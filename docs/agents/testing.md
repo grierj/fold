@@ -92,17 +92,35 @@ mounted path, a connection with no host, a socket directory that is missing).
   (`FOLD_PG_PULL_TIMEOUT`, 180s), as are the daemon check (`FOLD_PG_INFO_TIMEOUT`, 20s) and
   `<tool> --version` (`FOLD_PG_DISCOVERY_TIMEOUT`, 60s). `FOLD_PG_IMAGE` picks another image; a
   `name@sha256:...` digest is kept as given. The wrapper never invents a digest for a tag.
+- **Deadlines and cleanup.** Each command the wrapper starts (docker, and the tool in its
+  container) is the leader of its own process group, and its container has a name the wrapper made.
+  At a deadline, or when the wrapper gets TERM, INT or HUP, the whole group gets TERM, then KILL
+  after `FOLD_PG_KILL_GRACE` (3s), and `docker rm -f` removes the container. A command that ignores
+  TERM therefore still ends, and a signalled wrapper leaves no `pg_dump` or `pg_restore` running.
+  The Go side (`pgRun`, for discovery; a dump or restore itself has no deadline) runs the wrapper in
+  a group of its own and signals the group at its deadline, because exec's own kill reaches only the wrapper's pid. KILL of the wrapper itself cannot
+  be caught, so a killed test process can still leave a container; remove it with `docker rm -f`
+  on the `pg-client-*` name.
 - **Connections.** A TCP host runs on `--network host` after a `pg_isready` probe, which is what
   works on native Linux Docker. A Unix-socket directory (`host=/dir`, `?host=/dir`, `-h /dir`) is
   mounted at the same path with no network. The container runs as the caller's uid, which the
   image has no passwd entry for, so the probe passes `-U probe` (a `pg_isready` with no user exits 3,
-  "no attempt", before it connects; the probe does not authenticate). When the probe gets no answer the error says to use a
-  native client (`FOLD_PG_BIN`) or a connection the container can reach.
+  "no attempt", before it connects; the probe does not authenticate). When the probe gets no answer
+  the error says to use a native client (`FOLD_PG_BIN`) or a connection the container can reach.
+  A `host=` connection string is read only in its plain form (`key=value` words, no quotes, no
+  backslashes, no blanks around `=`); libpq's other forms can hide `host=` or `port=` inside a
+  password, so they are refused (74) with a message that says nothing of the string, and the
+  wrapper never prints a value it took from the arguments except the host and a numeric port. Use a
+  `postgres://` URL, or `FOLD_PG_BIN`.
 - **Tests.** The argument-level tests (`TestPGClientWrapper*`, in `restore_fence_test.go` beside
   `pgClients`) run the real script against a fake `docker`: paths with spaces, each directory
   mounted once, a stopped daemon, a bounded pull, a failed pull, an unreachable database, image-ID
   use, a mismatched major, and each connection form; the fake `pg_isready` exits 3 without `-U`
-  like the real one. `TestPGClientWrapperProbeWithRealDocker` runs real Docker and `pg_isready`
+  like the real one. The refusal tests put `host=` and `port=` inside quoted and escaped
+  passwords and check that neither routes the run nor appears in the output. The deadline tests
+  (`...DeadlinesHoldAgainstStubbornCommands`, `...CleansUpWhenToldToStop`, `TestPGRunStopsTheWholeGroup`)
+  use a fake whose process ignores TERM, has a child, and starts a "container" only `rm -f` ends;
+  they assert a bounded return, no surviving process and the container removed by name. `TestPGClientWrapperProbeWithRealDocker` runs real Docker and `pg_isready`
   against a closed local port and expects the "unreachable" diagnosis (73), skipping where Docker
   is not usable (failing under `CI`). The fake tests show the wrapper builds the right
   commands, not that any Docker variant behaves as assumed.

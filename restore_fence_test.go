@@ -1,17 +1,20 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"go/ast"
 	"go/token"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	neturl "net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -19,6 +22,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -610,6 +614,33 @@ var pgMajorRE = regexp.MustCompile(`\) (\d+)(?:\.\d+)?`)
 // stages add up to about five minutes in the worst case).
 const pgDiscoveryLimit = 6 * time.Minute
 
+// pgCleanupGrace is how long a command that was told to stop (SIGTERM) gets to
+// finish before it is killed. The wrapper, told to stop, ends its own commands
+// (its kill grace) and removes their containers (up to its daemon timeout), so
+// the grace has to outlast both.
+const pgCleanupGrace = 45 * time.Second
+
+// pgRun runs argv for at most limit with the given output writers. The command
+// gets its own process group, so the deadline reaches what it started: SIGTERM
+// to the group first (the wrapper's trap then stops its commands and removes its
+// containers), SIGKILL to the group once grace has passed. exec's own kill hits
+// only the command's pid, so a wrapper killed that way would leave its docker
+// and a container behind.
+func pgRun(limit, grace time.Duration, stdout, stderr io.Writer, argv ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
+	cmd.WaitDelay = grace
+	err := cmd.Run()
+	if ctx.Err() != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) // whatever ignored the TERM
+	}
+	return err
+}
+
 // The wrapper's exit codes for "no usable container runtime" (see
 // scripts/pg-client.sh). Locally these read as "Docker is not available" and skip,
 // like a missing docker; under CI they fail.
@@ -656,12 +687,8 @@ func exitCodeOf(err error) int {
 // resolvePGImage asks the wrapper for the local ID of the image it would use,
 // pulling it (bounded) when it is not there.
 func resolvePGImage(wrapper string, major int) (id, note string, unavailable bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), pgDiscoveryLimit)
-	defer cancel()
 	var stdout, stderr strings.Builder
-	cmd := exec.CommandContext(ctx, wrapper, "--resolve", strconv.Itoa(major))
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
+	if err := pgRun(pgDiscoveryLimit, pgCleanupGrace, &stdout, &stderr, wrapper, "--resolve", strconv.Itoa(major)); err != nil {
 		code := exitCodeOf(err)
 		return "", fmt.Sprintf("%s --resolve %d: %v: %s", wrapper, major, err, strings.TrimSpace(stderr.String())),
 			code == pgWrapperNoRuntime || code == pgWrapperNoDaemon
@@ -673,9 +700,9 @@ func resolvePGImage(wrapper string, major int) (id, note string, unavailable boo
 // the server's major version. unavailable is set when the wrapper says there is
 // no container runtime to run it with.
 func checkPGClient(argv []string, major int, fromWrapper bool) (note string, ok, unavailable bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), pgDiscoveryLimit)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, argv[0], append(argv[1:len(argv):len(argv)], "--version")...).CombinedOutput()
+	var buf bytes.Buffer
+	err := pgRun(pgDiscoveryLimit, pgCleanupGrace, &buf, &buf, append(argv[:len(argv):len(argv)], "--version")...)
+	out := buf.Bytes()
 	m := pgMajorRE.FindSubmatch(out)
 	switch {
 	case err != nil:
@@ -1287,15 +1314,38 @@ func isRestoreFenceStatement(sql string) bool {
 // FAKE_* variables: FAKE_DOCKER_INFO (ok, down, hang), FAKE_DOCKER_PULL (ok,
 // fail, hang), FAKE_DOCKER_PRESENT=1 (the image is already local),
 // FAKE_DOCKER_ID, FAKE_PGREADY_RC, FAKE_TOOL_RC, FAKE_PG_MAJOR.
+//
+// FAKE_STUBBORN (info, pull, probe, tool) makes that call the worst case for a
+// deadline: the process ignores SIGTERM, has a child in its own group that
+// does too, and starts a "container" that only `docker rm -f <name>` ends (as
+// the daemon owns a real one; it has a group of its own). Every pid goes to
+// pids and "started" appears once they are up. Each ends itself after a minute,
+// so a test that fails leaves nothing behind for long.
 const fakeDockerScript = `#!/usr/bin/env bash
 { echo "---"; for a in "$@"; do printf '%s\n' "$a"; done; } >>"$FAKE_DOCKER_DIR/log"
 id=${FAKE_DOCKER_ID:-sha256:feedbeef}
+stubborn() { # container name, or "" for none
+	trap '' TERM
+	spin='trap "" TERM; echo $$ >>"$1"; i=0; while [ $i -lt 60 ]; do sleep 1; i=$((i + 1)); done'
+	bash -c "$spin" spin "$FAKE_DOCKER_DIR/pids" &
+	if [[ -n $1 ]]; then
+		set -m
+		bash -c "$spin" spin "$FAKE_DOCKER_DIR/pids" &
+		echo $! >"$FAKE_DOCKER_DIR/c.$1"
+		set +m
+	fi
+	echo $$ >>"$FAKE_DOCKER_DIR/pids"
+	: >"$FAKE_DOCKER_DIR/started"
+	wait
+	exit 1
+}
 case $1 in
 info)
 	case ${FAKE_DOCKER_INFO:-ok} in
 	down) echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" >&2; exit 1 ;;
 	hang) exec sleep 30 ;;
 	esac
+	if [[ ${FAKE_STUBBORN:-} == info ]]; then stubborn ""; fi
 	;;
 image)
 	if [[ ${FAKE_DOCKER_PRESENT:-} == 1 || -e $FAKE_DOCKER_DIR/pulled || ${@: -1} == "$id" ]]; then
@@ -1311,14 +1361,30 @@ pull)
 	fail) echo "Error response from daemon: manifest unknown" >&2; exit 1 ;;
 	hang) exec sleep 30 ;;
 	esac
+	if [[ ${FAKE_STUBBORN:-} == pull ]]; then stubborn ""; fi
 	: >"$FAKE_DOCKER_DIR/pulled"
+	;;
+rm)
+	# rm -f <name>: the daemon ends the container, group and all.
+	name=${@: -1}
+	if [[ -f $FAKE_DOCKER_DIR/c.$name ]]; then
+		p=$(cat "$FAKE_DOCKER_DIR/c.$name")
+		kill -KILL -- "-$p" 2>/dev/null
+		kill -KILL "$p" 2>/dev/null
+	fi
+	exit 0
 	;;
 run)
 	shift
-	while [[ $1 != --entrypoint ]]; do shift; done
+	cname=
+	while [[ $1 != --entrypoint ]]; do
+		[[ $1 == --name ]] && cname=$2
+		shift
+	done
 	entry=$2
 	shift 3 # --entrypoint, its value, the image
 	if [[ $entry == pg_isready ]]; then
+		if [[ ${FAKE_STUBBORN:-} == probe ]]; then stubborn "$cname"; fi
 		# Like the real one run as a uid with no passwd entry: without -U it
 		# cannot name a user and exits 3, "no attempt made".
 		named=
@@ -1326,6 +1392,7 @@ run)
 		[[ -n $named ]] || exit 3
 		exit "${FAKE_PGREADY_RC:-0}"
 	fi
+	if [[ ${FAKE_STUBBORN:-} == tool ]]; then stubborn "$cname"; fi
 	if [[ ${FAKE_TOOL_RC:-0} != 0 ]]; then exit "$FAKE_TOOL_RC"; fi
 	if [[ ${1:-} == --version ]]; then echo "$entry (PostgreSQL) ${FAKE_PG_MAJOR:-16}.4"; fi
 	;;
@@ -1543,6 +1610,7 @@ func TestPGClientWrapperIsBash32Compatible(t *testing.T) {
 		regexp.MustCompile(`\b(mapfile|readarray|coproc)\b`),
 		regexp.MustCompile(`\$\{[^}]*(,,|\^\^)[^}]*\}`),
 		regexp.MustCompile(`&>>|\|&|;;&|;&|\[\[\s+-v\b`),
+		regexp.MustCompile(`\bwait\s+-[a-z]*n|\$\{?BASHPID\b|\$\{?EPOCHSECONDS\b`), // 4.3, 4.0, 5.0
 	} {
 		if m := bad.FindString(src); m != "" {
 			t.Errorf("scripts/pg-client.sh uses %q, which Bash 3.2 does not have", m)
@@ -1814,6 +1882,309 @@ func TestPGClientWrapperProbeWithRealDocker(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	if code := exitCodeOf(err); code != 73 || !strings.Contains(string(out), "does not answer from inside the container") {
 		t.Errorf("exit %d: %s\nwant 73, the probe saw a closed port", code, out)
+	}
+}
+
+// TestPGClientWrapperRefusesConninfoItCannotRead: a connection string that
+// libpq reads with quotes, backslashes or blanks around "=" cannot be split on
+// blanks, because a password can hold "port=5432" or "host=/tmp". The wrapper
+// refuses it before taking a word from it, with a message that says nothing of
+// its content, and starts no container.
+func TestPGClientWrapperRefusesConninfoItCannotRead(t *testing.T) {
+	root := t.TempDir()
+	sock := filepath.Join(root, "sock")
+	if err := os.Mkdir(sock, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		args []string
+		leak []string // fragments of the string the output must not repeat
+	}{
+		{"port inside a quoted password", []string{"-d", "host=127.0.0.1 user=app dbname=db password='prefix port=pa55w0rd'"}, []string{"pa55w0rd", "prefix"}},
+		{"host inside a quoted password", []string{"-d", "dbname=db password='prefix host=" + sock + " suffix'"}, []string{"prefix", "suffix"}},
+		{"host inside a double-quoted password", []string{"-d", `user=app password="pa55 host=` + sock + `" host=db.internal`}, []string{"pa55"}},
+		{"port first inside a quoted password", []string{"-d", "port='1 pa55w0rd' host=db.internal"}, []string{"pa55w0rd"}},
+		{"a backslash-escaped blank", []string{"-d", `host=db.internal password=pa55\ port=5432`}, []string{"pa55"}},
+		{"an escaped quote", []string{"-d", `host=db.internal password=pa55\'w0rd`}, []string{"pa55", "w0rd"}},
+		{"blanks around =", []string{"-d", "host = db.internal port=5432"}, []string{"db.internal"}},
+		{"a blank after =", []string{"-d", "host= db.internal port=5432"}, []string{"db.internal"}},
+		{"a blank before =", []string{"-d", "host =db.internal port=5432"}, []string{"db.internal"}},
+		{"an empty value", []string{"-d", "dbname= host=db.internal"}, []string{"db.internal"}},
+		{"a carriage return", []string{"-d", "host=db.internal\rport=5432"}, []string{"db.internal"}},
+		{"a bare string", []string{"host=db.internal password='pa55w0rd'"}, []string{"pa55w0rd"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeDocker(t, true)
+			out, code, calls := f.wrap(t, nil, append([]string{"16", "pg_dump"}, tc.args...)...)
+			if code != 74 || !strings.Contains(out, "FOLD_PG_BIN") || !strings.Contains(out, "does not read") {
+				t.Errorf("exit %d: %s\nwant 74 pointing at a URL or FOLD_PG_BIN", code, out)
+			}
+			for _, leak := range tc.leak {
+				if strings.Contains(out, leak) {
+					t.Errorf("the output repeats %q from the connection string: %s", leak, out)
+				}
+			}
+			for _, c := range callsFor(calls, "run") {
+				t.Errorf("a container started for a connection string that was refused: %v", c)
+			}
+		})
+	}
+
+	// Plain strings keep working; a word that only looks like a setting inside
+	// another setting's value is not one.
+	t.Run("host= inside an unquoted value", func(t *testing.T) {
+		f := newFakeDocker(t, true)
+		out, code, calls := f.wrap(t, nil, "16", "pg_dump", "-d", "host=db.internal password=xhost="+sock+" port=5436 dbname=x")
+		if code != 0 {
+			t.Fatalf("exit %d: %s", code, out)
+		}
+		ready := toolRun(t, calls, "pg_isready")
+		if !ready.has("-h", "db.internal", "-p", "5436") || !ready.has("--network", "host") || ready.count("-v") != 0 {
+			t.Errorf("the probe followed a word inside a password: %v", ready)
+		}
+	})
+	t.Run("a port that is not a number is not repeated", func(t *testing.T) {
+		f := newFakeDocker(t, true)
+		out, code, _ := f.wrap(t, nil, "16", "pg_dump", "postgres://u:pw@localhost:pa55w0rd/db")
+		if code != 74 || !strings.Contains(out, "not a number") || strings.Contains(out, "pa55w0rd") {
+			t.Errorf("exit %d: %s", code, out)
+		}
+	})
+	t.Run("a path named like a host setting is a path", func(t *testing.T) {
+		f := newFakeDocker(t, true)
+		out, code, calls := f.wrap(t, nil, "16", "pg_dump", "-f", filepath.Join(sock, "host=a b'c.dump"))
+		if code != 0 {
+			t.Fatalf("exit %d: %s", code, out)
+		}
+		run := toolRun(t, calls, "pg_dump")
+		if len(callsFor(calls, "run")) != 1 || !run.has("-v", sock+":"+sock) || !run.has("--network", "host") {
+			t.Errorf("a file argument was read as a connection: %v", calls)
+		}
+	})
+}
+
+// pids reads the process ids the fake docker recorded.
+func (f *fakeDocker) pids(t *testing.T) []int {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(f.dir, "pids"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pids []int
+	for _, s := range strings.Fields(string(b)) {
+		if n, err := strconv.Atoi(s); err == nil {
+			pids = append(pids, n)
+		}
+	}
+	return pids
+}
+
+// alive reports whether the process runs. A zombie is dead: it waits only to be
+// reaped.
+func alive(pid int) bool {
+	if syscall.Kill(pid, 0) != nil {
+		return false
+	}
+	if b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
+		if i := bytes.LastIndexByte(b, ')'); i >= 0 && i+2 < len(b) && b[i+2] == 'Z' {
+			return false
+		}
+	}
+	return true
+}
+
+// expectStopped fails unless every recorded process is gone within a second
+// (they were killed already; this only waits for the kernel), and kills any that
+// is not, so a failure does not leave them running.
+func (f *fakeDocker) expectStopped(t *testing.T) {
+	t.Helper()
+	pids := f.pids(t)
+	if len(pids) == 0 {
+		t.Fatal("the fake docker started no process to stop: the scenario did not run")
+	}
+	deadline := time.Now().Add(time.Second)
+	for _, pid := range pids {
+		for alive(pid) && time.Now().Before(deadline) {
+			time.Sleep(20 * time.Millisecond)
+		}
+		if alive(pid) {
+			t.Errorf("process %d is still running", pid)
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	}
+}
+
+// sawRemove reports whether the wrapper removed the container its run was
+// given: a `docker rm -f <name>` for the --name of a `docker run`.
+func sawRemove(calls []dockerCall) bool {
+	names := map[string]bool{}
+	for _, c := range callsFor(calls, "run") {
+		for i, a := range c {
+			if a == "--name" && i+1 < len(c) {
+				names[c[i+1]] = true
+			}
+		}
+	}
+	for _, c := range callsFor(calls, "rm") {
+		if c.has("-f") && names[c[len(c)-1]] {
+			return true
+		}
+	}
+	return false
+}
+
+// TestPGClientWrapperDeadlinesHoldAgainstStubbornCommands: a command that ignores
+// SIGTERM and starts children (one of them a container the daemon owns) must
+// still end at its deadline plus the grace, with nothing of it left running and
+// its container removed. A fixture that dies on TERM cannot show this.
+func TestPGClientWrapperDeadlinesHoldAgainstStubbornCommands(t *testing.T) {
+	url := "postgres://u:p@127.0.0.1:5433/db"
+	for _, tc := range []struct {
+		stage     string
+		timeout   string
+		args      []string
+		wantCode  int
+		wantText  string
+		container bool
+	}{
+		{"info", "FOLD_PG_INFO_TIMEOUT", []string{"16", "pg_dump", "--version"}, 71, "did not answer within 1s", false},
+		{"pull", "FOLD_PG_PULL_TIMEOUT", []string{"16", "pg_dump", "--version"}, 72, "did not finish within 1s", false},
+		{"probe", "FOLD_PG_INFO_TIMEOUT", []string{"16", "pg_dump", url}, 73, "does not answer", true},
+		{"tool", "FOLD_PG_DISCOVERY_TIMEOUT", []string{"16", "pg_dump", "--version"}, 72, "did not finish within 1s", true},
+	} {
+		t.Run(tc.stage, func(t *testing.T) {
+			f := newFakeDocker(t, true)
+			start := time.Now()
+			out, code, calls := f.wrap(t, []string{"FAKE_STUBBORN=" + tc.stage, tc.timeout + "=1", "FOLD_PG_KILL_GRACE=1"}, tc.args...)
+			if code != tc.wantCode || !strings.Contains(out, tc.wantText) {
+				t.Errorf("exit %d: %s\nwant exit %d containing %q", code, out, tc.wantCode, tc.wantText)
+			}
+			// 1s limit + 1s grace, and the poll of each; far under what a command
+			// that is merely waited for would take (it sleeps a minute).
+			if d := time.Since(start); d > 15*time.Second {
+				t.Errorf("took %v: the deadline did not hold", d)
+			}
+			f.expectStopped(t)
+			if tc.container && !sawRemove(calls) {
+				t.Errorf("the container was not removed by name: %v", calls)
+			}
+		})
+	}
+}
+
+// TestPGClientWrapperCleansUpWhenToldToStop: a caller that gives up (a test
+// deadline, Ctrl-C, a terminal closing) signals the wrapper, and the dump or
+// restore it started must not be left running with its container.
+func TestPGClientWrapperCleansUpWhenToldToStop(t *testing.T) {
+	for _, tc := range []struct {
+		sig  syscall.Signal
+		want int
+	}{
+		{syscall.SIGTERM, 143},
+		{syscall.SIGINT, 130},
+		{syscall.SIGHUP, 129},
+	} {
+		t.Run(tc.sig.String(), func(t *testing.T) {
+			if signal.Ignored(tc.sig) {
+				t.Skipf("%v is ignored in this process, so a shell it starts cannot trap it", tc.sig)
+			}
+			f := newFakeDocker(t, true)
+			cmd := exec.Command(pgWrapperPath(), "16", "pg_dump", "-Fc")
+			cmd.Env = []string{"PATH=" + f.path, "TMPDIR=" + f.dir, "FAKE_DOCKER_DIR=" + f.dir,
+				"FAKE_STUBBORN=tool", "FOLD_PG_KILL_GRACE=1"}
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- cmd.Wait() }()
+			t.Cleanup(func() {
+				_ = cmd.Process.Kill()
+				for _, pid := range f.pids(t) {
+					_ = syscall.Kill(-pid, syscall.SIGKILL)
+					_ = syscall.Kill(pid, syscall.SIGKILL)
+				}
+			})
+			deadline := time.Now().Add(30 * time.Second)
+			for {
+				if _, err := os.Stat(filepath.Join(f.dir, "started")); err == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("the tool never started")
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			stopped := time.Now()
+			if err := cmd.Process.Signal(tc.sig); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-done:
+				if code := exitCodeOf(err); code != tc.want {
+					t.Errorf("exit %d, want %d", code, tc.want)
+				}
+			case <-time.After(30 * time.Second):
+				t.Fatal("the wrapper did not end after the signal")
+			}
+			if d := time.Since(stopped); d > 15*time.Second {
+				t.Errorf("took %v to end", d)
+			}
+			f.expectStopped(t)
+			if !sawRemove(f.calls(t)) {
+				t.Errorf("the container was not removed by name: %v", f.calls(t))
+			}
+			if left, _ := filepath.Glob(filepath.Join(f.dir, "pg-client.*")); len(left) != 0 {
+				t.Errorf("the wrapper left its work directory: %v", left)
+			}
+		})
+	}
+}
+
+// TestPGRunStopsTheWholeGroup: the Go side of the deadline. A wrapper killed by
+// exec's own deadline (the pid alone) would leave its docker behind, so pgRun
+// signals the process group, and kills what ignored the TERM.
+func TestPGRunStopsTheWholeGroup(t *testing.T) {
+	dir := t.TempDir()
+	pids := filepath.Join(dir, "pids")
+	script := filepath.Join(dir, "stubborn")
+	body := `#!/usr/bin/env bash
+trap '' TERM
+bash -c 'trap "" TERM; echo $$ >>"$1"; sleep 60' child "$1" &
+echo $$ >>"$1"
+wait
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	var out bytes.Buffer
+	err := pgRun(700*time.Millisecond, 500*time.Millisecond, &out, &out, script, pids)
+	if err == nil {
+		t.Fatal("a command that overran its limit reported success")
+	}
+	if d := time.Since(start); d > 10*time.Second {
+		t.Errorf("took %v", d)
+	}
+	b, _ := os.ReadFile(pids)
+	got := strings.Fields(string(b))
+	if len(got) != 2 {
+		t.Fatalf("the script recorded %v, want its pid and its child's", got)
+	}
+	for _, s := range got {
+		pid, _ := strconv.Atoi(s)
+		deadline := time.Now().Add(time.Second)
+		for alive(pid) && time.Now().Before(deadline) {
+			time.Sleep(20 * time.Millisecond)
+		}
+		if alive(pid) {
+			t.Errorf("process %d survived the deadline", pid)
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
 	}
 }
 

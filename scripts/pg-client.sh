@@ -16,6 +16,17 @@
 #   FOLD_PG_INFO_TIMEOUT=20            seconds to wait for the daemon
 #   FOLD_PG_PULL_TIMEOUT=180           seconds for one image pull
 #   FOLD_PG_DISCOVERY_TIMEOUT=60       seconds for `<tool> --version`
+#   FOLD_PG_KILL_GRACE=3               seconds between SIGTERM and SIGKILL when a
+#                                      command overruns its limit, or this script
+#                                      is itself told to stop
+#
+# Every command this script starts (docker, and the tool in its container) runs in
+# its own process group and its container has a name made here. A command that
+# overruns its limit, or this script receiving TERM, INT or HUP, gets SIGTERM, then
+# SIGKILL after the grace, for the whole group, and its container is removed
+# (`docker rm -f`), so nothing started here outlives it. SIGKILL of the script
+# itself cannot be caught; a caller that may do that should signal the script's
+# process group first (restore_fence_test.go does).
 #
 # Every absolute path among the arguments has its directory mounted at the same
 # path, so `-f /tmp/x/fence.dump` and a dump file argument work unchanged.
@@ -26,7 +37,12 @@
 #     host is probed first, so an unreachable database is reported as such;
 #   - a Unix-socket directory (host=/dir, ?host=/dir, -h /dir) is mounted at the
 #     same path and the container gets no network.
-# Nothing here prints the arguments, so a password in a URL stays out of output.
+# A host= connection string is read only in its plain form: key=value words with
+# no quotes, no backslashes and no spaces around "=". libpq's other forms hide
+# words inside a quoted password, so they are refused (74) before any word is
+# taken from them; use a postgres:// URL, or FOLD_PG_BIN.
+# Nothing here prints the arguments, so a password in a URL or a connection
+# string stays out of output; a diagnostic names only the host and a numeric port.
 #
 # Exit codes of this script's own diagnostics (anything else is the tool's):
 #   70 no container runtime on PATH      71 the daemon does not answer
@@ -70,36 +86,108 @@ seconds() { # name default
 info_timeout=$(seconds FOLD_PG_INFO_TIMEOUT 20)
 pull_timeout=$(seconds FOLD_PG_PULL_TIMEOUT 180)
 discovery_timeout=$(seconds FOLD_PG_DISCOVERY_TIMEOUT 60)
+kill_grace=$(seconds FOLD_PG_KILL_GRACE 3)
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/pg-client.XXXXXX")
-trap 'rm -rf "$work"' EXIT
+
+# What this script has running, for cleanup. Job control makes every `&` command
+# the leader of its own process group, so one signal to -$job reaches whatever it
+# started, including a child that outlives it; without it a command's children
+# could not be found, and a timed-out `docker run` would leave its container.
+set -m
+job=       # the command being waited for
+watch=     # its deadline watcher
+container= # the name of the container $job runs, if any
+container_seq=0
+
+# stop_group <pid> sends TERM to the pid's process group, waits up to the grace,
+# then sends KILL. A command that ignores TERM therefore still ends. It falls
+# back to the pid alone where the group does not exist.
+stop_group() {
+	local pid=$1 left=$kill_grace
+	kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+	while [[ $left -gt 0 ]] && kill -0 -- "-$pid" 2>/dev/null; do
+		sleep 1
+		left=$((left - 1))
+	done
+	kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+}
+
+# name_container sets $container to a name no other run uses; the `docker run`
+# of the caller passes it to --name so the container can be removed by name.
+name_container() {
+	container_seq=$((container_seq + 1))
+	container=$prog-$$-$RANDOM$RANDOM-$container_seq
+}
+
+# remove_container <name> forces a container away, waiting at most the daemon
+# timeout for docker to do it. A container that is already gone is not an error.
+remove_container() {
+	local pid left=$info_timeout
+	docker rm -f "$1" >/dev/null 2>&1 </dev/null &
+	pid=$!
+	while [[ $left -gt 0 ]] && kill -0 "$pid" 2>/dev/null; do
+		sleep 1
+		left=$((left - 1))
+	done
+	kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+	{ wait "$pid" || true; } 2>/dev/null
+}
+
+# cleanup runs on every exit, including TERM, INT and HUP (below). A signal that
+# arrives while it runs is ignored, so it finishes: it is bounded by the grace and
+# the daemon timeout.
+# shellcheck disable=SC2329 # run by the EXIT trap below
+cleanup() {
+	trap '' TERM INT HUP
+	if [[ -n $watch ]]; then
+		kill -KILL -- "-$watch" 2>/dev/null || kill -KILL "$watch" 2>/dev/null || true
+	fi
+	if [[ -n $job ]]; then
+		stop_group "$job"
+	fi
+	if [[ -n $container ]]; then
+		remove_container "$container"
+	fi
+	rm -rf "$work"
+}
+trap cleanup EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+trap 'exit 129' HUP
 
 # bounded <seconds> <command...> runs the command with stdout in $work/out and
-# stderr in $work/err, and returns 124 when it had to be stopped. Bash 3.2 has no
-# `timeout`, and macOS has none either.
+# stderr in $work/err, and returns 124 when it had to be stopped (TERM, then KILL
+# after the grace, for its whole process group; its container, if $container
+# names one, is removed). Bash 3.2 has no `timeout`, and macOS has none either.
 bounded() {
-	local secs=$1 pid watcher rc=0
+	local secs=$1 rc=0
 	shift
 	rm -f "$work/timedout"
 	"$@" >"$work/out" 2>"$work/err" </dev/null &
-	pid=$!
+	job=$!
 	(
+		set +m # its sleep stays in the watcher's group, so one KILL ends both
 		exec >/dev/null 2>&1 </dev/null
-		sleeper=
-		trap 'kill "$sleeper"; exit 0' TERM
-		sleep "$secs" &
-		sleeper=$!
-		wait "$sleeper"
+		sleep "$secs"
 		: >"$work/timedout"
-		kill "$pid"
+		stop_group "$job"
 	) &
-	watcher=$!
-	{ wait "$pid" || rc=$?; } 2>/dev/null
-	kill "$watcher" 2>/dev/null || true
-	{ wait "$watcher" || true; } 2>/dev/null
+	watch=$!
+	{ wait "$job" || rc=$?; } 2>/dev/null
+	# The command is over; anything it left behind is not wanted.
+	kill -KILL -- "-$job" 2>/dev/null || true
+	kill -KILL -- "-$watch" 2>/dev/null || kill -KILL "$watch" 2>/dev/null || true
+	{ wait "$watch" || true; } 2>/dev/null
+	job='' watch=''
 	if [[ -e $work/timedout ]]; then
+		if [[ -n $container ]]; then
+			remove_container "$container"
+		fi
+		container=
 		return 124
 	fi
+	container=
 	return "$rc"
 }
 
@@ -219,11 +307,43 @@ set_url() {
 	fi
 }
 
-set_conninfo() { # a "host=/tmp port=5432 dbname=x" string; quoted values are not understood
+conninfo_refused="the connection string uses a form this wrapper does not read (quotes, backslashes, or a space around \"=\"), and a word such as host= or port= could hide inside a quoted password. Use a postgres:// URL, or set FOLD_PG_BIN to a directory of PostgreSQL $major client tools"
+
+# names_host: does the string have a word that is a host setting (host=...) or
+# the start of one with blanks around "=" ("host = x")? Any other argument is not
+# a connection string, and set_conninfo refuses the second form.
+names_host() {
 	local tok
 	set -f
 	for tok in $1; do
 		case $tok in
+		host | host=*)
+			set +f
+			return 0
+			;;
+		esac
+	done
+	set +f
+	return 1
+}
+
+# set_conninfo reads a plain "host=/tmp port=5432 dbname=x" string and refuses the
+# rest. libpq allows quoted and backslash-escaped values and blanks around "=",
+# and splitting such a string on blanks would take a word out of the middle of a
+# password ("password='a port=5432'") as if it were a setting. So any string that
+# has those forms is refused before a word is taken from it, and the refusal says
+# nothing about its content. Every word is then key=value; a word ending in "="
+# or starting with "=" is a blank around "=" (libpq would read the next word as
+# its value).
+set_conninfo() {
+	local tok
+	case $1 in
+	*"'"* | *'"'* | *\\* | *$'\r'* | *$'\f'* | *$'\v'*) die 74 "$conninfo_refused" ;;
+	esac
+	set -f
+	for tok in $1; do
+		case $tok in
+		=* | *=) die 74 "$conninfo_refused" ;;
 		host=*) host=${tok#host=} ;;
 		port=*) port=${tok#port=} ;;
 		esac
@@ -261,9 +381,12 @@ for arg in "$@"; do
 		;;
 	--port=*) port=${arg#--port=} ;;
 	-*) ;;
-	*"host="*)
-		set_conninfo "$arg"
-		target=found
+	/*) ;; # a file path is not a connection string
+	*)
+		if names_host "$arg"; then
+			set_conninfo "$arg"
+			target=found
+		fi
 		;;
 	esac
 	case $prev in
@@ -310,7 +433,7 @@ if [[ $target == found ]]; then
 	esac
 	port=${port:-5432}
 	case $port in
-	'' | *[!0-9]*) die 74 "the connection's port \"$port\" is not a number" ;;
+	'' | *[!0-9]*) die 74 "the connection's port is not a number" ;;
 	esac
 fi
 
@@ -332,7 +455,8 @@ user=$(id -u):$(id -g)
 # the name is never checked.
 if [[ $target != none ]]; then
 	rc=0
-	bounded "$info_timeout" docker run --rm "${net[@]}" --user "$user" \
+	name_container
+	bounded "$info_timeout" docker run --rm --name "$container" "${net[@]}" --user "$user" \
 		${mounts[@]+"${mounts[@]}"} --entrypoint pg_isready "$image_id" -q -U probe -h "$host" -p "$port" -t 10 || rc=$?
 	case $rc in
 	0 | 1) ;;
@@ -351,10 +475,13 @@ if [[ $target != none ]]; then
 	esac
 fi
 
-# 6. The tool. Discovery (`--version`) is bounded; a dump or restore is not.
+# 6. The tool. Discovery (`--version`) is bounded; a dump or restore is not, but
+# it is still a job of its own, so a signal to this script stops it and removes
+# its container.
 if [[ $# -eq 1 && $1 == --version ]]; then
 	rc=0
-	bounded "$discovery_timeout" docker run --rm "${net[@]}" --user "$user" \
+	name_container
+	bounded "$discovery_timeout" docker run --rm --name "$container" "${net[@]}" --user "$user" \
 		${mounts[@]+"${mounts[@]}"} --entrypoint "$tool" "$image_id" "$@" || rc=$?
 	if [[ $rc -eq 124 ]]; then
 		die 72 "$tool --version in image $image ($image_id) did not finish within ${discovery_timeout}s"
@@ -363,8 +490,21 @@ if [[ $# -eq 1 && $1 == --version ]]; then
 	cat "$work/err" >&2
 else
 	rc=0
-	docker run --rm -i "${net[@]}" --user "$user" \
-		${mounts[@]+"${mounts[@]}"} --entrypoint "$tool" "$image_id" "$@" || rc=$?
+	name_container
+	# A job in its own process group must not read a terminal (SIGTTIN would stop
+	# it); the tool never prompts, since the container has no tty.
+	if [[ -t 0 ]]; then
+		exec 3</dev/null
+	else
+		exec 3<&0
+	fi
+	docker run --rm -i --name "$container" "${net[@]}" --user "$user" \
+		${mounts[@]+"${mounts[@]}"} --entrypoint "$tool" "$image_id" "$@" <&3 &
+	job=$!
+	exec 3<&-
+	{ wait "$job" || rc=$?; } 2>/dev/null
+	kill -KILL -- "-$job" 2>/dev/null || true
+	job='' container=''
 fi
 case $rc in
 125 | 126 | 127) die 72 "the container could not start $tool from image $image ($image_id), docker exit $rc" ;;
