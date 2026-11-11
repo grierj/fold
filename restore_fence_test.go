@@ -1856,6 +1856,9 @@ func TestPGClientWrapperConnectionForms(t *testing.T) {
 		{name: "socket with a blank, in the URL authority", args: []string{"postgres://u@" + pctEncode(spacedSock) + ":5439/db"}, network: "none", mount: spacedSock, probe: probe{spacedSock, "5439"}},
 		{name: "socket with a blank, in an encoded query key", args: []string{"postgres://u@/db?%68ost=" + pctEncode(spacedSock)}, network: "none", mount: spacedSock, probe: probe{spacedSock, "5432"}},
 		{name: "socket with a blank, in lower-case hex", args: []string{"postgres://u@/db?host=" + strings.ReplaceAll(pctEncode(spacedSock), "%2F", "%2f")}, network: "none", mount: spacedSock, probe: probe{spacedSock, "5432"}},
+		{name: "repeated host socket to TCP", args: []string{"postgres://u@/db?host=" + pctEncode(sock) + "&host=127.0.0.1"}, network: "host", probe: probe{"127.0.0.1", "5432"}},
+		{name: "repeated host TCP to socket", args: []string{"postgres://u@/db?host=127.0.0.1&%68ost=" + pctEncode(spacedSock)}, network: "none", mount: spacedSock, probe: probe{spacedSock, "5432"}},
+		{name: "repeated port", args: []string{"postgres://u@localhost/db?port=5433&%70ort=5434"}, network: "host", probe: probe{"localhost", "5434"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeDocker(t, true)

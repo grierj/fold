@@ -351,11 +351,11 @@ url_decode() {
 	esac
 }
 
-# query_param <name> <query> puts the still-encoded value of the first ?name= in
+# query_param <name> <query> puts the still-encoded value of the last ?name= in
 # $qvalue; the key may itself be percent-encoded, as in libpq.
 qvalue=
 query_param() {
-	local rest=$2 pair key
+	local rest=$2 pair key found=1
 	while [[ -n $rest ]]; do
 		pair=${rest%%&*}
 		if [[ $rest == *"&"* ]]; then
@@ -374,10 +374,10 @@ query_param() {
 		fi
 		if [[ $key == "$1" ]]; then
 			qvalue=${pair#*=}
-			return 0
+			found=0
 		fi
 	done
-	return 1
+	return "$found"
 }
 
 # set_url reads the host and port of a postgres:// URL. It splits on the URL's own
