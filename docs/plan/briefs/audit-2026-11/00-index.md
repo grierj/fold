@@ -12,8 +12,8 @@ implementer notes the drift in the PR.
 
 1. Check the milestone's row in `STATUS.md` and its open issues; update the row in the slice PR.
 2. Work one slice per PR, in the brief's slice order. Follow the merge rules
-   in `AGENTS.md` (green `test`/`web`/`provision`, four-concern review by a
-   separate agent, hand-checks to `docs/FIRST-CHURCH-CHECKS.md`).
+   in `AGENTS.md` (green `test`/`web`/`provision`, a review of the concerns it
+   lists by a separate agent, hand-checks to `docs/FIRST-CHURCH-CHECKS.md`).
 3. Sanity before every push: the checks under "Before every push" in `AGENTS.md`.
    Then the brief's own tests (`make test`, `cd web && npm test`,
    `make e2e` where named).
