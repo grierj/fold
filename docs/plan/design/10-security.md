@@ -63,7 +63,9 @@ promises.
   SMS and inbound-mail webhooks check the provider's signature.
 - Security headers (M0.3b, DEC-37), set by the app on every response (`internal/httpx`): a
   Content-Security-Policy (scripts, styles, fonts, workers and the manifest from this origin only;
-  `connect-src 'self'`; `frame-ancestors 'self'`), `X-Content-Type-Options: nosniff`,
+  `connect-src 'self'`; `frame-ancestors 'self'`; images from this origin plus `data:` and
+  `blob:`, with no other origin since uploads are the only image source, DEC-49, PR #367),
+  `X-Content-Type-Options: nosniff`,
   `Referrer-Policy: same-origin`, `X-Frame-Options: SAMEORIGIN`, a `Permissions-Policy` that turns
   off camera, microphone and geolocation, and HSTS when cookies are Secure. Notifications add no
   CSP origin (5.12). Icons are inline SVG and user text renders as plain text.
