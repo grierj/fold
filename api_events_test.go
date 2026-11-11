@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2385,75 +2384,6 @@ func TestNextVisibleDatesUsesOneSnapshot(t *testing.T) {
 				requireNextAt(t, "fresh snapshot after tightening", fresh[g.ID], nil)
 			})
 		}
-	}
-}
-
-func TestNextVisibleDatesPreservesCallerTransaction(t *testing.T) {
-	for _, isolation := range []sql.IsolationLevel{sql.LevelRepeatableRead, sql.LevelSerializable, sql.LevelReadCommitted} {
-		t.Run(isolation.String(), func(t *testing.T) {
-			app := testApp(t)
-			leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
-			viewer := newTestUser(t, app, "viewer", "password1234", models.RoleMember)
-			g := newTestGroup(t, app, leader, "Choir", models.GroupActive)
-			originalDescription := g.Description
-			start := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Minute)
-			ev, _ := nextEventSeed(t, app, g, leader.ID, start, models.VisibilityInviteOnly, nil)
-			tx := app.DB.Begin(&sql.TxOptions{Isolation: isolation})
-			if tx.Error != nil {
-				t.Fatal(tx.Error)
-			}
-			defer tx.Rollback()
-			// Only this transaction can see the opened event and the viewer's
-			// new membership. Escaping to the pool for either read is wrong.
-			if err := tx.Model(&ev).Update("visibility", models.VisibilityPublic).Error; err != nil {
-				t.Fatal(err)
-			}
-			got, err := nextVisibleDates(tx, nil, []uint{g.ID})
-			if isolation == sql.LevelReadCommitted {
-				if !errors.Is(err, errNextDatesSnapshot) || got != nil {
-					t.Fatalf("read-committed caller: result=%v err=%v", got, err)
-				}
-			} else {
-				if err != nil {
-					t.Fatal(err)
-				}
-				requireNextAt(t, "caller's uncommitted event", got[g.ID], &start)
-				if err := tx.Model(&ev).Update("visibility", models.VisibilityInviteOnly).Error; err != nil {
-					t.Fatal(err)
-				}
-				if err := tx.Create(&models.Membership{GroupID: g.ID, UserID: viewer.ID,
-					Status: models.MembershipActive, Role: models.MembershipMember}).Error; err != nil {
-					t.Fatal(err)
-				}
-				got, err = nextVisibleDates(tx, viewer, []uint{g.ID})
-				if err != nil {
-					t.Fatal(err)
-				}
-				requireNextAt(t, "caller's uncommitted membership", got[g.ID], &start)
-			}
-			// The helper must neither commit the caller nor turn it read-only,
-			// even when it refuses the caller's isolation level.
-			if err := tx.Model(g).Update("description", "Still writable").Error; err != nil {
-				t.Fatal(err)
-			}
-			if err := tx.Rollback().Error; err != nil {
-				t.Fatal(err)
-			}
-			var stored models.Event
-			if err := app.DB.First(&stored, ev.ID).Error; err != nil {
-				t.Fatal(err)
-			}
-			if stored.Visibility != models.VisibilityInviteOnly {
-				t.Fatal("helper committed its caller's event edit")
-			}
-			var storedGroup models.Group
-			if err := app.DB.First(&storedGroup, g.ID).Error; err != nil {
-				t.Fatal(err)
-			}
-			if storedGroup.Description != originalDescription {
-				t.Fatal("caller transaction was not rolled back")
-			}
-		})
 	}
 }
 

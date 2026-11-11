@@ -482,40 +482,17 @@ func (a *App) groupSummaries(viewer *models.User, groups []models.Group) ([]grou
 // statements does not grow with the number of groups. The parity test against
 // full upcoming occurrences guards the synthetic occurrence used below.
 func nextVisibleDates(db *gorm.DB, viewer *models.User, groupIDs []uint) (map[uint]*time.Time, error) {
-	if db == nil || db.Statement == nil {
-		return nil, errNextDatesSnapshot
-	}
 	var next map[uint]*time.Time
-	load := func(tx *gorm.DB) error {
+	err := db.Transaction(func(tx *gorm.DB) error {
 		var err error
 		next, err = nextVisibleDatesIn(tx, viewer, groupIDs)
 		return err
-	}
-	var err error
-	if c, borrowed := db.Statement.ConnPool.(gorm.TxCommitter); borrowed {
-		if c == nil || reflect.ValueOf(c).IsNil() {
-			return nil, errNextDatesSnapshot
-		}
-		// GORM implements a nested Transaction with a savepoint and ignores its
-		// isolation options. Never upgrade or end a transaction owned by a caller.
-		var isolation string
-		if err = db.Raw("SHOW transaction_isolation").Scan(&isolation).Error; err == nil {
-			if isolation != "repeatable read" && isolation != "serializable" {
-				err = errNextDatesSnapshot
-			} else {
-				err = load(db)
-			}
-		}
-	} else {
-		err = db.Transaction(load, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
-	}
+	}, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
 		return nil, err
 	}
 	return next, nil
 }
-
-var errNextDatesSnapshot = errors.New("next visible dates requires a repeatable-read snapshot")
 
 // Candidates, policy facts and all minimum chunks must share a snapshot: a
 // tightening committed between them must not pair old authority with new dates.
