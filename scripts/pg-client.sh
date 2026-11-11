@@ -24,7 +24,12 @@
 # its own process group and its container has a name made here. A command that
 # overruns its limit, or this script receiving TERM, INT or HUP, gets SIGTERM, then
 # SIGKILL after the grace, for the whole group, and its container is removed
-# (`docker rm -f`), so nothing started here outlives it. SIGKILL of the script
+# (`docker rm -f`), so nothing started here outlives it. The container is removed
+# whenever its command ends, however it ends: the docker client can die while the
+# daemon keeps the container running, and --rm only acts when the container itself
+# exits. Only the container named here is removed. The removal is bounded by
+# FOLD_PG_INFO_TIMEOUT; if the container is still there after that, the script
+# names it on stderr and keeps the command's own exit status. SIGKILL of the script
 # itself cannot be caught; a caller that may do that should signal the script's
 # process group first (restore_fence_test.go does).
 #
@@ -41,6 +46,11 @@
 # no quotes, no backslashes and no spaces around "=". libpq's other forms hide
 # words inside a quoted password, so they are refused (74) before any word is
 # taken from them; use a postgres:// URL, or FOLD_PG_BIN.
+# A URL's host, port and ?host= / ?port= are percent-decoded as libpq does
+# (%2F is "/", %20 a blank), to choose the probe, the network and the mounted
+# directory; the tool still gets the URL as written. A "%" not followed by two
+# hex digits, %00, or a control character in the host or port is refused (74). So
+# is a comma in the host or port, which libpq reads as a list of hosts.
 # Nothing here prints the arguments, so a password in a URL or a connection
 # string stays out of output; a diagnostic names only the host and a numeric port.
 #
@@ -120,26 +130,74 @@ name_container() {
 	container=$prog-$$-$RANDOM$RANDOM-$container_seq
 }
 
-# remove_container <name> forces a container away, waiting at most the daemon
-# timeout for docker to do it. A container that is already gone is not an error.
-remove_container() {
-	local pid left=$info_timeout
-	docker rm -f "$1" >/dev/null 2>&1 </dev/null &
-	pid=$!
-	while [[ $left -gt 0 ]] && kill -0 "$pid" 2>/dev/null; do
-		sleep 1
-		left=$((left - 1))
+# limited <seconds> <outfile> <command...> runs a short command of the daemon's
+# (stdout to the file, stderr dropped) as a job of its own and returns its status;
+# a command still running after the limit is killed and returns 137. $rmjob names
+# it while it runs, so cleanup can end it if this script is told to stop meanwhile.
+# The limit counts $SECONDS, so it holds whatever granularity `sleep` has.
+rmjob=
+limited() {
+	local deadline=$((SECONDS + $1 + 1)) out=$2 rc=0
+	shift 2
+	"$@" >"$out" 2>/dev/null </dev/null &
+	rmjob=$!
+	while kill -0 "$rmjob" 2>/dev/null; do
+		if [[ $SECONDS -ge $deadline ]]; then
+			kill -KILL -- "-$rmjob" 2>/dev/null || kill -KILL "$rmjob" 2>/dev/null || true
+			break
+		fi
+		sleep 0.1 2>/dev/null || sleep 1
 	done
-	kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
-	{ wait "$pid" || true; } 2>/dev/null
+	{ wait "$rmjob" || rc=$?; } 2>/dev/null
+	rmjob=
+	return "$rc"
+}
+
+# remove_container <name> ends the container with exactly that name, whether or
+# not the docker client that started it is still alive, and returns 0 once it is
+# gone. `docker rm -f` failing is not yet a failure: the container may be gone
+# already (--rm removed it first, the usual case), or be mid-removal, so what
+# counts is whether the exact name is still listed. It tries again until
+# FOLD_PG_INFO_TIMEOUT has passed, then names the container on stderr and returns
+# 1; the caller keeps the status of the command it ran. Nothing but this name is
+# touched, and nothing here reads $job or $watch.
+remove_container() {
+	local name=$1 deadline=$((SECONDS + info_timeout + 1)) left rc line present
+	while :; do
+		left=$((deadline - SECONDS))
+		[[ $left -ge 1 ]] || left=1
+		rc=0
+		limited "$left" "$work/rm.out" docker rm -f "$name" || rc=$?
+		[[ $rc -eq 0 ]] && return 0
+		rc=0
+		limited "$left" "$work/rm.out" docker ps -a --filter "name=$name" --format '{{.Names}}' || rc=$?
+		if [[ $rc -eq 0 ]]; then
+			present=0
+			while IFS= read -r line || [[ -n $line ]]; do
+				if [[ $line == "$name" ]]; then
+					present=1
+				fi
+			done <"$work/rm.out"
+			[[ $present -eq 1 ]] || return 0
+		fi
+		[[ $SECONDS -lt $deadline ]] || break
+		sleep 0.2 2>/dev/null || sleep 1
+	done
+	echo "$prog: could not remove container $name; it may still be running. Remove it yourself: docker rm -f $name" >&2
+	return 1
 }
 
 # cleanup runs on every exit, including TERM, INT and HUP (below). A signal that
 # arrives while it runs is ignored, so it finishes: it is bounded by the grace and
-# the daemon timeout.
+# the daemon timeout. It also ends a removal that a signal interrupted, and does
+# that removal again, so a stop during cleanup does not abandon the container.
 # shellcheck disable=SC2329 # run by the EXIT trap below
 cleanup() {
 	trap '' TERM INT HUP
+	if [[ -n $rmjob ]]; then
+		kill -KILL -- "-$rmjob" 2>/dev/null || kill -KILL "$rmjob" 2>/dev/null || true
+		rmjob=
+	fi
 	if [[ -n $watch ]]; then
 		kill -KILL -- "-$watch" 2>/dev/null || kill -KILL "$watch" 2>/dev/null || true
 	fi
@@ -180,14 +238,16 @@ bounded() {
 	kill -KILL -- "-$watch" 2>/dev/null || kill -KILL "$watch" 2>/dev/null || true
 	{ wait "$watch" || true; } 2>/dev/null
 	job='' watch=''
-	if [[ -e $work/timedout ]]; then
-		if [[ -n $container ]]; then
-			remove_container "$container"
-		fi
+	# Ended on time, late or by itself, the docker client's exit says nothing about
+	# the container: the daemon owns it. $container stays set until the removal has
+	# finished, so a stop meanwhile still removes it.
+	if [[ -n $container ]]; then
+		remove_container "$container" || true
 		container=
+	fi
+	if [[ -e $work/timedout ]]; then
 		return 124
 	fi
-	container=
 	return "$rc"
 }
 
@@ -247,13 +307,55 @@ target=none # none | tcp | socket
 host=
 port=
 
-unescape() { # a URL's %2F is a slash; nothing else is decoded
-	local v=${1//\%2F//}
-	printf '%s' "${v//\%2f//}"
+url_escape_refused="the connection URL has a \"%\" that is not followed by two hex digits, or a %00, which libpq refuses too. Fix the URL, or set FOLD_PG_BIN to a directory of PostgreSQL $major client tools"
+url_control_refused="the connection URL names a host or port with a control character in it once percent-decoded. Fix the URL, or set FOLD_PG_BIN to a directory of PostgreSQL $major client tools"
+decoded= # the result of percent_decode
+
+# percent_decode <text> [controls] decodes %XX into $decoded as libpq does a
+# connection URL's parts (it does not read "+" as a blank). It returns 1 for a "%"
+# without two hex digits after it, or for %00, which libpq refuses; and, when a
+# second argument is given, 2 for a decoded control character (below a blank, or
+# DEL), which a host or port must not carry. The text may hold a password, so
+# nothing here prints it. Written for Bash 3.2: printf -v and 16# arithmetic only.
+percent_decode() {
+	local rest=$1 out='' hex n byte
+	decoded=
+	while [[ $rest == *%* ]]; do
+		out=$out${rest%%%*}
+		rest=${rest#*%}
+		hex=${rest:0:2}
+		case $hex in
+		[0-9A-Fa-f][0-9A-Fa-f]) ;;
+		*) return 1 ;;
+		esac
+		n=$((16#$hex))
+		[[ $n -ne 0 ]] || return 1
+		if [[ -n ${2:-} ]] && { [[ $n -lt 32 ]] || [[ $n -eq 127 ]]; }; then
+			return 2
+		fi
+		printf -v byte '%b' "\\x$hex"
+		out=$out$byte
+		rest=${rest:2}
+	done
+	decoded=$out$rest
 }
 
-query_param() { # name query
-	local rest=$2 pair
+# url_decode <part> puts the decoded host or port in $decoded, or refuses.
+url_decode() {
+	local rc=0
+	percent_decode "$1" part || rc=$?
+	case $rc in
+	0) ;;
+	1) die 74 "$url_escape_refused" ;;
+	*) die 74 "$url_control_refused" ;;
+	esac
+}
+
+# query_param <name> <query> puts the still-encoded value of the first ?name= in
+# $qvalue; the key may itself be percent-encoded, as in libpq.
+qvalue=
+query_param() {
+	local rest=$2 pair key
 	while [[ -n $rest ]]; do
 		pair=${rest%%&*}
 		if [[ $rest == *"&"* ]]; then
@@ -262,18 +364,30 @@ query_param() { # name query
 			rest=
 		fi
 		case $pair in
-		"$1="*)
-			printf '%s' "${pair#*=}"
-			return 0
-			;;
+		*=*) ;;
+		*) continue ;;
 		esac
+		key=${pair%%=*}
+		if [[ $key == *%* ]]; then
+			percent_decode "$key" || continue
+			key=$decoded
+		fi
+		if [[ $key == "$1" ]]; then
+			qvalue=${pair#*=}
+			return 0
+		fi
 	done
 	return 1
 }
 
+# set_url reads the host and port of a postgres:// URL. It splits on the URL's own
+# delimiters first and decodes each part after, so "%3A" and "%40" in a part never
+# split anything. The whole URL is checked for a bad escape first, because libpq
+# decodes every part (the password too) and its own complaint repeats the part.
 set_url() {
-	local url=$1 rest query='' hostport v
+	local url=$1 rest query='' hostport
 	rest=${url#*://}
+	percent_decode "$rest" || die 74 "$url_escape_refused"
 	case $rest in
 	*"?"*)
 		query=${rest#*\?}
@@ -298,12 +412,17 @@ set_url() {
 		port=
 		;;
 	esac
-	host=$(unescape "$host")
-	if v=$(query_param host "$query"); then
-		host=$(unescape "$v")
+	url_decode "$host"
+	host=$decoded
+	url_decode "$port"
+	port=$decoded
+	if query_param host "$query"; then
+		url_decode "$qvalue"
+		host=$decoded
 	fi
-	if v=$(query_param port "$query"); then
-		port=$v
+	if query_param port "$query"; then
+		url_decode "$qvalue"
+		port=$decoded
 	fi
 }
 
@@ -423,6 +542,11 @@ done
 if [[ $target == found ]]; then
 	[[ -n $host ]] ||
 		die 74 "the connection names no host, so it would use the default socket of this machine, which the container cannot see. Name a TCP host, or a socket directory (host=/var/run/postgresql), or set FOLD_PG_BIN to a directory of PostgreSQL $major client tools"
+	# libpq reads a comma in either as a list of hosts (or ports), which this
+	# wrapper does not follow; a decoded %2C is one too.
+	case $host$port in
+	*,*) die 74 "the connection names a list of hosts or ports (a comma), which this wrapper does not read. Name one host, or set FOLD_PG_BIN to a directory of PostgreSQL $major client tools" ;;
+	esac
 	case $host in
 	/*)
 		target=socket
@@ -477,7 +601,7 @@ fi
 
 # 6. The tool. Discovery (`--version`) is bounded; a dump or restore is not, but
 # it is still a job of its own, so a signal to this script stops it and removes
-# its container.
+# its container, and so does the end of the docker client, however it ends.
 if [[ $# -eq 1 && $1 == --version ]]; then
 	rc=0
 	name_container
@@ -504,7 +628,10 @@ else
 	exec 3<&-
 	{ wait "$job" || rc=$?; } 2>/dev/null
 	kill -KILL -- "-$job" 2>/dev/null || true
-	job='' container=''
+	job=
+	# The tool's status is $rc whatever the removal does.
+	remove_container "$container" || true
+	container=
 fi
 case $rc in
 125 | 126 | 127) die 72 "the container could not start $tool from image $image ($image_id), docker exit $rc" ;;

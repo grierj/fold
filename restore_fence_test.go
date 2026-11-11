@@ -1321,23 +1321,38 @@ func isRestoreFenceStatement(sql string) bool {
 // the daemon owns a real one; it has a group of its own). Every pid goes to
 // pids and "started" appears once they are up. Each ends itself after a minute,
 // so a test that fails leaves nothing behind for long.
+//
+// FAKE_ORPHAN (probe, tool) is the other failure: the docker client starts the
+// "container" and then dies with FAKE_ORPHAN_RC (default 5), leaving the daemon's
+// container running. A container is the file c.<name> holding the pid of its
+// group; "docker ps" lists, and "docker rm -f" ends, only those by name, and
+// rm of a name nobody has says so and exits 1, as docker does.
+// FAKE_RM=fail makes every rm refuse and leave the container alone;
+// FAKE_RM=slow_first makes the first rm hang (it writes rm.began), the later ones work.
 const fakeDockerScript = `#!/usr/bin/env bash
 { echo "---"; for a in "$@"; do printf '%s\n' "$a"; done; } >>"$FAKE_DOCKER_DIR/log"
 id=${FAKE_DOCKER_ID:-sha256:feedbeef}
+spin='trap "" TERM; echo $$ >>"$1"; i=0; while [ $i -lt 60 ]; do sleep 1; i=$((i + 1)); done'
+container() { # name: a "container" in a process group of its own, as the daemon owns one
+	set -m
+	bash -c "$spin" spin "$FAKE_DOCKER_DIR/pids" >/dev/null 2>&1 </dev/null &
+	echo $! >"$FAKE_DOCKER_DIR/c.$1"
+	echo $! >>"$FAKE_DOCKER_DIR/pids"
+	set +m
+}
 stubborn() { # container name, or "" for none
 	trap '' TERM
-	spin='trap "" TERM; echo $$ >>"$1"; i=0; while [ $i -lt 60 ]; do sleep 1; i=$((i + 1)); done'
-	bash -c "$spin" spin "$FAKE_DOCKER_DIR/pids" &
-	if [[ -n $1 ]]; then
-		set -m
-		bash -c "$spin" spin "$FAKE_DOCKER_DIR/pids" &
-		echo $! >"$FAKE_DOCKER_DIR/c.$1"
-		set +m
-	fi
+	bash -c "$spin" spin "$FAKE_DOCKER_DIR/pids" >/dev/null 2>&1 </dev/null &
+	if [[ -n $1 ]]; then container "$1"; fi
 	echo $$ >>"$FAKE_DOCKER_DIR/pids"
 	: >"$FAKE_DOCKER_DIR/started"
 	wait
 	exit 1
+}
+orphan() { # container name: the client starts the container and dies
+	container "$1"
+	: >"$FAKE_DOCKER_DIR/started"
+	exit "${FAKE_ORPHAN_RC:-5}"
 }
 case $1 in
 info)
@@ -1367,11 +1382,35 @@ pull)
 rm)
 	# rm -f <name>: the daemon ends the container, group and all.
 	name=${@: -1}
-	if [[ -f $FAKE_DOCKER_DIR/c.$name ]]; then
-		p=$(cat "$FAKE_DOCKER_DIR/c.$name")
-		kill -KILL -- "-$p" 2>/dev/null
-		kill -KILL "$p" 2>/dev/null
+	if [[ ${FAKE_RM:-} == fail ]]; then
+		echo "Error response from daemon: permission denied" >&2
+		exit 1
 	fi
+	if [[ ${FAKE_RM:-} == slow_first && ! -e $FAKE_DOCKER_DIR/rm.slow ]]; then
+		: >"$FAKE_DOCKER_DIR/rm.slow"
+		echo $$ >>"$FAKE_DOCKER_DIR/pids"
+		: >"$FAKE_DOCKER_DIR/rm.began"
+		exec sleep 60
+	fi
+	if [[ ! -f $FAKE_DOCKER_DIR/c.$name ]]; then
+		echo "Error response from daemon: No such container: $name" >&2
+		exit 1
+	fi
+	p=$(cat "$FAKE_DOCKER_DIR/c.$name")
+	kill -KILL -- "-$p" 2>/dev/null
+	kill -KILL "$p" 2>/dev/null
+	rm -f "$FAKE_DOCKER_DIR/c.$name"
+	exit 0
+	;;
+ps)
+	# ps -a --filter name=<part> --format {{.Names}}: the names that contain it.
+	part=
+	for a in "$@"; do [[ $a == name=* ]] && part=${a#name=}; done
+	for f in "$FAKE_DOCKER_DIR"/c.*; do
+		[[ -e $f ]] || continue
+		n=${f##*/c.}
+		[[ $n == *"$part"* ]] && echo "$n"
+	done
 	exit 0
 	;;
 run)
@@ -1385,6 +1424,7 @@ run)
 	shift 3 # --entrypoint, its value, the image
 	if [[ $entry == pg_isready ]]; then
 		if [[ ${FAKE_STUBBORN:-} == probe ]]; then stubborn "$cname"; fi
+		if [[ ${FAKE_ORPHAN:-} == probe ]]; then FAKE_ORPHAN_RC=${FAKE_ORPHAN_RC:-2} orphan "$cname"; fi
 		# Like the real one run as a uid with no passwd entry: without -U it
 		# cannot name a user and exits 3, "no attempt made".
 		named=
@@ -1393,6 +1433,7 @@ run)
 		exit "${FAKE_PGREADY_RC:-0}"
 	fi
 	if [[ ${FAKE_STUBBORN:-} == tool ]]; then stubborn "$cname"; fi
+	if [[ ${FAKE_ORPHAN:-} == tool ]]; then orphan "$cname"; fi
 	if [[ ${FAKE_TOOL_RC:-0} != 0 ]]; then exit "$FAKE_TOOL_RC"; fi
 	if [[ ${1:-} == --version ]]; then echo "$entry (PostgreSQL) ${FAKE_PG_MAJOR:-16}.4"; fi
 	;;
@@ -1764,6 +1805,21 @@ func TestPGClientWrapperRunsByImageID(t *testing.T) {
 	})
 }
 
+// pctEncode percent-encodes every byte of s but letters, digits and "-._", the
+// way a client would write a socket directory into a URL.
+func pctEncode(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '.' || c == '_' {
+			b.WriteByte(c)
+		} else {
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return b.String()
+}
+
 func TestPGClientWrapperConnectionForms(t *testing.T) {
 	root := t.TempDir()
 	sock := filepath.Join(root, "sock")
@@ -1790,6 +1846,16 @@ func TestPGClientWrapperConnectionForms(t *testing.T) {
 		{name: "socket in the URL authority", args: []string{"postgres://u@" + strings.ReplaceAll(sock, "/", "%2F") + ":5437/db"}, network: "none", mount: sock, probe: probe{sock, "5437"}},
 		{name: "socket with -h", args: []string{"-h", spacedSock, "-p", "5438", "dbname"}, network: "none", mount: spacedSock, probe: probe{spacedSock, "5438"}},
 		{name: "socket conninfo", args: []string{"-d", "host=" + sock + " dbname=x"}, network: "none", mount: sock, probe: probe{sock, "5432"}},
+		// libpq percent-decodes a URL's parts; the probe, the network and the mount
+		// follow the decoded values, the tool keeps the URL as written.
+		{name: "TCP URL with an encoded host and port", args: []string{"postgres://u:p@%31%32%37.0.0.1:%35433/db"}, network: "host", probe: probe{"127.0.0.1", "5433"}},
+		{name: "TCP URL with an encoded host and port in the query", args: []string{"postgres://u@/db?host=db%2Einternal&port=%35434"}, network: "host", probe: probe{"db.internal", "5434"}},
+		{name: "TCP URL with an encoded colon and at sign in the password", args: []string{"postgres://u:p%40ss%3A1@localhost:5433/db"}, network: "host", probe: probe{"localhost", "5433"}},
+		{name: "TCP URL with a literal percent sign", args: []string{"postgres://u@db%25x.internal/db"}, network: "host", probe: probe{"db%x.internal", "5432"}},
+		{name: "socket with a blank, in the URL query", args: []string{"postgres://u@/db?host=" + pctEncode(spacedSock)}, network: "none", mount: spacedSock, probe: probe{spacedSock, "5432"}},
+		{name: "socket with a blank, in the URL authority", args: []string{"postgres://u@" + pctEncode(spacedSock) + ":5439/db"}, network: "none", mount: spacedSock, probe: probe{spacedSock, "5439"}},
+		{name: "socket with a blank, in an encoded query key", args: []string{"postgres://u@/db?%68ost=" + pctEncode(spacedSock)}, network: "none", mount: spacedSock, probe: probe{spacedSock, "5432"}},
+		{name: "socket with a blank, in lower-case hex", args: []string{"postgres://u@/db?host=" + strings.ReplaceAll(pctEncode(spacedSock), "%2F", "%2f")}, network: "none", mount: spacedSock, probe: probe{spacedSock, "5432"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeDocker(t, true)
@@ -1964,6 +2030,63 @@ func TestPGClientWrapperRefusesConninfoItCannotRead(t *testing.T) {
 	})
 }
 
+// TestPGClientWrapperRefusesURLEncodingsItCannotTrust: a "%" without two hex
+// digits, %00, a control character in the host or port, and a list of hosts are
+// refused (74) before any container starts, and the refusal repeats nothing of the
+// URL: libpq's own complaint about a bad escape repeats the part it was decoding,
+// and the password is one.
+func TestPGClientWrapperRefusesURLEncodingsItCannotTrust(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"a bad escape in the password", "postgres://u:pa55%zzw0rd@localhost/db", "two hex digits"},
+		{"a one-digit escape in the password", "postgres://u:pa55w0rd%2@localhost/db", "two hex digits"},
+		{"a trailing percent sign", "postgres://u:pa55w0rd%@localhost/db", "two hex digits"},
+		{"a bad escape in the database name", "postgres://u:pa55w0rd@localhost/d%G0", "two hex digits"},
+		{"a bad escape in an unrelated parameter", "postgres://u:pa55w0rd@localhost/db?sslmode=%zz", "two hex digits"},
+		{"a NUL in the password", "postgres://u:pa55%00w0rd@localhost/db", "two hex digits"},
+		{"a NUL in the host", "postgres://u:pa55w0rd@loc%00alhost/db", "two hex digits"},
+		{"a bad escape in the host", "postgres://u:pa55w0rd@loc%4Xlhost/db", "two hex digits"},
+		{"a newline in the host", "postgres://u:pa55w0rd@local%0Ahost/db", "control character"},
+		{"a tab in the port", "postgres://u:pa55w0rd@localhost:54%0932/db", "control character"},
+		{"a control character in the query host", "postgres://u:pa55w0rd@/db?host=%2Ftmp%1B", "control character"},
+		{"DEL in the query port", "postgres://u:pa55w0rd@localhost/db?port=54%7F32", "control character"},
+		{"an encoded comma in the host", "postgres://u:pa55w0rd@a%2Cb/db", "list of hosts"},
+		{"a comma in the host", "postgres://u:pa55w0rd@a,b:5432/db", "list of hosts"},
+		{"a comma in the query host", "postgres://u:pa55w0rd@/db?host=a%2Cb", "list of hosts"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeDocker(t, true)
+			out, code, calls := f.wrap(t, nil, "16", "pg_dump", tc.url)
+			if code != 74 || !strings.Contains(out, tc.want) || !strings.Contains(out, "FOLD_PG_BIN") {
+				t.Errorf("exit %d: %s\nwant 74 containing %q and a pointer to FOLD_PG_BIN", code, out, tc.want)
+			}
+			for _, leak := range []string{"pa55", "w0rd", "localhost", "%zz", "tmp"} {
+				if strings.Contains(out, leak) {
+					t.Errorf("the output repeats %q from the URL: %s", leak, out)
+				}
+			}
+			for _, c := range callsFor(calls, "run") {
+				t.Errorf("a container started for a URL that was refused: %v", c)
+			}
+		})
+	}
+
+	// A "+" is not a blank and "%2B" is a plus: libpq decodes nothing else.
+	t.Run("a plus sign stays a plus sign", func(t *testing.T) {
+		f := newFakeDocker(t, true)
+		out, code, calls := f.wrap(t, nil, "16", "pg_dump", "postgres://u@a+b%2Bc.internal/db")
+		if code != 0 {
+			t.Fatalf("exit %d: %s", code, out)
+		}
+		if ready := toolRun(t, calls, "pg_isready"); !ready.has("-h", "a+b+c.internal") {
+			t.Errorf("the probe asked the wrong host: %v", ready)
+		}
+	})
+}
+
 // pids reads the process ids the fake docker recorded.
 func (f *fakeDocker) pids(t *testing.T) []int {
 	t.Helper()
@@ -2022,6 +2145,17 @@ func (f *fakeDocker) expectStopped(t *testing.T) {
 // sawRemove reports whether the wrapper removed the container its run was
 // given: a `docker rm -f <name>` for the --name of a `docker run`.
 func sawRemove(calls []dockerCall) bool {
+	names := runNames(calls)
+	for _, c := range callsFor(calls, "rm") {
+		if c.has("-f") && names[c[len(c)-1]] {
+			return true
+		}
+	}
+	return false
+}
+
+// runNames is the --name of every `docker run` the wrapper made.
+func runNames(calls []dockerCall) map[string]bool {
 	names := map[string]bool{}
 	for _, c := range callsFor(calls, "run") {
 		for i, a := range c {
@@ -2030,12 +2164,66 @@ func sawRemove(calls []dockerCall) bool {
 			}
 		}
 	}
+	return names
+}
+
+// onlyRemovedItsOwn fails if the wrapper removed anything but a container it
+// named in a `docker run`, or listed anything but by such a name.
+func onlyRemovedItsOwn(t *testing.T, calls []dockerCall) {
+	t.Helper()
+	names := runNames(calls)
 	for _, c := range callsFor(calls, "rm") {
-		if c.has("-f") && names[c[len(c)-1]] {
-			return true
+		if !names[c[len(c)-1]] {
+			t.Errorf("the wrapper removed something it did not start: %v", c)
 		}
 	}
-	return false
+	for _, c := range callsFor(calls, "ps") {
+		if !c.has("-a") || strings.Count(strings.Join(c, " "), "name=pg-client-") != 1 {
+			t.Errorf("the wrapper listed containers it did not start: %v", c)
+		}
+	}
+}
+
+// bystanders starts what a cleanup must never touch: a process in a group of its
+// own, and a fake "container" under a name the wrapper did not make. The returned
+// check fails if either was ended or named in a docker call.
+func (f *fakeDocker) bystanders(t *testing.T) (check func(t *testing.T)) {
+	t.Helper()
+	start := func() *exec.Cmd {
+		cmd := exec.Command("sleep", "60")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			_ = cmd.Wait()
+		})
+		return cmd
+	}
+	process, container := start(), start()
+	const name = "bystander-postgres"
+	marker := filepath.Join(f.dir, "c."+name)
+	if err := os.WriteFile(marker, []byte(strconv.Itoa(container.Process.Pid)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return func(t *testing.T) {
+		t.Helper()
+		if !alive(process.Process.Pid) {
+			t.Error("an unrelated process was killed")
+		}
+		if !alive(container.Process.Pid) {
+			t.Error("an unrelated container's process was killed")
+		}
+		if _, err := os.Stat(marker); err != nil {
+			t.Errorf("an unrelated container was removed: %v", err)
+		}
+		for _, c := range f.calls(t) {
+			if strings.Contains(strings.Join(c, " "), name) {
+				t.Errorf("a docker call named an unrelated container: %v", c)
+			}
+		}
+	}
 }
 
 // TestPGClientWrapperDeadlinesHoldAgainstStubbornCommands: a command that ignores
@@ -2142,6 +2330,152 @@ func TestPGClientWrapperCleansUpWhenToldToStop(t *testing.T) {
 				t.Errorf("the wrapper left its work directory: %v", left)
 			}
 		})
+	}
+}
+
+// TestPGClientWrapperRemovesAContainerItsClientLeftBehind: the docker client can
+// die after the daemon started the container (a lost connection, an OOM kill),
+// and --rm acts only when the container exits, so the tool would keep running
+// with nobody to stop it. Whatever the client's status, the wrapper removes the
+// container it named, keeps that status, and touches nothing else.
+func TestPGClientWrapperRemovesAContainerItsClientLeftBehind(t *testing.T) {
+	url := "postgres://u:p@127.0.0.1:5433/db"
+	for _, tc := range []struct {
+		name     string
+		orphan   string
+		rc       string
+		args     []string
+		wantCode int
+		wantText string
+	}{
+		{"a dump whose client fails", "tool", "5", []string{"16", "pg_dump", "-Fc"}, 5, ""},
+		{"a dump whose client reports success", "tool", "0", []string{"16", "pg_dump", "-Fc"}, 0, ""},
+		{"a discovery run", "tool", "5", []string{"16", "pg_dump", "--version"}, 5, ""},
+		{"the probe", "probe", "2", []string{"16", "pg_dump", url}, 73, "does not answer"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeDocker(t, true)
+			bystanders := f.bystanders(t)
+			start := time.Now()
+			out, code, calls := f.wrap(t, []string{"FAKE_ORPHAN=" + tc.orphan, "FAKE_ORPHAN_RC=" + tc.rc}, tc.args...)
+			if code != tc.wantCode || !strings.Contains(out, tc.wantText) {
+				t.Errorf("exit %d: %s\nwant exit %d containing %q", code, out, tc.wantCode, tc.wantText)
+			}
+			if strings.Contains(out, "could not remove") {
+				t.Errorf("the removal worked, yet the wrapper said it did not: %s", out)
+			}
+			if d := time.Since(start); d > 15*time.Second {
+				t.Errorf("took %v", d)
+			}
+			f.expectStopped(t)
+			if !sawRemove(calls) {
+				t.Errorf("the container was not removed by name: %v", calls)
+			}
+			onlyRemovedItsOwn(t, calls)
+			bystanders(t)
+		})
+	}
+}
+
+// TestPGClientWrapperNamesAContainerItCannotRemove: when the daemon refuses, the
+// wrapper still ends in bounded time, says which container to remove by hand,
+// and its exit status is still the tool's.
+func TestPGClientWrapperNamesAContainerItCannotRemove(t *testing.T) {
+	for _, rc := range []string{"5", "0"} {
+		t.Run("client status "+rc, func(t *testing.T) {
+			f := newFakeDocker(t, true)
+			bystanders := f.bystanders(t)
+			start := time.Now()
+			out, code, calls := f.wrap(t, []string{"FAKE_ORPHAN=tool", "FAKE_ORPHAN_RC=" + rc, "FAKE_RM=fail", "FOLD_PG_INFO_TIMEOUT=1"}, "16", "pg_dump", "-Fc")
+			if want, _ := strconv.Atoi(rc); code != want {
+				t.Errorf("exit %d, want the tool's %s: %s", code, rc, out)
+			}
+			names := runNames(calls)
+			if len(names) != 1 {
+				t.Fatalf("want one container run, got %v", calls)
+			}
+			for name := range names {
+				if !strings.Contains(out, "could not remove container "+name) || !strings.Contains(out, "docker rm -f "+name) {
+					t.Errorf("the output does not name the container %s: %s", name, out)
+				}
+				if b, err := os.ReadFile(filepath.Join(f.dir, "c."+name)); err == nil {
+					if pid, _ := strconv.Atoi(strings.TrimSpace(string(b))); pid > 0 {
+						_ = syscall.Kill(-pid, syscall.SIGKILL) // the fake refused to; do not leave it
+					}
+				}
+			}
+			if d := time.Since(start); d > 15*time.Second {
+				t.Errorf("took %v: the removal was not bounded", d)
+			}
+			onlyRemovedItsOwn(t, calls)
+			bystanders(t)
+		})
+	}
+}
+
+// TestPGClientWrapperFinishesRemovalWhenToldToStop: a stop that arrives while the
+// container is being removed must not abandon it. The first `docker rm` hangs;
+// the signal ends it, and the wrapper removes the container again before it exits.
+func TestPGClientWrapperFinishesRemovalWhenToldToStop(t *testing.T) {
+	if signal.Ignored(syscall.SIGTERM) {
+		t.Skip("SIGTERM is ignored in this process, so a shell it starts cannot trap it")
+	}
+	f := newFakeDocker(t, true)
+	bystanders := f.bystanders(t)
+	cmd := exec.Command(pgWrapperPath(), "16", "pg_dump", "-Fc")
+	cmd.Env = []string{"PATH=" + f.path, "TMPDIR=" + f.dir, "FAKE_DOCKER_DIR=" + f.dir,
+		"FAKE_ORPHAN=tool", "FAKE_RM=slow_first", "FOLD_PG_KILL_GRACE=1"}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		for _, pid := range f.pids(t) {
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(f.dir, "rm.began")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the wrapper never began removing the container")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	stopped := time.Now()
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if code := exitCodeOf(err); code != 143 {
+			t.Errorf("exit %d, want 143", code)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the wrapper did not end after the signal")
+	}
+	if d := time.Since(stopped); d > 15*time.Second {
+		t.Errorf("took %v to end", d)
+	}
+	f.expectStopped(t) // the hung rm and the container alike
+	calls := f.calls(t)
+	if n := len(callsFor(calls, "rm")); n < 2 {
+		t.Errorf("want the removal retried after the interrupted one, got %d rm calls: %v", n, calls)
+	}
+	for name := range runNames(calls) {
+		if _, err := os.Stat(filepath.Join(f.dir, "c."+name)); err == nil {
+			t.Errorf("the container %s was abandoned", name)
+		}
+	}
+	onlyRemovedItsOwn(t, calls)
+	bystanders(t)
+	if left, _ := filepath.Glob(filepath.Join(f.dir, "pg-client.*")); len(left) != 0 {
+		t.Errorf("the wrapper left its work directory: %v", left)
 	}
 }
 

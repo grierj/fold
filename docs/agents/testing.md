@@ -97,6 +97,14 @@ mounted path, a connection with no host, a socket directory that is missing).
   At a deadline, or when the wrapper gets TERM, INT or HUP, the whole group gets TERM, then KILL
   after `FOLD_PG_KILL_GRACE` (3s), and `docker rm -f` removes the container. A command that ignores
   TERM therefore still ends, and a signalled wrapper leaves no `pg_dump` or `pg_restore` running.
+  The container is removed whenever its command ends, not only at a deadline: the docker client can
+  die (a lost connection, an OOM kill) while the daemon keeps the container, and `--rm` acts only
+  when the container itself exits. The removal is `docker rm -f` on the generated name, then, if
+  that fails, a listing by exact name (a container `--rm` already removed is gone, not an error),
+  retried for at most `FOLD_PG_INFO_TIMEOUT`. If the container is still there after that, the wrapper
+  says on stderr which one (`docker rm -f <name>`) and still exits with the tool's own status. A
+  stop that arrives during the removal ends it and repeats it, so the container is not abandoned.
+  Only the generated name is removed or listed; no other container or process is touched.
   The Go side (`pgRun`, for discovery; a dump or restore itself has no deadline) runs the wrapper in
   a group of its own and signals the group at its deadline, because exec's own kill reaches only the wrapper's pid. KILL of the wrapper itself cannot
   be caught, so a killed test process can still leave a container; remove it with `docker rm -f`
@@ -111,7 +119,12 @@ mounted path, a connection with no host, a socket directory that is missing).
   backslashes, no blanks around `=`); libpq's other forms can hide `host=` or `port=` inside a
   password, so they are refused (74) with a message that says nothing of the string, and the
   wrapper never prints a value it took from the arguments except the host and a numeric port. Use a
-  `postgres://` URL, or `FOLD_PG_BIN`.
+  `postgres://` URL, or `FOLD_PG_BIN`. A URL's host, port and `?host=` / `?port=` are
+  percent-decoded as libpq does (`%2F` is `/`, `%20` a blank, `+` stays a plus) to choose the
+  probe, the network and the mounted directory; the tool still gets the URL as written. A `%`
+  without two hex digits anywhere in the URL, `%00`, a control character in the host or port, and
+  a comma in the host or port (libpq's list of hosts) are refused (74) without repeating any of
+  the URL.
 - **Tests.** The argument-level tests (`TestPGClientWrapper*`, in `restore_fence_test.go` beside
   `pgClients`) run the real script against a fake `docker`: paths with spaces, each directory
   mounted once, a stopped daemon, a bounded pull, a failed pull, an unreachable database, image-ID
@@ -120,7 +133,16 @@ mounted path, a connection with no host, a socket directory that is missing).
   passwords and check that neither routes the run nor appears in the output. The deadline tests
   (`...DeadlinesHoldAgainstStubbornCommands`, `...CleansUpWhenToldToStop`, `TestPGRunStopsTheWholeGroup`)
   use a fake whose process ignores TERM, has a child, and starts a "container" only `rm -f` ends;
-  they assert a bounded return, no surviving process and the container removed by name. `TestPGClientWrapperProbeWithRealDocker` runs real Docker and `pg_isready`
+  they assert a bounded return, no surviving process and the container removed by name.
+  `...RemovesAContainerItsClientLeftBehind` makes the fake docker client die after it started
+  its container (status 5, 0, or the probe's 2); the container must be removed by name, the exit
+  status kept, and an unrelated process and an unrelated container must survive and never be
+  named in a docker call. `...NamesAContainerItCannotRemove` has the daemon refuse (the wrapper
+  names the container, ends in bounded time, keeps the tool's status), and
+  `...FinishesRemovalWhenToldToStop` sends TERM while the first `docker rm` hangs and expects the
+  removal to be done again. The encoded-URL cases are in `...ConnectionForms` (an encoded TCP
+  host and port, a socket directory with blanks in the authority and in the query) and
+  `...RefusesURLEncodingsItCannotTrust`. `TestPGClientWrapperProbeWithRealDocker` runs real Docker and `pg_isready`
   against a closed local port and expects the "unreachable" diagnosis (73), skipping where Docker
   is not usable (failing under `CI`). The fake tests show the wrapper builds the right
   commands, not that any Docker variant behaves as assumed.
