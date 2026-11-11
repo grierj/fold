@@ -9,13 +9,14 @@ import "github.com/gin-gonic/gin"
 
 // contentSecurityPolicy covers the SPA and /setup (DEC-37, 10.1). Scripts
 // and styles come only from this origin; React sets focal points through
-// the CSSOM, which CSP allows without 'unsafe-inline'. Images may be data:
-// and blob: (upload previews) or any https URL (group covers given by URL);
-// tighten img-src when uploads are the only source (M4.7). The service
-// worker and the manifest come only from this origin too (M3.13c1); both
-// already fell back to 'self', and naming them keeps it that way.
+// the CSSOM, which CSP allows without 'unsafe-inline'. Images come only from
+// this origin, because uploads are the only image source (DEC-49), plus
+// data: (assets Vite inlines) and blob: (upload previews before they are
+// sent). The service worker and the manifest come only from this origin too
+// (M3.13c1); both already fell back to 'self', and naming them keeps it that
+// way.
 const contentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self'; " +
-	"img-src 'self' data: blob: https:; connect-src 'self'; font-src 'self'; object-src 'none'; " +
+	"img-src 'self' data: blob:; connect-src 'self'; font-src 'self'; object-src 'none'; " +
 	"worker-src 'self'; manifest-src 'self'; " +
 	"base-uri 'self'; form-action 'self'; frame-ancestors 'self'"
 
