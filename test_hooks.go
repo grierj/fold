@@ -46,6 +46,10 @@ type testHooks struct {
 	// messageLimitAfterCount (#260). It is nil in production and sends no
 	// statement.
 	guestVerifyAfterCount func(*gorm.DB)
+	// invitationBeforeHash runs in apiAcceptInvitation after the early
+	// full-group refusal and before the password is hashed, with no
+	// transaction open.
+	invitationBeforeHash func()
 
 	// pushRender overrides renderPush in tests (a rendering past the payload
 	// cap); nil uses the stored push text. pushWindow fixes the quiet hours

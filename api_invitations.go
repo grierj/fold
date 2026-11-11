@@ -295,6 +295,33 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	// A full target without an over-limit choice refuses before any hashing.
+	// This only saves work: it is read without a lock, so changeRoleIn's
+	// check under the group lock stays the authority, and nothing decided
+	// here is carried into the transaction.
+	if initial.GroupID != nil && !initial.OverLimit {
+		var g models.Group
+		if err := a.DB.First(&g, *initial.GroupID).Error; err == nil && g.Status == models.GroupActive {
+			count, err := memberCount(a.DB, g.ID)
+			if err != nil {
+				jsonError(c, http.StatusInternalServerError, "could not accept invitation")
+				return
+			}
+			if !policy.GroupHasRoom(g.MemberLimit, count) {
+				fail(c, errGroupFull)
+				return
+			}
+		}
+	}
+	// Password hashing never holds the contact gate or any other lock.
+	if a.hooks.invitationBeforeHash != nil {
+		a.hooks.invitationBeforeHash()
+	}
+	var prepared models.User
+	if err := prepared.SetPassword(body.Password); err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not accept invitation")
+		return
+	}
 	var userID uint
 	err = a.DB.Transaction(func(tx *gorm.DB) error {
 		// Share the lifecycle gate with demotion/removal/disable before taking
@@ -366,9 +393,7 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 		}
 		u.Name, u.AccountType, u.BirthDate = name, kind, birth
 		u.Status = newAccountStatus(kind, true)
-		if err := u.SetPassword(body.Password); err != nil {
-			return err
-		}
+		u.PasswordHash = prepared.PasswordHash
 		if guestRow {
 			err = upgradeGuestIn(tx, &u, "status", "name", "account_type", "birth_date", "password_hash")
 		} else {

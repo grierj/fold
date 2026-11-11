@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -482,5 +484,135 @@ func TestInvitationAcceptanceRechecksLiveStateAtClaim(t *testing.T) {
 				t.Fatal("failed live-state claim committed an account, membership, or acceptance audit")
 			}
 		})
+	}
+}
+
+// invitedIntoGroup has leader invite email into g and returns the raw token.
+func invitedIntoGroup(t *testing.T, app *App, leader *apiClient, email string, groupID uint) string {
+	t.Helper()
+	apiDo(t, leader, "POST", "/api/v1/invitations", map[string]any{"email": email, "groupId": groupID}, http.StatusCreated)
+	return tokenInEmail(t, latestEmail(t, app, email))
+}
+
+func acceptBody(token string) map[string]string {
+	return map[string]string{"ageBand": "adult", "token": token, "name": "Invited", "password": "password1234"}
+}
+
+// A full group refuses before the password is hashed, and a replay of the
+// refused token costs no hash either: the token stays live and no account or
+// membership appears.
+func TestFullGroupInvitationRefusesBeforeHashing(t *testing.T) {
+	app := testApp(t)
+	leader := newTestUser(t, app, "lead", "password1234", models.RoleMember)
+	g := newTestGroup(t, app, leader, "Tiny", models.GroupActive)
+	app.DB.Model(g).Update("member_limit", 1)
+	lc := loginAPI(t, app, "lead", "password1234")
+	token := invitedIntoGroup(t, app, lc, "full@example.com", g.ID)
+
+	var hashes atomic.Int32
+	app.hooks.invitationBeforeHash = func() { hashes.Add(1) }
+	anon := anonClient(t, app, "192.0.2.7")
+	for i := 0; i < 3; i++ {
+		w := anon.do("POST", "/api/v1/invitations/accept", acceptBody(token), true)
+		if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), `"full":true`) {
+			t.Fatalf("attempt %d: %d %s, want 409 full", i, w.Code, w.Body.String())
+		}
+	}
+	if hashes.Load() != 0 {
+		t.Fatalf("password hashed %d times for a full group", hashes.Load())
+	}
+	var accounts int64
+	app.DB.Model(&models.User{}).Where("email = ?", "full@example.com").Count(&accounts)
+	var inv models.Invitation
+	app.DB.Where("email = ?", "full@example.com").First(&inv)
+	if accounts != 0 || inv.AcceptedAt != nil {
+		t.Fatalf("full refusal consumed the invitation or created an account: accounts=%d accepted=%v", accounts, inv.AcceptedAt)
+	}
+
+	// The refusal is only about room: with a seat free the same token works,
+	// and an over-limit invitation never takes the early refusal.
+	app.DB.Model(g).Update("member_limit", 2)
+	if w := anon.do("POST", "/api/v1/invitations/accept", acceptBody(token), true); w.Code != http.StatusOK {
+		t.Fatalf("accept with room: %d %s", w.Code, w.Body.String())
+	}
+	if hashes.Load() != 1 {
+		t.Fatalf("hash count %d after one admitted accept, want 1", hashes.Load())
+	}
+}
+
+// Room can vanish after the early check: the locked check still refuses, with
+// no account, membership or consumed token left behind.
+func TestInvitationFilledAfterEarlyCheckStillRefuses(t *testing.T) {
+	app := testApp(t)
+	leader := newTestUser(t, app, "lead", "password1234", models.RoleMember)
+	filler := newTestUser(t, app, "filler", "password1234", models.RoleMember)
+	g := newTestGroup(t, app, leader, "Two seats", models.GroupActive)
+	app.DB.Model(g).Update("member_limit", 2)
+	lc := loginAPI(t, app, "lead", "password1234")
+	token := invitedIntoGroup(t, app, lc, "late@example.com", g.ID)
+
+	app.hooks.invitationBeforeHash = func() {
+		if err := app.DB.Create(&models.Membership{UserID: filler.ID, GroupID: g.ID,
+			Role: models.MembershipMember, Status: models.MembershipActive, JoinedAt: time.Now().UTC()}).Error; err != nil {
+			t.Error(err)
+		}
+	}
+	anon := anonClient(t, app, "192.0.2.8")
+	w := anon.do("POST", "/api/v1/invitations/accept", acceptBody(token), true)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), `"full":true`) {
+		t.Fatalf("accept after the group filled: %d %s, want 409 full", w.Code, w.Body.String())
+	}
+	var accounts, memberships int64
+	app.DB.Model(&models.User{}).Where("email = ?", "late@example.com").Count(&accounts)
+	app.DB.Model(&models.Membership{}).Joins("JOIN users ON users.id = memberships.user_id").Where("users.email = ?", "late@example.com").Count(&memberships)
+	var inv models.Invitation
+	app.DB.Where("email = ?", "late@example.com").First(&inv)
+	if accounts != 0 || memberships != 0 || inv.AcceptedAt != nil {
+		t.Fatalf("late refusal committed state: accounts=%d memberships=%d accepted=%v", accounts, memberships, inv.AcceptedAt)
+	}
+}
+
+// Hashing the invitee's password holds no lock: while one acceptance is
+// paused before its hash, another contact mutation takes the gate at once.
+func TestInvitationHashDoesNotHoldContactGate(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "root", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "root", "password1234")
+	apiDo(t, admin, "POST", "/api/v1/invitations", map[string]any{"email": "slow@example.com", "name": "Slow"}, http.StatusCreated)
+	token := tokenInEmail(t, latestEmail(t, app, "slow@example.com"))
+
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once atomic.Bool
+	app.hooks.invitationBeforeHash = func() {
+		if !once.Swap(true) {
+			close(entered)
+			<-release
+		}
+	}
+	var open sync.Once
+	resume := func() { open.Do(func() { close(release) }) }
+	t.Cleanup(resume)
+	anon := anonClient(t, app, "192.0.2.9")
+	anon.holdNotices = true
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- anon.do("POST", "/api/v1/invitations/accept", acceptBody(token), true) }()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("acceptance never reached password preparation")
+	}
+
+	err := app.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("SET LOCAL lock_timeout = '3s'").Error; err != nil {
+			return err
+		}
+		return lockContacts(tx)
+	})
+	if err != nil {
+		t.Fatalf("a contact mutation waited on invitation password preparation: %v", err)
+	}
+	resume()
+	if w := awaitRec(t, done, "acceptance"); w.Code != http.StatusOK {
+		t.Fatalf("accept: %d %s", w.Code, w.Body.String())
 	}
 }
