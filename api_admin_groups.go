@@ -26,7 +26,7 @@ func (a *App) apiPendingGroups(c *gin.Context) {
 }
 
 func (a *App) respondGroups(c *gin.Context, groups []models.Group) {
-	out, err := a.groupSummaries(groups)
+	out, err := a.groupSummaries(apiUser(c), groups)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not list groups")
 		return
@@ -157,7 +157,7 @@ func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint,
 		return
 	}
 	if action == notify.ActionApproveGroup {
-		summary, err := a.groupSummary(&g)
+		summary, err := a.groupSummary(apiUser(c), &g)
 		if err != nil {
 			jsonError(c, http.StatusInternalServerError, "could not "+action+" group")
 			return

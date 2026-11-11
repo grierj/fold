@@ -53,7 +53,7 @@ func (a *App) apiListGroups(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not list groups")
 		return
 	}
-	list, err := a.viewerGroupList(groups, roles)
+	list, err := a.viewerGroupList(apiUser(c), groups, roles)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not list groups")
 		return
@@ -91,8 +91,8 @@ func (a *App) viewerRoles(me *models.User, groups []models.Group) (map[uint]stri
 // summary carries the viewer's own role from roles, and the list runs by
 // next meeting, soonest first, then by name, with groups that have no
 // upcoming date last.
-func (a *App) viewerGroupList(groups []models.Group, roles map[uint]string) ([]groupSummaryJSON, error) {
-	out, err := a.groupSummaries(groups)
+func (a *App) viewerGroupList(viewer *models.User, groups []models.Group, roles map[uint]string) ([]groupSummaryJSON, error) {
+	out, err := a.groupSummaries(viewer, groups)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +113,7 @@ func (a *App) viewerGroupList(groups []models.Group, roles map[uint]string) ([]g
 }
 
 func (a *App) respondGroup(c *gin.Context, status int, g *models.Group) {
-	summary, err := a.groupSummary(g)
+	summary, err := a.groupSummary(apiUser(c), g)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load group")
 		return
@@ -277,7 +277,7 @@ func (a *App) apiGetGroup(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load group")
 		return
 	}
-	summary, err := a.groupSummary(g)
+	summary, err := a.groupSummary(me, g)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load group")
 		return

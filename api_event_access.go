@@ -346,43 +346,40 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 		fail(c, errVisibilityNotAllowed)
 		return
 	}
-	if ev.Visibility == vis && ev.LeaderOpened == leaderOpens(f, vis) && !body.ResetOverrides {
-		a.respondEvent(c, http.StatusOK, ev, me, f)
-		return
-	}
 	var impact visibilityImpactJSON
 	err := a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
-		var locked models.Event
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, ev.ID).Error; err != nil {
+		actor, locked, fresh, err := lockManagedEventIn(tx, me, ev.ID)
+		if err != nil {
 			return err
 		}
-		var err error
-		if f, err = eventFactsIn(tx, me, &locked); err != nil {
-			return err
-		}
+		me, f = actor, fresh
 		if !policy.CanSetEventVisibility(asPerson(me), f.view, f.rel, vis) {
-			return errDateVisibility
+			return errVisibilityNotAllowed
 		}
 		opened := leaderOpens(f, vis)
+		if locked.Visibility == vis && locked.LeaderOpened == opened && !body.ResetOverrides {
+			*ev = *locked
+			return nil
+		}
 		action := audit.VisibilityChanged
 		if opened {
 			action = audit.VisibilityOverride
 		}
 		oldVis, oldOpened := locked.Visibility, locked.LeaderOpened
-		impact, err = eventImpactOfReset(tx, &locked, vis, body.ResetOverrides)
+		impact, err = eventImpactOfReset(tx, locked, vis, body.ResetOverrides)
 		if err != nil {
 			return err
 		}
 		if !body.Confirm && impactHasLosers(impact) {
 			return errNeedDecision
 		}
-		if err := tx.Model(&locked).Updates(map[string]any{"visibility": vis, "leader_opened": opened}).Error; err != nil {
+		if err := tx.Model(locked).Updates(map[string]any{"visibility": vis, "leader_opened": opened}).Error; err != nil {
 			return err
 		}
 		locked.Visibility, locked.LeaderOpened = vis, opened
 		// More private: the same cancel-and-notify as a group tightening (DEC-48).
 		if policy.MoreOpen(oldVis, vis) {
-			err := a.cancelDateLosers(tx, me, c.ClientIP(), &locked, vis, time.Now().UTC(), seriesDates)
+			err := a.cancelDateLosers(tx, me, c.ClientIP(), locked, vis, time.Now().UTC(), seriesDates)
 			if err != nil {
 				return err
 			}
@@ -393,13 +390,13 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 				return err
 			}
 			for i := range dates {
-				err := a.changeDateVisibility(tx, me, c.ClientIP(), &locked, &dates[i], f.group, nil, "series_reset", false)
+				err := a.changeDateVisibility(tx, me, c.ClientIP(), locked, &dates[i], f.group, nil, "series_reset", false)
 				if err != nil {
 					return err
 				}
 			}
 		}
-		*ev = locked
+		*ev = *locked
 		meta := map[string]any{
 			"oldVisibility":   oldVis,
 			"newVisibility":   vis,
@@ -433,7 +430,7 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 		return
 	}
 	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not update visibility")
+		answerEventWrite(c, err, "could not update visibility")
 		return
 	}
 	f.view.Visibility = vis
@@ -591,17 +588,18 @@ func (a *App) dateCandidates(viewer *models.User, q *gorm.DB) (visibleSet, error
 // must separately authorize each date, never the series. Events whose group is
 // missing are skipped, and deleted groups stay hidden.
 func (a *App) eventCandidates(viewer *models.User, q *gorm.DB) (visibleSet, error) {
-	return a.loadCandidates(viewer, q, false)
+	return loadCandidates(a.DB, viewer, q, false)
 }
 
 // deletedEventCandidates is eventCandidates for the admin-only "show deleted
 // events" calendar switch (DEC-68): an admin also gets the events of
 // soft-deleted groups. Anyone else gets the ordinary candidates.
 func (a *App) deletedEventCandidates(viewer *models.User, q *gorm.DB) (visibleSet, error) {
-	return a.loadCandidates(viewer, q, policy.IsAdmin(asPerson(viewer)))
+	return loadCandidates(a.DB, viewer, q, policy.IsAdmin(asPerson(viewer)))
 }
 
-func (a *App) loadCandidates(viewer *models.User, q *gorm.DB, withDeleted bool) (visibleSet, error) {
+// When reading in a transaction, db and q must both come from that transaction.
+func loadCandidates(db *gorm.DB, viewer *models.User, q *gorm.DB, withDeleted bool) (visibleSet, error) {
 	vs := visibleSet{ByID: map[uint]*models.Event{}}
 	var evs []models.Event
 	if err := q.Find(&evs).Error; err != nil || len(evs) == 0 {
@@ -609,7 +607,7 @@ func (a *App) loadCandidates(viewer *models.User, q *gorm.DB, withDeleted bool) 
 		return vs, err
 	}
 	var err error
-	if vs.factSet, err = loadFactSet(a.DB, viewer, evs, withDeleted); err != nil {
+	if vs.factSet, err = loadFactSet(db, viewer, evs, withDeleted); err != nil {
 		return vs, err
 	}
 	for i := range evs {

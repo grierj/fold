@@ -501,3 +501,27 @@ func TestDateVisibilityAuditAndPreviewUseExactDates(t *testing.T) {
 		t.Fatalf("date preview: %+v, want one public entry whose title ends in %s", preview.Tightened, date)
 	}
 }
+
+func TestDateVisibilityRechecksAfterHeldBody(t *testing.T) {
+	for _, change := range []string{"demoted admin", "removed leader", "disabled account"} {
+		t.Run(change, func(t *testing.T) {
+			f := newEventWriterRace(t, change == "demoted admin")
+			path := "/api/v1/events/" + itoa(f.event.ID) + "/occurrences/" + f.date
+			held := f.actor.doHeld("PUT", path, map[string]any{"visibility": models.VisibilityPrivate, "location": "New hall"})
+			f.revoke(t, change)
+			before := eventWriterState(t, f.app, f.event.ID)
+			held.release()
+			w := held.wait(t)
+			want := 401
+			if change == "removed leader" {
+				want = 404
+			}
+			if w.Code != want {
+				t.Fatalf("date visibility after %s: %d %s, want %d", change, w.Code, w.Body.String(), want)
+			}
+			if after := eventWriterState(t, f.app, f.event.ID); before != after {
+				t.Fatalf("refused date write changed rows:\nbefore %s\nafter %s", before, after)
+			}
+		})
+	}
+}

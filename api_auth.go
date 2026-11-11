@@ -271,7 +271,7 @@ func (a *App) apiMyGroups(c *gin.Context) {
 		groups = append(groups, memberships[i].Group)
 		roles[memberships[i].GroupID] = memberships[i].Role
 	}
-	list, err := a.viewerGroupList(groups, roles)
+	list, err := a.viewerGroupList(apiUser(c), groups, roles)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not list groups")
 		return
