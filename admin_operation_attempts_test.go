@@ -8,10 +8,13 @@ import (
 	"go/parser"
 	"go/token"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1979,5 +1982,292 @@ func TestDeletionMissingTargetKeepsItsAnswers(t *testing.T) {
 	}
 	if s.state(unclaimed, a.ID) != attemptAbsent {
 		t.Fatal("the 404 must leave the id unclaimed")
+	}
+}
+
+// The in-memory race tests. They run with the ordinary tests, and
+// scripts/reason-review-hardening.sh runs them again under the race detector
+// (go test -race), many times over. They use no database: the ledger and the
+// fence state are plain memory, and what they prove is that the memory is
+// shared safely. Whether the PostgreSQL locks around them are right is decided
+// by the deterministic lock tests above, not by anything here: a clean race run
+// says nothing about a lock.
+
+// raceAll runs f on n goroutines released at the same moment and waits for them.
+func raceAll(n int, f func(k int)) {
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for k := 0; k < n; k++ {
+		wg.Add(1)
+		go func(k int) {
+			defer wg.Done()
+			<-start
+			f(k)
+		}(k)
+	}
+	close(start)
+	wg.Wait()
+}
+
+// raceSeed is the seed for a race test's random choices (FOLD_REASON_SEED
+// replays one), logged when the test fails. It fixes which operations each
+// goroutine attempts, not how the scheduler interleaves them.
+func raceSeed(t *testing.T) int64 {
+	t.Helper()
+	seed := int64(20261111)
+	if s := os.Getenv("FOLD_REASON_SEED"); s != "" {
+		v, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			t.Fatalf("FOLD_REASON_SEED %q is not an integer", s)
+		}
+		seed = v
+	}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("reproduce the operations with FOLD_REASON_SEED=%d", seed)
+		}
+	})
+	return seed
+}
+
+// Racing claims of one id: exactly one runs it, the rest find it closed, and
+// racing ends hand the done channel to exactly one caller, whose close wakes
+// every waiter.
+func TestRaceAttemptLedgerOneWinnerPerID(t *testing.T) {
+	var l attemptLedger
+	const ids, racers = 40, 8
+	for i := 0; i < ids; i++ {
+		n := nonceOf(i + 1)
+		results := make([]submitResult, racers)
+		raceAll(racers, func(k int) { results[k] = l.claim(n, 0, time.Minute) })
+		ok, closed := 0, 0
+		for _, r := range results {
+			switch r {
+			case submitOK:
+				ok++
+			case submitClosed:
+				closed++
+			}
+		}
+		if ok != 1 || closed != racers-1 {
+			t.Fatalf("id %d: %d claims ran and %d found it closed, want 1 and %d", i, ok, closed, racers-1)
+		}
+		_, done := l.look(n)
+		if done == nil {
+			t.Fatalf("id %d: a running entry has no done channel", i)
+		}
+		final := []attemptState{attemptApplied, attemptRolledBack, attemptUnknown}[i%3]
+		var wins, woke atomic.Int32
+		raceAll(racers, func(k int) {
+			if k%2 == 0 {
+				select {
+				case <-done:
+					woke.Add(1)
+				case <-time.After(10 * time.Second):
+					t.Errorf("id %d: a waiter was never woken", i)
+				}
+				return
+			}
+			if d, ended := l.end(n, final); ended {
+				wins.Add(1)
+				close(d)
+			}
+		})
+		if wins.Load() != 1 || woke.Load() != racers/2 {
+			t.Fatalf("id %d: %d ends won and %d waiters woke, want 1 and %d", i, wins.Load(), woke.Load(), racers/2)
+		}
+		if st, _ := l.look(n); st != final {
+			t.Fatalf("id %d: the entry is %v, want %v", i, st, final)
+		}
+	}
+}
+
+// Claim, look, end and settleTransition on a few ids from many goroutines. Each
+// goroutine checks what it sees against the entry's one-way life (absent,
+// then running or fenced, then one final state that never changes); the totals
+// check that no id ran twice and that an entry settle fenced was never run.
+func TestRaceAttemptLedgerMixedOperations(t *testing.T) {
+	seed := raceSeed(t)
+	var l attemptLedger
+	const ids, workers, steps = 8, 12, 600
+	rank := func(s attemptState) int {
+		switch s {
+		case attemptAbsent:
+			return 0
+		case attemptRunning:
+			return 1
+		}
+		return 2
+	}
+	var mu sync.Mutex // guards the tallies
+	ran := make([]int, ids)
+	ended := make([]int, ids)
+	traces := make([][]string, workers)
+	t.Cleanup(func() {
+		if t.Failed() {
+			for w, tr := range traces {
+				if len(tr) > 40 {
+					tr = tr[len(tr)-40:]
+				}
+				t.Logf("worker %d, last operations: %s", w, strings.Join(tr, ", "))
+			}
+		}
+	})
+	raceAll(workers, func(w int) {
+		rng := rand.New(rand.NewSource(seed + int64(w)))
+		seen := make([]attemptState, ids)
+		note := func(i int, op string) { traces[w] = append(traces[w], strconv.Itoa(i)+" "+op) }
+		observe := func(i int, st attemptState) {
+			if rank(st) < rank(seen[i]) || (rank(seen[i]) == 2 && st != seen[i]) {
+				t.Errorf("worker %d: id %d went from %v to %v", w, i, seen[i], st)
+			}
+			seen[i] = st
+		}
+		for s := 0; s < steps; s++ {
+			i := rng.Intn(ids)
+			n := nonceOf(i + 1)
+			now := 2 * time.Minute
+			if rng.Intn(6) == 0 {
+				now = 11 * time.Minute // past the submit window: claim fences instead of running
+			}
+			switch rng.Intn(4) {
+			case 0:
+				note(i, "claim")
+				r := l.claim(n, 0, now)
+				if r == submitOK {
+					mu.Lock()
+					ran[i]++
+					mu.Unlock()
+				}
+				if r == submitBusy {
+					t.Errorf("worker %d: busy far below the cap", w)
+				}
+			case 1:
+				note(i, "look")
+				st, done := l.look(n)
+				if (st == attemptRunning) != (done != nil) {
+					t.Errorf("worker %d: id %d is %v with done %v", w, i, st, done != nil)
+				}
+				observe(i, st)
+			case 2:
+				note(i, "end")
+				final := []attemptState{attemptApplied, attemptRolledBack, attemptUnknown}[rng.Intn(3)]
+				if done, ok := l.end(n, final); ok {
+					if done == nil {
+						t.Errorf("worker %d: ended id %d with no done channel", w, i)
+					} else {
+						close(done)
+					}
+					mu.Lock()
+					ended[i]++
+					mu.Unlock()
+				}
+			default:
+				note(i, "settle")
+				st, err := l.settleTransition(n, 0, now)
+				switch {
+				case err == errSettleRunning:
+					if st != attemptRunning {
+						t.Errorf("worker %d: settle of id %d said running but gave %v", w, i, st)
+					}
+				case err != nil:
+					t.Errorf("worker %d: settle of id %d: %v", w, i, err)
+				case st == attemptAbsent || st == attemptRunning:
+					t.Errorf("worker %d: settle of id %d returned %v without an error", w, i, st)
+				default:
+					observe(i, st)
+				}
+			}
+		}
+	})
+	for i := 0; i < ids; i++ {
+		st, _ := l.look(nonceOf(i + 1))
+		switch {
+		case ran[i] > 1 || ended[i] > 1 || ended[i] > ran[i]:
+			t.Errorf("id %d: ran %d times, ended %d times", i, ran[i], ended[i])
+		case ran[i] == 1 && ended[i] == 0 && st != attemptRunning:
+			t.Errorf("id %d ran and never ended, but is %v", i, st)
+		case ran[i] == 1 && ended[i] == 1 && (st == attemptRunning || st == attemptFenced || st == attemptAbsent):
+			t.Errorf("id %d ran and ended, but is %v", i, st)
+		case ran[i] == 0 && st != attemptFenced && st != attemptAbsent:
+			t.Errorf("id %d never ran, but is %v", i, st)
+		}
+	}
+}
+
+// At the cap, racing claims fill exactly the room left and the rest are busy;
+// racing settles of unknown ids all find the ledger full.
+func TestRaceAttemptLedgerCapIsExact(t *testing.T) {
+	var l attemptLedger
+	const room, racers = 50, 200
+	for i := 0; i < attemptLedgerCap-room; i++ {
+		if r := l.claim(nonceOf(i+1000), 0, 0); r != submitOK {
+			t.Fatalf("filling claim %d: %v", i, r)
+		}
+	}
+	results := make([]submitResult, racers)
+	raceAll(racers, func(k int) { results[k] = l.claim(nonceOf(k+500000), 0, 0) })
+	ok, busy := 0, 0
+	for _, r := range results {
+		switch r {
+		case submitOK:
+			ok++
+		case submitBusy:
+			busy++
+		}
+	}
+	if ok != room || busy != racers-room {
+		t.Fatalf("%d claims ran and %d were busy, want %d and %d", ok, busy, room, racers-room)
+	}
+	l.mu.Lock()
+	size := len(l.m)
+	l.mu.Unlock()
+	if size != attemptLedgerCap {
+		t.Fatalf("the ledger holds %d entries, want exactly %d", size, attemptLedgerCap)
+	}
+	var full atomic.Int32
+	raceAll(racers, func(k int) {
+		if _, err := l.settleTransition(nonceOf(k+900000), 0, 0); err == errLedgerFull {
+			full.Add(1)
+		}
+	})
+	if full.Load() != racers {
+		t.Fatalf("%d of %d settles found the ledger full", full.Load(), racers)
+	}
+}
+
+// Pruning runs inside claim and settleTransition while other goroutines look:
+// the map is never touched outside the mutex, and what is old enough is gone.
+func TestRaceAttemptLedgerPruneWhileInUse(t *testing.T) {
+	var l attemptLedger
+	const steps = 260 // half-minute steps: 130 minutes
+	var stop atomic.Bool
+	var readers sync.WaitGroup
+	for r := 0; r < 4; r++ {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for i := 0; !stop.Load(); i++ {
+				l.look(nonceOf(i%steps + 1))
+			}
+		}()
+	}
+	for i := 0; i < steps; i++ {
+		now := time.Duration(i) * 30 * time.Second
+		if i%2 == 0 {
+			l.claim(nonceOf(i+1), now, now)
+		} else if _, err := l.settleTransition(nonceOf(i+1), now, now); err != nil {
+			t.Errorf("settle at step %d: %v", i, err)
+		}
+	}
+	stop.Store(true)
+	readers.Wait()
+	end := 140 * time.Minute
+	l.claim(nonceOf(steps+10), end, end) // a use after a gap prunes
+	if st, _ := l.look(nonceOf(1)); st != attemptAbsent {
+		t.Errorf("an entry from minute 0 survived to minute 140: %v", st)
+	}
+	if st, _ := l.look(nonceOf(steps - 1)); st == attemptAbsent {
+		t.Error("an entry from minute 129.5 was pruned at minute 140")
 	}
 }

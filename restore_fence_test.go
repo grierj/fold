@@ -8,6 +8,7 @@ import (
 	"go/ast"
 	"go/token"
 	"io"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -2683,5 +2684,103 @@ func TestCheckPGClientKeepsTheMajorStrict(t *testing.T) {
 	}
 	if _, ok, unavailable = checkPGClient(script(t, `echo "pulling failed" >&2; exit 72`), 16, true); ok || unavailable {
 		t.Errorf("an unusable image must fail, not skip: ok=%v unavailable=%v", ok, unavailable)
+	}
+}
+
+// The in-memory race tests for the fence's process state. They use no database
+// and prove only that the shared memory is touched safely; the barrier's
+// PostgreSQL ordering is decided by the lock and schedule tests above, which a
+// clean race run does not replace. scripts/reason-review-hardening.sh runs
+// them under the race detector.
+
+// Raising the floor from many goroutines keeps the largest value ever offered,
+// and no goroutine ever sees it go down.
+func TestRaceFenceStateRaiseKeepsTheMaximum(t *testing.T) {
+	seed := raceSeed(t)
+	var f fenceState
+	const workers, raises = 16, 2000
+	offered := make([][]int64, workers)
+	var stop atomic.Bool
+	var observer sync.WaitGroup
+	observer.Add(1)
+	go func() {
+		defer observer.Done()
+		var prev int64
+		for !stop.Load() {
+			cur := f.floor.Load()
+			if cur < prev {
+				t.Errorf("the floor went from %d down to %d", prev, cur)
+				return
+			}
+			prev = cur
+		}
+	}()
+	raceAll(workers, func(w int) {
+		rng := rand.New(rand.NewSource(seed + int64(w)))
+		for i := 0; i < raises; i++ {
+			v := rng.Int63n(1<<40) - 1<<20
+			offered[w] = append(offered[w], v)
+			f.raise(v)
+		}
+	})
+	stop.Store(true)
+	observer.Wait()
+	want := int64(0) // the zero value is the starting floor; a lower offer changes nothing
+	for _, vs := range offered {
+		for _, v := range vs {
+			want = max(want, v)
+		}
+	}
+	if got := f.floor.Load(); got != want {
+		t.Fatalf("the floor is %d, want the largest offered value %d", got, want)
+	}
+}
+
+// Every caller gets the one turn channel, and it is a mutual exclusion: at most
+// one goroutine is inside at a time, and what they do inside is ordered by it
+// (the race detector would flag the counter otherwise).
+func TestRaceFenceStateTurnIsExclusive(t *testing.T) {
+	var f fenceState
+	const workers, rounds = 16, 300
+	chans := make([]chan struct{}, workers)
+	raceAll(workers, func(k int) { chans[k] = f.turnChan() })
+	for k, c := range chans {
+		if c != chans[0] || c == nil {
+			t.Fatalf("caller %d got a different turn channel", k)
+		}
+	}
+	var inside atomic.Int32
+	counter := 0
+	raceAll(workers, func(int) {
+		turn := f.turnChan()
+		for i := 0; i < rounds; i++ {
+			turn <- struct{}{}
+			if n := inside.Add(1); n != 1 {
+				t.Errorf("%d goroutines hold the turn at once", n)
+			}
+			counter++
+			inside.Add(-1)
+			<-turn
+		}
+	})
+	if counter != workers*rounds {
+		t.Fatalf("the counter is %d, want %d", counter, workers*rounds)
+	}
+}
+
+// Many goroutines notice the same restore: the process is asked to restart
+// once, and everyone sees it marked afterwards. With nothing to ask, noticing
+// still marks it.
+func TestRaceNoteRestoreDetectedRestartsOnce(t *testing.T) {
+	var restarts atomic.Int32
+	a := &App{requestRestart: func() { restarts.Add(1) }}
+	raceAll(32, func(int) { a.noteRestoreDetected() })
+	if !a.restoreDetected() || restarts.Load() != 1 {
+		t.Fatalf("detected %v, restarts %d, want true and 1", a.restoreDetected(), restarts.Load())
+	}
+	bare := &App{}
+	raceAll(32, func(int) { bare.noteRestoreDetected() })
+	if !bare.restoreDetected() {
+		t.Fatal("a restore noticed with no restart hook was not marked")
 	}
 }

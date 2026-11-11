@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"os"
 	"runtime"
 	"strconv"
@@ -100,6 +102,112 @@ func TestReasonSetDigestVectors(t *testing.T) {
 			}
 			if m := envelopeOf(entries); m["digest"] != v.Digest || m["choices"] != v.ChoicesBase64 {
 				t.Errorf("envelopeOf = %v", m)
+			}
+		})
+	}
+}
+
+// generatedReasonVector is a large vector that the shared file describes
+// instead of listing (see its generatedNote): web/src/lib/reasonSetDigest.test.ts
+// builds the same review from the same fields. Item i has id FirstID + i*Step,
+// 32 hash bytes from one linear congruential byte stream, and choice code 2
+// when i mod 3 is 1, else 1.
+type generatedReasonVector struct {
+	Name          string `json:"name"`
+	Count         int    `json:"count"`
+	FirstID       string `json:"firstId"`
+	Step          string `json:"step"`
+	HashSeed      uint32 `json:"hashSeed"`
+	Digest        string `json:"digest"`
+	ChoicesSha256 string `json:"choicesSha256"`
+}
+
+func loadGeneratedReasonVectors(t *testing.T) []generatedReasonVector {
+	t.Helper()
+	b, err := os.ReadFile(reasonSetVectorsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f struct {
+		Generated []generatedReasonVector `json:"generated"`
+	}
+	if err := json.Unmarshal(b, &f); err != nil || len(f.Generated) == 0 {
+		t.Fatalf("generated vectors: %v (%d)", err, len(f.Generated))
+	}
+	return f.Generated
+}
+
+// The counts where a chunked or size-limited digest could differ from a whole
+// one: a 1 MiB chunk holds 26,214 whole 40-byte records, and WebCrypto takes a
+// preimage up to 16 MiB. Both are derived here from the wire format, so a
+// vector file that drops a boundary fails.
+func requiredGeneratedReasonCounts() []int {
+	perChunk := (1 << 20) / 40
+	lastWebCrypto := ((16 << 20) - 35) / 40
+	return []int{perChunk - 1, perChunk, perChunk + 1, perChunk + 2, 2 * perChunk, 2*perChunk + 1, lastWebCrypto, lastWebCrypto + 1}
+}
+
+func TestReasonSetGeneratedVectors(t *testing.T) {
+	vectors := loadGeneratedReasonVectors(t)
+	have := map[int]bool{}
+	for _, v := range vectors {
+		have[v.Count] = true
+	}
+	for _, n := range requiredGeneratedReasonCounts() {
+		if !have[n] {
+			t.Errorf("the shared file has no generated vector with %d reasons", n)
+		}
+	}
+	for _, v := range vectors {
+		t.Run(v.Name, func(t *testing.T) {
+			first, err1 := strconv.ParseInt(v.FirstID, 10, 64)
+			step, err2 := strconv.ParseInt(v.Step, 10, 64)
+			if err1 != nil || err2 != nil || step <= 0 || v.Count <= 0 {
+				t.Fatalf("vector %q is malformed", v.Name)
+			}
+			if last := new(big.Int).Add(big.NewInt(first), new(big.Int).Mul(big.NewInt(step), big.NewInt(int64(v.Count-1)))); !last.IsInt64() {
+				t.Fatalf("the last id of %q overflows int64", v.Name)
+			}
+			h := newReasonSetHasher(uint64(v.Count))
+			packed := make([]byte, (v.Count+3)/4)
+			x, id := v.HashSeed, first
+			for i := 0; i < v.Count; i++ {
+				var raw [sha256.Size]byte
+				for b := range raw {
+					x = x*1664525 + 1013904223
+					raw[b] = byte(x >> 24)
+				}
+				h.add(id, &raw)
+				code := byte(reasonCodeKeep)
+				if i%3 == 1 {
+					code = reasonCodeRemove
+				}
+				packed[i/4] |= code << (2 * uint(i%4))
+				if i < v.Count-1 {
+					id += step
+				}
+			}
+			sum := h.sum()
+			if got := hex.EncodeToString(sum[:]); got != v.Digest {
+				t.Errorf("digest %s, want %s", got, v.Digest)
+			}
+			choices := base64.StdEncoding.EncodeToString(packed)
+			cs := sha256.Sum256([]byte(choices))
+			if got := hex.EncodeToString(cs[:]); got != v.ChoicesSha256 {
+				t.Errorf("choices digest %s, want %s", got, v.ChoicesSha256)
+			}
+			env, ok := buildNewEnvelope(reasonSetFormat, strconv.Itoa(v.Count), v.Digest, choices)
+			if !ok || env.count != uint64(v.Count) {
+				t.Fatalf("the vector's envelope was refused (ok %v)", ok)
+			}
+			for i := 0; i < v.Count; i++ {
+				want := byte(reasonCodeKeep)
+				if i%3 == 1 {
+					want = reasonCodeRemove
+				}
+				if got := env.choiceAt(i); got != want {
+					t.Fatalf("choice %d is %d, want %d", i, got, want)
+				}
 			}
 		})
 	}
@@ -243,8 +351,39 @@ func FuzzReasonEnvelope(f *testing.F) {
 	f.Add(jsonEsc(`{"c#u006funt":"1"}`))
 	f.Add(jsonEsc(`{"#u0069tems":[],"items":[]}`))
 	f.Add(jsonEsc(`{"c#qount":"1"}`))
+	// Boundary counts around the byte (4), the padding slots and the largest
+	// counts a 64-bit count allows, each with a right-sized vector and then
+	// with its padding bits, its code and its length spoiled.
+	for _, n := range []int{1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17} {
+		f.Add(envJSON("set-v1", strconv.Itoa(n), envDigest, base64.StdEncoding.EncodeToString(fuzzChoices(n, 0x55))))
+		f.Add(envJSON("set-v1", strconv.Itoa(n), envDigest, base64.StdEncoding.EncodeToString(fuzzChoices(n, 0xaa))))
+		f.Add(envJSON("set-v1", strconv.Itoa(n), envDigest, base64.StdEncoding.EncodeToString(append(fuzzChoices(n, 0x55), 0))))
+		f.Add(envJSON("set-v1", strconv.Itoa(n), envDigest, base64.StdEncoding.EncodeToString(fuzzChoices(n, 0xff))))
+	}
+	for _, n := range []string{"9223372036854775807", "9223372036854775808", "18446744073709551615", "18446744073709551616", "4294967296", "4294967295"} {
+		f.Add(envJSON("set-v1", n, envDigest, "AQ=="))
+	}
+	f.Add("  " + envJSON("set-v1", "1", envDigest, "AQ==") + "\n")
+	f.Add(envJSON("set-v1", "1", envDigest, "AQ==") + envJSON("set-v1", "1", envDigest, "AQ=="))
+	f.Add("\ufeff" + envJSON("set-v1", "1", envDigest, "AQ=="))
+	f.Add(`{"items":[{"requestId":"-9223372036854775808","reviewHash":"` + envHash + `","choice":"keep"}]}`)
 	f.Fuzz(func(t *testing.T, raw string) {
+		// A nested key never makes a top-level key ambiguous: the wrapper names
+		// each of its two keys once, whatever the value holds.
+		if json.Valid([]byte(raw)) {
+			wrapped := []byte(`{"attemptId":"a","reasonReview":` + raw + `}`)
+			if got := scanTopKeys(wrapped); got.attemptAmbiguous || got.reviewAmbiguous {
+				t.Fatalf("a nested value made a top-level key ambiguous: %q", raw)
+			}
+		}
+		scanTopKeys([]byte(raw))
 		env, ok := parseReasonEnvelope(json.RawMessage(raw), false)
+		if again, ok2 := parseReasonEnvelope(json.RawMessage(raw), false); ok2 != ok || again.kind != env.kind || again.count != env.count {
+			t.Fatalf("parsing %q twice gave different answers", raw)
+		}
+		if _, accepted := parseReasonEnvelope(json.RawMessage(raw), true); accepted {
+			t.Fatalf("an ambiguous reasonReview key was accepted for %q", raw)
+		}
 		if !ok {
 			return
 		}
@@ -281,12 +420,27 @@ func FuzzReasonEnvelope(f *testing.F) {
 					t.Fatalf("accepted code %d at %d", c, i)
 				}
 			}
+			// Canonical form: what was accepted, written out again in the one
+			// spelling the reader prefers, is accepted and means the same.
+			canon := envJSON(reasonSetFormat, strconv.FormatUint(env.count, 10), hex.EncodeToString(env.digest[:]), base64.StdEncoding.EncodeToString(env.choices))
+			back, ok := parseReasonEnvelope(json.RawMessage(canon), false)
+			if !ok || back.kind != reasonEnvelopeNew || back.count != env.count || back.digest != env.digest || !bytes.Equal(back.choices, env.choices) {
+				t.Fatalf("accepted %q but its canonical form %q was not read back as the same envelope", raw, canon)
+			}
 		case reasonEnvelopeLegacy:
 			if len(seen) != 1 || !seen["items"] {
 				t.Fatalf("accepted a legacy envelope with keys %v", seen)
 			}
 		}
 	})
+}
+
+// fuzzChoices is the right length of choices vector for n items with every byte
+// set to fill: 0x55 is all keeps, 0xaa all removes, 0xff the unused code 3, and
+// any of them leaves the padding slots of the last byte set when n is not a
+// multiple of 4.
+func fuzzChoices(n int, fill byte) []byte {
+	return bytes.Repeat([]byte{fill}, (n+3)/4)
 }
 
 // Keys written with JSON escapes. encoding/json decodes a key before the reader

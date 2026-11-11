@@ -1,3 +1,4 @@
+import { appendFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { ErasureReasonItem } from "../types";
 import { KEEP, REMOVE, ReasonReviewStore, ReasonStoreError } from "./reasonReviewStore";
@@ -266,4 +267,260 @@ describe("ReasonReviewStore", () => {
       expect(store.isChanged(store.ordinalOf("5"))).toBe(false);
     });
   });
+});
+
+// Seeded random operations against a small reference model. A failure names the
+// seed and prints the operation trace, so FOLD_REASON_SEED=<seed> replays it.
+// FOLD_REASON_SEED_BASE and FOLD_REASON_RUNS choose the range
+// (scripts/reason-review-hardening.sh sets them).
+function mulberry32(seed: number) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function seedsFromEnv(): number[] {
+  const one = process.env.FOLD_REASON_SEED;
+  if (one) return [Number(one)];
+  const base = Number(process.env.FOLD_REASON_SEED_BASE ?? 20261111);
+  const runs = Number(process.env.FOLD_REASON_RUNS ?? 24);
+  return Array.from({ length: runs }, (_, i) => base + i);
+}
+
+type ModelItem = { id: bigint; hash: string; choice: 0 | 1 | 2; changed: boolean; item: ErasureReasonItem };
+
+// The model keeps the rules in the plainest form: a list, a walk position and a
+// version that moves only when the state does.
+class Model {
+  items: ModelItem[] = [];
+  last: bigint | null = null;
+  prior: Map<string, { hash: string; choice: 1 | 2 }> | null = null;
+  version = 0;
+
+  // The refusals, written independently of the store: a canonical signed
+  // decimal inside int64, ascending across the walk, a new id, a 64-character
+  // lower-case hash.
+  accepts(page: ErasureReasonItem[]): boolean {
+    let prev = this.last;
+    const seen = new Set(this.items.map((m) => m.item.requestId));
+    for (const it of page) {
+      if (typeof it.requestId !== "string" || !/^(0|-?[1-9][0-9]*)$/.test(it.requestId)) return false;
+      const v = BigInt(it.requestId);
+      if (v < -(2n ** 63n) || v > 2n ** 63n - 1n) return false;
+      if (prev !== null && v <= prev) return false;
+      if (seen.has(it.requestId)) return false;
+      if (typeof it.reviewHash !== "string" || !/^[0-9a-f]{64}$/.test(it.reviewHash)) return false;
+      seen.add(it.requestId);
+      prev = v;
+    }
+    return true;
+  }
+
+  append(page: ErasureReasonItem[]): void {
+    if (page.length === 0) return;
+    for (const it of page) {
+      const old = this.prior?.get(it.requestId);
+      const kept = old && old.hash === it.reviewHash ? old.choice : 0;
+      this.items.push({ id: BigInt(it.requestId), hash: it.reviewHash, choice: kept, changed: this.prior !== null && !kept, item: it });
+      this.last = BigInt(it.requestId);
+    }
+    this.version++;
+  }
+
+  choose(at: number, c: 1 | 2): void {
+    const m = this.items[at];
+    if (!m || m.choice === c) return;
+    m.choice = c;
+    m.changed = false;
+    this.version++;
+  }
+
+  reset(prior: Model["prior"]): void {
+    this.items = [];
+    this.last = null;
+    this.prior = prior;
+    this.version++;
+  }
+
+  carry(): Map<string, { hash: string; choice: 1 | 2 }> {
+    return new Map(this.items.filter((m) => m.choice !== 0).map((m) => [m.item.requestId, { hash: m.hash, choice: m.choice as 1 | 2 }]));
+  }
+
+  next(from: number, want: (m: ModelItem) => boolean): number {
+    const n = this.items.length;
+    for (let step = 1; step <= n; step++) {
+      const i = (from + step + n) % n;
+      if (want(this.items[i])) return i;
+    }
+    return -1;
+  }
+}
+
+// Plain comparisons per item (a few hundred items, a few hundred steps, many
+// seeds): expect() only for the aggregates.
+function same(got: unknown, want: unknown, what: string) {
+  if (got !== want) throw new Error(`${what} is ${String(got)}, want ${String(want)}`);
+}
+
+function compare(store: ReasonReviewStore, model: Model, rng: () => number, withHashes: boolean) {
+  const n = model.items.length;
+  same(store.total, n, "total");
+  same(store.getVersion(), model.version, "version");
+  expect(store.getSnapshot(), "snapshot").toMatchObject({
+    total: n,
+    keep: model.items.filter((m) => m.choice === KEEP).length,
+    remove: model.items.filter((m) => m.choice === REMOVE).length,
+    unchosen: model.items.filter((m) => m.choice === 0).length,
+    changedOpen: model.items.filter((m) => m.changed).length,
+  });
+  model.items.forEach((m, i) => {
+    same(store.choiceAt(i), m.choice, `choice ${i}`);
+    same(store.isChanged(i), m.changed, `changed ${i}`);
+    same(store.itemAt(i), m.item, `item ${i}`);
+    same(store.ordinalOf(m.item.requestId), i, `ordinal of ${m.item.requestId}`);
+  });
+  same(store.itemAt(n), undefined, "the item past the end");
+  same(store.ordinalOf("not an id"), -1, "ordinal of an unknown id");
+  const from = Math.floor(rng() * (n + 1)) - 1;
+  same(store.nextUnchosen(from), model.next(from, (m) => m.choice === 0), `nextUnchosen(${from})`);
+  same(store.nextChanged(from), model.next(from, (m) => m.changed && m.choice === 0), `nextChanged(${from})`);
+  const a = Math.floor(rng() * (n + 2)) - 1;
+  const b = a + Math.floor(rng() * 6);
+  expect(store.slice(a, b), `slice(${a}, ${b})`).toEqual(model.items.slice(Math.max(0, a), Math.max(0, b)).map((m) => m.item));
+  const f = store.freeze();
+  same(f.count, n, "frozen count");
+  same(f.version, model.version, "frozen version");
+  same(f.hashes.length, n * 32, "frozen hash bytes");
+  expect([...f.choices]).toEqual(model.items.map((m) => m.choice));
+  if (withHashes) {
+    model.items.forEach((m, i) => {
+      same(f.ids[i], m.item.requestId, `frozen id ${i}`);
+      same(Array.from(f.hashes.subarray(i * 32, i * 32 + 32), (x) => x.toString(16).padStart(2, "0")).join(""), m.hash, `hash ${i}`);
+    });
+  }
+}
+
+// FOLD_REASON_EVIDENCE names a file that scripts/reason-review-hardening.sh counts
+// to see that every seed it asked for really ran.
+function record(line: string) {
+  if (process.env.FOLD_REASON_EVIDENCE) appendFileSync(process.env.FOLD_REASON_EVIDENCE, line.replace(/\n/g, "\\n") + "\n");
+}
+
+describe("random operations against a reference model", () => {
+  it.each(seedsFromEnv())("seed %i: the store and the model agree after every operation", (seed) => {
+    const rng = mulberry32(seed);
+    const below = (n: number) => Math.floor(rng() * n);
+    const trace: string[] = [];
+    const store = new ReasonReviewStore();
+    const model = new Model();
+    const hashOf = () => Array.from({ length: 32 }, () => below(256).toString(16).padStart(2, "0")).join("");
+    const itemOf = (id: bigint, hash = hashOf()): ErasureReasonItem => ({ ...item(0), requestId: String(id), reviewHash: hash });
+    // A page that continues the walk: ascending ids with gaps, now and then at an int64 extreme.
+    const goodPage = (): ErasureReasonItem[] => {
+      const size = 1 + below(6);
+      let id = model.last === null ? (rng() < 0.3 ? -(2n ** 63n) + BigInt(below(5)) : BigInt(below(2000) - 1000)) : model.last + 1n + BigInt(below(4));
+      const page: ErasureReasonItem[] = [];
+      for (let i = 0; i < size; i++) {
+        if (id > 2n ** 63n - 1n) break;
+        page.push(itemOf(id));
+        id += 1n + BigInt(below(3));
+      }
+      return page;
+    };
+    const badPage = (): ErasureReasonItem[] => {
+      const page = goodPage();
+      const at = below(page.length || 1);
+      const kind = below(8);
+      if (page.length === 0) return [itemOf(5n), itemOf(5n)];
+      const mutate = (patch: Partial<ErasureReasonItem>) => (page[at] = { ...page[at], ...patch });
+      if (kind === 0) mutate({ requestId: "+" + page[at].requestId });
+      else if (kind === 1) mutate({ requestId: page[at].requestId + "\n" });
+      else if (kind === 2) mutate({ reviewHash: page[at].reviewHash.slice(0, 63) + "G" });
+      else if (kind === 3) mutate({ reviewHash: page[at].reviewHash.slice(1) });
+      else if (kind === 4) mutate({ requestId: String(2n ** 63n) });
+      else if (kind === 5 && model.items.length > 0) page.unshift(model.items[below(model.items.length)].item); // a repeat
+      else if (kind === 6 && model.last !== null) page.unshift(itemOf(model.last - BigInt(below(3)))); // does not continue
+      else page.push(page[at]); // twice on one page
+      return page;
+    };
+    const step = (label: string, run: () => void) => {
+      trace.push(label);
+      run();
+    };
+
+    try {
+      for (let op = 0; op < 260; op++) {
+        const roll = below(100);
+        if (roll < 28) {
+          const page = goodPage();
+          step(`append good [${page.map((p) => p.requestId).join(",")}]`, () => {
+            expect(model.accepts(page)).toBe(true);
+            store.appendPage(page);
+            model.append(page);
+          });
+        } else if (roll < 38) {
+          const page = badPage();
+          step(`append bad [${page.map((p) => `${JSON.stringify(p.requestId)}:${p.reviewHash.length}`).join(",")}]`, () => {
+            if (model.accepts(page)) {
+              store.appendPage(page);
+              model.append(page);
+            } else {
+              expect(() => store.appendPage(page)).toThrow(ReasonStoreError);
+            }
+          });
+        } else if (roll < 74) {
+          const at = below(model.items.length + 3) - 1;
+          const c = rng() < 0.5 ? KEEP : REMOVE;
+          step(`choose ${at} ${c === KEEP ? "keep" : "remove"}`, () => {
+            store.choose(at, c);
+            model.choose(at, c);
+          });
+        } else if (roll < 80) {
+          step(`append empty page`, () => {
+            store.appendPage([]);
+            model.append([]);
+          });
+        } else if (roll < 86) {
+          // A reload: carry the choices, start over and replay the walk with some hashes changed, some ids gone, some new.
+          const before = model.items.slice();
+          const prior = rng() < 0.85 ? model.carry() : null;
+          step(`reload ${prior ? `with ${prior.size} carried` : "with nothing carried"} (${before.length} before)`, () => {
+            expect(store.carry()).toEqual(model.carry());
+            store.reset(prior ? new Map(prior) : null);
+            model.reset(prior ? new Map(prior) : null);
+            const walk: ModelItem[] = [];
+            for (const m of before) if (rng() < 0.8) walk.push({ ...m, hash: rng() < 0.2 ? hashOf() : m.hash });
+            for (let k = below(4); k > 0; k--) walk.push({ id: BigInt(below(4000) - 2000), hash: hashOf(), choice: 0, changed: false, item: item(0) });
+            const sorted = [...new Map(walk.map((m) => [m.id, m] as const)).values()].sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
+            for (let at = 0; at < sorted.length; ) {
+              const size = 1 + below(5);
+              const page = sorted.slice(at, at + size).map((m) => itemOf(m.id, m.hash));
+              store.appendPage(page);
+              model.append(page);
+              at += size;
+            }
+          });
+        } else if (roll < 90) {
+          step(`reset with nothing carried`, () => {
+            store.reset();
+            model.reset(null);
+          });
+        } else {
+          step(`read`, () => undefined);
+        }
+        compare(store, model, rng, op % 11 === 0 || op === 259);
+      }
+      record(`store seed ${seed} ok: ${trace.length} operations`);
+    } catch (e) {
+      const shown = trace.length > 120 ? [`... ${trace.length - 120} earlier operations ...`, ...trace.slice(-120)] : trace;
+      const report = `reproduce with FOLD_REASON_SEED=${seed}; ${trace.length} operations, the last failing:\n${shown.join("\n")}\n${(e as Error).message}`;
+      record(`store seed ${seed} FAILED: ${report}`);
+      throw new Error(report);
+    }
+  }, 60_000);
 });
