@@ -355,11 +355,17 @@ func TestGuardianCopyEventFieldsFollowTheTeensAccess(t *testing.T) {
 // until the test ends, through the one handle app.DB shares with every
 // transaction and session: a lookup that fails inside the delivery's own
 // transaction, which a cancelled context on a copy of the handle cannot reach.
+// A read through an aliased table ("registrations r") is matched by its table
+// expression: GORM records the alias, not the table, as Statement.Table.
 func failReads(t *testing.T, db *gorm.DB, prefix string) {
 	t.Helper()
 	name := "test:fail-reads:" + prefix
 	fail := func(tx *gorm.DB) {
-		if strings.HasPrefix(tx.Statement.Table, prefix) {
+		expr := ""
+		if tx.Statement.TableExpr != nil {
+			expr = strings.Trim(tx.Statement.TableExpr.SQL, "\"` ")
+		}
+		if strings.HasPrefix(tx.Statement.Table, prefix) || strings.HasPrefix(expr, prefix) {
 			_ = tx.AddError(errors.New("lookup failed"))
 		}
 	}
