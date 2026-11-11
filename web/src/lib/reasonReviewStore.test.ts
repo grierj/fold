@@ -309,12 +309,23 @@ class Model {
     let prev = this.last;
     const seen = new Set(this.items.map((m) => m.item.requestId));
     for (const it of page) {
-      if (typeof it.requestId !== "string" || !/^(0|-?[1-9][0-9]*)$/.test(it.requestId)) return false;
-      const v = BigInt(it.requestId);
+      if (typeof it.requestId !== "string") return false;
+      let v: bigint;
+      try {
+        v = BigInt(it.requestId);
+      } catch {
+        return false;
+      }
+      // The round trip rejects what BigInt reads but the walk never writes: a
+      // trailing line terminator or space, "0x10", "+1", "01" and "-0".
+      if (v.toString() !== it.requestId) return false;
       if (v < -(2n ** 63n) || v > 2n ** 63n - 1n) return false;
       if (prev !== null && v <= prev) return false;
       if (seen.has(it.requestId)) return false;
-      if (typeof it.reviewHash !== "string" || !/^[0-9a-f]{64}$/.test(it.reviewHash)) return false;
+      // The length is checked, not implied by the pattern's end: "$" matches
+      // before a final newline, so a longer hash with one would pass the
+      // pattern alone.
+      if (typeof it.reviewHash !== "string" || it.reviewHash.length !== 64 || !/^[0-9a-f]{64}$/.test(it.reviewHash)) return false;
       seen.add(it.requestId);
       prev = v;
     }
@@ -404,6 +415,20 @@ function compare(store: ReasonReviewStore, model: Model, rng: () => number, with
     });
   }
 }
+
+describe("the reference model", () => {
+  it("refuses the same newline-suffixed ids and hashes production refuses", () => {
+    const model = new Model();
+    for (const id of ["5\n", "5\r", "5\r\n", "-5\n", "5\u00a0", "5 ", "0x10", "+1", "01", "-0", ""]) {
+      expect(model.accepts([{ ...item(0), requestId: id }]), JSON.stringify(id)).toBe(false);
+    }
+    for (const hash of ["a".repeat(64) + "\n", "\n" + "a".repeat(64), "a".repeat(63) + "\n", "A".repeat(64)]) {
+      expect(model.accepts([{ ...item(1), reviewHash: hash }]), JSON.stringify(hash)).toBe(false);
+    }
+    expect(model.accepts([{ ...item(1) }])).toBe(true);
+    expect(model.accepts([])).toBe(true);
+  });
+});
 
 // FOLD_REASON_EVIDENCE names a file that scripts/reason-review-hardening.sh counts
 // to see that every seed it asked for really ran.

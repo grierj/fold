@@ -2145,8 +2145,19 @@ func TestRaceAttemptLedgerMixedOperations(t *testing.T) {
 			case 1:
 				note(i, "look")
 				st, done := l.look(n)
-				if (st == attemptRunning) != (done != nil) {
-					t.Errorf("worker %d: id %d is %v with done %v", w, i, st, done != nil)
+				switch st {
+				case attemptRunning:
+					if done == nil {
+						t.Errorf("worker %d: id %d is running with no done channel", w, i)
+					}
+				case attemptAbsent, attemptFenced:
+					if done != nil {
+						t.Errorf("worker %d: id %d is %v with a done channel", w, i, st)
+					}
+				default:
+					// Applied, rolled back and unknown entries keep the
+					// channel for the winner to close; its presence says
+					// nothing once the entry has left running.
 				}
 				observe(i, st)
 			case 2:

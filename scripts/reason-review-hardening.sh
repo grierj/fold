@@ -14,8 +14,9 @@
 #   --seed-base S      first seed of those runs (default 20261111); the race
 #                      tests use S as their operation seed
 #   --seed S           replay one seed only (the value a failure printed)
-#   --evidence-dir D   where the record goes; it must be outside this checkout.
-#                      Default: $FOLD_EVIDENCE_DIR, else
+#   --evidence-dir D   where the record goes; it must be outside this checkout
+#                      and new or empty (a directory that already holds files is
+#                      refused). Default: $FOLD_EVIDENCE_DIR, else
 #                      ${XDG_STATE_HOME:-~/.local/state}/fold/reason-review-hardening,
 #                      then a directory named for the revision and the time.
 #
@@ -44,8 +45,11 @@
 # per seed that ran, with its trace on failure) and failure-corpus/ (any input
 # the fuzzer saved). A failing fuzz input is also left in
 # testdata/fuzz/FuzzReasonEnvelope/, where `go test` replays it; deleting it is
-# the decision to call it fixed or not a bug. Exit status: 0 only when every
-# step passed.
+# the decision to call it fixed or not a bug. The record starts as incomplete
+# before the first step, and a signal finalizes it, so an interrupted rerun
+# cannot keep a previous pass; the completed record is parsed as JSON before
+# success is reported. Seed spellings are canonical (no leading zeros).
+# Exit status: 0 only when every step passed.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
@@ -63,6 +67,7 @@ seed_base=20261111
 single_seed=
 evidence_root=${FOLD_EVIDENCE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/fold/reason-review-hardening}
 evidence=
+failure_files=()
 
 while (($#)); do
 	case $1 in
@@ -100,8 +105,8 @@ esac
 ((race_count <= 1000)) || die "--race-count must be 1 to 1000"
 [[ $seeds =~ ^[1-9][0-9]{0,3}$ ]] || die "--seeds must be 1 to 5000"
 ((seeds <= 5000)) || die "--seeds must be 1 to 5000"
-[[ $seed_base =~ ^[0-9]{1,15}$ ]] || die "--seed-base must be a whole number of at most 15 digits"
-[[ -z $single_seed || $single_seed =~ ^[0-9]{1,15}$ ]] || die "--seed must be a whole number of at most 15 digits"
+[[ $seed_base =~ ^(0|[1-9][0-9]{0,14})$ ]] || die "--seed-base must be a canonical whole number (no leading zeros) of at most 15 digits"
+[[ -z $single_seed || $single_seed =~ ^(0|[1-9][0-9]{0,14})$ ]] || die "--seed must be a canonical whole number (no leading zeros) of at most 15 digits"
 if [[ -n $single_seed ]]; then
 	seeds=1
 	seed_base=$single_seed
@@ -136,7 +141,12 @@ if [[ -n $(git status --porcelain --untracked-files=normal) ]]; then
 fi
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 [[ -n $evidence ]] || evidence="$evidence_root/${revision:0:12}-$stamp"
-mkdir -p "$evidence"
+if [[ -e $evidence ]]; then
+	[[ -d $evidence ]] || die "the evidence destination $evidence exists and is not a directory"
+	[[ -z $(ls -A "$evidence") ]] || die "the evidence directory $evidence is not empty; each run writes a fresh directory, so an interrupted rerun cannot keep a previous pass"
+else
+	mkdir -p "$evidence"
+fi
 evidence=$(cd "$evidence" && pwd -P)
 case $evidence in
 "$root" | "$root"/*) die "the evidence directory $evidence is inside the checkout; it must be outside" ;;
@@ -157,6 +167,50 @@ now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 started=$(now)
 steps_json=
 overall=0
+
+# write_evidence RESULT writes evidence.json with the steps recorded so far, so
+# an interrupted run keeps an incomplete record instead of a previous pass.
+# shellcheck disable=SC2329 # also run through the signal trap below
+write_evidence() {
+	local result=$1 artifacts="" f=""
+	for f in "${failure_files[@]}"; do
+		[[ -z $artifacts ]] || artifacts+=","
+		artifacts+=$(json "$f")
+	done
+	local node_version
+	node_version=$(command -v node >/dev/null 2>&1 && node --version || echo none)
+	cat >"$evidence/evidence.json" <<EOF
+{
+  "schema": "fold/reason-review-hardening/v1",
+  "issue": 296,
+  "revision": "$revision",
+  "tree": "$tree",
+  "workingTreeClean": $([[ $dirty == false ]] && echo true || echo false),
+  "workingTreeDiffSha256": $(json "$diff_sha"),
+  "startedAt": "$started",
+  "finishedAt": "$(now)",
+  "host": $(json "$(uname -sm)"),
+  "go": $(json "$(go version)"),
+  "node": $(json "$node_version"),
+  "cc": $(json "$cc"),
+  "parameters": {
+    "fuzzTime": "$fuzz_time",
+    "raceCount": $race_count,
+    "webSeeds": $seeds,
+    "seedBase": $seed_base,
+    "singleSeed": $([[ -n $single_seed ]] && echo "$single_seed" || echo null),
+    "raceOperationSeed": $seed_base
+  },
+  "steps": [$steps_json
+  ],
+  "failureArtifacts": [$artifacts],
+  "result": "$result"
+}
+EOF
+}
+
+write_evidence incomplete
+trap 'write_evidence incomplete; echo "reason-review-hardening: interrupted; record: $evidence/evidence.json (incomplete)" >&2; exit 130' INT TERM
 
 # run_step NAME LOGFILE COMMAND...: runs the command with its output in the log
 # and leaves the outcome in the step_* variables. A failed step does not stop
@@ -285,57 +339,46 @@ record_step
 web_env=(FOLD_REASON_SEED_BASE="$seed_base" FOLD_REASON_RUNS="$seeds" FOLD_REASON_EVIDENCE="$evidence/web-seeds.log")
 [[ -z $single_seed ]] || web_env+=(FOLD_REASON_SEED="$single_seed")
 # shellcheck disable=SC2329 # run through run_step
-web_cmd() { (cd web && env "${web_env[@]}" npm test -- src/lib/reasonSetDigest.test.ts src/lib/reasonReviewStore.test.ts); }
+web_cmd() { (cd web && env -u FOLD_REASON_SEED "${web_env[@]}" npm test -- src/lib/reasonSetDigest.test.ts src/lib/reasonReviewStore.test.ts); }
 # shellcheck disable=SC2329 # run through check_step
 seeds_completed() {
-	local digest_ok store_ok
-	digest_ok=$(grep -c -E '^digest seed [0-9]+ ok' "$evidence/web-seeds.log" || true)
-	store_ok=$(grep -c -E '^store seed [0-9]+ ok' "$evidence/web-seeds.log" || true)
-	((digest_ok == seeds && store_ok == seeds)) || echo "$digest_ok digest and $store_ok store seeds completed, expected $seeds of each (see web-seeds.log)" >>"$evidence/web.log"
-	((digest_ok == seeds && store_ok == seeds))
+	# The exact seed set the manifest records: the one replay seed, or the
+	# base run. An inherited FOLD_REASON_SEED is cleared above, so only these
+	# may appear.
+	local want=()
+	if [[ -n $single_seed ]]; then
+		want=("$single_seed")
+	else
+		local s
+		for ((s = 0; s < seeds; s++)); do want+=("$((seed_base + s))"); done
+	fi
+	local missing=0 seed
+	for seed in "${want[@]}"; do
+		grep -q -E -- "^digest seed $seed ok" "$evidence/web-seeds.log" || {
+			echo "digest seed $seed did not complete (see web-seeds.log)" >>"$evidence/web.log"
+			missing=1
+		}
+		grep -q -E -- "^store seed $seed ok" "$evidence/web-seeds.log" || {
+			echo "store seed $seed did not complete (see web-seeds.log)" >>"$evidence/web.log"
+			missing=1
+		}
+	done
+	if grep -q -E -- " FAILED" "$evidence/web-seeds.log"; then
+		echo "a randomized seed reported FAILED (see web-seeds.log)" >>"$evidence/web.log"
+		missing=1
+	fi
+	return "$missing"
 }
 run_step web web.log web_cmd
 check_step "not every requested seed completed" seeds_completed
 record_step
 
 # --- the record --------------------------------------------------------------
-finished=$(now)
 result=pass
 ((overall == 0)) || result=fail
-artifacts=
-for f in "${failure_files[@]}"; do
-	[[ -z $artifacts ]] || artifacts+=","
-	artifacts+=$(json "$f")
-done
-node_version=$(command -v node >/dev/null 2>&1 && node --version || echo none)
-cat >"$evidence/evidence.json" <<EOF
-{
-  "schema": "fold/reason-review-hardening/v1",
-  "issue": 296,
-  "revision": "$revision",
-  "tree": "$tree",
-  "workingTreeClean": $([[ $dirty == false ]] && echo true || echo false),
-  "workingTreeDiffSha256": $(json "$diff_sha"),
-  "startedAt": "$started",
-  "finishedAt": "$finished",
-  "host": $(json "$(uname -sm)"),
-  "go": $(json "$(go version)"),
-  "node": $(json "$node_version"),
-  "cc": $(json "$cc"),
-  "parameters": {
-    "fuzzTime": "$fuzz_time",
-    "raceCount": $race_count,
-    "webSeeds": $seeds,
-    "seedBase": $seed_base,
-    "singleSeed": $([[ -n $single_seed ]] && echo "$single_seed" || echo null),
-    "raceOperationSeed": $seed_base
-  },
-  "steps": [$steps_json
-  ],
-  "failureArtifacts": [$artifacts],
-  "result": "$result"
-}
-EOF
+write_evidence "$result"
+node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' "$evidence/evidence.json" ||
+	die "the completed evidence record is not valid JSON: $evidence/evidence.json"
 echo "record: $evidence/evidence.json ($result at ${revision:0:12}$([[ $dirty == true ]] && echo ', working tree not clean'))"
 if ((overall != 0)); then
 	echo "to replay a randomized failure: scripts/reason-review-hardening.sh --seed <seed from the log> --fuzz-time 1s --race-count 1" >&2
