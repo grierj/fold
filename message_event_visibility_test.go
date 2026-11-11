@@ -550,26 +550,34 @@ func prepareReminder(t *testing.T, f composeFixture, going []*models.User, rowUs
 	return m.ID, out
 }
 
-// reminderTighteners make the date private after its reminder was prepared:
-// the whole event, and then one date alone, each renamed so a reminder that
-// borrowed the live title would show it.
-var reminderTighteners = []struct {
+// reminderTightener narrows the date to a visibility after its reminder was
+// prepared, and renames it so a reminder that borrowed the live title would
+// show it.
+type reminderTightener struct {
 	name  string
 	apply func(t *testing.T, f composeFixture)
 	title string
-}{
-	{"the event made private", func(t *testing.T, f composeFixture) {
-		if err := f.app.DB.Model(&models.Event{}).Where("id = ?", f.groupEvent.ID).
-			Updates(map[string]any{"title": "Renamed night", "visibility": models.VisibilityPrivate}).Error; err != nil {
-			t.Fatal(err)
-		}
-	}, "Renamed night"},
-	{"one date made private", func(t *testing.T, f composeFixture) {
-		if err := f.app.DB.Model(&models.EventOccurrence{}).Where("id = ?", f.groupOcc.ID).
-			Updates(map[string]any{"title_override": "Special night", "visibility_override": models.VisibilityPrivate}).Error; err != nil {
-			t.Fatal(err)
-		}
-	}, "Special night"},
+}
+
+// reminderTighteners narrow the whole event, and then one date alone, to
+// visibility. Private closes a date to a signed-out visitor only: every
+// signed-in person, a former member included, still sees it. Only invite-only
+// shuts out a person who is not in the group (policy.visibleTo).
+func reminderTighteners(visibility string) []reminderTightener {
+	return []reminderTightener{
+		{"the event made " + visibility, func(t *testing.T, f composeFixture) {
+			if err := f.app.DB.Model(&models.Event{}).Where("id = ?", f.groupEvent.ID).
+				Updates(map[string]any{"title": "Renamed night", "visibility": visibility}).Error; err != nil {
+				t.Fatal(err)
+			}
+		}, "Renamed night"},
+		{"one date made " + visibility, func(t *testing.T, f composeFixture) {
+			if err := f.app.DB.Model(&models.EventOccurrence{}).Where("id = ?", f.groupOcc.ID).
+				Updates(map[string]any{"title_override": "Special night", "visibility_override": visibility}).Error; err != nil {
+				t.Fatal(err)
+			}
+		}, "Special night"},
+	}
 }
 
 func leaveGroup(t *testing.T, f composeFixture, u *models.User) {
@@ -611,35 +619,51 @@ func requireReminderSeen(t *testing.T, s *deliverySender, label, addr, title str
 }
 
 // A reminder's text carries the date's place, so someone who can no longer
-// see the date (a guest once it is no longer public, a former member of its
-// group) is sent no reminder at all, not one with its fields blanked, while a
-// member of the group beside them still gets the live title and the place
-// (C5, M1.13).
+// see the date is sent no reminder at all, not one with its fields blanked,
+// while a member of the group beside them still gets the live title and the
+// place (C5, M1.13). Who loses the date follows the visibility: private shuts
+// out only a guest, and a former member, still signed in, is the control that
+// keeps getting it; invite-only shuts out the former member too.
 func TestReminderEmailSkipsWhoCanNoLongerSeeTheDate(t *testing.T) {
-	for _, tc := range reminderTighteners {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newComposeFixture(t)
-			f.admin.holdNotices, f.leader.holdNotices = true, true
-			guest := newTestUser(t, f.app, "reminder-guest", "password1234", models.RoleMember)
-			if err := f.app.DB.Model(guest).Update("status", models.UserGuest).Error; err != nil {
-				t.Fatal(err)
-			}
-			former := newTestUser(t, f.app, "reminder-former", "password1234", models.RoleMember)
-			addMember(t, f.app, former, f.group, models.MembershipMember)
-			id, rows := prepareReminder(t, f, []*models.User{guest, former, f.teen}, guest, former, f.teen)
-			tc.apply(t, f)
-			leaveGroup(t, f, former)
-			s := &deliverySender{}
-			if err := deliverRows(f.app, s, id, []uint{rows[guest.ID].ID, rows[former.ID].ID, rows[f.teen.ID].ID}); err != nil {
-				t.Fatal(err)
-			}
-			requireSkippedCantSee(t, f, s, "a guest", rows[guest.ID])
-			requireSkippedCantSee(t, f, s, "a former member", rows[former.ID])
-			requireReminderSeen(t, s, "a member of the group", rows[f.teen.ID].Address, tc.title)
-			if s.count() != 1 {
-				t.Errorf("%d emails went out, want the member's alone", s.count())
-			}
-		})
+	for _, vis := range []struct {
+		name          string
+		visibility    string
+		formerStaysIn bool
+	}{
+		{"private", models.VisibilityPrivate, true},
+		{"invite only", models.VisibilityInviteOnly, false},
+	} {
+		for _, tc := range reminderTighteners(vis.visibility) {
+			t.Run(vis.name+"/"+tc.name, func(t *testing.T) {
+				f := newComposeFixture(t)
+				f.admin.holdNotices, f.leader.holdNotices = true, true
+				guest := newTestUser(t, f.app, "reminder-guest", "password1234", models.RoleMember)
+				if err := f.app.DB.Model(guest).Update("status", models.UserGuest).Error; err != nil {
+					t.Fatal(err)
+				}
+				former := newTestUser(t, f.app, "reminder-former", "password1234", models.RoleMember)
+				addMember(t, f.app, former, f.group, models.MembershipMember)
+				id, rows := prepareReminder(t, f, []*models.User{guest, former, f.teen}, guest, former, f.teen)
+				tc.apply(t, f)
+				leaveGroup(t, f, former)
+				s := &deliverySender{}
+				if err := deliverRows(f.app, s, id, []uint{rows[guest.ID].ID, rows[former.ID].ID, rows[f.teen.ID].ID}); err != nil {
+					t.Fatal(err)
+				}
+				requireSkippedCantSee(t, f, s, "a guest", rows[guest.ID])
+				want := 1
+				if vis.formerStaysIn {
+					want++
+					requireReminderSeen(t, s, "a former member who is still signed in", rows[former.ID].Address, tc.title)
+				} else {
+					requireSkippedCantSee(t, f, s, "a former member", rows[former.ID])
+				}
+				requireReminderSeen(t, s, "a member of the group", rows[f.teen.ID].Address, tc.title)
+				if s.count() != want {
+					t.Errorf("%d emails went out, want %d", s.count(), want)
+				}
+			})
+		}
 	}
 }
 
@@ -647,7 +671,7 @@ func TestReminderEmailSkipsWhoCanNoLongerSeeTheDate(t *testing.T) {
 // was made private is rechecked at that send: the retry sends the person who
 // lost the date nothing.
 func TestReminderEmailRetryRechecksTheDate(t *testing.T) {
-	for _, tc := range reminderTighteners {
+	for _, tc := range reminderTighteners(models.VisibilityPrivate) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newComposeFixture(t)
 			f.admin.holdNotices, f.leader.holdNotices = true, true
@@ -678,17 +702,21 @@ func TestReminderEmailRetryRechecksTheDate(t *testing.T) {
 // A guardian copy of a reminder is the teen's own: it follows what the teen
 // may see of the date, not the guardian, so a copy to an administrator who
 // could still see everything is not sent once the teen lost the date, and a
-// copy to a guardian who could not is, while the teen still sees it.
+// copy to a guardian who could not is, while the teen still sees it. A teen
+// who left but is still signed in keeps a private date, so both are sent.
 func TestReminderGuardianCopyFollowsTheTeensDate(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		guardianRole string
+		visibility   string
 		teenLeaves   bool
+		sent         bool
 	}{
-		{"the teen can still see the date", models.RoleMember, false},
-		{"the teen lost the date", models.RoleAdmin, true},
+		{"the teen can still see the date", models.RoleMember, models.VisibilityInviteOnly, false, true},
+		{"the teen lost the date", models.RoleAdmin, models.VisibilityInviteOnly, true, false},
+		{"the teen left but the date is private", models.RoleAdmin, models.VisibilityPrivate, true, true},
 	} {
-		for _, tight := range reminderTighteners {
+		for _, tight := range reminderTighteners(tc.visibility) {
 			t.Run(tc.name+"/"+tight.name, func(t *testing.T) {
 				f := newComposeFixture(t)
 				f.admin.holdNotices, f.leader.holdNotices = true, true
@@ -712,7 +740,7 @@ func TestReminderGuardianCopyFollowsTheTeensDate(t *testing.T) {
 				if err := deliverRows(f.app, s, id, []uint{rows[f.teen.ID].ID, copyRow.ID}); err != nil {
 					t.Fatal(err)
 				}
-				if tc.teenLeaves {
+				if !tc.sent {
 					requireSkippedCantSee(t, f, s, "the teen", rows[f.teen.ID])
 					requireSkippedCantSee(t, f, s, "the guardian's copy", copyRow)
 					if s.count() != 0 {
