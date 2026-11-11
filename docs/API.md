@@ -1491,7 +1491,6 @@ All routes require ordinary authentication; another user's row returns 404.
 GET    /api/v1/notifications?filter=all|unread|waiting|archived&before=<cursor>&limit=20
        → 200 {waiting, waitingTotal, notifications, next}
 GET    /api/v1/notifications/badge → 200 {unread, waiting} | 304 (ETag)
-POST   /api/v1/notifications/seen {ids: number[]} → 200 {} (at most 100)
 POST   /api/v1/notifications/read-all → 200 {}
 POST   /api/v1/notifications/archive-read → 200 {}
 POST   /api/v1/notifications/:id/read → 200 {notification}
@@ -2264,7 +2263,7 @@ mail runs only after commit.
 
 Occurrence requests are enabled on the same authenticated `/add-requests`
 routes as group asks. M1.11 was accepted and merged in #122; historical evidence
-is in [M1.11-VERIFICATION.md](plan/M1.11-VERIFICATION.md).
+is in [M1.11-VERIFICATION.md](plan/provenance/M1.11-VERIFICATION.md).
 
 `POST /add-requests` takes an actor-bound `selectionId`, `contextType` (`group`
 or `event`), `contextId`, optional `reason` (1000 characters). Group accepts
@@ -2491,7 +2490,7 @@ mutations/sweeps own their actual audit entries. DEC-33 hash chaining, write-onc
 offsite storage and retention hardening remain deferred.
 
 Verification evidence for the broader M1.11 milestone is tracked in
-[M1.11-VERIFICATION.md](plan/M1.11-VERIFICATION.md).
+[M1.11-VERIFICATION.md](plan/provenance/M1.11-VERIFICATION.md).
 
 ### Per-date visibility (M1.13)
 
@@ -2559,8 +2558,9 @@ therefore alter feed bodies/ETags as well as API output.
 
 Implemented consumers: group/upcoming/open-event lists, event/date details,
 calendar, public/group/personal feeds, account/household RSVP, guest submission
-and redemption, manager-add eligibility and waitlist promotion. Dedicated event
-search, reminder scheduling and room-suggestion infrastructure do not exist at
-this base. Their future consumers must resolve `policy.EffectiveVisibility`
-per date and apply the same ordinary policy separately from exact-date grants;
-no reminder/room/search integration pass is claimed by M1.13's current tests.
+and redemption, manager-add eligibility, waitlist promotion, email and push
+reminders (each reader is checked against the date, `reminders.go`) and room
+suggestions (each usage counts by its date's effective visibility,
+`internal/rooms/suggest.go`). There is no dedicated event search yet. Any new
+consumer resolves `policy.EffectiveVisibility` per date and applies the ordinary
+policy separately from exact-date grants.

@@ -1,10 +1,12 @@
 # Notifications: consolidated UX reference
 
+> Line references like `PLAN.md:NNN` point to PLAN.md at commit `a0c31a41`, before the plan was split into `docs/plan/design/`, `milestones/` and `decisions.md` (Nov 10, 2026). Section numbers still resolve through the index in `docs/plan/PLAN.md`.
+
 Reconciled 2026-10-25. The October 10 vendor research led to DEC-42–DEC-45:
 Fold builds notifications in PostgreSQL, with no notification vendor or new
 service. Knock is a UX reference only. This document retains the useful design
 rules, not the rejected schema/API sketches or old rose/Tailwind palette.
-[PLAN 5.12](../PLAN.md#512-notifications-dec-42-dec-43) owns product policy;
+[PLAN 5.12](../design/05-architecture.md#512-notifications-dec-42-dec-43) owns product policy;
 [API.md](../../API.md#notifications) describes the installed endpoints.
 
 ## Delivery status

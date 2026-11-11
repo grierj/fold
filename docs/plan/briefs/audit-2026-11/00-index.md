@@ -10,12 +10,11 @@ implementer notes the drift in the PR.
 
 ## For the implementing agent
 
-1. Claim the milestone in `STATUS.md` first (its own commit or the slice PR).
+1. Check the milestone's row in `STATUS.md` and its open issues; update the row in the slice PR.
 2. Work one slice per PR, in the brief's slice order. Follow the merge rules
    in `AGENTS.md` (green `test`/`web`/`provision`, four-concern review by a
    separate agent, hand-checks to `docs/FIRST-CHURCH-CHECKS.md`).
-3. Sanity before every push: `go build ./...`, `go vet ./...`,
-   `make lint-go`, `(cd web && npx tsc --noEmit)`, `(cd web && npx knip)`.
+3. Sanity before every push: the checks under "Before every push" in `AGENTS.md`.
    Then the brief's own tests (`make test`, `cd web && npm test`,
    `make e2e` where named).
 4. Every brief ends with open questions that carry a recommended default.

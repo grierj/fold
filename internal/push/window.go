@@ -68,9 +68,9 @@ func afterGap(t time.Time, hour int) time.Time {
 // LastAllowed is the reminder rule (PLAN 7.7, written once there): t
 // itself when it is inside w, else the last allowed minute before it (one
 // minute before the window closed, for example 7:59 PM the night before a
-// 7:00 AM reminder) if that is no more than within earlier; ok is false
-// when it would be, and the reminder is skipped. The 2-hour push reminder
-// (M3.13d3) and, through M3.8, SMS reminders use it.
+// 7:00 AM reminder) when that is at most `within` earlier than t. When it
+// would be further back, ok is false and the reminder is skipped. The
+// 2-hour push reminder (M3.13d3) and, through M3.8, SMS reminders use it.
 func (w Window) LastAllowed(t time.Time, loc *time.Location, within time.Duration) (at time.Time, ok bool) {
 	if inside, _ := w.Check(t, loc); inside {
 		return t, true

@@ -1,5 +1,7 @@
 # R9 — Squash migrations into one baseline (pre-live window)
 
+> Line references like `PLAN.md:NNN` point to PLAN.md at commit `a0c31a41`, before the plan was split into `docs/plan/design/`, `milestones/` and `decisions.md` (Nov 10, 2026). Section numbers still resolve through the index in `docs/plan/PLAN.md`.
+
 | Field | Value |
 |---|---|
 | Audit item | R9 [CHANGE], `docs/AUDIT-2026-11-01.md:151` |
