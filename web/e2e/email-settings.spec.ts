@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Locator, type Page } from "@playwright/test";
 import { apiAs, email, nextFrames, PASSWORD, signIn } from "./helpers";
 // @ts-expect-error plain JS module shared with .cursor/skills/verify-ui
 import { measure } from "./ui-measure.mjs";
@@ -23,7 +23,38 @@ async function settingsPath(request: APIRequestContext, login: string) {
 // Signed links aren't in ui-pages.ts: each test needs its own real email.
 // Keep their accessibility, layout and screenshots beside the flow that
 // creates the link, using the same checks as the shared UI coverage.
-async function checkUI(page: Page, state: string, options: { emailPreview?: boolean } = {}) {
+//
+// A state with `views` is shown in viewport captures instead of one full-page
+// shot: a full-page capture paints the sticky header and the fixed tab bar
+// where they sat in the viewport, on top of whatever is below (#289).
+type View = { name: string; target: Locator; block: "center" | "start"; also?: Locator[] };
+
+// Each element must sit between the sticky header and the tab bar, and be what
+// is on top at its center, so a capture cannot hide it behind either bar.
+async function expectClearOfBars(page: Page, state: string, width: number, view: View) {
+  const bars = await page.evaluate(() => {
+    const header = document.querySelector("header");
+    const tabs = document.querySelector('nav[aria-label="Tabs"]');
+    const tabsTop = tabs ? tabs.getBoundingClientRect() : null;
+    return {
+      headerBottom: header ? header.getBoundingClientRect().bottom : 0,
+      tabsTop: tabsTop && tabsTop.height > 0 ? tabsTop.top : null,
+    };
+  });
+  for (const el of [view.target, ...(view.also ?? [])]) {
+    const rect = await el.evaluate((node) => {
+      const r = node.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return { top: r.top, bottom: r.bottom, onTop: !!hit && node.contains(hit) };
+    });
+    const what = `${state} ${view.name} at ${width}px`;
+    expect.soft(rect.top, `${what}: under the sticky header`).toBeGreaterThanOrEqual(bars.headerBottom - 1);
+    if (bars.tabsTop !== null) expect.soft(rect.bottom, `${what}: under the tab bar`).toBeLessThanOrEqual(bars.tabsTop + 1);
+    expect.soft(rect.onTop, `${what}: something is painted over it`).toBe(true);
+  }
+}
+
+async function checkUI(page: Page, state: string, options: { emailPreview?: boolean; views?: View[] } = {}) {
   for (const width of [390, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     await nextFrames(page);
@@ -36,7 +67,9 @@ async function checkUI(page: Page, state: string, options: { emailPreview?: bool
       await expect(preview).toHaveAttribute("sandbox", "allow-popups allow-popups-to-escape-sandbox");
       // axe.runPartial hangs inside this deliberately script-free sandbox.
       // Scan the composer and its error, leaving only the email document out.
-      // Keep the preview present for layout measurements and screenshots.
+      // Keep the preview present for layout measurements; its screenshots are
+      // viewport captures, because a full-page one paints the sticky header and
+      // the fixed tab bar over the toolbar and the preview (#289).
       wcagScan.exclude(emailPreviewSelector);
       headingScan.exclude(emailPreviewSelector);
     }
@@ -57,7 +90,18 @@ async function checkUI(page: Page, state: string, options: { emailPreview?: bool
     expect.soft(layout.clipped, `${state} at ${width}px: clipped choices`).toEqual([]);
     expect.soft(layout.under24, `${state} at ${width}px: targets under 24px`).toEqual([]);
     expect.soft(layout.under44.filter((t) => /^input\[(radio|checkbox)\]$/.test(t.el)), `${state} at ${width}px: rows under 44px`).toEqual([]);
-    await page.screenshot({ path: test.info().outputPath(`${state}-${width}.png`), fullPage: true, animations: "disabled" });
+    if (!options.views) {
+      await page.screenshot({ path: test.info().outputPath(`${state}-${width}.png`), fullPage: true, animations: "disabled" });
+      continue;
+    }
+    for (const view of options.views) {
+      await view.target.evaluate((e, block) => e.scrollIntoView({ block }), view.block);
+      await nextFrames(page);
+      await expectClearOfBars(page, state, width, view);
+      await page.screenshot({ path: test.info().outputPath(`${state}-${view.name}-${width}.png`), fullPage: false, animations: "disabled" });
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await nextFrames(page);
+    }
   }
 }
 
@@ -227,7 +271,19 @@ test("a moved-address link explains turn-off-only access, refuses turn-on and st
   await page.getByRole("button", { name: "Preview", exact: true }).click();
   await expect(page).toHaveURL(/\/messages\/\d+$/);
   await page.getByRole("button", { name: "Send a test to me" }).click();
-  await expect(page.getByRole("alert").filter({ hasText: "This kind of email is turned off in your notification settings" })).toHaveText("This kind of email is turned off in your notification settings, so we didn't send the test. Turn it on in Me → Notifications, then try again.");
+  const refusal = page.getByRole("alert").filter({ hasText: "This kind of email is turned off in your notification settings" });
+  await expect(refusal).toHaveText("This kind of email is turned off in your notification settings, so we didn't send the test. Turn it on in Me → Notifications, then try again.");
   await expect(page.frameLocator(emailPreviewSelector).getByText("A test message for this group.", { exact: true })).toBeVisible();
-  await checkUI(page, "composer-email-turned-off", { emailPreview: true });
+  await checkUI(page, "composer-email-turned-off", {
+    emailPreview: true,
+    views: [
+      { name: "send-test", target: refusal, block: "center", also: [page.getByRole("button", { name: "Send a test to me" })] },
+      {
+        name: "preview",
+        target: page.getByRole("heading", { name: "Preview", level: 2 }),
+        block: "start",
+        also: [page.locator("p").filter({ hasText: /^Subject:/ }), page.locator(emailPreviewSelector)],
+      },
+    ],
+  });
 });

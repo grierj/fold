@@ -1,5 +1,5 @@
 import { expect, type APIRequestContext, type Locator, type Page, type Request } from "@playwright/test";
-import { apiAs, email, fromMore } from "./helpers";
+import { apiAs, email, fromMore, LONG_GROUP_NAME } from "./helpers";
 
 // The pages the UI checks cover (a11y.spec.ts, layout.spec.ts). Each has the
 // person who opens it and a handle that shows the page has loaded.
@@ -9,6 +9,7 @@ export async function uiPages(request: APIRequestContext): Promise<UIPage[]> {
   const admin = await apiAs(request, "grier");
   const { groups } = (await admin("GET", "/groups")) as { groups: { id: number; name: string }[] };
   const room = groups.find((g) => g.name === "Room 201 class")!;
+  const long = groups.find((g) => g.name === LONG_GROUP_NAME)!;
   const householdEvents = await admin("GET", `/groups/${room.id}/events`);
   const householdEvent = (householdEvents.events as { id: number; title: string }[]).find((e) => e.title === "Household check night")!;
   const lee = await apiAs(request, "lee");
@@ -59,6 +60,12 @@ export async function uiPages(request: APIRequestContext): Promise<UIPage[]> {
     // The editor loads with import(); the live count is part of the page.
     { id: "compose", who: "lee", path: `/messages/new?group=${room.id}`, ready: (p) => p.getByRole("textbox", { name: "Message" }),
       prepare: async (p) => { await expect(p.getByRole("status").filter({ hasText: /^\d+ (people|person);/ })).toBeVisible(); } },
+    // The Send to select cuts a long name in the middle and shows the whole of it below (#288).
+    { id: "compose-long-name", who: "lee", path: `/messages/new?group=${long.id}`, ready: (p) => p.getByRole("textbox", { name: "Message" }),
+      prepare: async (p) => {
+        await expect(p.getByRole("status").filter({ hasText: /^\d+ (people|person);/ })).toBeVisible();
+        await expect(p.getByText(LONG_GROUP_NAME, { exact: true })).toBeVisible();
+      } },
     { id: "message-read", who: "lee", path: `/messages/${note!.id}/read`, ready: heading("UI check announcement"),
       prepare: async (p) => { await expect(p.getByText("Room 104")).toBeVisible(); } },
     { id: "admin", who: "grier", path: "/admin", ready: heading("Admin") },
