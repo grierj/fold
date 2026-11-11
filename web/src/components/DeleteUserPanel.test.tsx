@@ -359,6 +359,9 @@ describe("DeleteUserPanel uncertain answers settle the same id", () => {
     ["a rejected fetch", () => new TypeError("Failed to fetch"), CHECKING],
     ["an aborted fetch", () => new DOMException("aborted", "AbortError"), CHECKING],
     ["a non-JSON 5xx", () => new ApiError(502, "request failed (502)", {}), CHECKING],
+    // The server could not read the account (a failed lookup): it says nothing
+    // about whether the account exists, so the panel never says it is gone.
+    ["a generic server_error from a failed lookup", () => coded(500, "server_error"), CHECKING],
     ["a status no table row names", () => coded(418, "teapot"), CHECKING],
   ];
 
@@ -370,6 +373,7 @@ describe("DeleteUserPanel uncertain answers settle the same id", () => {
     expect(await screen.findByText(lead)).toBeInTheDocument();
     expect(AdminUsers.settleAttempt).toHaveBeenCalledWith("attempt-1", 9);
     expect(document.body).not.toHaveTextContent(NOT_DELETED);
+    expect(document.body).not.toHaveTextContent("This account no longer exists.");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(deleteButton()).toBeDisabled();
     expect(screen.queryByRole("button", { name: QC1_WEB.labels.checkAgain })).not.toBeInTheDocument();

@@ -144,21 +144,27 @@ func emailTaken(err error) bool {
 	return pgConstraint(err, pgUniqueViolation, "uni_users_email")
 }
 
-// loadTargetUser reads the account the :id route parameter names; nil when it
-// is absent (or cannot be read). It also returns the parsed id.
-func (a *App) loadTargetUser(c *gin.Context) (*models.User, int) {
+// loadTargetUser reads the account the :id route parameter names. Only
+// gorm.ErrRecordNotFound means the account is absent; any other error is a
+// failed read, which says nothing about whether the account exists. It also
+// returns the parsed id.
+func (a *App) loadTargetUser(c *gin.Context) (*models.User, int, error) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	var u models.User
 	if err := a.DB.First(&u, id).Error; err != nil {
-		return nil, id
+		return nil, id, err
 	}
-	return &u, id
+	return &u, id, nil
 }
 
 func (a *App) adminTargetUser(c *gin.Context) (*models.User, bool) {
-	u, _ := a.loadTargetUser(c)
-	if u == nil {
-		jsonError(c, http.StatusNotFound, "user not found")
+	u, _, err := a.loadTargetUser(c)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			jsonError(c, http.StatusNotFound, "user not found")
+		} else {
+			fail(c, err)
+		}
 		return nil, false
 	}
 	return u, true

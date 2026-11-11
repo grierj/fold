@@ -325,6 +325,36 @@ func TestAdminResetPassword(t *testing.T) {
 	}
 }
 
+// Only a missing row is "user not found"; a failed read of the target is the
+// generic server error and changes nothing.
+func TestAdminTargetLookupFailureIsNotAbsence(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", "admin")
+	target := newTestUser(t, app, "grier", "password1234", "member")
+	admin := loginAPI(t, app, "admin", "password1234")
+	path := "/api/v1/admin/users/" + itoa(target.ID) + "/password"
+	body := map[string]string{"password": "brand-new-password"}
+
+	restore := failTargetLookup(t, app.DB, target.ID)
+	w := admin.do("POST", path, body, true)
+	restore()
+	if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), `"code":"server_error"`) {
+		t.Fatalf("reset with a failing lookup: %d %s, want 500 server_error", w.Code, w.Body.String())
+	}
+	for _, leak := range []string{"injected", "not found"} {
+		if strings.Contains(w.Body.String(), leak) {
+			t.Errorf("the answer carries %q: %s", leak, w.Body.String())
+		}
+	}
+	if !loginAPIExpectFail(t, app, "grier", "password1234") {
+		t.Fatal("the failed lookup changed the password")
+	}
+
+	if w := admin.do("POST", "/api/v1/admin/users/987654/password", body, true); w.Code != http.StatusNotFound {
+		t.Fatalf("reset of a missing account: %d %s, want 404", w.Code, w.Body.String())
+	}
+}
+
 func TestAdminGroupMembers(t *testing.T) {
 	app := testApp(t)
 	newTestUser(t, app, "admin", "password1234", "admin")

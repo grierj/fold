@@ -1,7 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { mkdirSync } from "node:fs";
 import { expect, test, type APIRequestContext, type Locator, type Page, type Request, type Route } from "@playwright/test";
-import { apiAs, email, fromMore, keepAllReview, nextFrames, PASSWORD, signInTo } from "./helpers";
+import { apiAs, deleteAccountKeepingReasons, email, fromMore, keepAllReview, nextFrames, PASSWORD, signInTo } from "./helpers";
 // @ts-expect-error plain JS module shared with verify-ui
 import { measure } from "./ui-measure.mjs";
 
@@ -893,6 +893,28 @@ test.describe("reviewing contact-request reasons before a delete (T07B-2c)", () 
     expect(res.status()).toBe(409);
     expect(((await res.json()) as { code: string }).code).toBe("reason_review_outdated");
     expect(await reasonOf(request, askers[0].requestId)).toBe(askers[0].text);
+  });
+
+  // The helper sends the review the way the panel does: none for an account
+  // with no reasons (the server refuses an empty set-v1 as invalid), every item
+  // kept for one with reasons.
+  test("the delete helper deletes an account with no reasons and sends no review", async ({ request }) => {
+    const suffix = Date.now().toString(36);
+    const admin = await apiAs(request, adminName);
+    const subject = await makePerson(admin, `rv-none-${suffix}`, `Nora None ${suffix}`);
+    const done = await deleteAccountKeepingReasons(admin, subject.id);
+    expect(numberAt(done, "erasure", "reasonsKept")).toBe(0);
+    expect(numberAt(done, "erasure", "reasonsRemoved")).toBe(0);
+  });
+
+  test("the delete helper keeps every reason of an account that has them", async ({ request }) => {
+    const suffix = Date.now().toString(36);
+    const { subject, askers } = await makeReasoned(request, suffix, 2);
+    const admin = await apiAs(request, adminName);
+    const done = await deleteAccountKeepingReasons(admin, subject.id);
+    expect(numberAt(done, "erasure", "reasonsKept")).toBe(askers.length);
+    expect(numberAt(done, "erasure", "reasonsRemoved")).toBe(0);
+    for (const asker of askers) expect(await reasonOf(request, asker.requestId)).toBe(asker.text);
   });
 
   test("two deleted askers are told apart by reference, never named", async ({ page, request }) => {

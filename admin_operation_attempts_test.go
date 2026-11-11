@@ -1876,3 +1876,108 @@ func TestSettleReconcilesOnlyTheSubject(t *testing.T) {
 		t.Errorf("settle's log shows %d unscoped request scans", unscoped)
 	}
 }
+
+// failTargetLookup makes the read of the account with this id fail, whoever
+// asks, until the returned restore runs. The session's own user read names a
+// different id, so only the route's target lookup is hit.
+func failTargetLookup(t *testing.T, db *gorm.DB, id uint) (restore func()) {
+	t.Helper()
+	if id <= 1 {
+		t.Fatalf("target id %d collides with a LIMIT variable", id)
+	}
+	name := fmt.Sprintf("target:lookup:fail:%d", id)
+	if err := db.Callback().Query().After("gorm:query").Register(name, func(tx *gorm.DB) {
+		if tx.Statement.Table != "users" {
+			return
+		}
+		for _, v := range tx.Statement.Vars {
+			if fmt.Sprint(v) == itoa(id) {
+				tx.AddError(errors.New("injected target lookup failure"))
+				return
+			}
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var once atomic.Bool
+	restore = func() {
+		if once.CompareAndSwap(false, true) {
+			_ = db.Callback().Query().Remove(name)
+		}
+	}
+	t.Cleanup(restore)
+	return restore
+}
+
+// A failed read of the target says nothing about the account: it answers the
+// generic server error, deletes nothing, and neither claims, closes nor
+// expires the attempt id, so the same id still works once the read does.
+func TestDeletionTargetLookupFailureIsAServerError(t *testing.T) {
+	for _, withID := range []bool{false, true} {
+		name := "without an attempt id"
+		if withID {
+			name = "with an attempt id"
+		}
+		t.Run(name, func(t *testing.T) {
+			s := newAttemptScene(t)
+			a := s.target("a")
+			id := ""
+			if withID {
+				id = s.mint(a.ID)
+			}
+			before := s.counter()
+			restore := failTargetLookup(t, s.app.DB, a.ID)
+			w := s.del(id, a.ID)
+			restore()
+			if w.Code != http.StatusInternalServerError || codeOf(t, w) != "server_error" {
+				t.Fatalf("delete with a failing lookup: %d %s, want 500 server_error", w.Code, w.Body.String())
+			}
+			for _, leak := range []string{"injected", "lookup", "not found", "attempt_closed", "attempt_expired"} {
+				if strings.Contains(w.Body.String(), leak) {
+					t.Errorf("the answer carries %q: %s", leak, w.Body.String())
+				}
+			}
+			if s.deleted(a.ID) {
+				t.Fatal("the account was deleted")
+			}
+			if s.counter() != before || s.receipts() != 0 {
+				t.Fatalf("a failed lookup took a ticket or left a receipt: counter %d -> %d, receipts %d", before, s.counter(), s.receipts())
+			}
+			if withID {
+				if s.state(id, a.ID) != attemptAbsent {
+					t.Fatal("a failed lookup must leave the id unclaimed")
+				}
+			}
+			if w := s.del(id, a.ID); w.Code != http.StatusOK {
+				t.Fatalf("the same id once the read works: %d %s, want 200", w.Code, w.Body.String())
+			}
+			if !s.deleted(a.ID) {
+				t.Fatal("the retry did not delete the account")
+			}
+		})
+	}
+}
+
+// Absence still keeps its answers: attempt_closed for an id the ledger holds,
+// attempt_expired for an id that does not open for this admin and account, and
+// a plain 404 for an unclaimed id of its own tuple.
+func TestDeletionMissingTargetKeepsItsAnswers(t *testing.T) {
+	s := newAttemptScene(t)
+	a := s.target("a")
+	used, unclaimed, foreign := s.mint(a.ID), s.mint(a.ID), s.mint(s.target("b").ID)
+	if w := s.del(used, a.ID); w.Code != http.StatusOK {
+		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
+	}
+	if w := s.del(used, a.ID); w.Code != http.StatusConflict || codeOf(t, w) != "attempt_closed" {
+		t.Fatalf("a used id on a gone account: %d %s, want 409 attempt_closed", w.Code, w.Body.String())
+	}
+	if w := s.del(foreign, a.ID); w.Code != http.StatusConflict || codeOf(t, w) != "attempt_expired" {
+		t.Fatalf("another account's id on a gone account: %d %s, want 409 attempt_expired", w.Code, w.Body.String())
+	}
+	if w := s.del(unclaimed, a.ID); w.Code != http.StatusNotFound {
+		t.Fatalf("an unclaimed id on a gone account: %d %s, want 404", w.Code, w.Body.String())
+	}
+	if s.state(unclaimed, a.ID) != attemptAbsent {
+		t.Fatal("the 404 must leave the id unclaimed")
+	}
+}
