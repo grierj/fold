@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +14,8 @@ import (
 	"fold/internal/policy"
 	"fold/internal/providers"
 	"fold/models"
+
+	"gorm.io/gorm"
 )
 
 // An announcement's event fields are filled when each email row or push goes
@@ -348,28 +351,208 @@ func TestGuardianCopyEventFieldsFollowTheTeensAccess(t *testing.T) {
 	checkDelivered(t, "the teen lost access", s.to(t, parent.Email), first, readWant{}, true, blankForbid(f)...)
 }
 
+// failReads makes every read of a table whose name starts with prefix fail
+// until the test ends, through the one handle app.DB shares with every
+// transaction and session: a lookup that fails inside the delivery's own
+// transaction, which a cancelled context on a copy of the handle cannot reach.
+func failReads(t *testing.T, db *gorm.DB, prefix string) {
+	t.Helper()
+	name := "test:fail-reads:" + prefix
+	fail := func(tx *gorm.DB) {
+		if strings.HasPrefix(tx.Statement.Table, prefix) {
+			_ = tx.AddError(errors.New("lookup failed"))
+		}
+	}
+	if err := db.Callback().Query().Before("gorm:query").Register(name, fail); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Callback().Row().Before("gorm:row").Register(name, fail); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = db.Callback().Query().Remove(name)
+		_ = db.Callback().Row().Remove(name)
+	})
+}
+
 // A failed lookup fails the delivery: nothing is sent and the row stays
-// queued for the retry, never read as "may not see" or "may see".
+// queued for the retry, never read as "may not see" or "may see". Each table
+// the field loader reads is failed in turn, for a one-date and a series
+// audience.
 func TestEmailLookupFailureFailsTheDelivery(t *testing.T) {
-	f := newReadVisFixture(t, models.VisibilityPublic)
-	f.register(t, f.reader, f.occs[0])
-	id, ids := seedSending(t, f.app, f.leaderU, f.occAudience(f.occs[0]), toRow(f.reader))
-	original := f.app.DB
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	f.app.DB = original.WithContext(ctx)
-	s := &deliverySender{}
-	err := deliverRows(f.app, s, id, ids)
-	f.app.DB = original
-	if err == nil {
-		t.Fatal("a failed lookup was not an error")
+	for _, tc := range []struct {
+		table  string
+		series bool
+	}{
+		{"event_occurrences", false},
+		{"events", false},
+		{"events", true},
+		{"registrations", false},
+		{"registrations", true},
+		{"memberships", false},
+		{"memberships", true},
+	} {
+		name := tc.table + "/one date"
+		if tc.series {
+			name = tc.table + "/series"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newReadVisFixture(t, models.VisibilityPublic)
+			addMember(t, f.app, f.reader, &f.group, models.MembershipMember)
+			f.register(t, f.reader, f.occs[0])
+			au := f.occAudience(f.occs[0])
+			if tc.series {
+				au = f.seriesAudience()
+			}
+			id, ids := seedSending(t, f.app, f.leaderU, au, toRow(f.reader))
+			failReads(t, f.app.DB, tc.table)
+			s := &deliverySender{}
+			if err := deliverRows(f.app, s, id, ids); err == nil {
+				t.Fatal("a failed lookup was not an error")
+			}
+			if s.count() != 0 {
+				t.Fatalf("%d emails went out after a failed lookup", s.count())
+			}
+			var row models.MessageRecipient
+			if err := f.app.DB.First(&row, ids[0]).Error; err != nil || row.Status != models.RecipientQueued {
+				t.Fatalf("the row after a failed lookup: %+v %v", row, err)
+			}
+		})
 	}
-	if s.count() != 0 {
-		t.Fatalf("%d emails went out after a failed lookup", s.count())
+}
+
+// A one-connection pool cannot serve the event fields from a second
+// connection while the claimed row's transaction holds the only one: the
+// fields are read through that transaction, so the email is sent. A deadline
+// stands in for the hang a regression would be.
+func TestEmailEventFieldsNeedOnlyTheClaimedConnection(t *testing.T) {
+	oneConnection := func(t *testing.T, app *App) {
+		t.Helper()
+		sqlDB, err := app.DB.DB()
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := sqlDB.Stats().MaxOpenConnections
+		sqlDB.SetMaxOpenConns(1)
+		t.Cleanup(func() { sqlDB.SetMaxOpenConns(before) })
 	}
-	var row models.MessageRecipient
-	if err := f.app.DB.First(&row, ids[0]).Error; err != nil || row.Status != models.RecipientQueued {
-		t.Fatalf("the row after a failed lookup: %+v %v", row, err)
+	deliver := func(t *testing.T, app *App, s *deliverySender, id uint, ids []uint) {
+		t.Helper()
+		done := make(chan error, 1)
+		go func() { done <- deliverRows(app, s, id, ids) }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(30 * time.Second):
+			t.Fatal("delivery is waiting for a second connection")
+		}
+	}
+	t.Run("a series the reader can see", func(t *testing.T) {
+		f := newReadVisFixture(t, models.VisibilityPublic)
+		f.register(t, f.reader, f.occs[0])
+		dateID, dateIDs := seedSending(t, f.app, f.leaderU, f.occAudience(f.occs[0]), toRow(f.reader))
+		seriesID, seriesIDs := seedSending(t, f.app, f.leaderU, f.seriesAudience(), toRow(f.reader))
+		oneConnection(t, f.app)
+		s := &deliverySender{}
+		first := firstName(f.reader.PublicName())
+		deliver(t, f.app, s, dateID, dateIDs)
+		checkDelivered(t, "a one-date audience", s.to(t, f.reader.Email), first, liveSeen(f, "Vis night"), false)
+		deliver(t, f.app, s, seriesID, seriesIDs)
+		checkDelivered(t, "a series audience", s.to(t, f.reader.Email), first, liveSeen(f, "Vis night"), false)
+	})
+	t.Run("an exact-date invitation to a hidden series", func(t *testing.T) {
+		f := newOccurrenceReadFixture(t)
+		date := f.dates[1]
+		dateID, dateIDs := seedSending(t, f.app, f.issuer, audienceJSON{Type: policy.AudienceOccurrence, OccurrenceID: date.ID}, toRow(f.recipient))
+		seriesID, seriesIDs := seedSending(t, f.app, f.issuer, audienceJSON{Type: policy.AudienceEventSeries, EventID: f.event.ID}, toRow(f.recipient))
+		oneConnection(t, f.app)
+		s := &deliverySender{}
+		deliver(t, f.app, s, dateID, dateIDs)
+		if got := s.to(t, f.recipient.Email); !strings.Contains(got.Subject, "Invited date title") {
+			t.Errorf("the invited date: %q", got.Subject)
+		}
+		deliver(t, f.app, s, seriesID, seriesIDs)
+		if got := s.to(t, f.recipient.Email); strings.Contains(got.Subject+got.Text+got.HTML, "Invited date title") {
+			t.Errorf("a series announcement borrowed the date's title: %q", got.Subject)
+		}
+	})
+}
+
+// A guest registrant is personalized as themselves but sees what a signed-out
+// visitor sees (C5): once the event, or the one date, is no longer public,
+// the reminder prepared while it was public goes out without the title, the
+// time or either page, however the date was renamed. A member of the group
+// beside them still sees it, so the same delivery tells the two apart.
+func TestGuestReminderEmailSeesOnlyWhatAVisitorSees(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(t *testing.T, f composeFixture)
+		title  string
+	}{
+		{"the event made private", func(t *testing.T, f composeFixture) {
+			if err := f.app.DB.Model(&models.Event{}).Where("id = ?", f.groupEvent.ID).
+				Updates(map[string]any{"title": "Renamed night", "visibility": models.VisibilityPrivate}).Error; err != nil {
+				t.Fatal(err)
+			}
+		}, "Renamed night"},
+		{"one date made private", func(t *testing.T, f composeFixture) {
+			if err := f.app.DB.Model(&models.EventOccurrence{}).Where("id = ?", f.groupOcc.ID).
+				Updates(map[string]any{"title_override": "Special night", "visibility_override": models.VisibilityPrivate}).Error; err != nil {
+				t.Fatal(err)
+			}
+		}, "Special night"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newComposeFixture(t)
+			f.admin.holdNotices, f.leader.holdNotices = true, true
+			guest := newTestUser(t, f.app, "reminder-guest", "password1234", models.RoleMember)
+			if err := f.app.DB.Model(guest).Update("status", models.UserGuest).Error; err != nil {
+				t.Fatal(err)
+			}
+			for _, u := range []*models.User{guest, f.teen} {
+				if err := f.app.DB.Create(&models.Registration{OccurrenceID: f.groupOcc.ID, UserID: &u.ID, Status: models.RegGoing}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			at := f.groupOcc.StartsAt.Add(-24 * time.Hour)
+			if err := f.app.sendReminder(context.Background(), reminderJob{OccurrenceID: f.groupOcc.ID, StartsAt: f.groupOcc.StartsAt.Unix(), Minutes: 1440}, at); err != nil {
+				t.Fatal(err)
+			}
+			var m models.Message
+			if err := f.app.DB.Where("category = ? AND occurrence_id = ?", models.MessageCategoryReminder, f.groupOcc.ID).First(&m).Error; err != nil {
+				t.Fatal(err)
+			}
+			var rows []models.MessageRecipient
+			if err := f.app.DB.Where("message_id = ? AND channel = ? AND user_id IN ?", m.ID, models.DeliveryEmail, []uint{guest.ID, f.teen.ID}).Order("id").Find(&rows).Error; err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != 2 || rows[0].Status != models.RecipientQueued || rows[1].Status != models.RecipientQueued {
+				t.Fatalf("the prepared reminder rows: %+v", rows)
+			}
+			var ev models.Event
+			if err := f.app.DB.First(&ev, f.groupEvent.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			when := formatWhen(f.groupOcc.StartsAt, eventZone(ev.TZID))
+			tc.change(t, f)
+			s := &deliverySender{}
+			if err := deliverRows(f.app, s, m.ID, []uint{rows[0].ID, rows[1].ID}); err != nil {
+				t.Fatal(err)
+			}
+			if got := s.to(t, f.teen.Email); !strings.Contains(got.Subject, tc.title) {
+				t.Errorf("a member of the group no longer sees the date: %q", got.Subject)
+			}
+			got := s.to(t, guest.Email)
+			for _, bad := range []string{tc.title, "Renamed night", "Special night", "Book night", when, f.app.emailLink("/events/" + itoa(ev.ID))} {
+				for part, text := range map[string]string{"subject": got.Subject, "text": got.Text, "html": got.HTML} {
+					if strings.Contains(text, bad) {
+						t.Errorf("%q reached the %s of a guest who may not see the date: %q", bad, part, text)
+					}
+				}
+			}
+		})
 	}
 }
 

@@ -542,7 +542,7 @@ func (a *App) deliverMessageBatchOnce(ctx context.Context, p messageBatchJob) er
 			if off.Off(row.UserID, row.Address, optOut) {
 				return markRecipient(tx, row.ID, models.RecipientSuppressed, skipOptedOutOf(messageCategory(&m)), "", "")
 			}
-			values, err := a.rowValues(row, readers, au, time.Now())
+			values, err := a.rowValues(tx, row, readers, au, time.Now())
 			if err != nil {
 				return err
 			}

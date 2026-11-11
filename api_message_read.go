@@ -87,7 +87,7 @@ func (a *App) apiReadMessage(c *gin.Context) {
 	// The event fields are filled per field, by what this reader may see of
 	// the event or date today. Nobody is exempt: the author, an admin and a
 	// reminder's manager get them only as far as they can see the event.
-	vals, err := a.readerEventValues(me, au, time.Now().UTC())
+	vals, err := a.readerEventValues(a.DB.WithContext(c.Request.Context()), me, au, time.Now().UTC())
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load the message")
 		return
@@ -117,11 +117,18 @@ func (a *App) apiReadMessage(c *gin.Context) {
 // for an email row or announcement push as it goes out
 // (message_event_visibility.go). It applies the event and date pages' own
 // rules to the reader and never authorizes the message (CanReadMessage does
-// that). Every read goes through
-// a.DB, like loadOccurrenceDate, so no transaction or snapshot is claimed: a
-// change committed while one response loads may or may not affect it, and the
-// next load rechecks. A failed read is returned, never treated as "not
-// visible".
+// that). Every read goes through db, the caller's one handle, and no
+// read opens another connection: an email row passes the transaction that
+// claimed it (a bounded pool must never need a second connection while that
+// one is held), a push or the read page a context-bound handle. No snapshot is
+// claimed and no authority lock is taken: a change committed while one
+// response loads may or may not affect it, and the next load rechecks. A
+// failed read is returned, never treated as "not visible".
+//
+// The reader's identity personalizes the message and finds their
+// registration; what they may see is decided for eventViewer(reader), so a
+// guest sees what a signed-out visitor sees and holds no exact-date
+// invitation.
 //
 // Access is decided per field:
 //   - the series is visible: today's values, as a send gives them;
@@ -135,31 +142,43 @@ func (a *App) apiReadMessage(c *gin.Context) {
 //   - a cancelled date: the series title and link for series viewers only.
 //
 // Otherwise the event fields stay unset and a link reads as its text.
-func (a *App) readerEventValues(reader *models.User, au audienceJSON, now time.Time) (map[string]string, error) {
+func (a *App) readerEventValues(db *gorm.DB, reader *models.User, au audienceJSON, now time.Time) (map[string]string, error) {
 	vals := map[string]string{content.FieldFirstName: firstName(reader.PublicName())}
 	switch au.Type {
 	case policy.AudienceOccurrence:
 		if au.OccurrenceID == 0 {
 			return vals, nil
 		}
-		return a.readerDateValues(reader, au, now, vals)
+		return a.readerDateValues(db, reader, au, now, vals)
 	case policy.AudienceEventSeries:
 		if au.EventID == 0 {
 			return vals, nil
 		}
-		return a.readerSeriesValues(reader, au, now, vals)
+		return a.readerSeriesValues(db, reader, au, now, vals)
 	}
 	return vals, nil
 }
 
-func (a *App) readerDateValues(reader *models.User, au audienceJSON, now time.Time, vals map[string]string) (map[string]string, error) {
+// eventViewer is who an event or date is authorized for when reader is the
+// recipient or reader: nil for a guest (AGENTS.md, C5: a guest is never loaded
+// as an actor), who sees only what a signed-out visitor sees. reminderReaders
+// decides the same way at preparation.
+func eventViewer(reader *models.User) *models.User {
+	if reader.Status == models.UserGuest {
+		return nil
+	}
+	return reader
+}
+
+func (a *App) readerDateValues(db *gorm.DB, reader *models.User, au audienceJSON, now time.Time, vals map[string]string) (map[string]string, error) {
+	viewer := eventViewer(reader)
 	var occ models.EventOccurrence
-	if err := a.DB.First(&occ, au.OccurrenceID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+	if err := db.First(&occ, au.OccurrenceID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return vals, nil // the date is gone: the fields stay unset
 	} else if err != nil {
 		return nil, err
 	}
-	vs, err := a.dateCandidates(reader, a.DB.Where("id = ?", occ.EventID))
+	vs, err := dateCandidatesIn(db, viewer, db.Where("id = ?", occ.EventID))
 	if err != nil {
 		return nil, err
 	}
@@ -167,20 +186,20 @@ func (a *App) readerDateValues(reader *models.User, au audienceJSON, now time.Ti
 	if occ.Status != models.OccurrenceScheduled {
 		// Neither the event page's dates nor the date page show a cancelled
 		// date: series viewers get the series alone, never the date's title.
-		if ev != nil && vs.canSeeSeries(reader, ev) {
+		if ev != nil && vs.canSeeSeries(viewer, ev) {
 			maps.Copy(vals, a.eventFields(messageEvent{ID: ev.ID, Title: ev.Title, TZID: ev.TZID}, nil))
 		}
 		return vals, nil
 	}
-	scoped, err := a.scopedOccurrenceReads(reader, a.DB.Where("id = ? AND status = ?", occ.ID, models.OccurrenceScheduled), now)
+	scoped, err := scopedOccurrenceReadsIn(db, viewer, db.Where("id = ? AND status = ?", occ.ID, models.OccurrenceScheduled), now)
 	if err != nil {
 		return nil, err
 	}
-	p, ok := a.projectDate(reader, vs, &occ, scoped[occ.ID])
+	p, ok := a.projectDate(viewer, vs, &occ, scoped[occ.ID])
 	if !ok {
 		return vals, nil
 	}
-	regs, err := audienceRegisteredDates(a.DB, occ.EventID, au, []uint{reader.ID}, now)
+	regs, err := audienceRegisteredDates(db, occ.EventID, au, []uint{reader.ID}, now)
 	if err != nil {
 		return nil, err
 	}
@@ -203,8 +222,9 @@ func (a *App) readerDateValues(reader *models.User, au audienceJSON, now time.Ti
 	return vals, nil
 }
 
-func (a *App) readerSeriesValues(reader *models.User, au audienceJSON, now time.Time, vals map[string]string) (map[string]string, error) {
-	vs, err := a.dateCandidates(reader, a.DB.Where("id = ?", au.EventID))
+func (a *App) readerSeriesValues(db *gorm.DB, reader *models.User, au audienceJSON, now time.Time, vals map[string]string) (map[string]string, error) {
+	viewer := eventViewer(reader)
+	vs, err := dateCandidatesIn(db, viewer, db.Where("id = ?", au.EventID))
 	if err != nil {
 		return nil, err
 	}
@@ -212,10 +232,10 @@ func (a *App) readerSeriesValues(reader *models.User, au audienceJSON, now time.
 	if ev == nil {
 		return vals, nil // deleted event or group: no candidate and no live invitation
 	}
-	if vs.canSeeSeries(reader, ev) {
+	if vs.canSeeSeries(viewer, ev) {
 		f := newMessageEvent(*ev, au, nil)
 		maps.Copy(vals, a.eventFields(f, nil))
-		regs, err := audienceRegisteredDates(a.DB, ev.ID, au, []uint{reader.ID}, now)
+		regs, err := audienceRegisteredDates(db, ev.ID, au, []uint{reader.ID}, now)
 		if err != nil {
 			return nil, err
 		}
@@ -225,9 +245,9 @@ func (a *App) readerSeriesValues(reader *models.User, au audienceJSON, now time.
 		}
 		// The next date supplies a time and a page only if the reader may see
 		// that date, ordinarily or by invitation.
-		seen := vs.canSeeDate(reader, ev, &models.EventOccurrence{EventID: ev.ID, VisibilityOverride: d.VisibilityOverride})
+		seen := vs.canSeeDate(viewer, ev, &models.EventOccurrence{EventID: ev.ID, VisibilityOverride: d.VisibilityOverride})
 		if !seen {
-			scoped, err := a.scopedOccurrenceReads(reader, a.DB.Where("id = ? AND status = ?", d.OccurrenceID, models.OccurrenceScheduled), now)
+			scoped, err := scopedOccurrenceReadsIn(db, viewer, db.Where("id = ? AND status = ?", d.OccurrenceID, models.OccurrenceScheduled), now)
 			if err != nil {
 				return nil, err
 			}
@@ -249,13 +269,13 @@ func (a *App) readerSeriesValues(reader *models.User, au audienceJSON, now time.
 	// included, never supplies the series title.
 	open := []string{}
 	for _, v := range []string{policy.Public, policy.Private, policy.InviteOnly} {
-		if vs.canSeeDate(reader, ev, &models.EventOccurrence{EventID: ev.ID, VisibilityOverride: &v}) {
+		if vs.canSeeDate(viewer, ev, &models.EventOccurrence{EventID: ev.ID, VisibilityOverride: &v}) {
 			open = append(open, v)
 		}
 	}
 	if len(open) > 0 {
 		var hit []models.EventOccurrence
-		if err := a.DB.Select("id").
+		if err := db.Select("id").
 			Where("event_id = ? AND status = ? AND title_override IS NULL AND visibility_override IN ?", ev.ID, models.OccurrenceScheduled, open).
 			Limit(1).Find(&hit).Error; err != nil {
 			return nil, err
@@ -268,7 +288,7 @@ func (a *App) readerSeriesValues(reader *models.User, au audienceJSON, now time.
 	// The existence probe pages this reader's live grant candidates for
 	// untitled scheduled dates and validates them with the date page's grant
 	// check, so an invalid earlier grant never hides a valid later one.
-	hit, err := a.hasScopedUntitledRead(reader, ev.ID, now)
+	hit, err := hasScopedUntitledRead(db, viewer, ev.ID, now)
 	if err != nil {
 		return nil, err
 	}

@@ -24,7 +24,7 @@ func TestEventMergeValuesAgreeAcrossSendPreviewAndReminder(t *testing.T) {
 	raw, _ := json.Marshal(au)
 	m := models.Message{Audience: string(raw)}
 
-	sent, err := f.app.rowValues(models.MessageRecipient{UserID: f.leaderUser.ID}, map[uint]*models.User{f.leaderUser.ID: f.leaderUser}, au, time.Now())
+	sent, err := f.app.rowValues(f.app.DB, models.MessageRecipient{UserID: f.leaderUser.ID}, map[uint]*models.User{f.leaderUser.ID: f.leaderUser}, au, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

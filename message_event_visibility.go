@@ -49,8 +49,11 @@ func rowReaders(db *gorm.DB, row models.MessageRecipient) (*models.User, map[uin
 // user whose values they are: the recipient, or for a guardian copy the teen,
 // whose live access decides the fields. A person who is gone gets no entry,
 // so no protected field is filled for them; a failed read is returned and
-// fails the delivery, never read as "may not see".
-func (a *App) rowValues(row models.MessageRecipient, readers map[uint]*models.User, au audienceJSON, now time.Time) (map[uint]map[string]string, error) {
+// fails the delivery, never read as "may not see". db is the transaction that
+// claimed the row, so its reads never wait for a second connection while that
+// one is held. A guest is personalized as themselves but sees only what a
+// signed-out visitor does (eventViewer).
+func (a *App) rowValues(db *gorm.DB, row models.MessageRecipient, readers map[uint]*models.User, au audienceJSON, now time.Time) (map[uint]map[string]string, error) {
 	subject := row.UserID
 	if row.CopyOfUserID != nil {
 		subject = *row.CopyOfUserID
@@ -60,7 +63,7 @@ func (a *App) rowValues(row models.MessageRecipient, readers map[uint]*models.Us
 	if u == nil {
 		return out, nil
 	}
-	vals, err := a.readerEventValues(u, au, now)
+	vals, err := a.readerEventValues(db, u, au, now)
 	if err != nil {
 		return nil, err
 	}
@@ -69,9 +72,10 @@ func (a *App) rowValues(row models.MessageRecipient, readers map[uint]*models.Us
 }
 
 // pushEventValues are u's merge values for an announcement push, read now,
-// just before the payload is built (after quiet hours have let it go). The
-// row's user is reloaded in full, since the one the push job holds carries no
-// role. An account that is gone has no event fields.
+// just before the payload is built (after quiet hours have let it go), on
+// the push job's context-bound handle. The row's user is reloaded in full,
+// since the one the push job holds carries no role. An account that is gone
+// has no event fields.
 func (a *App) pushEventValues(db *gorm.DB, userID uint, au audienceJSON, now time.Time) (map[string]string, error) {
 	var live models.User
 	if err := db.First(&live, userID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
@@ -79,5 +83,5 @@ func (a *App) pushEventValues(db *gorm.DB, userID uint, au audienceJSON, now tim
 	} else if err != nil {
 		return nil, err
 	}
-	return a.readerEventValues(&live, au, now)
+	return a.readerEventValues(db, &live, au, now)
 }

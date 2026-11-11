@@ -591,6 +591,12 @@ func (a *App) eventCandidates(viewer *models.User, q *gorm.DB) (visibleSet, erro
 	return loadCandidates(a.DB, viewer, q, false)
 }
 
+// dateCandidatesIn is dateCandidates on db, for a caller that holds a
+// transaction or a context-bound handle: db and q must come from the same one.
+func dateCandidatesIn(db *gorm.DB, viewer *models.User, q *gorm.DB) (visibleSet, error) {
+	return loadCandidates(db, viewer, q, false)
+}
+
 // deletedEventCandidates is eventCandidates for the admin-only "show deleted
 // events" calendar switch (DEC-68): an admin also gets the events of
 // soft-deleted groups. Anyone else gets the ordinary candidates.
