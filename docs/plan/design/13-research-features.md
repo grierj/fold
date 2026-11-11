@@ -19,7 +19,7 @@ plans it).
 | Capacity, waitlist, auto-promotion | **Core** (built, M1.5) | F10. |
 | Guest registration for public events (no account) | **Core** (built, M1.4) | Visitors are the point of public events. |
 | Hybrid capacity (separate remote limit) | **Core** (built, M1.8) | Pairs with F12 (remote flag). |
-| RSVP open/close windows; +N guests (0 to 5) | **Core** (+N guests built; open/close windows not built, no milestone yet) | Cheap to build; Meetup parity. |
+| RSVP open/close windows; +N guests (0 to 5) | **Core** for +N guests (built); **Later** for open/close windows (no milestone) | Cheap to build; Meetup parity. |
 | Simple attendance (leader ticks a roll) | **Core** (planned, M6.3) | Churches track attendance; ChurchTrac does. |
 | Volunteer and potluck sign-up sheets (one model: sheets, slots, claims) | **Core** (planned, M6.2) | ChurchTrac volunteer scheduling and forms. High value, small model. |
 | ICS feeds and add-to-calendar | **Core** (built, M1.7) | F2. |

@@ -367,15 +367,11 @@ Record the reason and date with the evidence; use targeted checks otherwise.
 
 These notes are interim and the steps are recommended, not a promise. They
 describe `/opt/fold/restore.sh` as written in this tree. Local drills on a
-disposable Compose stack exercised it (the most recent full `restore-drill.sh`
-run, "drill16", passed on an uncommitted candidate whose base was `3a97ff9`;
-that is prior candidate evidence, not a run at the current head). The checks on
-a real droplet in
-[FIRST-CHURCH-CHECKS.md](FIRST-CHURCH-CHECKS.md#live-install-m51-m53-agentsmd-deployment)
-have not been done. No release that reports `recoveryPolicy` 1 or higher may be
-published until this tooling and these notes are landed and verified. Erasure is
-not finished (M7.4 is incomplete); nothing here says a restore brings back or
-removes every trace of anyone.
+disposable Compose stack have exercised it; the checks on a real droplet in
+[FIRST-CHURCH-CHECKS.md](FIRST-CHURCH-CHECKS.md#live-install-m51-m53) have not
+been done (#310). No release that reports `recoveryPolicy` 1 or higher may be
+published until they are. Account erasure still has open work (see `STATUS.md`,
+M7.4); nothing here says a restore brings back or removes every trace of anyone.
 
 **Why a procedure.** A dump knows nothing about people deleted after it was
 taken, so restoring it brings them back as active accounts. `restore.sh` keeps
@@ -651,10 +647,10 @@ malformed metadata refuses. The host floor is the greater of `recovery-policy-fl
 and the level of the image its current Compose pin names. There is no override.
 The floor file is recorded only after smoke passes and never decreases.
 
-R4-RP is staged locally. Never publish a release reporting `recoveryPolicy >= 1`
+This tree reports level 2 (`deploy/recovery-policy`). Never publish a release reporting `recoveryPolicy >= 1`
 before R4-6c-R's current-release restore tooling and operator procedure land
 and are verified. The local refusal drills do not verify that restore procedure
-or complete the [real-droplet checks](FIRST-CHURCH-CHECKS.md#live-install-m51-m53-agentsmd-deployment).
+or complete the [real-droplet checks](FIRST-CHURCH-CHECKS.md#live-install-m51-m53).
 
 If a higher-level image starts but smoke fails, its pin already contributes
 to the floor. `--rollback` to a lower-level previous release is refused even

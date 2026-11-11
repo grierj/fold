@@ -140,7 +140,7 @@ their earlier check ids. The disposable drill ended with `drill result=0` and
 remain pending. Application UI, schema and queries are unaffected; deployment
 adds read-only level inspection and checks the built or pulled image before startup.
 
-The [real-droplet follow-ups](../../FIRST-CHURCH-CHECKS.md#live-install-m51-m53-docsagentsdeploymd)
+The [real-droplet follow-ups](../../FIRST-CHURCH-CHECKS.md#live-install-m51-m53)
 remain unchecked, including a second installed upgrade being refused during
 an upgrade. Never publish `recoveryPolicy >= 1` before R4-6c-R's
 current-release restore tooling and operator procedure land and are verified.

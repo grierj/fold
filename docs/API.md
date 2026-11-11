@@ -2558,8 +2558,9 @@ therefore alter feed bodies/ETags as well as API output.
 
 Implemented consumers: group/upcoming/open-event lists, event/date details,
 calendar, public/group/personal feeds, account/household RSVP, guest submission
-and redemption, manager-add eligibility and waitlist promotion. Dedicated event
-search, reminder scheduling and room-suggestion infrastructure do not exist at
-this base. Their future consumers must resolve `policy.EffectiveVisibility`
-per date and apply the same ordinary policy separately from exact-date grants;
-no reminder/room/search integration pass is claimed by M1.13's current tests.
+and redemption, manager-add eligibility, waitlist promotion, email and push
+reminders (each reader is checked against the date, `reminders.go`) and room
+suggestions (each usage counts by its date's effective visibility,
+`internal/rooms/suggest.go`). There is no dedicated event search yet. Any new
+consumer resolves `policy.EffectiveVisibility` per date and applies the ordinary
+policy separately from exact-date grants.

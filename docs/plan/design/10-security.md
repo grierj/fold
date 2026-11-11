@@ -47,8 +47,7 @@ promises.
 - Public forms (guest sign-up, account requests) have a hidden honeypot field instead of a
   third-party CAPTCHA. A honeypot-flagged submission sends no receipt, account hint or admin email.
   Every limit below is a fixed constant in code, and a refused request gets the form's usual answer
-  (DEC-52). Admin controls to change these defaults were planned but have no milestone yet. The
-  limits:
+  (DEC-52). The limits:
   - guest verification emails: 3 per address per hour and 10 per day, plus a per-IP budget (M1.4);
   - account requests and guest sign-ups: a site-wide cap of 100 an hour for each;
   - leader invitations: 20 valid attempts per leader per rolling day, including refusals for an

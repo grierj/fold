@@ -113,7 +113,7 @@
 - Tests: store contract suite run on both stores.
 
 **M4.8 `fold setup` CLI**
-- Depends on: M4.4, M4.5, M4.6 (storage steps wait for M4.7, which is cut until a church asks, DEC-140)
+- Depends on: M4.4, M4.5, M4.6 (no storage step: M4.7 is cut, DEC-140)
 - Scope: non-interactive setup from `setup.yaml`, `--dry-run`, `--json` (11.4).
 - Acceptance:
   - [ ] `--dry-run` makes no external calls and prints every planned action

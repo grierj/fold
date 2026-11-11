@@ -55,7 +55,7 @@ narratives and follow-up lists, is kept in
 | M4.7 S3 storage and private assets | Deferred until a church asks (DEC-140) | |
 | M4.8 `fold setup` CLI | Not started | |
 | M4.9 Admin two-factor sign-in (TOTP) | Not started | |
-| M5.1 Prebuilt images | In progress: the `fold` image and release workflow are built; the `fold-backup` image and the first tagged release remain | #251, #252 |
+| M5.1 Prebuilt images | In progress: the `fold` image and release workflow are built; the first tagged release remains | #251, #252 |
 | M5.2 Backups | In progress: host scripts `backup.sh` and `restore.sh` are built; the backup container, its System page warning and the CI restore test remain | |
 | M5.3 Upgrades | In progress: host `upgrade.sh` dumps first and can roll back; the app's pre-migration backup check and `docs/UPGRADING.md` remain | |
 | M5.4 Deployment docs (Compose) | In progress: `docs/DEPLOY-DIGITALOCEAN.md` and `docs/agents/deploy.md` exist; `docs/DEPLOY.md` (generic Compose) remains | |

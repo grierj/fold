@@ -6,10 +6,10 @@
 - Brief: [`briefs/audit-2026-11/R1-deployment.md`](../briefs/audit-2026-11/R1-deployment.md) (R1; hosting verdict DEC-142).
 - Partly done (PR #251, #252): the `fold` image. `release.yml` builds `linux/amd64` and `linux/arm64` on `v*` tags, pushes exact versions to `ghcr.io/grierj/fold` (never `latest`), boots the image, attests its build provenance and writes the digest into the release notes. `docker-compose.yml` uses `image: ghcr.io/grierj/fold:${FOLD_VERSION}`, `docker-compose.build.yml` keeps local builds, and CI's `compose` job (`make compose-smoke`) boots the shipped stack and checks `/healthz`. The `fold-backup` image is not built (it is M5.2's container).
 - Depends on: M0.1
-- Scope: GitHub Actions builds `linux/amd64` and `linux/arm64` images of `fold` and `fold-backup` and pushes them to GHCR on tags (C10). The deploy compose uses `image:`; a `docker-compose.build.yml` override keeps local builds for developers. Also carried from M0.3b: any security headers the Caddy and image layers should add (10.6), and pinned base-image digests in releases.
+- Scope: GitHub Actions builds `linux/amd64` and `linux/arm64` images of `fold` and pushes them to GHCR on tags (C10); the `fold-backup` image is M5.2's. The deploy compose uses `image:`; a `docker-compose.build.yml` override keeps local builds for developers. Also carried from M0.3b: any security headers the Caddy and image layers should add (10.6), and pinned base-image digests in releases.
 - Acceptance:
   - [ ] `docker compose pull && docker compose up -d` works on a fresh VPS without Go or Node (the compose file and release workflow are built; this needs a published release)
-  - [ ] Images are signed or have checksums published in the release notes (built for `fold`: a build provenance attestation and the digest; `fold-backup` does not exist yet)
+  - [ ] Images are signed or have checksums published in the release notes (built: a build provenance attestation and the digest)
 - Tests: CI smoke test starts the stack and hits `/healthz` (built: `scripts/compose-smoke.sh`).
 
 **M5.2 Backups**
@@ -41,7 +41,7 @@
 - Scope: `docs/DEPLOY.md` for humans, and the agent deployment guide (`docs/agents/deploy.md`; the original outline is [Appendix A](../provenance/appendix-a-agents-deployment.md)).
 - Acceptance:
   - [ ] A person following DEPLOY.md on a fresh 2 GB VPS reaches the wizard in under 30 minutes (manual check, recorded in the PR)
-  - [ ] An agent following `docs/agents/deploy.md` completes the same run with `fold setup --dry-run` first
+  - [ ] An agent following `docs/agents/deploy.md` completes the same run (`fold setup --dry-run` joins this check once M4.8 lands in v0.8)
 - Tests: docs link check.
 
 **M5.5 Render Blueprint (cut, DEC-140)**

@@ -129,12 +129,12 @@ Steps (each names the milestone that builds it):
      carrier review after its own review).
    - Set the SMS send window (default 8 AM to 8 PM recipient-local, DEC-9, DEC-25), with the TCPA
      warning if it is set outside 8 AM to 9 PM.
-5. **Storage** (M4.2): uploads use local disk, and this step shows where. The S3-compatible option,
-   its put/get/delete test and `storage migrate` were cut with M4.7 (DEC-140).
+5. **Storage**: folded into step 7. Uploads use local disk; the S3-compatible option was cut with
+   M4.7 (DEC-140). The number is kept so later steps keep theirs.
 6. **Video** (M4.2): the Jitsi domain for generated links (`jitsi_domain`, default `meet.jit.si`;
    Fold reads it today, but no screen sets it yet). Leaders choose link-out or Jitsi per event
    (built, M1.8).
-7. **Backups** (M4.2): show where nightly backups go. Optionally set an offsite S3 bucket and an
+7. **Backups and storage** (M4.2): show where uploads live and where nightly backups go. Optionally set an offsite S3 bucket and an
    `age` public key. Show a "write down your FOLD_SECRET_KEY" reminder and require a tick to
    continue.
 8. **Safeguarding** (M4.2): choose whether guardians get copies of messages to teens by email

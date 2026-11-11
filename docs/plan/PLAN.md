@@ -207,5 +207,9 @@ Every decision is in [decisions.md](decisions.md).
 - DEC-78: whether a person can hide completely (distinct from contact privacy), and whether to
   rename "private" groups. Until decided, active teens and contact-hidden adults remain searchable;
   private groups remain visible to signed-in members.
-- DEC-40/M6.15: exact ChMS field ownership and local-control locking. One-way import and no
-  write-back are already decided.
+- DEC-40: ChMS field ownership and local-control locking. Deferred: it reopens only if roster sync
+  comes back as a new milestone (M6.15 was cut, DEC-140). One-way import and no write-back are
+  already decided.
+- Notice email timing (R6 open question 3): whether a non-urgent notice's email waits 15 minutes
+  and is skipped if the person has already seen or read it in the app. M3.12 plans it; today
+  `notify.deliver` sends at once.

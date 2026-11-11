@@ -147,8 +147,11 @@ milestones until a first church is live (DEC-145).
 - Brief: [`R15-R16-frontend.md`](../briefs/audit-2026-11/R15-R16-frontend.md) (R16).
 
 **M7.11 Contact locks inside the freeze (R19, DEC-141)**
-- Not started. Scope: per-request row locks replace the global contact advisory lock
-  (`lockContacts`), with concurrency tests; no API, schema or policy change.
+- Not started. Re-scope before starting: R19 was written before M7.4, and account erasure now
+  depends on the contact gate (`fencedContactMutation`, the restore ticket's turn and
+  `eraseTombstoneOnce` run under it; `docs/agents/erasure.md`). The re-scoped milestone keeps
+  that gate for erasure and restore and moves only the other contact writers to per-request row
+  locks, with concurrency tests; no API, schema or policy change.
 - Brief: [`R13-R17-R18-R19-governance.md`](../briefs/audit-2026-11/R13-R17-R18-R19-governance.md) (R19).
 
 **M7.12 Cut execution and maintenance tax (R17 code half, R18)**

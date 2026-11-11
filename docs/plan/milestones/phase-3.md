@@ -106,7 +106,8 @@ The full as-delivered text of the done milestones (slices, acceptance, tests) is
   - Notification email and push already go through a job, `notify.deliver`, which `notify.Send` queues in the change's transaction (M7.5). It sends at once; the 15-minute escalation below is not built.
   - Me → Notifications already has the email switches with "Turn off all optional email" (M3.3b, DEC-97, DEC-115), and the device card with a Push switch per optional kind (M3.13b, M3.13c1). The email unsubscribe link opens the same email component on `/email-settings/:token` (M3.3b).
 - Scope: the rest of 5.12's delivery:
-  - The 15-minute "skip if seen or read" escalation for non-urgent kinds, in `notify.deliver`.
+  - The 15-minute "skip if seen or read" escalation for non-urgent kinds, in `notify.deliver` (waits on the open question in PLAN 15.2).
+  - The admin notice when an announcement fails to send (DEC-111). It was planned with M3.5 and not built; the `system.job_dead` alert (M7.5) covers dead jobs, not failed announcements.
   - SMS delivery for kinds marked with a new `AllowSMS` flag (kinds have `AllowEmail` and `AllowPush` today), through Consent, Suppression, teen rules, and the shared send-window function.
   - The `/settings/notifications` page (research 6.8), growing Me → Notifications (DEC-97): rows by category with Email, Text and Push columns, locked required cells, "Turn off all optional email" (writes `Consent` opt-outs for every optional category and leaves required mail on), the quiet-hours line with the effective time zone, and the teen `guardian_copies` line.
   - The email unsubscribe link opens the same page.
@@ -118,6 +119,7 @@ The full as-delivered text of the done milestones (slices, acceptance, tests) is
   - [x] "Turn off all optional email" writes one `Consent` opt-out row per optional category (source `web_form`) and leaves account, safety, and request emails on; turning a category back on appends an opt-in row (M3.3b)
   - [ ] A notification email sent at 11 PM recipient-local goes at once (no quiet hours for email); its SMS waits for the send window (the email half is built)
   - [ ] The settings payload has the effective time zone and, for teens, read-only `guardian_copies`
+  - [ ] An announcement that fails to send gives the admins one in-app notice naming it (DEC-111)
 - Tests: job tests with a fake clock; consent mapping tests; Playwright for the settings page.
 
 **M3.13 Web push**
