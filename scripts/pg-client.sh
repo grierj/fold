@@ -405,6 +405,16 @@ set_url() {
 	local url=$1 rest query='' hostport
 	rest=${url#*://}
 	percent_decode "$rest" || die 74 "$url_escape_refused"
+	# libpq ends userinfo at the first @ before the first slash, even when
+	# the password contains a question mark.
+	case $rest in
+	*@*)
+		case ${rest%%@*} in
+		*/*) ;;
+		*) rest=${rest#*@} ;;
+		esac
+		;;
+	esac
 	case $rest in
 	*"?"*)
 		query=${rest#*\?}
@@ -412,7 +422,9 @@ set_url() {
 		;;
 	esac
 	hostport=${rest%%/*}
-	hostport=${hostport##*@}
+	case $hostport in
+	*@*) die 74 "the connection URL has an ambiguous host. Fix the URL, or set FOLD_PG_BIN to a directory of PostgreSQL $major client tools" ;;
+	esac
 	case $hostport in
 	"["*)
 		host=${hostport#\[}

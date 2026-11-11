@@ -1862,6 +1862,8 @@ func TestPGClientWrapperConnectionForms(t *testing.T) {
 		{name: "TCP URL with an encoded host and port", args: []string{"postgres://u:p@%31%32%37.0.0.1:%35433/db"}, network: "host", probe: probe{"127.0.0.1", "5433"}},
 		{name: "TCP URL with an encoded host and port in the query", args: []string{"postgres://u@/db?host=db%2Einternal&port=%35434"}, network: "host", probe: probe{"db.internal", "5434"}},
 		{name: "TCP URL with an encoded colon and at sign in the password", args: []string{"postgres://u:p%40ss%3A1@localhost:5433/db"}, network: "host", probe: probe{"localhost", "5433"}},
+		{name: "TCP URL with host-like query in password", args: []string{"postgres://u:secret?host=hidden@localhost:5433/db"}, network: "host", probe: probe{"localhost", "5433"}},
+		{name: "TCP URL with port-like query in password", args: []string{"postgres://u:secret?port=9999@localhost:5433/db"}, network: "host", probe: probe{"localhost", "5433"}},
 		{name: "TCP URL with a literal percent sign", args: []string{"postgres://u@db%25x.internal/db"}, network: "host", probe: probe{"db%x.internal", "5432"}},
 		{name: "socket with a blank, in the URL query", args: []string{"postgres://u@/db?host=" + pctEncode(spacedSock)}, network: "none", mount: spacedSock, probe: probe{spacedSock, "5432"}},
 		{name: "socket with a blank, in the URL authority", args: []string{"postgres://u@" + pctEncode(spacedSock) + ":5439/db"}, network: "none", mount: spacedSock, probe: probe{spacedSock, "5439"}},
@@ -1876,6 +1878,9 @@ func TestPGClientWrapperConnectionForms(t *testing.T) {
 			out, code, calls := f.wrap(t, nil, append([]string{"16", "pg_dump"}, tc.args...)...)
 			if code != 0 {
 				t.Fatalf("exit %d: %s", code, out)
+			}
+			if strings.Contains(tc.name, "query in password") && strings.Contains(out, "secret") {
+				t.Error("wrapper output contained a password fragment")
 			}
 			ready := toolRun(t, calls, "pg_isready")
 			run := toolRun(t, calls, "pg_dump")
