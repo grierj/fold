@@ -14,15 +14,15 @@ narratives and follow-up lists, is kept in
 | M0.3b Member removal, sole-leader handoff, security headers, dependency scanning | Done | #13 |
 | M0.4 Frontend and browser test tooling | Done | #22 |
 | M1.1a Events, time zones, occurrences, series edits | Done | #38 |
-| M1.1b Church-wide hosts, event visibility, audit, attendee privacy | Done | #39 |
+| M1.1b Church-wide hosts, event visibility, audit, attendee privacy | Done | #39, #41 |
 | M1.1c Stored in-app notifications | Done | #46 |
 | M1.2 Email basics, password reset, invitations | Done | #47, #48 |
 | M1.3 Self-signup, account requests, age gate | Done | #49 |
 | M1.4 Guest registration | Done | #55 |
-| M1.5 Capacity, waitlist, pruning | Done | #57 |
+| M1.5 Capacity, waitlist, pruning | Done | #57, #101 |
 | M1.6 Calendar views | Done | #73 |
 | M1.7 ICS feeds | Done | landed on master directly; fixes #80 |
-| M1.8 Video, remote, childcare | Done | #102, #105, #109 |
+| M1.8 Video, remote, childcare | Done | #102, #105, #108, #109 |
 | M1.9 Households and household people | Done | #106, #107, #110, #111 |
 | M1.10 Teen accounts, consent, badges | Done | #114–#118 |
 | M1.11 Contact privacy and direct-contact requests | Done | #122 |

@@ -123,7 +123,7 @@ milestones until a first church is live (DEC-145).
 - Brief: [`R6-R11-reliability-perf.md`](../briefs/audit-2026-11/R6-R11-reliability-perf.md) (R11).
 
 **M7.7 Baseline squash (R9, DEC-138)**
-- Done (#258, #264, #265, #266): one generated baseline, `00001_baseline.sql` with 37 tables,
+- Done (#258, #264 to #267): one generated baseline, `00001_baseline.sql` with 37 tables,
   replaced the old migration chain. Calendar dates use real `date` columns, exact-date provenance
   lives on `registrations`, and the additive-first rule replaced expand/contract (14.1). The
   close-out is in the brief, R9 section 9.

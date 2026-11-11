@@ -24,7 +24,7 @@ The full as-delivered text of the done milestones (slices, acceptance, tests) is
 - The church mailing address admin setting fills the email footer (DEC-116).
 
 **M3.4 Composer**
-- Done for email (PR #208, #209, #211). The SMS parts are not built (last bullet).
+- Done for email (PR #208 to #211). The SMS parts are not built (last bullet).
 - Messages (`/messages`) and the composer (`/messages/new`, `/messages/:id`): TipTap (lazy-loaded) with a button block and merge fields, bluemonday sanitizing, an HTML email template with a plain-text part, preview, "Send a test to me", and scheduling in the church's zone.
 - The audience picker offers only what `policy.CanMessageAudience` allows, with live counts, skipped reasons and Teen badges (7.2, DEC-20).
 - Images in email come later (DEC-118).

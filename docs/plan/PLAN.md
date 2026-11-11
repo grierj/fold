@@ -9,8 +9,9 @@ what is built, and what comes next. Repo: https://github.com/grierj/fold.
 - **Where things live.** This file holds the goals, the requirements, the milestone rules and an
   index. The design is in [`design/`](design/), one file per section (5 to 13). Milestones are in
   [`milestones/`](milestones/), one file per phase. Grier's decisions are in
-  [`decisions.md`](decisions.md). Delivery status is in [`STATUS.md`](../../STATUS.md) and nowhere
-  else. History and evidence (verification records, as-delivered milestone text, slice histories)
+  [`decisions.md`](decisions.md). [`STATUS.md`](../../STATUS.md) is the one status table; a
+  milestone file only notes, in a line, whether that milestone is done and which PRs delivered it,
+  and the two agree. History and evidence (verification records, as-delivered milestone text, slice histories)
   are in [`provenance/`](provenance/README.md) and are not current guidance.
 - **Built or planned.** The design files describe what is built, in the present tense. Anything not
   built yet is marked **Planned (Mx.y)** with the milestone that owns it. `docs/API.md` is the
