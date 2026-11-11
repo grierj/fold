@@ -1,5 +1,7 @@
 # Audit 2026-11, Cluster C — People: R2 import, R3 TOTP + export, R4 erasure
 
+> Line references like `PLAN.md:NNN` point to PLAN.md at commit `a0c31a41`, before the plan was split into `docs/plan/design/`, `milestones/` and `decisions.md` (Nov 10, 2026). Section numbers still resolve through the index in `docs/plan/PLAN.md`.
+
 Implementation briefs for a coding agent. These are briefs, not code. Read
 `AGENTS.md` first; where this file and `docs/plan/PLAN.md` disagree, PLAN wins
 and the disagreement gets raised, not silently resolved.

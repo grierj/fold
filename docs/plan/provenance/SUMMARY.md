@@ -1,9 +1,11 @@
 # Fold: product and delivery summary
 
+> History, not current guidance. Superseded by `STATUS.md` (status), `docs/plan/PLAN.md` §15.2 (open questions) and the design files (Nov 10, 2026).
+
 Reconciled October 27, 2026 against merged work through M1.14 series RSVP/Undo
 PR #130 (merge `7229e92`, reviewed head `5f927ce`) and the locally validated
-departure publication head `deb093d`. [PLAN.md](PLAN.md) owns product decisions;
-[STATUS.md](../../STATUS.md) tracks merges and publication state;
+departure publication head `deb093d`. [PLAN.md](../PLAN.md) owns product decisions;
+[STATUS.md](../../../STATUS.md) tracks merges and publication state;
 [DOCUMENTATION-REVIEW.md](DOCUMENTATION-REVIEW.md) lists open product conflicts.
 Local validation does not mean protected-branch CI, merge, deployment or
 production readiness.
@@ -99,7 +101,7 @@ Fold. The current mail path is SMTP/devoutbox, not the future Postmark default.
 
 ## Deployment reality
 
-Use [DEPLOY-DIGITALOCEAN.md](../DEPLOY-DIGITALOCEAN.md) and `.env.example`, not
+Use [DEPLOY-DIGITALOCEAN.md](../../DEPLOY-DIGITALOCEAN.md) and `.env.example`, not
 future command examples in PLAN. Current Compose builds on the server; a 2 GB
 VPS is the recommended starting point for that path. A 1 GB runtime assumes a
 prebuilt image and is not the current release workflow. Prices vary; the church

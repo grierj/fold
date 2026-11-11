@@ -682,7 +682,7 @@ const (
 type NotificationDelivery struct {
 	ID                uint   `gorm:"primaryKey"`
 	NotificationID    uint   `gorm:"not null;uniqueIndex:idx_notification_deliveries_channel"`
-	Channel           string `gorm:"not null;uniqueIndex:idx_notification_deliveries_channel"` // email | sms
+	Channel           string `gorm:"not null;uniqueIndex:idx_notification_deliveries_channel"` // email | sms | push
 	UserID            uint   `gorm:"not null;index"`
 	Status            string `gorm:"not null"` // sent | failed | ...
 	Reason            string `gorm:"not null;default:''"`

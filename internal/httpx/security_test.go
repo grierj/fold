@@ -27,6 +27,25 @@ func TestLimitBodyRefusesOversizedRequests(t *testing.T) {
 	}
 }
 
+// Images are upload-only (DEC-49), so the app's pages load no image from
+// another origin; a page that injects an <img> pointing elsewhere is blocked.
+func TestCSPLoadsImagesOnlyFromThisOrigin(t *testing.T) {
+	r := gin.New()
+	r.Use(SecurityHeaders(false))
+	r.GET("/", func(c *gin.Context) { c.Status(http.StatusOK) })
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	var imgSrc string
+	for _, d := range strings.Split(w.Header().Get("Content-Security-Policy"), ";") {
+		if f := strings.Fields(d); len(f) > 0 && f[0] == "img-src" {
+			imgSrc = strings.Join(f[1:], " ")
+		}
+	}
+	if imgSrc != "'self' data: blob:" {
+		t.Fatalf("img-src = %q, want 'self' data: blob:", imgSrc)
+	}
+}
+
 func TestManifestShortensLongNames(t *testing.T) {
 	if m := manifestFor("Grace Church", "Fold"); m.ShortName != "Grace Church" { // 12 characters
 		t.Errorf("short_name %q", m.ShortName)
