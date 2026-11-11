@@ -41,6 +41,15 @@ run out of memory, so the on-droplet build (`--allow-onbox-build`, which
 also copies `docker-compose.build.yml`) needs the 2 GB size. No separate
 build machine is part of this guide.
 
+Picture uploads (profile photos and group covers) are decoded in memory, at
+most two at a time in the whole process, each bounded by an estimate of
+128 MiB, so about 256 MiB at once on top of the app's own use; a third
+upload at that moment is told to try again. The estimate is not a limit on
+the process, and a request body is read before that check (5 MB plus
+overhead each, uncapped in number). `docs/API.md` has the details; the
+1 GB droplet with swap stays a check to run on the real machine
+(`docs/FIRST-CHURCH-CHECKS.md`).
+
 **No release is published yet.** Until the first release exists there is
 no image to pull: use the 2 GB size with `--allow-onbox-build`, as the
 commands below do, and switch to `--image ghcr.io/grierj/fold:x.y.z` when

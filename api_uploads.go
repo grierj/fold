@@ -39,8 +39,8 @@ var (
 	// errUploadBusy is the answer when every processing slot is taken. Nothing
 	// was saved; the client may try again.
 	errUploadBusy = apiErr(http.StatusServiceUnavailable, "upload_busy", "other pictures are being processed; try again in a moment")
-	// errUploadCanceled is for a request whose client went away before its
-	// picture was read.
+	// errUploadCanceled is for a request whose client went away before or while
+	// its picture was read.
 	errUploadCanceled = apiErr(http.StatusRequestTimeout, "upload_canceled", "the upload was interrupted")
 )
 
@@ -90,6 +90,13 @@ func readImageUpload(c *gin.Context, field string) (*os.File, string, string, er
 	tmp, ext, mime, err := images.ReadUpload(fh)
 	if err != nil {
 		return nil, "", "", imageRefusal(err)
+	}
+	// A decoder cannot be stopped, so a client that went away while it ran
+	// has held its slot until now; nothing is stored for it.
+	if c.Request.Context().Err() != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return nil, "", "", errUploadCanceled
 	}
 	return tmp, ext, mime, nil
 }

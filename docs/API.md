@@ -349,26 +349,48 @@ S3-replacement seam.
 
 Resource bounds for avatar and cover uploads (one path, `readImageUpload`):
 
-- Pictures are copied, decoded and re-encoded in memory, so the process allows
+- Pictures are copied, decoded and re-encoded, so the process allows
   `images.MaxConcurrentProcessing` (2) at once across both routes. A request
   takes a slot only after sign-in, CSRF and its own permission check
   (`teen_avatar`, leader or admin for a cover) have passed. It never waits:
   when both slots are taken it answers `503 upload_busy`, nothing is saved, and
   the client may try again. The slot is held until the picture has been
   normalized and is released before the file is stored or any row changes, on
-  every path including errors and a client that went away (`408 upload_canceled`
-  if it had gone before reading began).
-- Before decoding, from the header, an estimate of the memory the decoders need
-  (bytes per pixel of the PNG or JPEG color model, the orientation copy of a
-  turned JPEG, two bytes per pixel of every GIF frame, plus the encoded buffers)
-  is compared with 128 MiB. Over it answers `400 image_too_large`, as the
-  pixel and frame caps do. A 5000 x 5000 16-bit PNG, a few hundred KB on the
-  wire, needs about 200 MB and is refused. The figure is an estimate from the
-  decoders' pixel formats, sized for the smallest recommended droplet.
+  every path including errors. A decoder cannot be stopped, so a client that
+  goes away keeps its slot until the decode returns, and is then answered
+  `408 upload_canceled` (also when it had gone before reading began) with
+  nothing stored.
+- Before decoding, from the header and, for JPEG and PNG, the segments or
+  chunks before the pixel data, an estimate of what the standard decoder
+  allocates is added to the encoded input and compared with 128 MiB. Over it
+  answers `400 image_too_large`, as the pixel and frame caps do. The estimate
+  counts: for PNG, the bytes per pixel of the color model, widened for a
+  grayscale picture that a `tRNS` chunk could make transparent, and doubled
+  for Adam7 interlacing (the canvas and its passes); for JPEG, the sample
+  planes padded to whole blocks of the file's sampling, 256 bytes of
+  coefficients per 8 x 8 block of every component of a progressive file, the
+  RGBA or CMYK copy built for RGB and CMYK files, and the RGBA copy made to
+  turn a picture upright; for GIF, two bytes per pixel of every frame. A
+  5000 x 5000 16-bit PNG (a few hundred KB on the wire, 200 MB to decode) and
+  the same canvas as an 8-bit interlaced PNG or a progressive 4:4:4 JPEG are
+  refused; a baseline 12 megapixel phone photo, turned or not, and 25
+  megapixels of plain 8-bit PNG are accepted. A progressive JPEG that also
+  needs turning is refused at about 12 megapixels. The figure is an estimate
+  from the allocations of the pinned Go toolchain's decoders, not a limit on
+  the process, and it counts what the decoders allocate whether or not the
+  garbage collector has freed it yet.
+- The re-encoded picture is written to a second temporary file through a
+  writer that stops at 10 MiB (twice the upload limit) and answers
+  `400 image_too_large`, so output is never held in memory. The 5 MB upload
+  limit applies to what is sent.
 - Not covered: the request body is capped at 5 MB plus 1 MiB of multipart
-  overhead per request, and the CSRF check reads that body before sign-in, so
-  concurrent uploads still buffer one request each ahead of the slot check.
-  There is no per-user quota and no whole-server memory cap.
+  overhead per request, whether or not it declares its length, and the CSRF
+  check reads that body before sign-in, so concurrent requests still buffer
+  one body each ahead of the slot check; the cap bounds each request, not
+  their number. There is no per-user quota and no whole-server memory cap. The
+  slots bound only the picture work: with two slots at the budget that is about
+  256 MiB of decoder memory at once, plus the application and the database
+  (`docs/agents/testing.md` describes the opt-in measurement of it).
 
 ### Groups
 

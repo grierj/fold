@@ -4,13 +4,22 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
+	"image"
+	"image/png"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
+	"runtime/metrics"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"fold/internal/images"
 	"fold/internal/images/imagetest"
@@ -117,16 +126,6 @@ func wantCode(t *testing.T, label string, w *httptest.ResponseRecorder, status i
 	if w.Code != status || (code != "" && !strings.Contains(w.Body.String(), `"code":"`+code+`"`)) {
 		t.Errorf("%s: got %d %s, want %d %s", label, w.Code, w.Body.String(), status, code)
 	}
-}
-
-// png16Header claims a 16-bit RGBA canvas of w x h and nothing else, the shape
-// of the issue's small file that needs hundreds of megabytes to decode.
-func png16Header(w, h uint32) []byte {
-	ihdr := make([]byte, 13)
-	binary.BigEndian.PutUint32(ihdr[0:], w)
-	binary.BigEndian.PutUint32(ihdr[4:], h)
-	ihdr[8], ihdr[9] = 16, 6
-	return append([]byte("\x89PNG\r\n\x1a\n"), imagetest.PNGChunk("IHDR", ihdr)...)
 }
 
 type uploadFixture struct {
@@ -264,10 +263,16 @@ func TestFailedUploadsReleaseTheirSlots(t *testing.T) {
 		data []byte
 		code string
 	}{
-		"16-bit 5000x5000 PNG": {png16Header(5000, 5000), "image_too_large"},
-		"aggregate-frame GIF":  {heavyGIF, "image_too_large"},
-		"corrupt JPEG":         {[]byte("\xFF\xD8\xFF\xE0 not really a jpeg at all"), "file_unreadable"},
-		"not an image":         {[]byte("<html>"), "file_type"},
+		// The first four are small files: none would be refused by its pixel
+		// count or byte size, only by what the decoder would allocate for it.
+		"16-bit 5000x5000 PNG":        {imagetest.PNGHeader(5000, 5000, 16, 6, 0), "image_too_large"},
+		"16-bit gray PNG with tRNS":   {append(append(imagetest.PNGHeader(5000, 5000, 16, 0, 0), imagetest.PNGChunk("tRNS", []byte{0, 1})...), imagetest.PNGChunk("IDAT", []byte("x"))...), "image_too_large"},
+		"Adam7 PNG, 4700x4700":        {append(imagetest.PNGHeader(4700, 4700, 8, 2, 1), imagetest.PNGChunk("IDAT", []byte("x"))...), "image_too_large"},
+		"progressive JPEG, 5000x5000": {imagetest.ProgressiveJPEG(5000, 5000, []byte{1, 2, 3}, []byte{0x11, 0x11, 0x11}, -1), "image_too_large"},
+		"progressive CMYK JPEG":       {imagetest.ProgressiveJPEG(5000, 5000, []byte{1, 2, 3, 4}, []byte{0x11, 0x11, 0x11, 0x11}, 0), "image_too_large"},
+		"aggregate-frame GIF":         {heavyGIF, "image_too_large"},
+		"corrupt JPEG":                {[]byte("\xFF\xD8\xFF\xE0 not really a jpeg at all"), "file_unreadable"},
+		"not an image":                {[]byte("<html>"), "file_type"},
 	}
 	for round := 0; round <= images.MaxConcurrentProcessing; round++ {
 		for name, tc := range cases {
@@ -321,4 +326,244 @@ func TestConcurrentUploadsStayWithinTheLimit(t *testing.T) {
 	}
 	t.Logf("%d finished, %d were told to try again", ok, busy)
 	requireFreeSlots(t)
+}
+
+// A multipart body of no declared length is bounded by the body cap while it is
+// parsed (the CSRF check does that first). Once the parse has failed on the cap
+// the handler finds no file, so nothing is read from it or normalized: the
+// picture inside is valid, and the file is over the size limit besides, so
+// reaching ReadUpload would have answered file_too_large instead.
+func TestUploadWithoutLengthIsBoundedByTheBodyCap(t *testing.T) {
+	f := newUploadFixture(t)
+	tmp := uploadTempFiles(t)
+	for _, tc := range []struct {
+		name, path, field string
+		c                 *apiClient
+	}{
+		{"avatar", f.avatarPath, "avatar", f.memberC},
+		{"cover", f.coverPath, "cover", f.leaderC},
+	} {
+		var b bytes.Buffer
+		mw := multipart.NewWriter(&b)
+		fw, err := mw.CreateFormFile(tc.field, "picture.png")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, part := range [][]byte{tinyPNG(t), make([]byte, maxRequestBytes+1<<20)} { // padding after IEND, past the cap
+			if _, err := fw.Write(part); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := mw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		// A body that is not a bytes.Buffer, Reader or strings.Reader has no length.
+		req := httptest.NewRequest("POST", tc.path, io.NopCloser(&b))
+		if req.ContentLength != -1 {
+			t.Fatalf("test body has a declared length: %d", req.ContentLength)
+		}
+		req.Header.Set("Content-Type", mw.FormDataContentType())
+		for _, ck := range tc.c.jar {
+			req.AddCookie(ck)
+		}
+		req.Header.Set("X-CSRF-Token", tc.c.token)
+		rec := httptest.NewRecorder()
+		tc.c.router.ServeHTTP(rec, req)
+		wantCode(t, tc.name+", no declared length, over the cap", rec, http.StatusBadRequest, "file_unreadable")
+	}
+	requireFreeSlots(t)
+	if got := uploadTempFiles(t); got != tmp {
+		t.Errorf("an oversized body left temp files: %d, was %d", got, tmp)
+	}
+	f.nothingStored(t)
+}
+
+// waitFor polls until cond holds, or fails the test.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// Requests cancelled while their pictures are being processed keep their slots
+// until the decoders return (they cannot be stopped), so a third request is
+// still told to wait, and when the work is over every slot is free, no temp
+// file is left, nothing is stored and the next upload works. The pictures are
+// real, large enough to take a good while to decode and encode again.
+func TestCancelledDuringProcessingKeepsTheSlotsUntilItIsDone(t *testing.T) {
+	f := newUploadFixture(t)
+	var heavy bytes.Buffer
+	if err := png.Encode(&heavy, image.NewGray(image.Rect(0, 0, 4000, 4000))); err != nil {
+		t.Fatal(err)
+	}
+	// Only the pictures' own temp files are in this directory, so seeing one is
+	// seeing a request inside ReadUpload, which is where its slot is held.
+	t.Setenv("TMPDIR", t.TempDir())
+	if uploadTempFiles(t) != 0 {
+		t.Fatal("the temp directory is not empty")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	avatar, cover := make(chan *httptest.ResponseRecorder, 1), make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		avatar <- postUpload(t, f.memberC, f.avatarPath, "avatar", heavy.Bytes(), uploadOptions{ctx: ctx})
+	}()
+	go func() {
+		cover <- postUpload(t, f.leaderC, f.coverPath, "cover", heavy.Bytes(), uploadOptions{ctx: ctx})
+	}()
+	// Each request copies its upload into an input file (upload-<digits>) before
+	// decoding it and keeps it until it is done; the output file comes later.
+	waitFor(t, "both pictures to be in processing", func() bool {
+		inputs, err := filepath.Glob(filepath.Join(os.TempDir(), "upload-[0-9]*"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(inputs) >= images.MaxConcurrentProcessing
+	})
+
+	cancel()
+	// Both slots are still taken by work that cannot be stopped.
+	wantCode(t, "a third upload while the cancelled ones run", postUpload(t, f.memberC, f.avatarPath, "avatar", tinyPNG(t), uploadOptions{}), http.StatusServiceUnavailable, "upload_busy")
+
+	wantCode(t, "cancelled avatar", <-avatar, http.StatusRequestTimeout, "upload_canceled")
+	wantCode(t, "cancelled cover", <-cover, http.StatusRequestTimeout, "upload_canceled")
+	requireFreeSlots(t)
+	if got := uploadTempFiles(t); got != 0 {
+		t.Errorf("cancelled uploads left %d temp files", got)
+	}
+	f.nothingStored(t)
+	wantCode(t, "avatar after the cancelled ones", postUpload(t, f.memberC, f.avatarPath, "avatar", tinyPNG(t), uploadOptions{}), http.StatusOK, "")
+	wantCode(t, "cover after the cancelled ones", postUpload(t, f.leaderC, f.coverPath, "cover", tinyPNG(t), uploadOptions{}), http.StatusOK, "")
+}
+
+// uploadWave sends requests uploads at once, alternating the avatar and cover
+// routes, and cancels every other one while it is in flight at staggered
+// moments. It returns how many answered each status and fails unless every
+// slot is free again afterwards.
+func uploadWave(t *testing.T, f *uploadFixture, payload []byte, requests int, cancelHalf bool) map[int]int {
+	t.Helper()
+	codes := make(chan int, requests)
+	var wg sync.WaitGroup
+	for i := 0; i < requests; i++ {
+		ctx, cancel := context.Background(), context.CancelFunc(func() {})
+		if cancelHalf && i%2 == 1 {
+			ctx, cancel = context.WithTimeout(ctx, time.Duration(50+40*i)*time.Millisecond)
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer cancel()
+			if i%2 == 0 {
+				codes <- postUpload(t, f.memberC, f.avatarPath, "avatar", payload, uploadOptions{ctx: ctx}).Code
+			} else {
+				codes <- postUpload(t, f.leaderC, f.coverPath, "cover", payload, uploadOptions{ctx: ctx}).Code
+			}
+		}()
+	}
+	wg.Wait()
+	close(codes)
+	byStatus := map[int]int{}
+	for code := range codes {
+		byStatus[code]++
+	}
+	requireFreeSlots(t)
+	return byStatus
+}
+
+// TestMeasureUploadRequests is the opt-in measurement of whole upload requests
+// (FOLD_UPLOAD_MEASURE=1 with DATABASE_URL, docs/agents/testing.md): for each
+// worst-case picture, in a process of its own, waves of concurrent avatar and
+// cover requests, some cancelled while they run, through the real router. A
+// control run sends bodies of the same size that are not pictures, so they take
+// the same multipart parse and copy but are refused before any decode; what the
+// picture adds over the control is the processing. Every slot must be free after
+// each wave, no temp file left, and a valid upload must still work.
+//
+// Limits: the process is the whole test binary (database client, app and test
+// client included), and each request's body also exists once more in the test
+// client, so ingress is overstated, and VmHWM is a high-water mark of resident
+// memory, not of what Go has mapped.
+func TestMeasureUploadRequests(t *testing.T) {
+	c, ok := imagetest.MeasureCase(t, "TestMeasureUploadRequests")
+	if !ok {
+		return
+	}
+	f := newUploadFixture(t)
+	data := c.Build(t)
+	if len(data) > images.MaxUploadBytes {
+		t.Fatalf("%s is %d bytes, over the upload limit", c.Name, len(data))
+	}
+	control := bytes.Repeat([]byte("x"), len(data))
+	t.Setenv("TMPDIR", t.TempDir()) // so a leaked temp file is seen
+	const waves, requests = 3, 8
+
+	measure := func(payload []byte, cancelHalf bool) map[string]any {
+		runtime.GC()
+		debug.FreeOSMemory()
+		resetOK := imagetest.ResetPeak()
+		baseHWM := imagetest.ProcessKB("VmHWM")
+		samples := []metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}, {Name: "/memory/classes/total:bytes"}}
+		metrics.Read(samples)
+		baseObjects := samples[0].Value.Uint64()
+		var peakObjects, peakMapped uint64
+		stop, done := make(chan struct{}), make(chan struct{})
+		go func() {
+			defer close(done)
+			for {
+				metrics.Read(samples)
+				peakObjects, peakMapped = max(peakObjects, samples[0].Value.Uint64()), max(peakMapped, samples[1].Value.Uint64())
+				select {
+				case <-stop:
+					return
+				case <-time.After(time.Millisecond):
+				}
+			}
+		}()
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		answers := map[int]int{}
+		for w := 0; w < waves; w++ {
+			for code, n := range uploadWave(t, f, payload, requests, cancelHalf) {
+				answers[code] += n
+			}
+		}
+		close(stop)
+		<-done
+		runtime.ReadMemStats(&after)
+		return map[string]any{
+			"answers":              answers,
+			"peakHeapObjectsBytes": peakObjects - min(peakObjects, baseObjects),
+			"peakGoMappedBytes":    peakMapped,
+			"vmHWMOverBaselineKB":  imagetest.ProcessKB("VmHWM") - baseHWM,
+			"vmHWMResetWorked":     resetOK,
+			"totalAllocBytes":      after.TotalAlloc - before.TotalAlloc,
+		}
+	}
+	report := map[string]any{
+		"case":              c.Name,
+		"inputBytes":        len(data),
+		"slots":             images.MaxConcurrentProcessing,
+		"waves":             waves,
+		"requestsPerWave":   requests,
+		"goVersion":         runtime.Version(),
+		"controlNotPicture": measure(control, false),
+		"pictures":          measure(data, false),
+		"picturesCancelled": measure(data, true),
+	}
+	left, _ := filepath.Glob(filepath.Join(os.TempDir(), "upload-*"))
+	report["tempFilesLeft"] = len(left)
+	out, _ := json.Marshal(report)
+	t.Logf("MEASURE %s", out)
+	if len(left) != 0 {
+		t.Errorf("%d temp files left", len(left))
+	}
+	requireFreeSlots(t)
+	wantCode(t, "avatar after the waves", postUpload(t, f.memberC, f.avatarPath, "avatar", tinyPNG(t), uploadOptions{}), http.StatusOK, "")
+	wantCode(t, "cover after the waves", postUpload(t, f.leaderC, f.coverPath, "cover", tinyPNG(t), uploadOptions{}), http.StatusOK, "")
 }

@@ -18,6 +18,30 @@ setup, a source guard or the e2e harness is what you are changing or debugging.
 - Local concurrency tests can flake under load; rerun with `-count=8` before chasing them, and
   trust CI.
 
+### Upload memory measurement
+
+`TestMeasureNormalize` (`internal/images`) and `TestMeasureUploadRequests` (root, needs
+`DATABASE_URL`) are opt-in (`FOLD_UPLOAD_MEASURE=1`, not run in CI), e.g.
+`FOLD_UPLOAD_MEASURE=1 go test ./internal/images -run '^TestMeasureNormalize$' -count=1 -v` and
+`FOLD_UPLOAD_MEASURE=1 go test . -run '^TestMeasureUploadRequests$' -count=1 -v`. Each runs every
+`imagetest.WorstCases` picture (the most the estimate accepts for each format) in a process of its
+own (`FOLD_UPLOAD_MEASURE_CASE=<name>` runs one) and logs a `MEASURE {...}` JSON line. Run them
+alone: they are about memory, so other work on the machine skews them.
+
+- The first runs waves of `MaxConcurrentProcessing` normalizations with more attempts refused
+  while full, and checks that every slot recovers. The second sends concurrent avatar and cover
+  requests through the router, cancels half of them mid-flight, and first runs a control of the
+  same size that is not a picture, so what the picture adds over it is the processing.
+- The numbers differ: `estimateBytesPerCall` is the pre-decode estimate; `peakHeapObjectsBytes` is
+  the sampled peak of Go heap objects, dead ones not yet freed included, over the baseline;
+  `peakGoMappedBytes` is the runtime's mapped memory; `vmHWMOverBaselineKB` is the process's resident
+  high-water mark after the baseline was reset (`/proc/self/clear_refs`, Linux; `vmHWMResetWorked`
+  says whether it did); `totalAlloc*` is cumulative and says nothing about peak.
+- Limits: sampled every millisecond, so a short spike can be missed; the second test's process also
+  holds the database client, the app and each body once more in the test client; the first leaves
+  out multipart ingress. Neither reproduces a 1 GB droplet's swap and cgroup behavior; that is a
+  hand check in `docs/FIRST-CHURCH-CHECKS.md`.
+
 ### Restore tests
 
 `TestRestoreFence*` and `TestReasonReviewRestoreWithOpenPanel` need `pg_dump` and `pg_restore` of

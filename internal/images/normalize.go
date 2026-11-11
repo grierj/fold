@@ -4,6 +4,7 @@
 package images
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"errors"
@@ -34,18 +35,27 @@ const (
 	maxGIFPixels = 100_000_000
 	// jpegQuality is the quality of re-encoded JPEGs.
 	jpegQuality = 85
-	// maxWorkingBytes is the most memory one Normalize call may be expected to
-	// hold (estimateWorking). The pixel caps alone are not enough: a 25 MP
-	// 16-bit PNG decodes to 200 MB although its file is a few hundred KB.
-	// Admit allows MaxConcurrentProcessing calls at once, so the worst case
-	// is that many of these on a 1 GB droplet beside Postgres. The figure is
-	// an estimate from the decoders' pixel formats, not a measurement; it
-	// leaves 25 MP of 8-bit color (100 MB) and an upright 12 MP phone photo
-	// accepted.
+	// maxWorkingBytes is the most memory one Normalize call is expected to
+	// hold for a picture: what the standard decoder allocates for it
+	// (jpegDecodeBytes, pngDecodeBytes, two bytes a pixel of every GIF frame)
+	// and the encoded input (bufferBytes). The pixel caps alone are not
+	// enough: a 25 MP 16-bit PNG decodes to 200 MB from a few hundred KB, and
+	// a progressive JPEG keeps 256 bytes of coefficients for every 8 x 8 block
+	// of every component. Admit allows MaxConcurrentProcessing calls at once.
+	// The figure is an estimate from the decoders' allocations in the pinned
+	// toolchain, not a measurement of a whole process; it leaves an upright or
+	// turned 12 MP baseline phone photo and 25 MP of 8-bit color PNG accepted.
 	maxWorkingBytes = 128 << 20
 	// scratchBytes covers what the estimate does not count per pixel: row
-	// buffers, flate and LZW state, Huffman tables.
+	// buffers, flate and LZW state, Huffman tables, the output chunk buffer.
 	scratchBytes = 8 << 20
+	// maxOutputBytes is the most a re-encoded picture may be. Re-encoding does
+	// not keep the compressed size (a PNG can grow, a GIF loses its
+	// interlacing), so the output has its own allowance, twice the upload
+	// limit, enforced as it is written to disk.
+	maxOutputBytes = 2 * MaxUploadBytes
+	// outputChunkBytes is the buffer between an encoder and that file.
+	outputChunkBytes = 64 << 10
 )
 
 // allowedTypes maps sniffed MIME types to canonical extensions. The
@@ -78,7 +88,16 @@ var (
 // Normalize re-encodes the image in f (already sniffed as mime) and
 // rewrites f in place with the clean bytes, leaving it positioned at the
 // start. It returns the extension and MIME type of what is now stored.
+//
+// The re-encoded picture is written to a second temporary file through a
+// writer that refuses more than maxOutputBytes (ErrTooLarge), so the output
+// never sits in memory and cannot grow past its allowance.
 func Normalize(f *os.File, mime string) (string, string, error) {
+	return normalize(f, mime, maxOutputBytes)
+}
+
+// normalize is Normalize with the output allowance as a parameter.
+func normalize(f *os.File, mime string, outputLimit int64) (string, string, error) {
 	ext, ok := allowedTypes[mime]
 	if !ok {
 		return "", "", ErrNotAllowed
@@ -96,16 +115,30 @@ func Normalize(f *os.File, mime string) (string, string, error) {
 		return "", "", ErrTooLarge
 	}
 
-	var out bytes.Buffer
+	out, err := os.CreateTemp("", "upload-out-*")
+	if err != nil {
+		return "", "", err
+	}
+	defer func() {
+		out.Close()
+		os.Remove(out.Name())
+	}()
+	bw := bufio.NewWriterSize(&cappedWriter{w: out, left: outputLimit}, outputChunkBytes)
 	switch mime {
 	case "image/jpeg":
-		err = normalizeJPEG(&out, data, cfg)
+		err = normalizeJPEG(bw, data, cfg)
 	case "image/png":
-		err = normalizePNG(&out, data, cfg)
+		err = normalizePNG(bw, data, cfg)
 	case "image/gif":
-		err = normalizeGIF(&out, data)
+		err = normalizeGIF(bw, data)
+	}
+	if err == nil {
+		err = bw.Flush()
 	}
 	if err != nil {
+		return "", "", err
+	}
+	if _, err := out.Seek(0, io.SeekStart); err != nil {
 		return "", "", err
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
@@ -114,7 +147,7 @@ func Normalize(f *os.File, mime string) (string, string, error) {
 	if err := f.Truncate(0); err != nil {
 		return "", "", err
 	}
-	if _, err := f.Write(out.Bytes()); err != nil {
+	if _, err := io.Copy(f, out); err != nil {
 		return "", "", err
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
@@ -123,51 +156,191 @@ func Normalize(f *os.File, mime string) (string, string, error) {
 	return ext, mime, nil
 }
 
-// bufferBytes is what the encoded sides of a call hold: the file as read (a
-// growing read can reserve twice its size), and room for the re-encoded
-// output, which is assumed to stay near the upload limit.
+// cappedWriter passes bytes to w until left runs out, then refuses with
+// ErrTooLarge. The encoders return a writer's error as it is, so Normalize's
+// caller sees ErrTooLarge and nothing past the allowance reaches the disk.
+type cappedWriter struct {
+	w    io.Writer
+	left int64
+}
+
+func (c *cappedWriter) Write(p []byte) (int, error) {
+	if int64(len(p)) > c.left {
+		return 0, ErrTooLarge
+	}
+	n, err := c.w.Write(p)
+	c.left -= int64(n)
+	return n, err
+}
+
+// bufferBytes is what the encoded input holds in memory: the file as read (a
+// growing read can reserve twice its size) and the encoders' own state. The
+// re-encoded output is not here: it goes to disk through a small bufio.Writer.
 func bufferBytes(dataLen int) int64 {
-	return 2*int64(dataLen) + MaxUploadBytes + scratchBytes
+	return 2*int64(dataLen) + scratchBytes
 }
 
-// bytesPerPixel is what the standard decoder holds per pixel for a color
-// model from DecodeConfig. A 16-bit PNG is 8 (RGBA64) or 2 (Gray16); an
-// unknown model is counted as the largest.
-func bytesPerPixel(m color.Model) int64 {
-	if _, ok := m.(color.Palette); ok {
-		return 1
-	}
-	switch m {
-	case color.GrayModel:
-		return 1
-	case color.Gray16Model:
-		return 2
-	case color.YCbCrModel:
-		return 3 // a 4:4:4 JPEG; subsampled ones are smaller
-	case color.RGBAModel, color.NRGBAModel, color.CMYKModel:
-		return 4
-	}
-	return 8
-}
-
-// refuseHeavy returns ErrTooLarge when the estimated memory for decoding and
-// encoding exceeds maxWorkingBytes. It runs from the header, before any pixel
-// is decoded.
-func refuseHeavy(decoded, extra int64, dataLen int) error {
-	if decoded+extra+bufferBytes(dataLen) > maxWorkingBytes {
+// refuseHeavy returns ErrTooLarge when the estimated memory for decoding
+// (decoded, what the standard decoder allocates for the picture) and the
+// encoded buffers exceeds maxWorkingBytes. It runs from the header, before any
+// pixel is decoded.
+func refuseHeavy(decoded int64, dataLen int) error {
+	if decoded+bufferBytes(dataLen) > maxWorkingBytes {
 		return ErrTooLarge
 	}
 	return nil
 }
 
-func normalizeJPEG(out *bytes.Buffer, data []byte, cfg image.Config) error {
-	orientation := jpegOrientation(data)
-	pixels := int64(cfg.Width) * int64(cfg.Height)
-	var copied int64
-	if orientation >= 2 && orientation <= 8 {
-		copied = pixels * 4 // applyOrientation's RGBA copy, alive beside the decoded image
+// jpegFrame is the part of a JPEG's SOF segment that decides what the decoder
+// allocates: whether it is progressive, and the sampling factors of each
+// component (h, v), already as image/jpeg uses them (1 x 1 for a grayscale
+// picture).
+type jpegFrame struct {
+	progressive bool
+	n           int
+	h, v        [4]int
+}
+
+// scanJPEGFrame finds the first SOF segment the way image/jpeg walks markers
+// (extraneous bytes skipped, fill bytes allowed) and reads it. It reports
+// false for anything it does not follow, which refuses the file rather than
+// guess at how much memory it needs.
+func scanJPEGFrame(b []byte) (jpegFrame, bool) {
+	var f jpegFrame
+	if len(b) < 2 || b[0] != 0xFF || b[1] != 0xD8 {
+		return f, false
 	}
-	if err := refuseHeavy(pixels*bytesPerPixel(cfg.ColorModel), copied, len(data)); err != nil {
+	pos := 2
+	for {
+		if pos+2 > len(b) {
+			return f, false
+		}
+		t0, t1 := b[pos], b[pos+1]
+		pos += 2
+		for t0 != 0xFF {
+			if pos >= len(b) {
+				return f, false
+			}
+			t0, t1 = t1, b[pos]
+			pos++
+		}
+		marker := t1
+		if marker == 0 {
+			continue
+		}
+		for marker == 0xFF {
+			if pos >= len(b) {
+				return f, false
+			}
+			marker = b[pos]
+			pos++
+		}
+		if marker == 0xD9 || marker == 0xDA { // no SOF before the end or the scan
+			return f, false
+		}
+		if marker >= 0xD0 && marker <= 0xD7 { // restart marker: no length
+			continue
+		}
+		if pos+2 > len(b) {
+			return f, false
+		}
+		n := int(binary.BigEndian.Uint16(b[pos:])) - 2
+		pos += 2
+		if n < 0 || pos+n > len(b) {
+			return f, false
+		}
+		if marker >= 0xC0 && marker <= 0xC2 { // baseline, extended sequential, progressive
+			seg := b[pos : pos+n]
+			switch n {
+			case 6 + 3*1:
+				f.n = 1
+			case 6 + 3*3:
+				f.n = 3
+			case 6 + 3*4:
+				f.n = 4
+			default:
+				return f, false
+			}
+			if int(seg[5]) != f.n {
+				return f, false
+			}
+			f.progressive = marker == 0xC2
+			for i := 0; i < f.n; i++ {
+				h, v := int(seg[7+3*i]>>4), int(seg[7+3*i]&0x0F)
+				if h < 1 || h > 4 || v < 1 || v > 4 {
+					return f, false
+				}
+				if f.n == 1 {
+					h, v = 1, 1
+				}
+				f.h[i], f.v[i] = h, v
+			}
+			return f, true
+		}
+		pos += n
+	}
+}
+
+// flex reports whether image/jpeg falls back to full-size chroma planes: a
+// 3-component picture whose sampling is not one of its standard ratios
+// (4:4:4, 4:4:0, 4:2:2, 4:2:0, 4:1:1, 4:1:0).
+func (f jpegFrame) flex(maxH, maxV int) bool {
+	if f.n != 3 {
+		return false
+	}
+	if f.h[1] != f.h[2] || f.v[1] != f.v[2] || f.h[0] != maxH || f.v[0] != maxV {
+		return true
+	}
+	return maxV/f.v[1] > 2
+}
+
+// jpegDecodeBytes is what image/jpeg allocates to decode a picture of cfg's
+// size laid out as f: the sample planes (padded to whole MCUs), for a
+// progressive file also one 256-byte coefficient block per 8 x 8 block of every
+// component, and for a CMYK or RGB file the RGBA or CMYK copy it builds at the
+// end. The planes and coefficients are counted as still held when that copy is
+// made, because nothing frees them before the decoder returns.
+func jpegDecodeBytes(f jpegFrame, cfg image.Config) int64 {
+	w, h := int64(cfg.Width), int64(cfg.Height)
+	maxH, maxV := 1, 1
+	for i := 0; i < f.n; i++ {
+		maxH, maxV = max(maxH, f.h[i]), max(maxV, f.v[i])
+	}
+	mxx := (w + 8*int64(maxH) - 1) / (8 * int64(maxH))
+	myy := (h + 8*int64(maxV) - 1) / (8 * int64(maxV))
+	var blocks int64
+	for i := 0; i < f.n; i++ {
+		blocks += mxx * myy * int64(f.h[i]) * int64(f.v[i])
+	}
+	total := blocks * 64 // one byte a sample, in the planes
+	if f.flex(maxH, maxV) {
+		total = 3 * (8 * int64(maxH) * mxx) * (8 * int64(maxV) * myy)
+	}
+	if f.progressive {
+		total += blocks * 256 // a [64]int32 a block
+	}
+	if f.n == 4 || (f.n == 3 && cfg.ColorModel != color.YCbCrModel) {
+		total += 4 * w * h
+	}
+	return total
+}
+
+// jpegOrientationBytes is what Normalize adds on top of the decode for a JPEG:
+// the upright RGBA copy applyOrientation makes beside the decoded picture.
+func jpegOrientationBytes(orientation int, cfg image.Config) int64 {
+	if orientation < 2 || orientation > 8 {
+		return 0
+	}
+	return 4 * int64(cfg.Width) * int64(cfg.Height)
+}
+
+func normalizeJPEG(out io.Writer, data []byte, cfg image.Config) error {
+	frame, ok := scanJPEGFrame(data)
+	if !ok {
+		return ErrUnreadable
+	}
+	orientation := jpegOrientation(data)
+	if err := refuseHeavy(jpegDecodeBytes(frame, cfg)+jpegOrientationBytes(orientation, cfg), len(data)); err != nil {
 		return err
 	}
 	img, err := jpeg.Decode(bytes.NewReader(data))
@@ -178,8 +351,63 @@ func normalizeJPEG(out *bytes.Buffer, data []byte, cfg image.Config) error {
 	return jpeg.Encode(out, img, &jpeg.Options{Quality: jpegQuality})
 }
 
-func normalizePNG(out *bytes.Buffer, data []byte, cfg image.Config) error {
-	if err := refuseHeavy(int64(cfg.Width)*int64(cfg.Height)*bytesPerPixel(cfg.ColorModel), 0, len(data)); err != nil {
+// pngPixelBytes is what image/png allocates a pixel for the color model
+// DecodeConfig reports. DecodeConfig stops at the header, so it cannot say
+// whether a later tRNS chunk turns a gray picture into an NRGBA one;
+// transparent says it might (pngMayBeTransparent). An unknown model is counted
+// as the largest.
+func pngPixelBytes(m color.Model, transparent bool) int64 {
+	if _, ok := m.(color.Palette); ok {
+		return 1
+	}
+	switch m {
+	case color.GrayModel:
+		if transparent {
+			return 4 // NRGBA
+		}
+		return 1
+	case color.Gray16Model:
+		if transparent {
+			return 8 // NRGBA64
+		}
+		return 2
+	case color.RGBAModel, color.NRGBAModel:
+		return 4
+	}
+	return 8
+}
+
+// pngMayBeTransparent reports whether a tRNS chunk could precede the pixel
+// data. tRNS may only come before the first IDAT, so only the chunks up to it
+// are walked; anything that does not end in an IDAT counts as transparent.
+func pngMayBeTransparent(b []byte) bool {
+	pos := int64(8)
+	for pos+8 <= int64(len(b)) {
+		switch string(b[pos+4 : pos+8]) {
+		case "tRNS":
+			return true
+		case "IDAT":
+			return false
+		}
+		pos += 8 + int64(binary.BigEndian.Uint32(b[pos:])) + 4
+	}
+	return true
+}
+
+// pngDecodeBytes is what image/png allocates for the pixels of cfg's size. An
+// Adam7 picture allocates the whole canvas and then an image for each of its
+// seven passes, which together are about one more canvas; the passes are
+// garbage only once the collector runs, so both are counted.
+func pngDecodeBytes(b []byte, cfg image.Config) int64 {
+	n := int64(cfg.Width) * int64(cfg.Height) * pngPixelBytes(cfg.ColorModel, pngMayBeTransparent(b))
+	if len(b) > 28 && b[28] != 0 { // the interlace method byte of IHDR
+		n *= 2
+	}
+	return n
+}
+
+func normalizePNG(out io.Writer, data []byte, cfg image.Config) error {
+	if err := refuseHeavy(pngDecodeBytes(data, cfg), len(data)); err != nil {
 		return err
 	}
 	img, err := png.Decode(bytes.NewReader(data))
@@ -189,7 +417,7 @@ func normalizePNG(out *bytes.Buffer, data []byte, cfg image.Config) error {
 	return png.Encode(out, img)
 }
 
-func normalizeGIF(out *bytes.Buffer, data []byte) error {
+func normalizeGIF(out io.Writer, data []byte) error {
 	frames, pixels, ok := scanGIF(data)
 	if !ok {
 		return ErrUnreadable
@@ -199,7 +427,7 @@ func normalizeGIF(out *bytes.Buffer, data []byte) error {
 	}
 	// DecodeAll holds one palette index per pixel of every frame at once, and
 	// EncodeAll works on the same frames; count two bytes to stay conservative.
-	if err := refuseHeavy(int64(pixels)*2, 0, len(data)); err != nil {
+	if err := refuseHeavy(int64(pixels)*2, len(data)); err != nil {
 		return err
 	}
 	g, err := gif.DecodeAll(bytes.NewReader(data))
