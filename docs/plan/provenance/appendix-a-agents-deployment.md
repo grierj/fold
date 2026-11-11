@@ -1,5 +1,9 @@
 # Fold provenance: original AGENTS.md deployment outline
 
+History, not current guidance. This outline was the plan for an AGENTS.md "Deployment" section.
+That guidance now lives in `docs/agents/deploy.md` and `docs/DEPLOY-DIGITALOCEAN.md`. The Render
+outline at the end is still the reference for the optional M5.5 Render Blueprint.
+
 ## 16. Appendix A: AGENTS.md "Deployment" section outline
 
 Add this to `AGENTS.md` in M5.4. Each item is a heading with short, exact instructions. The Render outline at the end is reference only and is not added to `AGENTS.md` unless M5.5 is started (DEC-26).

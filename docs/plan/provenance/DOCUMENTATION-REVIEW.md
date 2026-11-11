@@ -1,5 +1,7 @@
 # Documentation reconciliation — October 25, 2026
 
+> History, not current guidance. Superseded by `STATUS.md` (status), `docs/plan/PLAN.md` §15.2 (open questions) and the design files (Nov 10, 2026).
+
 ## Basis and limits
 
 Reviewed tracked root documentation, `docs/`, planning/research documents and

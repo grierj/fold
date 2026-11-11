@@ -1,5 +1,10 @@
 # Fold provenance: the starting repo and the architecture change index
 
+History, not current guidance. Section 3 describes the repo as the plan found it and updated it
+through October 2026; section 4 is the index of foundation changes (C1 to C17) made from that
+starting point. The `Cn` ids are stable and still cited by decisions and code. What Fold is today
+is in `AGENTS.md`, the design files in [`../design/`](../design/) and the code.
+
 ## 3. The current repo and what to keep
 
 ### 3.1 What is there today

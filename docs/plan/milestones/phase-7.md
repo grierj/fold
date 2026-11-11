@@ -3,68 +3,160 @@
 ### 14.10 Phase 7: First-church hardening (Audit 2026-11, DEC-145)
 
 Approved Nov 1, 2026. Every milestone below has a coding-agent brief in
-[`briefs/audit-2026-11/`](../briefs/audit-2026-11/00-index.md): slices, files,
-API shapes, tests and acceptance checklists live there; this section is the
-claim list and the order. Claim in [STATUS.md](../../../STATUS.md) before
-starting, one reviewable PR per slice (14.1). Waves: M7.1 first; then
-M7.2/M7.5 with the M5.1 image work; **M7.7 (baseline) before any brief that
-adds schema** (M4.5, M4.9, M6.2, M6.3, parts of M7.4/M7.5) unless its table
-folds into the baseline; then the rest. No new surface beyond these briefs
-and existing milestones until a first church is live (DEC-145).
+[`briefs/audit-2026-11/`](../briefs/audit-2026-11/00-index.md). Slices, files, API shapes, tests
+and acceptance checklists live there; this section is the list and the order. Status is in
+[STATUS.md](../../../STATUS.md), and the old status and receipt text is in
+[`provenance/delivered-phase-7.md`](../provenance/delivered-phase-7.md). Work ships one reviewable
+PR per slice (14.1).
+
+Order: M7.1 first; then M7.2 and M7.5 with the M5.1 image work; M7.7 (the baseline squash) before
+any brief that adds schema; then the rest. No new surface beyond these briefs and existing
+milestones until a first church is live (DEC-145).
 
 **M7.1 Setup takeover: verify and close (SEC1)**
-- Status: done Nov 1, 2026 (`28268b3`, merged in [#241](https://github.com/grierj/fold/pull/241); setup token + locked first-admin transaction; [issue #240](https://github.com/grierj/fold/issues/240) closed).
+- Done (#241): first-run setup needs the setup token, and the first admin is created in one locked
+  transaction ([issue #240](https://github.com/grierj/fold/issues/240) closed).
 - Brief: [`SEC1-R5-R12-security.md`](../briefs/audit-2026-11/SEC1-R5-R12-security.md) (SEC1).
 
 **M7.2 Privacy and session hardening bundle (R5)**
-- Scope: people-search roster gating, logout session revocation + CSRF rotation, EXIF strip on upload (covers the M4.2b logo path too, whichever lands second), room-feed "Reserved" for non-public dates, prod config refusals, uniform invite-friend answer, HTTP timeouts. One slice per leak.
+- Done (#243–#250), one slice per leak: people search no longer reveals rosters; logout ends every
+  session and sign-in rotates the CSRF token; uploads are re-encoded, which drops EXIF and GPS
+  data; room feeds show "Reserved" for dates that aren't public; production refuses a `/0` proxy
+  range, a plain-http `SITE_URL` and insecure cookies; invite-a-friend answers the same whether or
+  not the person has an account; the HTTP server has timeouts; the password minimum counts
+  characters, not bytes.
+- **Planned (M4.2b):** the church logo upload goes through the same re-encode.
 - Brief: [`SEC1-R5-R12-security.md`](../briefs/audit-2026-11/SEC1-R5-R12-security.md) (R5).
 
 **M7.3 Secret rotation and expiring email links (R12)**
-- Scope: dual-key verification for unsubscribe tokens only, scoped expiring email-settings tokens, `SESSION_SECRET` rotation runbook. Sessions never get dual-key acceptance.
+- Not started. Scope: dual-key verification for unsubscribe tokens only, scoped expiring
+  email-settings tokens, and a `SESSION_SECRET` rotation runbook. Sessions never get dual-key
+  acceptance. Today unsubscribe tokens never expire, and changing `SESSION_SECRET` ends them along
+  with every session (M3.3a).
 - Brief: [`SEC1-R5-R12-security.md`](../briefs/audit-2026-11/SEC1-R5-R12-security.md) (R12).
 
 **M7.4 Account erasure (R4, DEC-144)**
-- Scope: independently reviewed per-table inventory first (37 tables today; the "38" in DEC-144 and the brief counted `occurrence_accesses`, which M7.7 folded into `registrations`), then anonymise/delete so deletion erases the person; backups note in the admin screen. Opt-out and suppression records keep a hashed address (10.1): plaintext suppression is a disclosed temporary stage, not approval.
-- Completion: a merged slice is staged progress, not a finished milestone. M7.4 is not complete while personal IP addresses can remain in `audit_logs` (the inventory's gate G-9, section 6.5.2: unattributed teen-conversion completion rows, transfer rows of an unestablished history, and conversion groups retained because a row is malformed or ambiguous) unless the owner authorizes an exact, named disposition here or an approved, implemented, independently reviewed minimization closes it with a per-action safeguarding judgment; DEC-144 allows only an anonymous tombstone, and a reviewer's acceptance or the inventory naming the residue does not change that. **G-9 is open.** *Owner scope recorded Nov 3, 2026 (evening):* asked whether Fold may clear the IP from household-conversion audit entries when an erased person may have caused the conversion, even if it might belong to another living participant, provided it is not essential safeguarding evidence (decisions, actors, dates and provenance remain), the owner answered "Yes, clear those IPs (Recommended)". That authorizes only the concept of the inventory's option P2 within exactly that scope: clear only the `ip` field, only on identified conversion entries, only if not essential safeguarding evidence. It is not an approved design or implementation, does not settle the safeguarding review, does not authorize blanket deletion of audit IPs or any change to separate step rows of living people, does not claim the candidate-set, history or action-filter approach is complete or reaches malformed or unreachable historical rows, and does not establish G-8. The other routes the inventory lists (P1, P3 to P5) are unapproved.
-- Status: claimed Nov 3, 2026. Slice R4-0 (the documentation-only inventory, [`M7.4-ERASURE-INVENTORY.md`](../M7.4-ERASURE-INVENTORY.md)) is merged (PR #268, merge commit `dc15921f3210a315421c517b7b1ce7ccfceda8d6`) after an independent review that signed with conditional gates (inventory sections 15 and 15.1). Slice R4-N (notification safety during erasure, inventory 9.2.4 and 9.2.5) is merged (PR #269, merge commit `6c44b85c1859bd9b7b63ef623a1f51cc951f5b79`); it changes no schema, UI, policy or gate. Slice R4-H (a replacement host before account deletion, owner decision 3; inventory T08, M9 and F-2) is merged (PR #270, merge commit `369c45121d599a39e32be1b9e9153a5a7c96f5e6`): deleting the only non-deleted host of a church-wide event now needs a host the admin picks, hosting changes commit with the deletion, and deleted accounts no longer count as hosts. It adds no migration, changes no gate, and erases no identity data. (The terminal add-request `reason` and ages-note question, O-7, was put to the owner, who allowed a narrow erasure-only exception to scrub only the erased person's identifying text while preserving request decisions and provenance, recorded as the Nov 3, 2026 amendment to DEC-141; the T07 gate verdicts are now recorded in inventory section 15.3: G-7a and G-7b rejected, G-7c signed as narrowed and G-7d narrowed conditionally; slice R4-T07A (the ages note) is merged in PR #282, and slice R4-T07B (`reason`) is held: Grier has since chosen an admin review step during deletion to decide whether to blank each reason, and a one-time admin review list for accounts deleted before that step exists; both answers are recorded in inventory 15.4, and the revision 8 design and G-7e are approved (inventory 15.4); reason-review implementation, verification and landing remain incomplete.) Slice R4-5 (durable avatar cleanup) is merged (PR #271, merge commit `2aea60a9783ecfa9f56638347ba043ad7cf3ad5d`) and slice R4-S (suppression address hashing, Route B expand, migration `00002`) is merged (PR #272, merge commit `6d5ad07399cd48122df681e233a8aa4d2c92bc45`). Slice R4-1 (tombstone, credentials, throttles, admin invariants) is merged: PR #273, merge commit `5444abaf68cb041577b523a62cca22fc5e4feb51`. Slice R4-2a (dependent records, waiting tasks and the snapshot, expiry and guest-redemption lock orders it needs; no `contact_requests` statement) is delivered on `autoflow/m74-r4-2a-20261104`. R4-2a is merged: PR [#275](https://github.com/grierj/fold/pull/275), merge commit `b4092e7f1ead749e7cce4979e9572f1701836747`. On that branch deleting an account also withdraws its pending account requests, anonymizes its account requests, invitations and confirmed guest signups, deletes its unconfirmed guest signups, development-outbox mail, undo receipts, manager-add blocks and delivery rows, cancels its scheduled announcements, scrubs the address and error text of its recipient rows and clears the free-text and capability fields of its registrations, with the lock orders and the one new deadlock limit (D4) recorded in inventory 9.5 and the three separate in-flight budgets (provider, database statement, HTTP) in 9.4. It adds no migration, gate, decision or UI change and writes no `contact_requests` statement. R4-2d1a (the `setConsent` lifecycle guard) is merged: PR #274, merge commit `cc1f9915da6eff1c5c12007d6add0d7f71558198`; the consent scrub is merged in R4-2d1b. Slice R4-SG (the CI contract-migration gate, PLAN 14.1 tag-and-file half; publication stays review only) is merged: PR [#276](https://github.com/grierj/fold/pull/276), merge commit `06cc31d0ac3f01eddf8bb100e65da3c4cdc603fd`. Slice R4-2d1b (consent evidence scrub, the rest of R4-2d1) is merged: PR #278, merge commit `4bb3e1e6d2d6bf5afdbcd3426a0e5a19c80e4707`. Deleting an account also blanks the `ip`, `user_agent` and `evidence_text` of its consent rows (migration `00003_consent_erasure_scrub.sql`, additive, with its Down restoring the baseline body), right after the soft delete and serialized with `setConsent` on the user row; every other column, the opt-out choice, `teen_consents` and `suppressions` stay. It changes no gate, decision or UI. R4-2d2 (the address-level opt-out, O-1) is implemented locally under decision 8 and the approved revision 2 design, with final verification and landing pending; C2 and closure on master need PUB-1 merge (inventory 7.6 and 15.8). Slice R4-3a (household writer revalidation, inventory 9.6 requirements 1 to 4) is merged: PR [#277](https://github.com/grierj/fold/pull/277), merge commit `e806cf3e8562f916381f990593ae975adba1dad8`. Migration token: R4-T07A merged in PR #282; the migration token is released at that merge. Identity erasure is staged, not done (R4-1 erases only the user-row identity, the account's credentials and devices, and its owned throttle keys, and R4-2a's dependent records are merged; contact-request text, households, audit IPs, suppression storage and legacy tombstones stay with their named slices; R4-3b, the household and guardian step, and R4-CTX, the bounded deletion transaction it needs, are committed locally and staged, neither pushed nor merged: deleting an account then also removes its household seat, anonymizes the household person row of the same individual, revokes their guardian links and scrubs a household only when nobody else is left in it, with the lock census, retry and the deadlock limit that remains recorded in inventory 9.6.1 and 15.6), the remaining slices (R4-T07B, R4-2d2, R4-3b, R4-4, R4-SC, R4-6) are not merged, and M7.4 is not complete; gates G-8, G-9, O-1, O-2 and O-15 remain open, G-7d's condition (4) is closed by the recheck record and its condition (5) stays open for R4-T07A until merge (inventory 15.3), reason review is not implemented (R4-T07B is held, so `reason` stays as written), and C4 is not met. See [STATUS.md](../../../STATUS.md). Migration `00006_admin_operation_attempts.sql` originally staged dormant receipt storage; T07B-1b now uses and cleans it locally (inventory T39 and 15.9); reason-review behavior remains pending and C4 is unchanged. Locally staged migration `00007_reason_review_erasure_scrub.sql` (T07B-2a) adds the DEC-141-scoped, DEC-138-additive database licence to blank a `reason` on a non-contact, non-pending request with a soft-deleted party, with no caller or reason writer; verification and landing are pending (inventory 15.4).
-- R4-4a wiring staged locally (Nov 6, 2026): the deletion transaction now scrubs attributable audit IPs and exact subject metadata keys after dependent records, with the throttle cleanup still last. `activityEntriesKept` counts subject-linked RETAIN_* rows with nonempty IPs plus distinct discovered conversion rows, including already-empty conversion IPs; it excludes unrelated database-wide residue and overlapping malformed-nomination diagnostics. It is not proof of IP ownership or a complete residue count. R4-GR-IP found no essential-IP exception and confirmed Class B blanking and the member-inviter requester rule. Inventory [6.9](../M7.4-ERASURE-INVENTORY.md#69-r4-4a-implementation-record-staged-nov-6-2026) records the attribution table, every unattributed action as Q3 residue and IR-1 to IR-4. Targeted and full Go checks, lint, deadcode, TypeScript and the deletion-panel test passed on the staged candidate; the independent review passed and local landing remains pending. Conversion IPs are unchanged, R4-4b is gated, G-8 unestablished and G-9 OPEN. No gate or owner decision changes; M7.4 remains staged and incomplete.
-- R4-6b staged locally (Nov 6, 2026): `f95a474` implements the single-tombstone L0–L15 pipeline and `e0324e7` registers `erasure.tombstone_sweep`, `erasure.tombstone_page` and `erasure.tombstone` with the existing job runner. Discovery queues at most 200 subjects and one continuation atomically per page. One subject runs under the contact gate, its exact tombstone row lock and a two-minute context; a numeric `user.erasure_swept` version committed with the scrub is the durable completion marker for that version's work. Retained id links select the dependent records, with no address reconstruction or address-only selection. O-17 is unknown per subject; church-wide candidate counts cannot prove erased ownership. Inventory [12.1 to 12.3](../M7.4-ERASURE-INVENTORY.md#121-r4-6b-tombstone-pipeline-staged-nov-6-2026) records the pipeline, limits, report queries, recovery, measurement and prior test/review evidence. R4-6b-V docs are an uncommitted local candidate; integration landing, four-concern review of that candidate and final verification on the exact integration head remain pending. This records no push, publication or new product decision. R4-4b conversion-IP work, R4-T07B reason review, suppression contraction and remaining R4-6 coverage, UI, restore and hand-check work stay with their slices. R4-2d2 address-level opt-out behavior is implemented locally only (10.1, inventory 7.6 and 15.8). G-8 remains unestablished, G-9 and DG-9 OPEN, and O-1, O-2, O-15 and the T07 gates are unchanged. M7.4 remains staged and incomplete.
-- R4-T07B-1 (1b machinery and 1c panel) staged locally (Nov 6, 2026): committed as `cd3ad9a`, `99fd0b3` (merge of the reason schema) and `5f941e6`; unpushed, unmerged, unpublished. It adds the restore barrier (a boot step and a commit-aware ticket: the ticket is taken first under the turn, and the in-memory floor is raised only on an acknowledged COMMIT before the turn is released), process-bound attempt ids with a memory ledger, a 24-hour receipt (T39) and an authorized settle, the actor seal (`FOR SHARE NOWAIT`, last locking statement), the codes `attempt_expired`, `attempt_closed`, `attempt_busy`, `restore_detected` and `admin_account_busy`, recovery level 1, and the delete panel's outcome states. An id runs at most once, only in its minting process, only if first submitted within 10 minutes; nothing is promised after a restart or 60 minutes. The fence detects only a restore that loses a commit this process saw acknowledged: a stored value alone detects nothing, and a dump taken after the last acknowledged commit, a restore that loses only an unknown commit, and a restore while the process is stopped are not detected (they answer `applied` or `history_unavailable`, never `not_applied`). A build-tagged, environment-gated test clock (`e2eclock`, `FOLD_E2E_CLOCK=1`) serves only the browser tests. Prior candidate evidence (checks and independent rechecks that passed on uncommitted trees on `8989979` for 1b and `99fd0b3` for 1c) and its limits are inventory 15.9; no check is recorded at the current head. Pending: exact-head full checks including `make e2e` and verify-ui, a four-concern integration review, the deployment-level drill of the first level-1 candidate (provision and upgrade paths refusing the level-0 targets before any backup, release record, checkout or pin), local landing, and R4-6c-R's tooling and procedure, which must land and be verified before any release at `recoveryPolicy >= 1` is published. C4 is not met; reason review (T07B-2, T07B-3) is not built; M7.4 is not complete and every other gate is unchanged. Hand checks for the first church (best effort, DEC-128; listed in [`docs/FIRST-CHURCH-CHECKS.md`](../../FIRST-CHURCH-CHECKS.md)): (1) on a disposable copy of the droplet, dump the database, delete an account, restore the dump into the running app and press Delete on another throwaway account: Fold says it noticed the restore and is restarting, and Delete stays off until the users list reloads (these steps are interim; R4-6c-V replaces them); (2) under Compose, the app container restarts once by itself, `/healthz` returns within a minute and it does not loop; (3) an attempt made before the restore settles `history_unavailable` and resubmitting it answers `attempt_expired`, with the panel's wording never "Nothing was deleted by this attempt."; (4) a lost answer on a real connection shows "Still checking" and then the true result.
-- R4-6c-R and R4-6c-V restore tooling and interim operator notes, staged locally (Nov 6, 2026): `restore.sh` and `compose.recovery.yml` (committed locally as `a0969a8`) restore a `backup.sh` dump into a fresh database swapped in whole and keep the public site closed and background deliveries paused in a worker-free private recovery instance (`127.0.0.1:18080`, SSH tunnel) until the admin has deleted again whoever was deleted after the dump, then `--reopen` (with `--checked-church-records` when the count is above zero or unknown). `backup.sh` and its expiry are suspended while `recovery.lock` exists (exit 75, no retry); `ops.lock`, `backup.lock` and `recovery.lock` are never deleted; `upgrade.sh --rollback` hands off to `restore.sh --reopen-if-none` and reopens alone only at a count of exactly zero (otherwise exit 3, site closed); `--abort` works only before the swap; a lower recovery level is refused on every scripted path, forward upgrades included; a Droplet Backup restore is outside the protection; no list of deleted accounts exists (R4-6e-R waits on owner question Q5); `restore.sh` does not restore uploads. The operator notes are in `docs/DEPLOY-DIGITALOCEAN.md` and the hand checks in `docs/FIRST-CHURCH-CHECKS.md`; inventory 11 and 15.10 record the evidence. The full `restore-drill.sh` run "drill16" passed on an uncommitted candidate whose base was `3a97ff9`: prior candidate evidence, not a run at the current head. Pending: exact-head full checks (`make e2e`, `make compose-smoke`, a full `restore-drill.sh`), the real level-1 crossing drills, independent review, local landing and the first-church hand checks. `recoveryPolicy >= 1` must not be published until the tooling and procedure land and are verified. C4 is not met, M7.4 is not complete, and nothing here claims full erasure.
+- Scope: an independently reviewed per-table inventory first, then anonymise or delete so that
+  deleting an account erases the person, with a backups note in the admin screen. Opt-out and
+  suppression records keep a hashed address (10.1); plaintext suppression addresses are a
+  disclosed temporary stage, not approval.
+- Delivered so far (how it works: [`docs/agents/erasure.md`](../../agents/erasure.md)):
+  - The inventory, [`M7.4-ERASURE-INVENTORY.md`](../M7.4-ERASURE-INVENTORY.md), written over the
+    37 tables of the M7.7 baseline. Migrations `00005` and `00006` have since added
+    `email_address_optouts` and `admin_operation_attempts`.
+  - One erasure pipeline, `eraseAccountIn`, run by the admin delete and by the daily tombstone
+    sweep (`erasure.tombstone_sweep`, `erasure.tombstone_page`, `erasure.tombstone`), which
+    reaches accounts deleted before the pipeline existed.
+  - Deleting an account scrubs the user row to a tombstone and deletes the account's tokens,
+    calendar link, push devices and owned throttle keys. The `avatar.cleanup` job removes the
+    photo file.
+  - It anonymises or deletes the account's dependent records: account requests, invitations,
+    guest signups, development-outbox mail, scheduled announcements, announcement recipient rows,
+    undo receipts, delivery rows and registration free text. It also blanks consent evidence (IP,
+    user agent, evidence text).
+  - Contact-request text: the childcare ages note is cleared, and each `reason` is kept or
+    blanked by the admin's choice in a review step inside the delete panel (owner decision 6).
+  - Households: the account's seat is removed, person rows for the same individual are
+    anonymised, their guardian links are revoked, and a household's name and address are scrubbed
+    only when nobody else is left in it. Shared households are kept and counted.
+  - Audit rows: attributable IPs and subject metadata are scrubbed, and the delete answers with
+    counts of what it kept (`householdsKept`, `activityEntriesKept`).
+  - Deleting the only host of a church-wide event needs a replacement host the admin picks. Notice
+    fan-outs skip erased recipients.
+  - Suppressions store an address hash beside the plaintext, the expand step (`00002`). An
+    erased person's optional email choices survive as address-hash records (`00005`, owner
+    decision 8).
+  - Deletion outcomes: attempt ids with a settle route, the restore barrier, the actor seal and
+    the delete panel's outcome states. The panel tells the admin what a delete cannot reach
+    (backups until they expire, copies already sent, some activity-log IP addresses).
+  - Operator recovery: `deploy/digitalocean/restore.sh` and `compose.recovery.yml` restore a
+    nightly dump into a private recovery instance. Scripted provision, upgrade and rollback refuse
+    a lower recovery level. The tree is at recovery level 2 (`deploy/recovery-policy`).
+  - A CI gate refuses a contract migration whose expand step is not in an earlier tagged release
+    (`scripts/contract-gate.sh`).
+- Done means conditions C1–C5 hold on master ([#311](https://github.com/grierj/fold/issues/311)).
+  The personal-IP gate (G-9) and the owner's Nov 3 answer on conversion IPs are recorded in
+  inventory section 6.5.2 and owner decision 5.
+- Open work:
+  - [#300](https://github.com/grierj/fold/issues/300) verify the slices that landed together at
+    one exact head, with a four-concern review.
+  - [#301](https://github.com/grierj/fold/issues/301) and
+    [#302](https://github.com/grierj/fold/issues/302) the one-time review list for reasons of
+    accounts deleted before the review step existed (owner decision 7): API, then page.
+  - [#303](https://github.com/grierj/fold/issues/303) and
+    [#305](https://github.com/grierj/fold/issues/305) design, review and build conversion-IP
+    minimisation (R4-4b).
+  - [#304](https://github.com/grierj/fold/issues/304) the owner's disposition for audit IP
+    residue no retained key reaches (G-9, Q3).
+  - [#306](https://github.com/grierj/fold/issues/306) contract suppressions to hash-only, after a
+    tagged release that holds `00002` (R4-SC).
+  - [#307](https://github.com/grierj/fold/issues/307) and
+    [#308](https://github.com/grierj/fold/issues/308) the final restore procedure (owner question
+    Q5), delete-dialog disclosure and restore docs.
+  - [#309](https://github.com/grierj/fold/issues/309) an end-to-end sentinel proof that erasure
+    leaves only the named residue.
+  - [#310](https://github.com/grierj/fold/issues/310) exact-head recovery drills and real-droplet
+    checks. No release at `recoveryPolicy >= 1` is published before they pass.
+  - [#311](https://github.com/grierj/fold/issues/311) milestone sign-off against C1–C5.
+  - Follow-ups: [#312](https://github.com/grierj/fold/issues/312) (deletion e2e helper),
+    [#313](https://github.com/grierj/fold/issues/313) (recovery level docs), and the
+    reason-review test follow-ups [#292](https://github.com/grierj/fold/issues/292)–[#298](https://github.com/grierj/fold/issues/298).
 - Brief: [`R2-R3-R4-people.md`](../briefs/audit-2026-11/R2-R3-R4-people.md) (R4).
 
 **M7.5 Notification delivery outbox (R6)**
-- Scope: transactional delivery intent with retries/backoff/dead state on the existing delivery ledger, dead-job admin alerts, password-reset mail onto jobs.
+- Done (#253–#256): `notify.Send` writes a queued email delivery row and a `notify.deliver` job in
+  the notice's own transaction, and the job sends with retries, backoff and a dead state. An
+  hourly `notify.reconcile` sweep re-queues orphaned deliveries. A dead job raises one bell alert
+  per admin (`system.job_dead`), and Admin → System shows delivery counts. Password reset and the
+  other account and guest mail run as id-only jobs; the email-change notice and the guest
+  confirmation stay synchronous on purpose (`docs/agents/mail.md`).
+- Left for later: rechecking visibility when stored notice email is sent, and whether dismissing a
+  dead job also recalls queued pushes, are owner questions. A `notifications(created_at)` index
+  waits on M7.6's EXPLAIN gate.
 - Brief: [`R6-R11-reliability-perf.md`](../briefs/audit-2026-11/R6-R11-reliability-perf.md) (R6).
 
 **M7.6 Query ceilings and pool cap (R11)**
-- Scope: incremental occurrence `Extend` (DEC-91 preserved), batched reminder readers, jobs lease index, SQL fast paths only where visibility semantics are identical, explicit DB pool cap. Acceptance needs the seeded EXPLAIN proof in the brief; today's numbers are estimates.
+- Not started. Scope: incremental occurrence `Extend` (DEC-91 preserved), batched reminder
+  readers, a jobs lease index, SQL fast paths only where visibility semantics are identical, and
+  an explicit database pool cap. Acceptance needs the seeded EXPLAIN proof in the brief; today's
+  numbers are estimates.
 - Brief: [`R6-R11-reliability-perf.md`](../briefs/audit-2026-11/R6-R11-reliability-perf.md) (R11).
 
 **M7.7 Baseline squash (R9, DEC-138)**
-- Scope: one generated baseline replacing the current chain (63 SQL files through `00064`, with `00021` absent; the audit saw 61 files through `00062`), real `date` types where the brief allows, provenance folded into `registrations`, additive-first rule replacing expand/contract. Preconditions gate in the brief is a hard stop.
-- Sequence: four reviewed PRs. **S1** (documentation only) records the sequence, the owner's statements and the agreed technical corrections. **S2** generates the schema-equivalent baseline, proves it by `pg_dump` diff and activates the replacement rules (`AGENTS.md`, 14.1, C1, "Done means"). **S3** changes the two date columns. **S4** folds exact-date provenance into `registrations`. S1 changes no migration and no operative rule; S2 opens only after the brief's squash preflight (refreshed release and deployment evidence, isolated proof databases, an announced migration freeze).
-- Status: complete Nov 3, 2026. S1 #258, S2 #264, S3 #265 and S4 #266 merged. The final baseline has 37 tables, typed calendar dates and registration access provenance. Independent review, schema allowlist, full suites and all four CI jobs passed. The S5 close-out in the brief records merge SHAs, owner attestation and release of the migration freeze; see [STATUS.md](../../../STATUS.md) for verification totals.
+- Done (#258, #264, #265, #266): one generated baseline, `00001_baseline.sql` with 37 tables,
+  replaced the old migration chain. Calendar dates use real `date` columns, exact-date provenance
+  lives on `registrations`, and the additive-first rule replaced expand/contract (14.1). The
+  close-out is in the brief, R9 section 9.
 - Brief: [`R9-baseline-squash.md`](../briefs/audit-2026-11/R9-baseline-squash.md).
 
 **M7.8 People and own-data export (R3 export half)**
-- Scope: admin people CSV export (round-trips M4.5 import columns) and a person's own-data export, audited. TOTP itself is M4.9.
+- Not started. Scope: an admin people CSV export that round-trips the M4.5 import columns, and a
+  person's own-data export, both audited. TOTP itself is M4.9.
 - Brief: [`R2-R3-R4-people.md`](../briefs/audit-2026-11/R2-R3-R4-people.md) (R3).
 
 **M7.9 Frontend speed and discoverability (R15)**
-- Scope: lazy detail pages + tighter bundle budget, small `api.ts` query cache that dies on logout, shared directory/calendar filters, `ConfirmDialog` everywhere, phone/tablet Messages nav, directory-first signed-out Home.
+- Not started. Scope: lazy group and event detail pages with a tighter bundle budget, a small
+  query cache in `web/src/api/core.ts` that dies on logout, shared directory and calendar filters,
+  `ConfirmDialog` in place of every `window.confirm`, Messages in the phone and tablet nav, and a
+  directory-first signed-out Home.
 - Brief: [`R15-R16-frontend.md`](../briefs/audit-2026-11/R15-R16-frontend.md) (R15).
 
 **M7.10 Generated web types (R16)**
-- Scope: Go generator emits `web/src/types.ts`; CI diff check; contract guard shrinks to auto-discovery.
+- Not started. Scope: a Go generator emits `web/src/types.ts`, CI checks the diff, and the
+  contract guard (`TestWebTypesMatchGoJSON`) shrinks to auto-discovery.
 - Brief: [`R15-R16-frontend.md`](../briefs/audit-2026-11/R15-R16-frontend.md) (R16).
 
 **M7.11 Contact locks inside the freeze (R19, DEC-141)**
-- Scope: per-request row locks replace the global contact advisory lock, concurrency tests included; no API/schema/policy change.
+- Not started. Scope: per-request row locks replace the global contact advisory lock
+  (`lockContacts`), with concurrency tests; no API, schema or policy change.
 - Brief: [`R13-R17-R18-R19-governance.md`](../briefs/audit-2026-11/R13-R17-R18-R19-governance.md) (R19).
 
 **M7.12 Cut execution and maintenance tax (R17 code half, R18)**
-- Scope: delete the dead Go SMS counter (TS stays the one live counter), tier `guards_test.go` without weakening security/privacy/contract guards, finish the UI ratchet, `go:embed` templates, shrink STATUS/SUMMARY. The wording half of R17 landed with DEC-140.
+- Scope: delete the dead Go SMS counter (TS stays the one live counter), tier the guard tests
+  without weakening security, privacy or contract guards, finish the UI ratchet, `go:embed` the
+  templates, and shrink STATUS and SUMMARY. The wording half of R17 landed with DEC-140.
+- In progress. Done: the Go SMS counter is gone, the guards are split by concern into
+  `guards_*_test.go`, the templates are embedded, `STATUS.md` is one short table, and `SUMMARY.md`
+  is in `provenance/`. Remaining: the guard tiers (the brief's tier header and
+  `scripts/lint-repo.sh`) and the UI ratchet down to zero (`ui-ratchet.json` still has counts).
 - Brief: [`R13-R17-R18-R19-governance.md`](../briefs/audit-2026-11/R13-R17-R18-R19-governance.md) (R17.1, R18).
-

@@ -1,5 +1,7 @@
 # Fold: product and delivery summary
 
+> History, not current guidance. Superseded by `STATUS.md` (status), `docs/plan/PLAN.md` §15.2 (open questions) and the design files (Nov 10, 2026).
+
 Reconciled October 27, 2026 against merged work through M1.14 series RSVP/Undo
 PR #130 (merge `7229e92`, reviewed head `5f927ce`) and the locally validated
 departure publication head `deb093d`. [PLAN.md](../PLAN.md) owns product decisions;

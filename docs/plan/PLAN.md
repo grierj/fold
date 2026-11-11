@@ -1,37 +1,58 @@
 # Fold: Architecture and Development Plan
 
-Status: active product plan. Phases 0 and 1 are complete (through PR #184, Oct 30, 2026). Decisions run through DEC-146 (DEC-137 branding; DEC-138–DEC-145 audit 2026-11; DEC-146 up-to-date merges).
-Repo: https://github.com/grierj/fold. [STATUS.md](../../STATUS.md) tracks delivery; [documentation review](provenance/DOCUMENTATION-REVIEW.md) records remaining conflicts and gaps.
+Fold is church small-group, ministry and activity management: the group-management slice of
+ChurchTrac, without the rest of it. This is the product plan: what Fold is for, how it is designed,
+what is built, and what comes next. Repo: https://github.com/grierj/fold.
 
-How to use this document:
+## How to use this plan
 
-- People: read sections 1 to 4 for the shape of the project, section 12 for the vendor and hosting picks, and section 15 for Grier's decisions and remaining open questions.
-- Agents: read section 3 (what exists), section 5 (architecture), and section 6 (permissions). Then pick one milestone in section 14. Each milestone lists its scope, acceptance criteria, and tests. Split high-complexity work into thin end-to-end slices, one reviewable PR per slice (14.1). Do not start a milestone until the ones it depends on are merged.
-- Precedence: Grier's decisions (section 15, through DEC-146; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
-- Clean break (DEC-22): no church runs Fold yet. Nothing in the current repo's data or schema has to be preserved. Any part of the skeleton may be changed if the result still meets the requirements in section 2.
-- Words like MUST and MUST NOT are hard rules. "Should" means the default; you may deviate if you write down why in the PR.
+- **Where things live.** This file holds the goals, the requirements, the milestone rules and an
+  index. The design is in [`design/`](design/), one file per section (5 to 13). Milestones are in
+  [`milestones/`](milestones/), one file per phase. Grier's decisions are in
+  [`decisions.md`](decisions.md). Delivery status is in [`STATUS.md`](../../STATUS.md) and nowhere
+  else. History and evidence (verification records, as-delivered milestone text, slice histories)
+  are in [`provenance/`](provenance/README.md) and are not current guidance.
+- **Built or planned.** The design files describe what is built, in the present tense. Anything not
+  built yet is marked **Planned (Mx.y)** with the milestone that owns it. `docs/API.md` is the
+  shipped HTTP contract and `docs/DEPLOY-DIGITALOCEAN.md` the runnable install guide.
+- **People** start with sections 1 and 2 below, then the decisions and `STATUS.md`.
+- **Agents** read `AGENTS.md`, the design sections for the area, and one milestone in
+  [`milestones/`](milestones/). Follow the rules in 14.1. Do not start a milestone until the ones
+  it depends on are merged.
+- **Precedence.** Grier's decisions win over the requirement wording and over anything else in the
+  repo, `AGENTS.md` and `README.md` included; a later decision wins over an earlier one. When the
+  repo disagrees with this plan, fix the repo in the milestone that owns the item, or fix the plan
+  if the plan is what's wrong.
+- **Stable ids.** Section numbers (code cites "PLAN 7.3"), `DEC-n` decisions, `Cn` architecture
+  changes ([provenance/foundations.md](provenance/foundations.md)), `Mx.y` milestones, and the
+  `D`/`F` requirements below never change meaning or number.
+- **Clean break (DEC-22).** No church runs Fold yet, so nothing in today's data has to be preserved.
+  The pre-live window for editing the baseline migration closes at the first tagged release or the
+  first church deployment (DEC-138).
+- MUST and MUST NOT are hard rules. "Should" is the default; you may deviate if you write down why
+  in the PR.
 
----
+## Index
 
-## Table of contents
-
-1. Goals and non-goals (below)
-2. Grier's requirements (below)
-3. The current repo and what to keep: [provenance/foundations.md](provenance/foundations.md)
-4. Architecture change index: [provenance/foundations.md](provenance/foundations.md)
-5. Architecture: [design/05-architecture.md](design/05-architecture.md)
-6. Permissions matrix: [design/06-permissions.md](design/06-permissions.md)
-7. Messaging pipeline: [design/07-messaging.md](design/07-messaging.md)
-8. Calendar and ICS feeds (F2): [design/08-calendar.md](design/08-calendar.md)
-9. Rooms and the room-suggestion rule (F3, F4): [design/09-rooms.md](design/09-rooms.md)
-10. Security and privacy: [design/10-security.md](design/10-security.md)
-11. Deployment, setup wizard, upgrades, backups: [design/11-deployment.md](design/11-deployment.md)
-12. Third-party services and hosting: [design/12-providers.md](design/12-providers.md)
-13. Extra features from research: [design/13-research-features.md](design/13-research-features.md)
-14. Phased roadmap and milestones (below; phases in [milestones/](milestones/))
-15. Decisions: [decisions.md](decisions.md); still open (below)
-16. Appendix A: [provenance/appendix-a-agents-deployment.md](provenance/appendix-a-agents-deployment.md)
-17. Appendix B: Sources and unverified facts: [design/12-providers.md](design/12-providers.md)
+| § | Section | File |
+|---|---|---|
+| 1 | Goals and non-goals | below |
+| 2 | Grier's requirements | below |
+| 3 | The starting repo and what to keep (history) | [provenance/foundations.md](provenance/foundations.md) |
+| 4 | Architecture change index, C1 to C17 (history) | [provenance/foundations.md](provenance/foundations.md) |
+| 5 | Architecture: components, code layout, data model, capacity, jobs, providers, storage, video, time zones, accounts and households, contact privacy, notifications | [design/05-architecture.md](design/05-architecture.md) |
+| 6 | Permissions matrix | [design/06-permissions.md](design/06-permissions.md) |
+| 7 | Messaging pipeline | [design/07-messaging.md](design/07-messaging.md) |
+| 8 | Calendar and ICS feeds | [design/08-calendar.md](design/08-calendar.md) |
+| 9 | Rooms and room suggestions | [design/09-rooms.md](design/09-rooms.md) |
+| 10 | Security and privacy | [design/10-security.md](design/10-security.md) |
+| 11 | Deployment, setup wizard, upgrades, backups | [design/11-deployment.md](design/11-deployment.md) |
+| 12 | Third-party services and hosting (17, sources, is at its end) | [design/12-providers.md](design/12-providers.md) |
+| 13 | Extra features from research | [design/13-research-features.md](design/13-research-features.md) |
+| 14 | Roadmap: rules and releases below; phases 0 to 7 | [milestones/](milestones/) |
+| 15 | Decisions; still-open questions below | [decisions.md](decisions.md) |
+| 16 | Original AGENTS.md deployment outline (history; Render reference for M5.5) | [provenance/appendix-a-agents-deployment.md](provenance/appendix-a-agents-deployment.md) |
+| 17 | Sources and unverified facts | [design/12-providers.md](design/12-providers.md) |
 
 ---
 
@@ -39,22 +60,41 @@ How to use this document:
 
 ### Goals
 
-1. Give a church one place for groups, events, RSVPs, rooms, and group messaging (email and SMS). It replaces the social and group parts of ChurchTrac and borrows Meetup's events-and-groups model.
-2. Self-host first. A church member who is comfortable with a Linux VPS can install it in under an hour with `docker compose`. A VPS with Compose is the only recommended deployment for now; a managed platform (Render) is a later, on-request option (12.5, DEC-26).
-3. Single-tenant. One deployment serves one church. Fold is free, open-source (MIT) give-away software (DEC-11). "Hosted" means someone (Grier, rarely, or anyone) runs one deployment per church. Hosting terms and any fee are agreed case by case and are not meant to make money (DEC-10). The church brings and owns its own email, SMS, and hosting accounts, even when hosted, unless there is a special agreement (DEC-2).
-4. Few external dependencies. Only email, the host, and (for texting) SMS are needed outside the box. The only database is PostgreSQL, run by Docker Compose in production, development, and tests (DEC-1, DEC-24). Everything else (object storage, video, DNS automation) is optional. **Self-contained by default (DEC-43):** Fold builds what it needs itself and adds an outside service only when that keeps deployments simple or a church asks for it. Notifications, for example, are built in Fold with no vendor (DEC-42, 5.12).
-5. Every external dependency can be set up by API: by the app's setup wizard, by the `fold` CLI, or by an AI agent following `AGENTS.md`. A power user can still do every step by hand.
-6. Every proprietary dependency sits behind an adapter interface. Build one real adapter per kind (plus the `devoutbox` for tests), and add a second only when a church demands it (DEC-140). For example SMTP and Postmark for email exist because the first churches need both a generic fallback and a deliverability default; SMS v1 is Telnyx only, and Twilio waits for a church that asks.
-7. Familiar UI. Meetup is the primary UI and design reference: copy its patterns (group cards, date badges, RSVP buttons), as the repo already does. ChurchTrac is the secondary reference, for church-admin screens Meetup has no equivalent for (people and households, rooms, attendance, consent, setup).
+1. Give a church one place for groups, events, RSVPs, rooms, and group messaging (email, push and,
+   later, SMS). It replaces the social and group parts of ChurchTrac and borrows Meetup's
+   events-and-groups model.
+2. Self-host first. A church member who is comfortable with a Linux VPS can install it in under an
+   hour with `docker compose`. A VPS with Compose is the only recommended deployment for now; a
+   managed platform (Render) is a later, on-request option (12.5, DEC-26).
+3. Single-tenant. One deployment serves one church. Fold is free, open-source (MIT) give-away
+   software (DEC-11). "Hosted" means someone (Grier, rarely, or anyone) runs one deployment per
+   church. Hosting terms and any fee are agreed case by case and are not meant to make money
+   (DEC-10). The church brings and owns its own email, SMS, and hosting accounts, even when hosted,
+   unless there is a special agreement (DEC-2).
+4. Few external dependencies. Only email, the host, and (for texting) SMS are needed outside the
+   box. The only database is PostgreSQL, run by Docker Compose in production, development, and
+   tests (DEC-1, DEC-24). Everything else (object storage, video, DNS automation) is optional.
+   **Self-contained by default (DEC-43):** Fold builds what it needs itself and adds an outside
+   service only when that keeps deployments simple or a church asks for it. Notifications, for
+   example, are built in Fold with no vendor (DEC-42, 5.12).
+5. Every external dependency can be set up by API: by the app's setup wizard, by the `fold` CLI, or
+   by an AI agent following `AGENTS.md`. A power user can still do every step by hand.
+6. Every proprietary dependency sits behind an adapter interface. Build one real adapter per kind
+   (plus the `devoutbox` for tests), and add a second only when a church demands it (DEC-140). SMTP
+   and Postmark both exist for email because the first churches need a generic fallback and a
+   deliverability default; SMS v1 is Telnyx only, and Twilio waits for a church that asks.
+7. Familiar UI. Meetup is the primary UI and design reference: copy its patterns (group cards, date
+   badges, RSVP buttons). ChurchTrac is the secondary reference, for church-admin screens Meetup
+   has no equivalent for (people and households, rooms, attendance, consent, setup).
 
 ### Non-goals
 
-- Multi-tenant SaaS (one database for many churches). The repo already rules this out, and this plan keeps it that way.
+- Multi-tenant SaaS (one database for many churches).
 - Giving, donations, pledges, fund accounting, contribution statements. See 13.3 for the reasons.
 - SQLite or any database other than PostgreSQL (DEC-1, DEC-24).
-- Migrating data from the current skeleton (DEC-22). There are no installs to upgrade.
-- Python, anywhere in the repo or its tooling (repo rule; DEC-22).
-- Accounts for anyone under 13. Younger children exist only as household people with no login (DEC-8).
+- Python, anywhere in the repo or its tooling (DEC-22).
+- Accounts for anyone under 13. Younger children exist only as household people with no login
+  (DEC-8).
 - Teens as group leaders or event hosts (DEC-18).
 - Translations and an i18n framework. Plain English strings in the code are fine (DEC-13).
 - Embedded video calls inside Fold. Link-out and generated Jitsi links only, for now (DEC-16).
@@ -69,15 +109,17 @@ How to use this document:
 
 ## 2. Grier's requirements (traceability)
 
-Each requirement maps to the sections and milestones that satisfy it. Agents: if your change would break one of these, stop and ask.
+Each requirement maps to the sections and milestones that satisfy it. Agents: if your change would
+break one of these, stop and ask. The decisions refine these requirements; where a decision and the
+wording below differ, the decision wins.
 
 | # | Requirement | Where it is handled |
 |---|---|---|
 | D1 | Self-host first | 11, 12.5, M5.x |
 | D2 | Single-tenant SaaS; hosted = one deployment per church. Refined by DEC-2 and DEC-10: the church owns its provider and hosting accounts; terms and fees are case by case and not for profit | 1, 11.6, DEC-2, DEC-10 |
 | D3 | Minimal external dependencies (one database: PostgreSQL, DEC-1) | 5.1, 12, C14 |
-| D4 | Every dependency manageable by AI agents; AGENTS.md Deployment section | 11.4, 11.5, Appendix A, M5.4 |
-| D5 | No added deployment complexity; a power user can do it by hand | 11, 12.5, docs/DEPLOY.md (M5.4) |
+| D4 | Every dependency manageable by AI agents | 11.4, 11.5, `docs/agents/deploy.md`, M5.4 |
+| D5 | No added deployment complexity; a power user can do it by hand | 11, 12.5, `docs/DEPLOY-DIGITALOCEAN.md` (M5.4) |
 | D6 | External deps limited to text, email, simple hosting where possible | 5.1, 12 |
 | D7 | Every dependency has API configuration; the app does as much setup as it can | 11.3, M4.x |
 | D8 | Proprietary deps sit behind adapters: one real adapter per kind, a second only when a church demands it (DEC-140) | 5.6, 12 |
@@ -95,54 +137,75 @@ Each requirement maps to the sections and milestones that satisfy it. Agents: if
 | F12 | Remote attendance flag | 5.3, M1.8 |
 | F13 | Childcare available flag | 5.3, M1.8 |
 
-The decisions in section 15 (through DEC-146) refine these requirements. Where a decision and the wording above differ, the decision wins.
-
 ---
 
 ## 14. Phased roadmap and milestones
 
+Phases: [0 Foundations](milestones/phase-0.md) · [1 Events and people](milestones/phase-1.md) ·
+[2 Rooms](milestones/phase-2.md) · [3 Messaging](milestones/phase-3.md) ·
+[4 Setup and providers](milestones/phase-4.md) · [5 Release engineering](milestones/phase-5.md) ·
+[6 Community features](milestones/phase-6.md) ·
+[7 First-church hardening](milestones/phase-7.md). Each milestone states what it depends on, its
+scope, its acceptance criteria and its tests. Where each one stands is in
+[`STATUS.md`](../../STATUS.md).
+
 ### 14.1 Rules for every milestone
 
-- High-complexity work (database + API + UI, or 3+ tables) must be split early into thin end-to-end slices, one reviewable PR per slice: database, then API/internals, then UI. Smaller milestones may be one PR. This is Grier's Oct 22 rule, replacing the original one-PR-per-milestone assumption.
-- Before starting, read `AGENTS.md`, this plan's sections for the milestone, and the "Depends on" milestones' code.
-- A check only a person can run on real devices or live services (phones, mail providers, TLS on a real domain, SMS) is built best effort and listed in [`docs/FIRST-CHURCH-CHECKS.md`](../FIRST-CHURCH-CHECKS.md) in the same PR; it does not block the merge (DEC-128).
-- Schema changes are additive first, then contracted in the next release (DEC-138, which replaced the Oct 22 14-day expand/contract rule). An expand migration only adds and backfills; the same release reads new-then-old. A contract migration names its expand migration, and CI fails unless that expand shipped in an earlier tagged release. Before the first church, DEC-22 and DEC-138 together allow editing the single baseline migration directly; the window closes at the first tagged release or first church deployment. After that, migrations are never edited again. Two pull requests never merge the same migration number: master requires a pull request to be up to date before it merges, and a duplicate that lands anyway is renumbered in a new PR (DEC-146).
+- Split high-complexity work (database + API + UI, or 3+ tables) early into thin end-to-end
+  slices, one reviewable PR per slice: database, then API and internals, then UI. Smaller
+  milestones may be one PR (Grier's rule).
+- Before starting, read `AGENTS.md`, the plan's design sections for the milestone, and the code of
+  the milestones it depends on.
+- A check only a person can run on real devices or live services (phones, mail providers, TLS on a
+  real domain, SMS) is built best effort and listed in
+  [`docs/FIRST-CHURCH-CHECKS.md`](../FIRST-CHURCH-CHECKS.md) in the same PR; it does not block the
+  merge (DEC-128).
+- Schema changes are expand, then contract (DEC-138): an expand migration only adds and backfills,
+  and a contract migration may only follow in a later tagged release. Two PRs never land the same
+  migration number (DEC-146). The full rules are in `docs/agents/migrations.md`.
 - Done means:
-  - [ ] `go vet ./...` and `go test ./...` pass against PostgreSQL 16 (`make test` locally, a Postgres service container in CI). There is no SQLite job (DEC-1, DEC-24)
-  - [ ] `npm run build` passes in `web/`; from M0.4 on, `npm test` (Vitest) passes too, and any Playwright test the milestone lists passes in CI
-  - [ ] Schema changes are new goose migrations, never edits to old ones (the one exception is the pre-live baseline window, DEC-138), and the `AutoMigrate` drift check shows no drift (C1)
-  - [ ] `docs/API.md` and the SPA types (`web/src/types.ts`) updated for any API change
+  - [ ] `go vet ./...` and `go test ./...` pass against PostgreSQL (`make test` locally, a Postgres
+    service container in CI)
+  - [ ] `npm run build` and `npm test` pass in `web/`, and any Playwright test the milestone lists
+    passes in CI
+  - [ ] Schema changes are new goose migrations (the one exception is the pre-live baseline
+    window, DEC-138), and the drift check shows no drift (C1)
+  - [ ] `docs/API.md` and the SPA types (`web/src/types.ts`) are updated for any API change
   - [ ] Tests use the `devoutbox` providers and `httptest` fakes; never live services
   - [ ] Permissions go through `internal/policy`, with table tests for new rules
-  - [ ] No Python anywhere
-  - [ ] Checklist boxes in this file ticked in the same PR
+  - [ ] The milestone's acceptance boxes are ticked in its phase file, and `STATUS.md` is updated,
+    in the same PR
 
 ### 14.2 Releases
+
+No release has been tagged yet. The table is the intended grouping of milestones into releases;
+milestones are built in dependency order, not release order (rooms, for example, were built before
+the email work).
 
 | Release | Contents | Milestones |
 |---|---|---|
 | v0.2 Foundations | Postgres-only clean baseline, CLI, trusted proxies, CSRF route groups, visibility enum and policy, email login, member removal and sole-leader handoff, security headers and dependency scanning, frontend test tooling | M0.1–M0.4 (M0.3 is M0.3a + M0.3b) |
-| v0.3 Events and people | Events and occurrences (time zones, series edits, church-wide hosts, visibility), email basics, account requests, guests, waitlist and pruning, calendar, ICS, video and flags, households and teen accounts, contact privacy, frontend toolchain upgrades (Vite 8, React 19, Tailwind 4, Node 24), per-date visibility, series RSVP and RSVP-aware calendar | M1.1a–M1.14 |
-| v0.4 Email and push | Jobs, Postmark and webhooks, consent, composer, pipeline (with guardian copies), email reminders, one-to-one messages and reply relay, web push | M3.1–M3.6, M3.11, M3.13 (if v0.4 is already cut, M3.13 goes in v0.5, still before v0.7 SMS) |
-| v0.5 MVP | Encrypted settings, SPA setup wizard, branding and asset customization (draft M4.2b), legal pages, email provisioning, people import, admin two-factor sign-in, images, backups, upgrades, deploy docs, plus the audit 2026-11 first-church floor (setup token, privacy bundle, delivery outbox, baseline squash, erasure, perf fixes, secret rotation): the first version a church can run | M4.1–M4.5, M4.2b, M4.9, M5.1–M5.4, M7.1–M7.7 (14.10) |
+| v0.3 Events and people | Events and occurrences (time zones, series edits, church-wide hosts, visibility), email basics, account requests, guests, waitlist and pruning, calendar, ICS, video and flags, households and teen accounts, contact privacy, frontend toolchain upgrades, per-date visibility, series RSVP and RSVP-aware calendar | M1.1a–M1.14 |
+| v0.4 Email and push | Jobs, Postmark and webhooks, consent, composer, pipeline (with guardian copies), email reminders, one-to-one messages and reply relay, web push | M3.1–M3.6, M3.11, M3.13 |
+| v0.5 MVP | Encrypted settings, SPA setup wizard, branding and asset customization (draft M4.2b), legal pages, email provisioning, people import, admin two-factor sign-in, images, backups, upgrades, deploy docs, plus the first-church hardening floor (setup token, privacy bundle, delivery outbox, baseline squash, erasure, perf fixes, secret rotation): the first version a church can run | M4.1–M4.5, M4.2b, M4.9, M5.1–M5.4, M7.1–M7.7 |
 | v0.6 Rooms | Rooms, by-room view and feed, suggestions | M2.1–M2.3 |
 | v0.7 SMS | Telnyx, keywords and revocation, send window and caps, SMS reminders, member requests, notification preferences and SMS, SMS provisioning | M3.7–M3.9, M3.12, M4.6 |
-| v0.8 CLI | `fold setup` (S3/private-assets adapter cut until a church asks, DEC-140) | M4.8 |
+| v0.8 CLI | `fold setup` (the S3 and private-assets adapter waits until a church asks, DEC-140) | M4.8 |
 | v1.0 | Hardening, sign-up sheets, attendance, security review (Twilio deferred until demanded, DEC-140) | M6.2, M6.3 + fixes |
 | v1.x and later | Community features | Rest of M6 |
-| Future, on request (not committed) | Render Blueprint, Twilio adapter, S3 adapter, ChMS sync, durable audit log — each re-enters only as a new milestone for a named church (DEC-140) | — |
+| Future, on request (not committed) | Render Blueprint, Twilio adapter, S3 adapter, ChMS sync, durable audit log: each re-enters only as a new milestone for a named church (DEC-140) | — |
 
-Rooms (M2) can be built in parallel with M3 once M1.1a is merged.
-
-Phases 0, 1 and 2 (v0.2, v0.3 and the v0.6 rooms work) are complete; Phase 3 (messaging, v0.4) is under way from M3.1, see 14.6.
+---
 
 ## 15. Decisions and remaining open questions
+
+Every decision is in [decisions.md](decisions.md).
 
 ### 15.2 Still open
 
 - DEC-76: where and how members discover public events outside their own groups.
-- DEC-78: whether a person can hide completely (distinct from contact privacy), and whether to rename “private” groups. Until decided, active teens and contact-hidden adults remain searchable; private groups remain visible to signed-in members.
-- DEC-40/M6.15: exact ChMS field ownership and local-control locking. One-way import and no write-back are already decided.
-
-The original notification questions and retention are settled by DEC-44/45. Delivery gaps and future consumers are tracked separately, not invented product decisions.
-
+- DEC-78: whether a person can hide completely (distinct from contact privacy), and whether to
+  rename "private" groups. Until decided, active teens and contact-hidden adults remain searchable;
+  private groups remain visible to signed-in members.
+- DEC-40/M6.15: exact ChMS field ownership and local-control locking. One-way import and no
+  write-back are already decided.

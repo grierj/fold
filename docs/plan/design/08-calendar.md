@@ -4,38 +4,38 @@
 
 ### 8.1 In-app views
 
-- Timeline (`/calendar`): an agenda list grouped by day showing every occurrence the viewer may see. Filters: group, tag, "my events", visibility, childcare, remote. Scrolls forward; a "past" toggle shows history.
-- Week and month grid views (a small calendar component; no heavy dependency needed).
-- By room (`/calendar/rooms`, when rooms are on): one column per room, rows for time, one day or one week at a time. Bookings the viewer cannot see show as grey "Reserved" blocks with no title.
+- `/calendar` (M1.6, DEC-67) shows every date the viewer may see, as Agenda (the default, a list grouped by day that loads 30 days at a time from a "From date"), Week or Month. Filters: "Just mine", a group (or church-wide events), and Remote seats and Childcare chips, shown only when something in view has them (DEC-99). Admins can also show deleted groups' events (DEC-68). Times are in the viewer's zone (DEC-57). The URL holds the state. It reads `GET /api/v1/calendar`, which returns slim rows with no attendance (`api_calendar.go`).
+- Answers on the calendar (M1.14): the words are "Going", "Maybe", "Can't go", "Waitlisted" and "Not answered"; `declined` never appears in copy, and a waitlisted date shows as Going with a "Waitlisted" label. Dates you haven't answered are drawn with a dashed border and a text label, never by fading the text, and each row's accessible name carries its status. On phones, Month view marks days with hollow (unanswered) and filled (answered) dots. Status is never color alone.
+- By room (`/calendar/rooms`, signed-in adults, when rooms are on; M2.2a): one day as a column per room on a time grid, or one week as rooms by days (DEC-108); phones show one room at a time as a day list. Bookings the viewer cannot see show as grey "Reserved" blocks with no title. Restricted rooms are listed for admins only (DEC-104), and only admins see bookings waiting for approval (DEC-109).
 
 ### 8.2 Feeds
 
 | Feed | URL | Auth | Contents |
 |---|---|---|---|
-| Public church feed | `/cal/public.ics` | none | Published public events. No attendee data. Video links only if `video_reveal=always`. |
-| Public group feed | `/cal/groups/<id>.ics` | none; public groups only | That group's public events |
-| Personal feed | `/cal/u/<token>.ics` | secret token in the URL | Option A, "My events" (`mine`, default): the viewer's own scope (DEC-72/73) — occurrences the user is `going`, `maybe` or `waitlisted` for, all events of groups they belong to, church-wide dates, events they host (DEC-7), and events their household people are registered for (DEC-8). Option B, "Everything I can see" (`all`): every date the user may see. Both scopes follow DEC-71/77 from M1.14: Going is `CONFIRMED`, Maybe, Not answered and Waitlisted are `TENTATIVE`, Can't go dates are omitted, an unanswered public date of another group appears only in `all` and only within the 30-day window, and an unanswered church-wide date appears only within the window. Video links included when the user may see them. |
+| Public church feed | `/cal/public.ics` | none | The dates a signed-out visitor may see. No attendee data. Video links only if `video_reveal=always`. |
+| Public group feed | `/cal/groups/<id>.ics` | none; active public groups only | That group's dates a signed-out visitor may see |
+| Personal feed | `/cal/u/<token>.ics` | secret token in the URL | "My events" (`mine`, the default) or "Everything I can see" (`all`), set on the profile (DEC-72, DEC-73); see below. Video links when the user may see them (DEC-70). |
 | One date (DEC-93) | `/api/v1/events/<id>/dates/<date>/calendar.ics` | the date page's own access (signed out for public dates) | A one-time download of that date, with exactly what the date page shows; Going is `CONFIRMED`, Maybe and Waitlisted `TENTATIVE`. Not a subscription. |
-| Room feed | `/cal/rooms/<roomId>/<token>.ics` | admin-issued token | Confirmed bookings for the room. Invite-only and hidden-date bookings are titled "Reserved". |
+| Room feed (M2.2b) | `/cal/rooms/<roomId>/<token>.ics` | admin-issued token | Confirmed bookings for the room on scheduled dates. Only a date whose own visibility (and group) is public shows its details; every other booking is titled "Reserved". Times are the event's, without setup and teardown. |
 
-Personal-feed status follows the **viewer’s own answer** (DEC-71). Household
-registrations supply scope, not the viewer’s RSVP: a household-only Going date is
-`TENTATIVE` when the viewer has not answered. The viewer’s Can't go omits the date
-from both `mine` and `all` even when a household person is Going, without changing
-that person’s registration. Video eligibility is separate from this status.
+Personal-feed scope (DEC-71, DEC-73, DEC-77; `policy.DecideCalendar`):
+
+- `mine` holds dates the user answered, every date of groups they belong to, church-wide dates, events they host (DEC-7), dates their household people are registered for (DEC-8), and dates opened to them on their own. An unanswered church-wide date appears only if it starts in the next 30 days.
+- `all` adds every other date the user may see. An unanswered public date of a group they are not in appears only if it starts in the next 30 days.
+- Can't go dates are omitted from both.
+- Status follows the **viewer's own answer**: Going is `CONFIRMED`; Maybe, Waitlisted and Not answered are `TENTATIVE`. Household registrations supply scope, not the viewer's RSVP: a household-only Going date is `TENTATIVE` when the viewer has not answered. The viewer's Can't go omits the date even when a household person is Going, without changing that person's registration. Video eligibility is separate from this status.
 
 Token rules:
 
 - 32 random bytes, base64url, shown once. Only the SHA-256 hash is stored.
-- Users can regenerate their token (which revokes the old one) from their profile. Admins can revoke anyone's.
+- Users can regenerate their token (which revokes the old one), change its scope, or turn it off from their profile (`/api/v1/me/calendar-feed`). Admins can revoke anyone's. Each change is audited.
 - Feed contents follow the user's current permissions at fetch time. If someone leaves an invite-only group, its events drop out of their feed on the next refresh.
-- Tokens of disabled or deleted users stop working.
-- Responses carry an `ETag` and `Cache-Control: private, max-age=900`. Feeds cover 30 days back to 12 months ahead.
+- Tokens of disabled or deleted users stop working, with the same 404 as an unknown token.
+- Responses carry an `ETag` (and answer `304` to a matching `If-None-Match`) and `Cache-Control: private, max-age=900`. Feeds cover 30 days back to 12 months ahead.
 
-ICS details:
+ICS details (`internal/events/ics.go`, `date_projector.go`):
 
-- Export one standalone `VEVENT` per authorized scheduled stored occurrence whose actual start falls in the half-open feed window. Do not emit VEVENT `RRULE`, `EXDATE`, `RDATE`, or `RECURRENCE-ID`: recurrence is expanded by the application, never reconstructed by calendar clients beyond loaded visibility facts. Output must pass parse and golden-file tests.
-- `UID` = `event-<id>-<originalDate without hyphens>@<SITE_URL host>`. Rescheduling keeps that identity while updating the effective date clock; moving outside the window or cancellation omits the date on the next refresh. This intentionally replaces historical series UIDs before release; there is no compatibility mode.
-- `DESCRIPTION` = the plain-text event `description` when series-authorized, plus the authorized exact-date URL. `LOCATION` includes only location fields the viewer may see (room names once rooms exist); an explicitly empty date location stays empty. A hidden parent contributes no description, video metadata or childcare details. Effective remote availability is authorized date participation information: mention it when remote is enabled and the effective remote capacity is unlimited or positive, even on an opened date of a hidden series. Zero capacity hides only the marker; full positive capacity still offers remote attendance. Authorized childcare flags are mentioned; registration care notes never are.
-- `VTIMEZONE` coverage follows the export window and emitted clocks, not the series anchor. Unchanged data produces stable bytes and ETags. Clients control refresh timing and may retain previously cached dates.
-
+- Each authorized scheduled date whose start falls in the half-open feed window is one standalone `VEVENT`. Fold emits no `RRULE`, `EXDATE`, `RDATE`, or `RECURRENCE-ID`: the app expands recurrence, so a calendar client can never bring back a hidden, declined or out-of-window date. Parse and golden-file tests check the output.
+- `UID` = `event-<id>-<originalDate without hyphens>@<SITE_URL host>`. A rescheduled date keeps its UID and shows its new time; a date that moves out of the window or is cancelled drops out on the next refresh.
+- `DESCRIPTION` holds the plain-text event `description` when the viewer may see the series, the date's page URL, "Remote attendance available", "Childcare available" (with ages), and "Join by video" with the link when allowed. `LOCATION` holds only places the viewer may see (a booked room's name first); an explicitly empty date location stays empty. A date opened on its own carries only what its date page shows: no parent description or childcare details, and a video link only when that page shows one. Remote attendance is mentioned when the date offers it: remote on with unlimited or positive remote capacity, even when its remote seats are full. Registration care notes never appear.
+- `VTIMEZONE` blocks cover the export window and the emitted dates' clocks. Unchanged data produces the same bytes and ETag. Clients control refresh timing and may keep dates they cached earlier.

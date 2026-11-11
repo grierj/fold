@@ -1491,7 +1491,6 @@ All routes require ordinary authentication; another user's row returns 404.
 GET    /api/v1/notifications?filter=all|unread|waiting|archived&before=<cursor>&limit=20
        → 200 {waiting, waitingTotal, notifications, next}
 GET    /api/v1/notifications/badge → 200 {unread, waiting} | 304 (ETag)
-POST   /api/v1/notifications/seen {ids: number[]} → 200 {} (at most 100)
 POST   /api/v1/notifications/read-all → 200 {}
 POST   /api/v1/notifications/archive-read → 200 {}
 POST   /api/v1/notifications/:id/read → 200 {notification}
