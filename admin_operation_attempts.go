@@ -448,10 +448,17 @@ func (a *App) deletionSeal(me *models.User, pred func(*models.User) bool) *conta
 // target with an unclaimed id of its own tuple still answers 404 and records
 // nothing (nothing ran and the id was never claimed). attemptID is the one id
 // readDeleteUserBody found; a body that did not parse or named it
-// ambiguously gives none, so it answers 404 too.
+// ambiguously gives none, so it answers 404 too. A lookup that fails for any
+// reason but absence is a server error and touches no attempt.
 func (a *App) adminDeletionTarget(c *gin.Context, me *models.User, attemptID string) (*models.User, bool) {
-	u, id := a.loadTargetUser(c)
-	if u == nil {
+	u, id, err := a.loadTargetUser(c)
+	if err != nil {
+		// A failed read proves nothing about the account: it answers a server
+		// error and claims, closes and expires nothing.
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			fail(c, err)
+			return nil, false
+		}
 		if attemptID != "" {
 			nonce, _, ok := a.openAttempt(attemptID, attemptKindAccountDelete, me.ID, uint(max(id, 0)))
 			if !ok {

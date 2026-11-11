@@ -204,7 +204,8 @@ export function keepAllReview(items: Array<{ requestId: string; reviewHash: stri
 // Deletes an account through the API the way the panel does when its reasons
 // have been reviewed: read every page of the account's contact-request reasons,
 // keep them all, and send that review with the DELETE. An account with no
-// reasons sends an empty review, which the server ignores.
+// reasons omits reasonReview, as the panel does: the server refuses an empty
+// set-v1 envelope as an invalid review.
 export async function deleteAccountKeepingReasons(admin: (method: string, path: string, data?: unknown) => Promise<any>, userId: number) {
   const items: Array<{ requestId: string; reviewHash: string }> = [];
   let after: string | null = null;
@@ -213,5 +214,7 @@ export async function deleteAccountKeepingReasons(admin: (method: string, path: 
     items.push(...page.items.map((it) => ({ requestId: it.requestId, reviewHash: it.reviewHash })));
     after = page.next;
   } while (after);
-  return admin("DELETE", `/admin/users/${userId}`, { successors: {}, hostSuccessors: {}, reasonReview: keepAllReview(items) });
+  const body: Record<string, unknown> = { successors: {}, hostSuccessors: {} };
+  if (items.length > 0) body.reasonReview = keepAllReview(items);
+  return admin("DELETE", `/admin/users/${userId}`, body);
 }
