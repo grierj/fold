@@ -299,17 +299,32 @@ Grier's rule. An agent may merge a fold PR, as a normal merge commit, when all o
 1. Every CI check is green (`test`, `web`, `provision`; branch protection requires them) on a head
    that contains master's tip. GitHub refuses a PR that is behind master (DEC-146); merge master
    into it (never rebase), wait for CI again, and then merge.
-2. All four primary concerns were reviewed by a separate agent from the one that implemented the
+2. All five review concerns were reviewed by a separate agent from the one that implemented the
    change, preferably running a different model:
-   - UI, UX and design;
-   - database and performance: simplicity and efficiency, to keep out complexity that would only
-     get cut later;
-   - security;
-   - correctness, including the backend and API.
+   - **UI, UX, accessibility and copy**: familiar patterns and the shared components, the axe and
+     layout gates, and plain, warm wording (DEC-52, DEC-60 to DEC-66);
+   - **simplicity and performance**: no complexity that would only get cut later, in any code;
+     query shape, indexes, lock cost and bundle size where they apply;
+   - **security, privacy and safeguarding**: attacks, and also who can see a name, a place or
+     contact details, whether erased data stays erased, and what minors and guardians get;
+   - **correctness against the plan, with tests that prove it**: the backend, API and UI do what
+     the plan and its decisions say. For a behavior change, a test fails without it; otherwise
+     the reviewer says why no test applies;
+   - **operations and docs**, where the change affects them: deployment stays one
+     `docker compose up`; migrations are expand-then-contract (`docs/agents/migrations.md`);
+     upgrade, rollback and recovery levels still work (`docs/agents/deploy.md`); and the docs move
+     in the same PR: `docs/API.md` for an API change, `.env.example` for new config, `STATUS.md`
+     for a milestone's status, and the design or milestone files in `docs/plan/` for a change to
+     what is built or planned.
 
    One reviewer may cover several concerns. A concern the change doesn't touch still gets an
-   explicit "not affected" from the reviewer. Keep the findings with the PR (its description or a
-   comment), and resolve blocking findings before merging.
+   explicit "not affected" from the reviewer. The review names the exact head SHA it reviewed.
+   Every new commit, a merge of master included, is a new head and needs a review naming it
+   before merging. That re-review may cover only what changed since the reviewed head, but it
+   reads the master side of a merge and any conflict resolution and gives each concern a fresh
+   verdict; it is a full review when master touched the PR's files, its subsystem, migrations or
+   dependencies. Keep the findings with the PR (its description or a comment), and resolve
+   blocking findings before merging.
 3. No product concern needs a human. No Grier decision on the PR is still open, and it makes no
    new product decision. Changes to security or visibility policy, repo settings, or production
    and deploy are product concerns unless Grier already decided that change. A check that only a
