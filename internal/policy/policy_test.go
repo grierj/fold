@@ -1222,6 +1222,14 @@ func TestCanInviteIntoGroup(t *testing.T) {
 	}
 }
 
+func TestGroupCanSchedule(t *testing.T) {
+	for status, want := range map[string]bool{GroupActive: true, GroupPending: false, GroupArchived: false, "": false, "unknown": false} {
+		if got := GroupCanSchedule(status); got != want {
+			t.Errorf("status %q: got %v, want %v", status, got, want)
+		}
+	}
+}
+
 func TestCanManageJobs(t *testing.T) {
 	if CanManageJobs(nil) || CanManageJobs(&Person{ID: 1}) || CanManageJobs(&Person{ID: 2, Teen: true}) || !CanManageJobs(&Person{ID: 3, Admin: true}) {
 		t.Fatal("only admins manage background jobs")

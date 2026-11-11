@@ -820,6 +820,13 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 		ev.LeaderOpened = policy.MoreOpen(vis, g.Visibility)
 	}
 	err = a.DB.Transaction(func(tx *gorm.DB) error {
+		// DEC-147: read inside the writing transaction, before anything is
+		// written, so a refusal leaves no event, date, audit row or booking.
+		if ok, err := groupSchedulesIn(tx, &g.ID); err != nil {
+			return err
+		} else if !ok {
+			return errGroupEventsNotApproved
+		}
 		meta := map[string]any{"groupId": g.ID, "churchWide": false, "visibility": ev.Visibility}
 		return a.createEventIn(tx, &ev, me, c.ClientIP(), body.RoomID, meta, func() error {
 			if ev.Visibility == g.Visibility {

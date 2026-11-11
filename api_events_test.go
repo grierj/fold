@@ -2109,3 +2109,63 @@ func TestHiddenSeriesDateHidesEverySeriesField(t *testing.T) {
 		}
 	}
 }
+
+// DEC-147: leaders and admins alike create no event for a group that isn't
+// active, and a refusal writes nothing. Church-wide events have no group.
+func TestCreateEventNeedsActiveGroup(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+	admin := loginAPI(t, app, "admin", "password1234")
+	lc := loginAPI(t, app, "leader", "password1234")
+	start := atUTC(time.Now().AddDate(0, 0, 7), 19, 0)
+	body := map[string]any{"title": "Night", "startsLocal": start.Format("2006-01-02T15:04"), "durationMinutes": 60, "tzid": "UTC"}
+
+	for _, status := range []string{models.GroupPending, models.GroupArchived} {
+		g := newTestGroup(t, app, leader, "Not active "+status, status)
+		path := "/api/v1/groups/" + itoa(g.ID) + "/events"
+		auditBefore := contactCount(t, app, &models.AuditLog{}, "1 = 1")
+		datesBefore := contactCount(t, app, &models.EventOccurrence{}, "1 = 1")
+		for name, c := range map[string]*apiClient{"leader": lc, "admin": admin} {
+			w := c.do("POST", path, body, true)
+			if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), `"code":"group_events_not_approved"`) {
+				t.Fatalf("%s creating in a %s group: %d %s", name, status, w.Code, w.Body.String())
+			}
+		}
+		withRoom := map[string]any{"title": "Room night", "startsLocal": start.Format("2006-01-02T15:04"), "durationMinutes": 60, "tzid": "UTC", "roomId": 999999}
+		beforeBookings := contactCount(t, app, &models.RoomBooking{}, "1 = 1")
+		if w := admin.do("POST", path, withRoom, true); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), `"code":"group_events_not_approved"`) {
+			t.Fatalf("creating with a room in a %s group: %d %s", status, w.Code, w.Body.String())
+		}
+		if n := contactCount(t, app, &models.RoomBooking{}, "1 = 1"); n != beforeBookings {
+			t.Fatalf("refused event added room bookings: %d -> %d", beforeBookings, n)
+		}
+		if n := contactCount(t, app, &models.Event{}, "group_id = ?", g.ID); n != 0 {
+			t.Fatalf("%d events written for a %s group", n, status)
+		}
+		if n := contactCount(t, app, &models.AuditLog{}, "action = ? AND meta_json->>'groupId' = ?", audit.EventCreated, itoa(g.ID)); n != 0 {
+			t.Fatalf("%d event.created audit rows for a %s group", n, status)
+		}
+		// Every refusal above together: no audit row of any kind (the
+		// visibility override's included) and no date.
+		if n := contactCount(t, app, &models.AuditLog{}, "1 = 1"); n != auditBefore {
+			t.Fatalf("refused creates wrote audit rows for a %s group: %d -> %d", status, auditBefore, n)
+		}
+		if n := contactCount(t, app, &models.EventOccurrence{}, "1 = 1"); n != datesBefore {
+			t.Fatalf("refused creates wrote dates for a %s group: %d -> %d", status, datesBefore, n)
+		}
+		if status == models.GroupPending {
+			if w := admin.do("POST", "/api/v1/admin/groups/"+itoa(g.ID)+"/approve", map[string]any{}, true); w.Code != http.StatusOK {
+				t.Fatalf("approve group: %d %s", w.Code, w.Body.String())
+			}
+			if w := lc.do("POST", path, body, true); w.Code != http.StatusCreated {
+				t.Fatalf("creating once the group is approved: %d %s", w.Code, w.Body.String())
+			}
+		}
+	}
+
+	w := admin.do("POST", "/api/v1/events", body, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("church-wide event: %d %s", w.Code, w.Body.String())
+	}
+}

@@ -388,3 +388,106 @@ func TestRoomLostNoticeFromExtenderSerializesWithLeaderErasure(t *testing.T) {
 		}
 	})
 }
+
+// DEC-147: an archived group's series room can be stopped but not set.
+func TestSeriesRoomNeedsActiveGroup(t *testing.T) {
+	f := newBookingFixture(t)
+	series := createFeedEvent(t, f.leader, f.group, "Weekly", f.startOn.AddDate(0, 0, 1), "FREQ=WEEKLY;COUNT=3")
+	if code, out := f.seriesRoom(t, f.leader, series, map[string]any{"roomId": f.hall.ID}); code != http.StatusOK || out.Booked != 3 {
+		t.Fatalf("book the series while active: %d %+v", code, out)
+	}
+	f.archiveGroup(t)
+	var chapel struct {
+		Room roomJSON `json:"room"`
+	}
+	w := f.admin.do("POST", "/api/v1/admin/rooms", map[string]any{"name": "Chapel"}, true)
+	decodeJSON(t, w, &chapel)
+
+	for name, c := range map[string]*apiClient{"leader": f.leader, "admin": f.admin} {
+		w := c.do("PUT", "/api/v1/events/"+itoa(series.ID)+"/room", map[string]any{"roomId": chapel.Room.ID}, true)
+		if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), `"code":"group_rooms_not_approved"`) {
+			t.Fatalf("%s setting a series room for an archived group: %d %s", name, w.Code, w.Body.String())
+		}
+	}
+	var ev models.Event
+	f.app.DB.First(&ev, series.ID)
+	if ev.DefaultRoomID == nil || *ev.DefaultRoomID != f.hall.ID {
+		t.Fatalf("the series room should be unchanged: %+v", ev.DefaultRoomID)
+	}
+	if n := seriesBookings(t, f.app, series.ID, models.BookingConfirmed); n != 3 {
+		t.Fatalf("%d confirmed bookings; the existing ones stay", n)
+	}
+	if code, _ := f.seriesRoom(t, f.leader, series, map[string]any{"roomId": nil}); code != http.StatusOK {
+		t.Fatalf("stopping the series room: %d", code)
+	}
+	f.app.DB.First(&ev, series.ID)
+	if ev.DefaultRoomID != nil {
+		t.Fatal("stopping should clear the series room")
+	}
+}
+
+// DEC-147: the extender, series edits and restores book nothing new for a
+// group that isn't active, and tell no one a date lost its room.
+func TestRoomSeriesExtenderSkipsInactiveGroup(t *testing.T) {
+	f := newBookingFixture(t)
+	series := createFeedEvent(t, f.leader, f.group, "Weekly", f.startOn.AddDate(0, 0, 1), "FREQ=WEEKLY;COUNT=4")
+	if code, out := f.seriesRoom(t, f.leader, series, map[string]any{"roomId": f.hall.ID}); code != http.StatusOK || out.Booked != 4 {
+		t.Fatalf("book the series: %d %+v", code, out)
+	}
+	f.archiveGroup(t)
+	third, fourth := feedDate(f.startOn.AddDate(0, 0, 15)), feedDate(f.startOn.AddDate(0, 0, 22))
+	if err := f.app.DB.Where("event_id = ? AND original_date IN ?", series.ID, []string{third, fourth}).Delete(&models.EventOccurrence{}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := eventdates.Extend(f.app.DB, time.Now().UTC(), f.app.afterExtend()); err != nil {
+		t.Fatal(err)
+	}
+	if n := contactCount(t, f.app, &models.EventOccurrence{}, "event_id = ?", series.ID); n != 4 {
+		t.Fatalf("the extender should still add the dates back; %d dates", n)
+	}
+	if n := seriesBookings(t, f.app, series.ID, models.BookingConfirmed); n != 2 {
+		t.Fatalf("%d confirmed bookings; want only the two made while active", n)
+	}
+	if n := contactCount(t, f.app, &models.RoomBooking{}, "occurrence_id IN (SELECT id FROM event_occurrences WHERE event_id = ?)", series.ID); n != 2 {
+		t.Fatalf("%d bookings of any status; the new dates should have none", n)
+	}
+	if n := contactCount(t, f.app, &models.RoomBooking{}, "1 = 1"); n != 2 {
+		t.Fatalf("%d total bookings after extension; want the two kept bookings", n)
+	}
+	if contactCount(t, f.app, &models.RoomRequest{}, "event_id = ?", series.ID) != 0 {
+		t.Fatal("the extender should open no room request")
+	}
+	if contactCount(t, f.app, &models.Notification{}, "kind = ?", notify.RoomLost) != 0 {
+		t.Fatal("no room.lost notice for a group that isn't active")
+	}
+}
+
+func TestRoomSeriesEditsSkipInactiveGroup(t *testing.T) {
+	f := newBookingFixture(t)
+	start := f.startOn.AddDate(0, 0, 1)
+	series := createFeedEvent(t, f.leader, f.group, "Weekly", start, "FREQ=WEEKLY;COUNT=3")
+	if code, out := f.seriesRoom(t, f.leader, series, map[string]any{"roomId": f.hall.ID}); code != http.StatusOK || out.Booked != 3 {
+		t.Fatalf("book the series: %d %+v", code, out)
+	}
+	f.archiveGroup(t)
+	edit := func(rule string) {
+		t.Helper()
+		if w := f.leader.do("PUT", "/api/v1/events/"+itoa(series.ID), map[string]any{"recurrenceRule": rule}, true); w.Code != http.StatusOK {
+			t.Fatalf("series edit %s: %d %s", rule, w.Code, w.Body.String())
+		}
+	}
+	// Shorten then lengthen: the third date is cancelled (its room freed),
+	// then restored along with a new fourth; neither is booked.
+	edit("FREQ=WEEKLY;COUNT=2")
+	edit("FREQ=WEEKLY;COUNT=4")
+	if n := contactCount(t, f.app, &models.EventOccurrence{}, "event_id = ? AND status = ?", series.ID, models.OccurrenceScheduled); n != 4 {
+		t.Fatalf("%d scheduled dates after the edits; want 4", n)
+	}
+	if n := contactCount(t, f.app, &models.RoomBooking{}, "occurrence_id IN (SELECT id FROM event_occurrences WHERE event_id = ?)", series.ID); n != 2 {
+		t.Fatalf("%d bookings; only the first two dates keep theirs", n)
+	}
+	if contactCount(t, f.app, &models.Notification{}, "kind = ?", notify.RoomLost) != 0 {
+		t.Fatal("no room.lost notice for a group that isn't active")
+	}
+}

@@ -215,3 +215,175 @@ func TestRoomFeedIsStableAndScoped(t *testing.T) {
 		t.Fatalf("want %d entries after cancelling, moving and rejecting, got %d", want, got)
 	}
 }
+
+// feedVEvent returns the VEVENT block whose UID starts with uidPrefix.
+func feedVEvent(t *testing.T, body, uidPrefix string) string {
+	t.Helper()
+	for _, block := range strings.Split(unfoldFeed(body), "BEGIN:VEVENT\r\n") {
+		if strings.Contains(block, "UID:"+uidPrefix) {
+			return block
+		}
+	}
+	t.Fatalf("feed has no VEVENT with UID %q:\n%s", uidPrefix, body)
+	return ""
+}
+
+func feedLine(block, prefix string) string {
+	for _, line := range strings.Split(block, "\r\n") {
+		if strings.HasPrefix(line, prefix) {
+			return line
+		}
+	}
+	return ""
+}
+
+// A booking made while its group was active turns Reserved when the group is
+// archived or set back to pending, because a signed-out viewer can't see the
+// date of a group that isn't active (#357). The busy block, its UID and
+// times stay, its DTSTAMP and the feed's ETag move so subscribed calendars
+// replace the old title, and reactivating the group brings the details back.
+func TestRoomFeedHidesEventsOfInactiveGroups(t *testing.T) {
+	f := newBookingFixture(t)
+	archived := newTestGroup(t, f.app, f.leaderUser, "Soon archived", models.GroupActive)
+	pending := newTestGroup(t, f.app, f.leaderUser, "Soon pending", models.GroupActive)
+	f.app.DB.Model(&models.Group{}).Where("id IN ?", []uint{archived.ID, pending.ID}).Update("location", "Annex lounge")
+
+	type booked struct {
+		ev    eventJSON
+		title string
+		desc  string
+	}
+	mk := func(gid uint, title, desc string, at time.Time) booked {
+		ev := createFeedEvent(t, f.leader, gid, title, at, "")
+		f.app.DB.Model(&models.Event{}).Where("id = ?", ev.ID).Update("description", desc)
+		return booked{ev: ev, title: title, desc: desc}
+	}
+	soonArchived := mk(archived.ID, "Archived night", "Archived notes", f.startOn.Add(-3*time.Hour))
+	soonPending := mk(pending.ID, "Pending night", "Pending notes", f.startOn.Add(-6*time.Hour))
+	w := f.admin.do("POST", "/api/v1/events", map[string]any{
+		"title": "Church night", "startsLocal": f.startOn.Add(-9 * time.Hour).Format("2006-01-02T15:04"),
+		"durationMinutes": 60, "tzid": "UTC", "visibility": "public",
+	}, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("church event: %d %s", w.Code, w.Body.String())
+	}
+	var made struct {
+		Event eventJSON `json:"event"`
+	}
+	decodeJSON(t, w, &made)
+	church := booked{ev: made.Event, title: "Church night"}
+	f.app.DB.Model(&models.Event{}).Where("id = ?", church.ev.ID).Update("description", "Church notes")
+	church.desc = "Church notes"
+
+	all := []booked{soonArchived, soonPending, church}
+	for _, b := range all {
+		if code, body := f.book(t, f.admin, b.ev, map[string]any{"roomId": f.hall.ID}); code != http.StatusOK {
+			t.Fatalf("book %s: %d %s", b.title, code, body)
+		}
+	}
+	// A public date override must not expose a date once its group is archived.
+	if err := f.app.DB.Model(&models.Event{}).Where("id = ?", soonArchived.ev.ID).Update("visibility", models.VisibilityInviteOnly).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.DB.Model(&models.EventOccurrence{}).Where("event_id = ?", soonArchived.ev.ID).Update("visibility_override", models.VisibilityPublic).Error; err != nil {
+		t.Fatal(err)
+	}
+	// DTSTAMP has second resolution; backdate the fixture instead of waiting.
+	old := time.Now().Add(-5 * time.Second)
+	for _, q := range []struct {
+		sql string
+		ids []uint
+	}{
+		{"UPDATE groups SET updated_at = ? WHERE id IN ?", []uint{archived.ID, pending.ID}},
+		{"UPDATE events SET updated_at = ? WHERE id IN ?", []uint{soonArchived.ev.ID, soonPending.ev.ID}},
+		{"UPDATE event_occurrences SET updated_at = ? WHERE event_id IN ?", []uint{soonArchived.ev.ID, soonPending.ev.ID}},
+		{"UPDATE room_bookings SET updated_at = ? WHERE occurrence_id IN (SELECT id FROM event_occurrences WHERE event_id IN ?)", []uint{soonArchived.ev.ID, soonPending.ev.ID}},
+	} {
+		if err := f.app.DB.Exec(q.sql, old, q.ids).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	link := f.roomFeed(t, f.hall.ID)
+	anon := newAPIClient(t, f.app)
+	first := fetchFeed(t, anon, link)
+	before := first.Body.String()
+	for _, b := range all {
+		if !strings.Contains(before, "SUMMARY:"+b.title) || (b.ev.ID != soonArchived.ev.ID && !strings.Contains(before, "DESCRIPTION:"+b.desc)) {
+			t.Fatalf("while active, %s should be described:\n%s", b.title, before)
+		}
+	}
+	reservedBefore := strings.Count(before, "SUMMARY:Reserved")
+
+	if w := f.leader.do("PUT", "/api/v1/groups/"+itoa(archived.ID), map[string]any{"status": models.GroupArchived}, true); w.Code != http.StatusOK {
+		t.Fatalf("archive: %d %s", w.Code, w.Body.String())
+	}
+	if w := f.admin.do("PUT", "/api/v1/groups/"+itoa(pending.ID), map[string]any{"status": models.GroupPending}, true); w.Code != http.StatusOK {
+		t.Fatalf("set pending: %d %s", w.Code, w.Body.String())
+	}
+
+	second := fetchFeed(t, anon, link)
+	after := second.Body.String()
+	for _, leak := range []string{"Archived night", "Archived notes", "Pending night", "Pending notes", "Annex lounge",
+		"/events/" + itoa(soonArchived.ev.ID) + "/", "/events/" + itoa(soonPending.ev.ID) + "/"} {
+		if strings.Contains(after, leak) {
+			t.Errorf("feed leaked %q after the groups stopped being active:\n%s", leak, after)
+		}
+	}
+	if n := strings.Count(after, "SUMMARY:Reserved"); n != reservedBefore+2 {
+		t.Errorf("want %d Reserved blocks, got %d:\n%s", reservedBefore+2, n, after)
+	}
+	if !strings.Contains(after, "SUMMARY:Church night") || !strings.Contains(after, "DESCRIPTION:Church notes") {
+		t.Errorf("the church-wide event should still be described:\n%s", after)
+	}
+	if second.Header().Get("ETag") == first.Header().Get("ETag") {
+		t.Error("the ETag should change when bookings turn Reserved")
+	}
+	for _, b := range []booked{soonArchived, soonPending} {
+		var bk models.RoomBooking
+		if err := f.app.DB.Joins("JOIN event_occurrences o ON o.id = room_bookings.occurrence_id").
+			Where("o.event_id = ?", b.ev.ID).First(&bk).Error; err != nil {
+			t.Fatalf("booking of %s: %v", b.title, err)
+		}
+		uid := "room-" + itoa(f.hall.ID) + "-booking-" + itoa(bk.ID) + "@"
+		was, now := feedVEvent(t, before, uid), feedVEvent(t, after, uid)
+		if !strings.Contains(now, "SUMMARY:Reserved") {
+			t.Errorf("%s should be a Reserved block:\n%s", b.title, now)
+		}
+		for _, keep := range []string{"DTSTART", "DTEND"} {
+			if feedLine(was, keep) != feedLine(now, keep) {
+				t.Errorf("%s: %s changed: %q -> %q", b.title, keep, feedLine(was, keep), feedLine(now, keep))
+			}
+		}
+		if feedLine(was, "DTSTAMP:") == feedLine(now, "DTSTAMP:") {
+			t.Errorf("%s: DTSTAMP should move when it turns Reserved: %q", b.title, feedLine(now, "DTSTAMP:"))
+		}
+	}
+
+	// Approving or reactivating the groups brings the details back.
+	if w := f.admin.do("PUT", "/api/v1/groups/"+itoa(archived.ID), map[string]any{"status": models.GroupActive}, true); w.Code != http.StatusOK {
+		t.Fatalf("reactivate: %d %s", w.Code, w.Body.String())
+	}
+	if err := f.app.DB.Model(&models.Group{}).Where("id = ?", pending.ID).UpdateColumn("updated_at", old).Error; err != nil {
+		t.Fatal(err)
+	}
+	beforeApproval := fetchFeed(t, anon, link).Body.String()
+	if w := f.admin.do("POST", "/api/v1/admin/groups/"+itoa(pending.ID)+"/approve", map[string]any{}, true); w.Code != http.StatusOK {
+		t.Fatalf("approve: %d %s", w.Code, w.Body.String())
+	}
+	back := fetchFeed(t, anon, link).Body.String()
+	var pendingBooking models.RoomBooking
+	if err := f.app.DB.Joins("JOIN event_occurrences o ON o.id = room_bookings.occurrence_id").
+		Where("o.event_id = ?", soonPending.ev.ID).First(&pendingBooking).Error; err != nil {
+		t.Fatal(err)
+	}
+	uid := "room-" + itoa(f.hall.ID) + "-booking-" + itoa(pendingBooking.ID) + "@"
+	if feedLine(feedVEvent(t, beforeApproval, uid), "DTSTAMP:") == feedLine(feedVEvent(t, back, uid), "DTSTAMP:") {
+		t.Error("approval should refresh the booking DTSTAMP")
+	}
+	for _, b := range []booked{soonArchived, soonPending} {
+		if !strings.Contains(back, "SUMMARY:"+b.title) || (b.ev.ID != soonArchived.ev.ID && !strings.Contains(back, "DESCRIPTION:"+b.desc)) {
+			t.Errorf("after reactivating, %s should be described again:\n%s", b.title, back)
+		}
+	}
+}

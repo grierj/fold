@@ -29,16 +29,20 @@ import (
 // own (even an explicitly empty one), else the event's, else the group's.
 var effectiveLocationSQL = `btrim(` + events.EffectivePlaceSQL("o.location_override", "e.location", "g.location") + `)`
 
-// unbookedDatesSQL is the scheduled upcoming dates with no booking at all.
+// unbookedDatesSQL is the scheduled upcoming dates with no booking at all, of
+// church-wide events and active groups only: matching books a room, which a
+// group that isn't active may not do (DEC-147).
 const unbookedDatesSQL = `FROM event_occurrences o
 	JOIN events e ON e.id = o.event_id AND e.deleted_at IS NULL
 	LEFT JOIN groups g ON g.id = e.group_id
 	WHERE o.status = 'scheduled' AND o.starts_at > now()
-	AND NOT EXISTS (SELECT 1 FROM room_bookings b WHERE b.occurrence_id = o.id)`
+	AND NOT EXISTS (SELECT 1 FROM room_bookings b WHERE b.occurrence_id = o.id)
+	AND ` + schedulingGroupSQL
 
 var seriesMatchSQL = `e.deleted_at IS NULL AND e.rrule <> '' AND e.default_room_id IS NULL
 	AND lower(btrim(` + events.SeriesPlaceSQL("e.location", "(SELECT g.location FROM groups g WHERE g.id = e.group_id)") + `)) = lower(btrim(?))
-	AND EXISTS (SELECT 1 FROM event_occurrences u WHERE u.event_id = e.id AND u.status = 'scheduled' AND u.starts_at > now())`
+	AND EXISTS (SELECT 1 FROM event_occurrences u WHERE u.event_id = e.id AND u.status = 'scheduled' AND u.starts_at > now())
+	AND ` + schedulingGroupSQL
 
 // typedLocationJSON is one typed place and how many upcoming dates without
 // a room use it. Spellings that differ only in case or outer spaces are one

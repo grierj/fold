@@ -21,9 +21,8 @@ import (
 // exports its confirmed bookings, so the church office or a calendar on
 // the door can follow the room. Only admins make or turn off the link
 // (section 6). The link is the only credential and anyone who can see the
-// screen can read it, so the feed describes only dates whose own
-// visibility is public; every other date is titled "Reserved" with nothing
-// that says whose it is.
+// screen can read it, so the feed describes only dates a signed-out viewer
+// can see; every other date is titled "Reserved" without identifying it.
 
 const roomFeedTitle = "Reserved"
 
@@ -259,9 +258,15 @@ func (a *App) buildRoomFeed(room *models.Room, now time.Time) (events.Feed, erro
 		single := events.FeedSingle{
 			UID:   "room-" + strconv.FormatUint(uint64(room.ID), 10) + "-booking-" + strconv.FormatUint(uint64(b.ID), 10) + "@" + host,
 			Title: roomFeedTitle, Location: roomLine, TZID: tz,
-			// The date's own change time too, so a date that becomes Reserved
-			// gets a newer DTSTAMP and calendars replace its old title.
+			// The date's own and its group's change time too, so a booking that
+			// turns Reserved (a date override, a group archived or set back to
+			// pending) gets a newer DTSTAMP and calendars replace its old title.
 			StartsAt: b.StartsAt, EndsAt: b.EndsAt, UpdatedAt: laterTime(occ.UpdatedAt, b.UpdatedAt), Status: "CONFIRMED",
+		}
+		if ev != nil && ev.GroupID != nil && groups[*ev.GroupID] != nil {
+			// Group edits share one timestamp; all of them refresh the feed so a
+			// status change replaces any details already cached by calendars.
+			single.UpdatedAt = laterTime(single.UpdatedAt, groups[*ev.GroupID].UpdatedAt)
 		}
 		if ev != nil && roomFeedDescribes(ev, occ, groups) {
 			grp := (*models.Group)(nil)
@@ -269,14 +274,14 @@ func (a *App) buildRoomFeed(room *models.Room, now time.Time) (events.Feed, erro
 				grp = groups[*ev.GroupID]
 			}
 			groupLoc := ""
-			if grp != nil && grp.Visibility == models.VisibilityPublic {
+			if grp != nil && policy.CanSeeGroup(nil, asGroup(grp), policy.Rel{}) {
 				groupLoc = grp.Location // group-ok: the group is public, so its place isn't hidden
 			}
 			eff := occurrenceToJSON(ev, occ, groupLoc)
 			single.Title = eff.Title
 			single.Location = placeLine(&occurrenceRoomJSON{ID: room.ID, Name: room.Name, Building: room.Building}, eff.Location)
 			single.URL = a.emailBaseURL() + occurrenceDatePath(ev.ID, models.FormatCalendarDate(occ.OriginalDate))
-			single.UpdatedAt = laterTime(laterTime(ev.UpdatedAt, occ.UpdatedAt), b.UpdatedAt)
+			single.UpdatedAt = laterTime(laterTime(laterTime(ev.UpdatedAt, occ.UpdatedAt), b.UpdatedAt), single.UpdatedAt)
 			// Only a public series contributes its description; a private or hidden
 			// series opened for one date shows the title alone.
 			if ev.Visibility == models.VisibilityPublic {
@@ -288,13 +293,13 @@ func (a *App) buildRoomFeed(room *models.Room, now time.Time) (events.Feed, erro
 	return feed, nil
 }
 
-// roomFeedDescribes: the room feed names a booking's event only when its
-// date is public (policy.EffectiveVisibility) and its group, if any, is
-// still there. A feed has no viewer, so the link holder counts as the
-// public; every private or invite-only date is Reserved (8.2).
+// roomFeedDescribes: the room feed names a booking's event only when a
+// signed-out viewer could see that date. A feed has no viewer, so the link
+// holder is the public, and the rule is canSeeDate's signed-out path (PLAN
+// 8.2, policy.CanSeeEvent): a group event needs a loaded (not deleted),
+// active group and a public effective visibility. Every other confirmed
+// booking, including one whose group was archived or set back to pending
+// after booking, stays in the feed as a Reserved busy block.
 func roomFeedDescribes(ev *models.Event, occ *models.EventOccurrence, groups map[uint]*models.Group) bool {
-	if ev.GroupID != nil && groups[*ev.GroupID] == nil {
-		return false
-	}
-	return policy.EffectiveVisibility(ev.Visibility, occ.VisibilityOverride) == policy.Public
+	return visibleSet{factSet: factSet{Groups: groups}}.canSeeDate(nil, ev, occ)
 }

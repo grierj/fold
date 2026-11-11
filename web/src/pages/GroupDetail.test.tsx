@@ -629,6 +629,35 @@ it("shows a booked room as the place on a date card, and the typed location with
   expect(within(cards[1]).getByText(/ · Hall$/)).not.toHaveTextContent("Fellowship");
 });
 
+it.each([
+  ["pending", "You can schedule events once an admin approves this group."],
+  ["archived", "This group is archived, so it can't schedule new events."],
+])("offers a managing viewer of a %s group no Schedule event and says why (DEC-147)", async (status, sentence) => {
+  vi.mocked(Groups.get).mockResolvedValue({ ...page, canManage: true, upcomingEvents: [], group: { ...page.group, status } });
+  open();
+  expect(await screen.findByText(sentence)).toBeVisible();
+  expect(screen.getByText("No upcoming events")).toBeVisible();
+  expect(screen.queryByRole("link", { name: "Schedule event" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "More group actions" })).toBeInTheDocument();
+});
+
+it.each([
+  ["pending", "You can schedule events once an admin approves this group."],
+  ["archived", "This group is archived, so it can't schedule new events."],
+])("explains scheduling for a %s group with upcoming events", async (status, sentence) => {
+  vi.mocked(Groups.get).mockResolvedValue({ ...page, canManage: true, group: { ...page.group, status } });
+  open();
+  expect(await screen.findByText(sentence)).toBeVisible();
+  expect(screen.queryByRole("link", { name: "Schedule event" })).not.toBeInTheDocument();
+});
+
+it("offers Schedule event in the cover and the empty state of an active group", async () => {
+  vi.mocked(Groups.get).mockResolvedValue({ ...page, canManage: true, upcomingEvents: [] });
+  open();
+  expect(await screen.findByText("Schedule your group's first meeting")).toBeVisible();
+  expect(screen.getAllByRole("link", { name: "Schedule event" })).toHaveLength(2);
+});
+
 it("offers a leader who can compose Email members and Email people going (M3.4c)", async () => {
   actor.canCompose = true;
   try {

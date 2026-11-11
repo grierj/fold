@@ -420,3 +420,81 @@ func TestPlaceLineSharesCasesWithTheWeb(t *testing.T) {
 		}
 	}
 }
+
+// archiveGroup archives f.group through the real API, as its leader.
+func (f bookingFixture) archiveGroup(t *testing.T) {
+	t.Helper()
+	if w := f.leader.do("PUT", "/api/v1/groups/"+itoa(f.group), map[string]any{"status": models.GroupArchived}, true); w.Code != http.StatusOK {
+		t.Fatalf("archive: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// DEC-147: a group that stopped being active books no new room for anyone,
+// keeps the bookings it has, and can still release them.
+func TestDateRoomNeedsActiveGroup(t *testing.T) {
+	f := newBookingFixture(t)
+	var chapel struct {
+		Room roomJSON `json:"room"`
+	}
+	w := f.admin.do("POST", "/api/v1/admin/rooms", map[string]any{"name": "Chapel"}, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("chapel: %d %s", w.Code, w.Body.String())
+	}
+	decodeJSON(t, w, &chapel)
+
+	if code, body := f.book(t, f.leader, f.eventA, map[string]any{"roomId": f.hall.ID}); code != http.StatusOK {
+		t.Fatalf("book while active: %d %s", code, body)
+	}
+	f.archiveGroup(t)
+
+	for name, c := range map[string]*apiClient{"leader": f.leader, "admin": f.admin} {
+		for _, room := range []uint{chapel.Room.ID, f.hall.ID} {
+			code, body := f.book(t, c, f.eventA, map[string]any{"roomId": room})
+			if code != http.StatusConflict || !strings.Contains(body, `"code":"group_rooms_not_approved"`) {
+				t.Fatalf("%s booking room %d for an archived group: %d %s", name, room, code, body)
+			}
+		}
+		code, body := f.book(t, c, f.eventB, map[string]any{"roomId": chapel.Room.ID})
+		if code != http.StatusConflict || !strings.Contains(body, `"code":"group_rooms_not_approved"`) {
+			t.Fatalf("%s booking a fresh date of an archived group: %d %s", name, code, body)
+		}
+	}
+	var bookings []models.RoomBooking
+	if err := f.app.DB.Find(&bookings).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(bookings) != 1 || bookings[0].RoomID != f.hall.ID || bookings[0].Status != models.BookingConfirmed {
+		t.Fatalf("the booking made while active should be untouched, and nothing else booked: %+v", bookings)
+	}
+	if n := contactCount(t, f.app, &models.AuditLog{}, "action IN ?", []string{audit.RoomBookingBooked, audit.RoomBookingReleased}); n != 1 {
+		t.Fatalf("%d room audit rows; only the booking made while active should exist", n)
+	}
+	// The kept booking still holds the hall: the picker for the next date,
+	// which runs into its padding, shows the hall busy and the chapel free.
+	var picker struct {
+		Rooms []roomPickerJSON `json:"rooms"`
+	}
+	if w := f.leader.do("GET", f.path(f.eventB, "/rooms"), nil, false); w.Code != http.StatusOK {
+		t.Fatalf("picker for an archived group's date: %d %s", w.Code, w.Body.String())
+	} else {
+		decodeJSON(t, w, &picker)
+	}
+	busy := map[uint]bool{}
+	for _, r := range picker.Rooms {
+		busy[r.ID] = r.Busy
+	}
+	if !busy[f.hall.ID] || busy[chapel.Room.ID] {
+		t.Fatalf("the kept booking should keep the hall busy and nothing else: %+v", picker.Rooms)
+	}
+
+	// Releasing is never refused.
+	if code, body := f.book(t, f.leader, f.eventA, map[string]any{"roomId": nil}); code != http.StatusOK {
+		t.Fatalf("release for an archived group: %d %s", code, body)
+	}
+	if n := contactCount(t, f.app, &models.RoomBooking{}, "1 = 1"); n != 0 {
+		t.Fatalf("%d bookings after the release", n)
+	}
+	if contactCount(t, f.app, &models.AuditLog{}, "action = ?", audit.RoomBookingReleased) != 1 {
+		t.Fatal("the release should be audited")
+	}
+}

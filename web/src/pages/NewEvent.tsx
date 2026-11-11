@@ -7,9 +7,10 @@ import { CreateRoomField } from "../components/CreateRoomField";
 import { useEventCreateForm } from "../components/useEventCreateForm";
 import { FormActions } from "../components/ui/FormActions";
 import { useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { Groups } from "../api/groups";
 import { useAuth } from "../auth";
+import { groupCanSchedule } from "../lib/can";
 import { useDirty } from "../lib/useDirty";
 import { useUnsavedChanges } from "../lib/unsavedChanges";
 import { Field, FormError, Input, Textarea } from "../components/ui/Field";
@@ -22,6 +23,7 @@ export function NewEvent() {
   const { loading: authLoading } = useAuth();
   const [groupName, setGroupName] = useState("");
   const [canManage, setCanManage] = useState(false);
+  const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(true);
   const f = useEventCreateForm("group");
   const { when } = f;
@@ -41,6 +43,7 @@ export function NewEvent() {
         if (!alive) return;
         setGroupName(d.group.name);
         setCanManage(d.canManage);
+        setStatus(d.group.status);
         setLocation(d.group.location);
         setGroupVisibility(d.group.visibility);
         setVisibility(d.group.visibility);
@@ -91,9 +94,33 @@ export function NewEvent() {
           Only the group leader or an admin can schedule events for{" "}
           <span className="font-semibold">{groupName || "this group"}</span>.
         </p>
-        <Link to={`/groups/${id}`} className="text-primary font-semibold">
+        <ButtonLink to={`/groups/${id}`} variant="secondary" layout="mt-4">
           Back to group
-        </Link>
+        </ButtonLink>
+      </div>
+    );
+  }
+
+  if (!groupCanSchedule(status)) {
+    return (
+      <div className="fold-page fold-page-narrow">
+        <h1 className="text-3xl font-bold mb-6">Schedule an event</h1>
+        <p className="text-text-muted">
+          {status === "archived" ? (
+            <>
+              <span className="font-semibold">{groupName || "This group"}</span> is archived, so it can't schedule new
+              events.
+            </>
+          ) : (
+            <>
+              You can schedule events for <span className="font-semibold">{groupName || "this group"}</span> once an
+              admin approves it.
+            </>
+          )}
+        </p>
+        <ButtonLink to={`/groups/${id}`} variant="secondary" layout="mt-4">
+          Back to group
+        </ButtonLink>
       </div>
     );
   }

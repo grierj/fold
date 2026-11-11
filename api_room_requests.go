@@ -249,6 +249,13 @@ func (a *App) apiConfirmRoomRequest(c *gin.Context) {
 		if err != nil {
 			return err
 		}
+		// DEC-147: a group that is no longer active has its waiting request
+		// left for an admin to reject; confirming would be a new booking.
+		if ok, err := groupSchedulesIn(tx, ev.GroupID); err != nil {
+			return err
+		} else if !ok {
+			return errGroupRoomsNotApproved
+		}
 		bookings, occs, err := requestBookings(tx, req)
 		if err != nil {
 			return err
@@ -395,6 +402,8 @@ func (a *App) requestFailed(c *gin.Context, id uint, err error) bool {
 		jsonError(c, http.StatusNotFound, "room request not found")
 	case errors.Is(err, errRequestDecided):
 		a.alreadyHandled(c, notify.RoomRequested, id)
+	case errors.Is(err, errGroupRoomsNotApproved):
+		fail(c, err)
 	default:
 		jsonError(c, http.StatusInternalServerError, "could not save the room request")
 	}

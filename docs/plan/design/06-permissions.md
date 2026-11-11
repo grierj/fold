@@ -5,7 +5,7 @@
 Roles:
 
 - **Admin**: `User.role=admin`. Church staff. Admins see everything, invite-only groups included (DEC-5).
-- **Leader**: has `Membership.role=leader` in a specific group. Leader rights apply only to the groups they lead and to those groups' events. Leaders have broad powers over their groups' events, including visibility (DEC-17). Leading a `pending` or `archived` group grants no power to add or invite people (DEC-88).
+- **Leader**: has `Membership.role=leader` in a specific group. Leader rights apply only to the groups they lead and to those groups' events. Leaders have broad powers over their groups' events, including visibility (DEC-17). Leading a `pending` or `archived` group grants no power to add or invite people (DEC-88), to create events, or to book rooms (DEC-147).
 - **Host**: an adult assigned with `EventHost` to a church-wide event (DEC-7). Host rights apply only to that event. Hosts are often admins but don't have to be. A host row on a group event grants nothing.
 - **Member**: a signed-in adult with `status=active`.
 - **Teen**: a signed-in user aged 13 to 17 with `account` consent (DEC-8). Teens have member rights, narrowed as the table shows. They are never leaders, hosts or admins (DEC-18).
@@ -68,7 +68,7 @@ SMS, one-to-one messages and the church directory are not built yet. Cells about
 | Set or clear a group's member limit (DEC-39) | Any | Own groups (leaders) | No | No | No |
 | Add someone to a full group (explicit over-limit choice, audited; DEC-39) | Any | Own groups (leaders) | No (self-join refused: "This group is full") | No | No |
 | Make someone a group leader, or a leader a member again | Any adult member; the last leader is never demoted | Own groups, adult members only; audited, and admins get an in-app notice (no admin gate, DEC-31, DEC-34); can't demote an admin (DEC-35) | No | No | No |
-| Create or edit events in a group | Any | Own groups (leaders) | No | No | No |
+| Create or edit events in a group | Any active group (create); any (edit) | Own groups; creating only while the group is active (DEC-147) | No | No | No |
 | Create church-wide events | Yes | No | No | No | No |
 | Assign or remove hosts of a church-wide event | Yes (active adults only; the event always keeps a host) | No | No | No | No |
 | Edit a church-wide event | Any | Hosts: own events | No | No | No |
@@ -83,7 +83,7 @@ SMS, one-to-one messages and the church directory are not built yet. Cells about
 | Action | Admin | Leader / Host | Member | Teen | Guest |
 |---|---|---|---|---|---|
 | Manage rooms | Yes | No | No | No | No |
-| Book a room | Any room | Own events, non-restricted rooms | No | No | No |
+| Book a room | Any room, for events of active groups or church-wide events (DEC-147) | Own events of an active group or hosted church-wide events, non-restricted rooms | No | No | No |
 | See the room calendar | Full details, restricted rooms and bookings waiting for approval included (DEC-104, DEC-109) | Details of bookings they can see; others show "Reserved" | Same as leader | No | No |
 | Email all members | Yes | No | No | No | No |
 | Email a group's members | Any group | Own approved groups (leaders, DEC-88) | No | No | No |

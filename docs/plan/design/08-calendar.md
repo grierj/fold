@@ -16,7 +16,7 @@
 | Public group feed | `/cal/groups/<id>.ics` | none; active public groups only | That group's dates a signed-out visitor may see |
 | Personal feed | `/cal/u/<token>.ics` | secret token in the URL | "My events" (`mine`, the default) or "Everything I can see" (`all`), set on the profile (DEC-72, DEC-73); see below. Video links when the user may see them (DEC-70). |
 | One date (DEC-93) | `/api/v1/events/<id>/dates/<date>/calendar.ics` | the date page's own access (signed out for public dates) | A one-time download of that date, with exactly what the date page shows; Going is `CONFIRMED`, Maybe and Waitlisted `TENTATIVE`. Not a subscription. |
-| Room feed (M2.2b) | `/cal/rooms/<roomId>/<token>.ics` | admin-issued token | Confirmed bookings for the room on scheduled dates. Only a date whose own visibility (and group) is public shows its details; every other booking is titled "Reserved". Times are the event's, without setup and teardown. |
+| Room feed (M2.2b) | `/cal/rooms/<roomId>/<token>.ics` | admin-issued token | Confirmed bookings for the room on scheduled dates. A booking's details show only when a signed-out viewer could see that date, the same rule as the public feed (`policy.CanSeeEvent` with no viewer): a church-wide event, or an active, non-deleted group, and a public effective visibility. Every other confirmed booking, including one whose group was archived or set back to pending after it was made (DEC-147), is titled "Reserved". Times are the event's, without setup and teardown. |
 
 Personal-feed scope (DEC-71, DEC-73, DEC-77; `policy.DecideCalendar`):
 

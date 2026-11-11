@@ -18,6 +18,7 @@ test is `internal/rooms/busy.go` and the suggestion engine `internal/rooms/sugge
 - With "Room bookings need an admin's approval" on (`room_bookings_need_approval`, default off, DEC-102), a leader's or host's booking waits as a request until an admin confirms or rejects it; an admin's own bookings confirm at once.
 - When an occurrence moves (a per-date change or a series edit, 5.3), its bookings move with it in the same transaction. If the new time conflicts, the booking becomes `requested` (not confirmed), the edit still saves, and the event's leaders or hosts, and the person who moved it, get a "Room lost on <dates>" notice (`room.lost`). An admin can then book the room again over the conflict with a reason; an admin's existing double-booking moves as it is.
 - Cancelling a date or deleting an event releases its booking.
+- Only events of an active group, or church-wide events, can be booked (DEC-147). For a group that is not active (pending, archived or deleted), single-date and series bookings, new series dates (the daily extender, series edits and restores), an admin confirming a waiting request and location matching book nothing. Existing bookings stay, keep holding the room and can be released, and the series room can be stopped.
 - Capacity gives a warning, not a block ("may be too small"), when the date's seat cap or current going count (the event's seat cap on the series picker) is larger than `room.capacity`.
 
 ### 9.3 Room suggestions: the exact rule
