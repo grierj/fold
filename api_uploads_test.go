@@ -171,6 +171,7 @@ func (f *uploadFixture) nothingStored(t *testing.T) {
 // Both routes draw on one set of slots, a full set answers at once with the
 // declared 503 and saves nothing, and a freed slot is usable again.
 func TestUploadRoutesShareOneProcessingLimit(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
 	f := newUploadFixture(t)
 	tmp := uploadTempFiles(t)
 	freeOne := occupyAllSlots(t)
@@ -244,6 +245,7 @@ func TestUploadAcceptsEitherCSRFFormAndKeepsBodyCap(t *testing.T) {
 // gives its slot and temp file back, so more failures than slots leave the
 // next valid upload working.
 func TestFailedUploadsReleaseTheirSlots(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
 	f := newUploadFixture(t)
 	tmp := uploadTempFiles(t)
 	var heavyGIF []byte
@@ -334,6 +336,7 @@ func TestConcurrentUploadsStayWithinTheLimit(t *testing.T) {
 // picture inside is valid, and the file is over the size limit besides, so
 // reaching ReadUpload would have answered file_too_large instead.
 func TestUploadWithoutLengthIsBoundedByTheBodyCap(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
 	f := newUploadFixture(t)
 	tmp := uploadTempFiles(t)
 	for _, tc := range []struct {
