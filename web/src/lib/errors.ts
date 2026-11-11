@@ -206,6 +206,8 @@ export const ERROR_COPY = {
   image_unsupported: "WebP pictures aren't supported yet. Try a JPEG or PNG instead.",
   image_too_large: "That picture is too big to use. Try a smaller one, or one with fewer animation frames.",
   file_unreadable: "We couldn't read that file. Try another picture.",
+  upload_busy: "Other pictures are being uploaded right now. Wait a moment and try again.",
+  upload_canceled: "That upload was interrupted. Try again.",
 
   too_long: "Some of what you typed is too long. Shorten it and try again.",
   missing_field: "Please fill in the required fields.",

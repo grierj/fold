@@ -63,7 +63,7 @@ successful sign-in clears the email's counter but not the IP's.
 ```
 PUT    /api/v1/me           → 200 {user, verificationSent?}  (auth; partial update)
 POST   /api/v1/me/password  → 200 {}  (auth)
-POST   /api/v1/me/avatar    → 200 {avatarUrl} | 401 | 403 teen_avatar  (auth; multipart, field "avatar")
+POST   /api/v1/me/avatar    → 200 {avatarUrl} | 401 | 403 teen_avatar | 503 upload_busy  (auth; multipart, field "avatar")
 DELETE /api/v1/me/avatar    → 200 {} | 401  (auth)
 POST   /api/v1/me/email/verify  {token} → 200 {user} | 400  (public capability; CSRF required)
 POST   /api/v1/me/email/cancel  {token} → 200 {cancelled: true} | 400 link_expired  (public capability; CSRF required)
@@ -347,6 +347,76 @@ lives under `UPLOAD_DIR` (`./data/uploads` default, `/data/uploads` in the
 compose stack, persisted on the `/data` volume). See AGENTS.md for the
 S3-replacement seam.
 
+Resource bounds for avatar and cover uploads (one path, `readImageUpload`):
+
+- Pictures are copied, decoded and re-encoded, so the process allows
+  `images.MaxConcurrentProcessing` (2) at once across both routes. A request
+  takes a slot only after sign-in, CSRF and its own permission check
+  (`teen_avatar`, leader or admin for a cover) have passed. It never waits:
+  when both slots are taken it answers `503 upload_busy`, nothing is saved, and
+  the client may try again. The slot is held until the picture has been
+  normalized and is released before the file is stored or any row changes, on
+  every path including errors. A decoder cannot be stopped, so a client that
+  goes away keeps its slot until the decode returns, and is then answered
+  `408 upload_canceled` (also when it had gone before reading began) with
+  nothing stored.
+- Before decoding, from the header and, for JPEG and PNG, the segments or
+  chunks, an estimate of what normalizing the picture allocates is compared
+  with 64 MiB (`maxWorkingBytes`). Over it answers `400 image_too_large`, as the
+  pixel and frame caps do. The estimate is of allocation in all, decode, turn
+  and encode, so it is above what is live at any moment. It is the encoded
+  input plus 8 MiB of fixed overhead, plus:
+  - PNG: the decoder's canvas, at the bytes a pixel of the color model,
+    widened for a grayscale picture that a `tRNS` chunk could make
+    transparent, doubled for Adam7 interlacing (the canvas and its passes);
+    and for every 16-bit picture a second canvas, because the encoder reads
+    it a pixel at a time and allocates each color.
+  - JPEG: the sample planes padded to whole blocks of the file's sampling;
+    for a progressive file 256 bytes of coefficients per 8 x 8 block of every
+    component; for a CMYK file, or a three-component file that is or may be
+    RGB, the RGBA or CMYK copy the decoder builds and a second one for the
+    colors the encoder or the turn reads one at a time; and the RGBA copy that
+    turns a picture upright. "May be RGB" includes any file with an Adobe
+    APP14 or an APP0 marker after its frame header, because the decoder
+    decides RGB only after the last scan (a later APP0 that is not JFIF
+    clears the JFIF flag an earlier one set) and `DecodeConfig` does not see it.
+  - GIF: two bytes per pixel of every frame (the frame's indexes, and the
+    second copy that puts an interlaced frame's rows back in order; the flag is
+    per frame, so every frame is charged for it), and 128 KiB for every frame
+    for the LZW state the decoder and the encoder each allocate anew for it (the
+    encoder's alone is a 64 KiB table), so many small frames count for more than
+    their pixels.
+
+  So, roughly: 8-bit color PNG up to about 14 megapixels (7 interlaced, 3.5
+  at 16 bits a channel), baseline JPEG up to the 25 megapixel cap upright and
+  about 10 megapixels when it must be turned, progressive JPEG up to about 7
+  megapixels, and about 29 million pixels of GIF frames in all for a few frames,
+  falling to about 16 million (200 frames of about 280 x 280) at the 200-frame
+  cap. A 5000 x 5000 16-bit
+  PNG (a few hundred KB on the wire, 200 MB to decode) is refused. The figure
+  comes from the allocations of the pinned Go toolchain's decoders and
+  encoders, and tests hold it against what they really allocate; it is not a
+  limit on the process.
+- The re-encoded picture is written to a second temporary file through a
+  writer that stops at 10 MiB (twice the upload limit) and answers
+  `400 image_too_large`, so output is never held in memory. The 5 MB upload
+  limit applies to what is sent.
+- The allowance for the process: with both slots busy, the picture work should
+  add no more than 320 MiB of resident memory (`images.ProcessAllowanceBytes`,
+  2.5 times the two budgets: the collector lets the heap reach about twice what
+  is live, and the runtime keeps freed pages a while). Nothing in the server
+  enforces it. The opt-in measurements (`docs/agents/testing.md`) run the
+  worst accepted picture of each format in repeated concurrent waves, with
+  cancellations, and fail when a call allocates more than its estimate or the
+  process peak passes the allowance. That is a check of this machine and Go
+  version, not of a 1 GB droplet with other services and swap; that is a hand
+  check (`docs/FIRST-CHURCH-CHECKS.md`).
+- Not covered: the request body is capped at 5 MB plus 1 MiB of multipart
+  overhead per request, whether or not it declares its length, and the CSRF
+  check reads that body before sign-in, so concurrent requests still buffer
+  one body each ahead of the slot check; the cap bounds each request, not
+  their number. There is no per-user quota and no whole-server memory cap.
+
 ### Groups
 
 ```
@@ -355,7 +425,7 @@ GET  /api/v1/me/groups                    → {groups: [groupSummary]}  (auth; g
 POST /api/v1/groups                       → 201 {group}   (auth, not teens; pending, or active when an admin creates it)
 GET  /api/v1/groups/:id?cursor=&limit=    → {group, members, upcomingEvents, truncated, hasMore, nextCursor, canManage, isMember}
 PUT  /api/v1/groups/:id                   → 200 {group}   (group leader or admin)
-POST   /api/v1/groups/:id/cover           → 200 {imageUrl} (group leader or admin; multipart, field "cover")
+POST   /api/v1/groups/:id/cover           → 200 {imageUrl} | 503 upload_busy (group leader or admin; multipart, field "cover")
 DELETE /api/v1/groups/:id/cover           → 200 {}         (group leader or admin)
 ```
 
