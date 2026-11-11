@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	neturl "net/url"
@@ -1317,7 +1318,14 @@ run)
 	while [[ $1 != --entrypoint ]]; do shift; done
 	entry=$2
 	shift 3 # --entrypoint, its value, the image
-	if [[ $entry == pg_isready ]]; then exit "${FAKE_PGREADY_RC:-0}"; fi
+	if [[ $entry == pg_isready ]]; then
+		# Like the real one run as a uid with no passwd entry: without -U it
+		# cannot name a user and exits 3, "no attempt made".
+		named=
+		for a in "$@"; do [[ $a == -U ]] && named=1; done
+		[[ -n $named ]] || exit 3
+		exit "${FAKE_PGREADY_RC:-0}"
+	fi
 	if [[ ${FAKE_TOOL_RC:-0} != 0 ]]; then exit "$FAKE_TOOL_RC"; fi
 	if [[ ${1:-} == --version ]]; then echo "$entry (PostgreSQL) ${FAKE_PG_MAJOR:-16}.4"; fi
 	;;
@@ -1750,6 +1758,63 @@ func TestPGClientWrapperConnectionForms(t *testing.T) {
 			t.Errorf("exit %d: %s", code, out)
 		}
 	})
+}
+
+// TestPGClientWrapperProbeNamesAUser: the container runs as the caller's uid,
+// which the image has no passwd entry for, so a pg_isready with no -U exits 3
+// ("no attempt") before it connects. The fake docker reproduces that, so a probe
+// without -U fails here as it did against a real server.
+func TestPGClientWrapperProbeNamesAUser(t *testing.T) {
+	f := newFakeDocker(t, true)
+	out, code, calls := f.wrap(t, nil, "16", "pg_dump", "postgres://u:p@127.0.0.1:5433/db")
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, out)
+	}
+	if ready := toolRun(t, calls, "pg_isready"); !ready.has("-U", "probe") {
+		t.Errorf("the probe names no user: %v", ready)
+	}
+
+	// Exit 3 from a probe is not a silent database: it gets its own message and
+	// never the "unreachable" diagnosis (73).
+	out, code, _ = f.wrap(t, []string{"FAKE_PGREADY_RC=3"}, "16", "pg_dump", "postgres://u:p@127.0.0.1:5433/db")
+	if code != 74 || !strings.Contains(out, "made no attempt (exit 3)") || strings.Contains(out, "rejected") {
+		t.Errorf("exit %d: %s", code, out)
+	}
+}
+
+// TestPGClientWrapperProbeWithRealDocker runs the real wrapper, docker and
+// pg_isready against a local port nothing listens on. The probe must get as far
+// as connecting and report silence (73), not "no attempt" (74). It skips where
+// Docker is not usable, as the restore tests do, and fails there under CI.
+func TestPGClientWrapperProbeWithRealDocker(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatal("docker is not on PATH")
+		}
+		t.Skip("docker is not on PATH")
+	}
+	wrapper := pgWrapperPath()
+	id, note, unavailable := resolvePGImage(wrapper, 16)
+	if id == "" {
+		if unavailable && os.Getenv("CI") == "" {
+			t.Skipf("Docker is not usable: %s", note)
+		}
+		t.Fatalf("no image to probe with: %s", note)
+	}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	l.Close() // the port is now closed and, for the next seconds, unused
+
+	cmd := exec.Command(wrapper, "16", "pg_dump", "-f", filepath.Join(t.TempDir(), "x.dump"),
+		fmt.Sprintf("postgres://probe:probe@127.0.0.1:%d/probe", port))
+	cmd.Env = append(os.Environ(), "FOLD_PG_IMAGE_ID="+id, "FOLD_PG_INFO_TIMEOUT=60")
+	out, err := cmd.CombinedOutput()
+	if code := exitCodeOf(err); code != 73 || !strings.Contains(string(out), "does not answer from inside the container") {
+		t.Errorf("exit %d: %s\nwant 73, the probe saw a closed port", code, out)
+	}
 }
 
 func TestPGCandidatesOrder(t *testing.T) {

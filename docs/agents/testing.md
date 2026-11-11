@@ -94,12 +94,17 @@ mounted path, a connection with no host, a socket directory that is missing).
   `name@sha256:...` digest is kept as given. The wrapper never invents a digest for a tag.
 - **Connections.** A TCP host runs on `--network host` after a `pg_isready` probe, which is what
   works on native Linux Docker. A Unix-socket directory (`host=/dir`, `?host=/dir`, `-h /dir`) is
-  mounted at the same path with no network. When the probe gets no answer the error says to use a
+  mounted at the same path with no network. The container runs as the caller's uid, which the
+  image has no passwd entry for, so the probe passes `-U probe` (a `pg_isready` with no user exits 3,
+  "no attempt", before it connects; the probe does not authenticate). When the probe gets no answer the error says to use a
   native client (`FOLD_PG_BIN`) or a connection the container can reach.
 - **Tests.** The argument-level tests (`TestPGClientWrapper*`, in `restore_fence_test.go` beside
   `pgClients`) run the real script against a fake `docker`: paths with spaces, each directory
   mounted once, a stopped daemon, a bounded pull, a failed pull, an unreachable database, image-ID
-  use, a mismatched major, and each connection form. They show the wrapper builds the right
+  use, a mismatched major, and each connection form; the fake `pg_isready` exits 3 without `-U`
+  like the real one. `TestPGClientWrapperProbeWithRealDocker` runs real Docker and `pg_isready`
+  against a closed local port and expects the "unreachable" diagnosis (73), skipping where Docker
+  is not usable (failing under `CI`). The fake tests show the wrapper builds the right
   commands, not that any Docker variant behaves as assumed.
 - **Not covered.** Nothing here was exercised on Docker Desktop, rootless Docker, Podman or a real
   macOS Bash 3.2; treat `--network host` there as unverified and use `FOLD_PG_BIN`. Evidence for

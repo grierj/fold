@@ -325,11 +325,15 @@ fi
 user=$(id -u):$(id -g)
 
 # 5. A database the container can reach. pg_isready answers 0 (accepting) and
-# 1 (starting up or refusing this connection) when something answers; 2 is silence.
+# 1 (starting up or refusing this connection) when something answers; 2 is silence;
+# 3 is "no attempt made". The container runs as the caller's uid, which has no
+# passwd entry in the image, so libpq cannot name a user of its own and pg_isready
+# exits 3 before it connects. -U names one; the probe does not authenticate, so
+# the name is never checked.
 if [[ $target != none ]]; then
 	rc=0
 	bounded "$info_timeout" docker run --rm "${net[@]}" --user "$user" \
-		${mounts[@]+"${mounts[@]}"} --entrypoint pg_isready "$image_id" -q -h "$host" -p "$port" -t 10 || rc=$?
+		${mounts[@]+"${mounts[@]}"} --entrypoint pg_isready "$image_id" -q -U probe -h "$host" -p "$port" -t 10 || rc=$?
 	case $rc in
 	0 | 1) ;;
 	2 | 124)
@@ -342,7 +346,8 @@ if [[ $target != none ]]; then
 	125 | 126 | 127)
 		die 72 "image $image ($image_id) could not run pg_isready ($(last_line "$work/err")); FOLD_PG_IMAGE must name an image with PostgreSQL $major client tools"
 		;;
-	*) die 74 "pg_isready rejected the connection (exit $rc)" ;;
+	3) die 74 "pg_isready made no attempt (exit 3): it could not use the connection parameters for $host port $port" ;;
+	*) die 74 "pg_isready failed (exit $rc)" ;;
 	esac
 fi
 
