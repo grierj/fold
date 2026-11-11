@@ -381,8 +381,11 @@ coverFocalY, location, leaderName, memberCount, nextEventAt (UTC; the SPA shows 
 status, leaderId, visibility, deletionRequested, memberLimit, myRole?}`.
 `myRole` (`leader` or `member`) is the viewer's own active role, sent only on
 `GET /groups` and `GET /me/groups` and only for groups they belong to (DEC-94).
-Those two lists run by `nextEventAt`, soonest first, with groups that have no
-upcoming date last, then by name.
+`nextEventAt` is the viewer's soonest upcoming scheduled date that they may see, or
+null: event visibility and per-date overrides apply, so a date the viewer cannot
+see never shows its time here, in any response that carries a `groupSummary`.
+`GET /groups` and `GET /me/groups` run by that value, soonest first, with groups that have no
+upcoming date they can see last, then by name.
 `memberLimit` is null
 for no limit (DEC-39); `memberCount` counts active members of listed accounts. `leaderId` and `leaderName` are the
 displayed primary contact only (one of the leaders); they grant nothing.
@@ -478,6 +481,10 @@ PUT /api/v1/events/:id/visibility  body {visibility, reason?, confirm?}
 The impact lists only that event, under `tightened`, when the change is more
 private. If it would cancel registrations, the PUT answers 409
 `{needsDecision: true, impact}` unless `confirm` is true.
+After the body arrives, the PUT checks the session, role, and group leadership
+or event hosting again, including for a request that changes nothing. A session
+that ended answers 401, lost management rights answer 403, and a visibility
+value no longer allowed answers 400 `visibility_not_allowed`.
 New groups enter `pending` until an admin approves them (the approval
 workflow survives); groups an admin creates start `active`.
 Name ≤ 200 characters, description ≤ 5000, location ≤ 300, joined tags ≤ 500.
@@ -712,6 +719,9 @@ POST /api/v1/groups/:id/events              → 201 {event} | 409 group_events_n
      body adds optional {visibility, visibilityReason} (DEC-51): defaults to the
      group's value; wider than the group is saved leader-opened with an
      event.visibility_override audit row and notice, as with PUT .../visibility
+     Leadership, the session, and the group's visibility and status are checked
+     again after the body arrives. The default uses the group's value then;
+     a session that ended answers 401.
 PUT  /api/v1/events/:id                     → 200 {event}   (leader, host, or admin; series edit)
 PUT  /api/v1/events/:id/visibility          → 200 {event}   (leader, host, or admin)
      body: {visibility, reason?}
@@ -735,6 +745,12 @@ GET  /api/v1/calendar?from=&to=&tz=&mine=1&group=&deleted=1&remote=1&childcare=1
      childcare=1 keeps only events with childcareAvailable)
 POST /api/v1/events/video/jitsi             → 200 {url}   (leader, host, or admin)
 ```
+
+Event series edits, deletion, date cancellation, and per-date edits check the
+session, role, and leadership or hosting again inside the writing transaction,
+after the body arrives on routes that take one. A session that ended answers
+401. Lost management rights answer 403, or 404 on the per-date edit endpoint.
+A visibility value no longer allowed answers 400 `visibility_not_allowed`.
 
 `GET /groups/:id/events` pages all visible scheduled dates within its original-date
 window, with no per-series cap. Like group detail, `limit` defaults to 25

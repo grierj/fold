@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,8 @@ import (
 	"fold/internal/eventdates"
 	"fold/internal/events"
 	"fold/internal/notify"
+	"fold/internal/policy"
+	"fold/internal/testdb"
 	"fold/models"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +22,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func TestGroupListReadBudgetsAndSummaryValues(t *testing.T) {
@@ -2167,5 +2171,885 @@ func TestCreateEventNeedsActiveGroup(t *testing.T) {
 	w := admin.do("POST", "/api/v1/events", body, true)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("church-wide event: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// The group card and the group page decide a date by the same rule: for every
+// kind of viewer and every mix of group visibility, event visibility and date
+// override, nextEventAt is the first date of the same viewer's upcoming list.
+func TestGroupNextEventAtMatchesUpcomingEvents(t *testing.T) {
+	app := testApp(t)
+	leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+	member := newTestUser(t, app, "member", "password1234", models.RoleMember)
+	outsider := newTestUser(t, app, "outsider", "password1234", models.RoleMember)
+	admin := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	guest := newTestUser(t, app, "guest", "password1234", models.RoleMember)
+	if err := app.DB.Model(guest).Update("status", models.UserGuest).Error; err != nil {
+		t.Fatal(err)
+	}
+	guest.Status = models.UserGuest
+
+	vis := []string{models.VisibilityPublic, models.VisibilityPrivate, models.VisibilityInviteOnly}
+	overrides := []*string{nil}
+	for i := range vis {
+		overrides = append(overrides, &vis[i])
+	}
+	first := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Minute)
+	for _, status := range []string{models.GroupActive, models.GroupPending, models.GroupArchived} {
+		for _, gv := range vis {
+			for _, ev := range vis {
+				for _, ov := range overrides {
+					g := newTestGroup(t, app, leader, fmt.Sprintf("G %s %s %s", status, gv, ev), status)
+					if err := app.DB.Model(g).Update("visibility", gv).Error; err != nil {
+						t.Fatal(err)
+					}
+					addMember(t, app, member, g, models.MembershipMember)
+					e, _ := nextEventSeed(t, app, g, leader.ID, first, ev, ov)
+					// A plain second date, so a hidden first date falls back to it.
+					second := first.Add(48 * time.Hour)
+					if err := app.DB.Create(&models.EventOccurrence{EventID: e.ID, OriginalDate: calDate(second.Format("2006-01-02")),
+						StartsAt: second, EndsAt: second.Add(time.Hour), Status: models.OccurrenceScheduled}).Error; err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+		}
+	}
+	var groups []models.Group
+	if err := app.DB.Find(&groups).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(groups) != 3*len(vis)*len(vis)*len(overrides) {
+		t.Fatalf("seeded %d groups", len(groups))
+	}
+
+	viewers := []struct {
+		kind string
+		u    *models.User
+	}{{"anonymous", nil}, {"guest", guest}, {"signed-in", outsider}, {"member", member}, {"leader", leader}, {"admin", admin}}
+	now := time.Now().UTC()
+	from, to := upcomingWindow(now)
+	sawNext, sawNone := 0, 0
+	for _, v := range viewers {
+		got, err := app.groupSummaries(v.u, groups)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, g := range groups {
+			var eventIDs []uint
+			if err := app.DB.Model(&models.Event{}).Where("group_id = ?", g.ID).Pluck("id", &eventIDs).Error; err != nil {
+				t.Fatal(err)
+			}
+			upcoming, _, err := app.occurrencesForEventsAfterErr(eventIDs, from, to, &now, v.u, maxGroupUpcomingOccurrences, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var want *time.Time
+			if len(upcoming) > 0 {
+				want = &upcoming[0].StartsAt
+				sawNext++
+			} else {
+				sawNone++
+			}
+			requireNextAt(t, fmt.Sprintf("%s, %s", v.kind, g.Name), got[i].NextEventAt, want)
+		}
+	}
+	if sawNext == 0 || sawNone == 0 {
+		t.Fatalf("the property check needs both visible and hidden cases: visible=%d hidden=%d", sawNext, sawNone)
+	}
+}
+
+// Seeing a hidden date costs no query per group: the statements groupSummaries
+// runs are the same for one group and for many, each with several events and
+// per-date overrides.
+func TestGroupSummariesDateReadsDoNotGrowWithGroups(t *testing.T) {
+	app := testApp(t)
+	leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+	viewer := newTestUser(t, app, "viewer", "password1234", models.RoleMember)
+	start := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Minute)
+	seedGroup := func(name string) {
+		t.Helper()
+		g := newTestGroup(t, app, leader, name, models.GroupActive)
+		for i, vis := range []string{models.VisibilityPublic, models.VisibilityPrivate, models.VisibilityInviteOnly} {
+			override := models.VisibilityPrivate
+			nextEventSeed(t, app, g, leader.ID, start.Add(time.Duration(i)*time.Hour), vis, nil)
+			nextEventSeed(t, app, g, leader.ID, start.Add(time.Duration(i+3)*time.Hour), vis, &override)
+		}
+	}
+	n := collectionReadCounter(t, app.DB)
+	reads := func() int {
+		t.Helper()
+		var groups []models.Group
+		if err := app.DB.Order("id").Find(&groups).Error; err != nil {
+			t.Fatal(err)
+		}
+		*n = 0
+		if _, err := app.groupSummaries(viewer, groups); err != nil {
+			t.Fatal(err)
+		}
+		return *n
+	}
+	seedGroup("Group 1")
+	one := reads()
+	for i := 2; i <= 6; i++ {
+		seedGroup(fmt.Sprintf("Group %d", i))
+	}
+	if six := reads(); six != one {
+		t.Fatalf("groupSummaries ran %d statements for 6 groups and %d for 1", six, one)
+	}
+}
+
+// A writer commits after the snapshot's first read or its last policy-fact
+// read. The result must belong to the state before that commit, never combine
+// stale permission with a start time that only exists after permission is lost.
+func TestNextVisibleDatesUsesOneSnapshot(t *testing.T) {
+	for _, boundary := range []string{"events", "memberships"} {
+		for _, change := range []string{"event visibility", "group status", "membership", "deleted event", "deleted group"} {
+			t.Run(boundary+"/"+change, func(t *testing.T) {
+				app := testApp(t)
+				leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+				viewer := newTestUser(t, app, "viewer", "password1234", models.RoleMember)
+				g := newTestGroup(t, app, leader, "Choir", models.GroupActive)
+				visibility := models.VisibilityPublic
+				if change == "membership" {
+					addMember(t, app, viewer, g, models.MembershipMember)
+					visibility = models.VisibilityInviteOnly
+				}
+				before := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Minute)
+				after := before.Add(time.Hour)
+				ev, occ := nextEventSeed(t, app, g, leader.ID, before, visibility, nil)
+				fired := false
+				callback := "test:next_dates_snapshot"
+				if err := app.DB.Callback().Query().After("gorm:query").Register(callback, func(read *gorm.DB) {
+					if fired || read.Error != nil || read.Statement.Table != boundary {
+						return
+					}
+					fired = true
+					var mode struct {
+						Isolation string
+						ReadOnly  string
+					}
+					if err := read.Session(&gorm.Session{NewDB: true}).Raw(`SELECT
+						current_setting('transaction_isolation') AS isolation,
+						current_setting('transaction_read_only') AS read_only`).Scan(&mode).Error; err != nil {
+						read.AddError(err)
+						return
+					}
+					if mode.Isolation != "repeatable read" || mode.ReadOnly != "on" {
+						read.AddError(fmt.Errorf("snapshot mode = %+v", mode))
+						return
+					}
+					read.AddError(app.DB.Transaction(func(write *gorm.DB) error {
+						switch change {
+						case "event visibility":
+							if err := write.Model(&ev).Update("visibility", models.VisibilityInviteOnly).Error; err != nil {
+								return err
+							}
+						case "group status":
+							if err := write.Model(g).Update("status", models.GroupArchived).Error; err != nil {
+								return err
+							}
+						case "membership":
+							if err := write.Model(&models.Membership{}).Where("group_id = ? AND user_id = ?", g.ID, viewer.ID).
+								Update("status", models.MembershipRemoved).Error; err != nil {
+								return err
+							}
+						case "deleted event":
+							if err := write.Delete(&ev).Error; err != nil {
+								return err
+							}
+						case "deleted group":
+							if err := write.Delete(g).Error; err != nil {
+								return err
+							}
+						}
+						return write.Model(&occ).Updates(map[string]any{"starts_at": after, "ends_at": after.Add(time.Hour)}).Error
+					}))
+				}); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = app.DB.Callback().Query().Remove(callback) })
+
+				got, err := nextVisibleDates(app.DB, viewer, []uint{g.ID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !fired {
+					t.Fatal("writer did not commit between snapshot reads")
+				}
+				requireNextAt(t, "in-flight snapshot", got[g.ID], &before)
+				fresh, err := nextVisibleDates(app.DB, viewer, []uint{g.ID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				requireNextAt(t, "fresh snapshot after tightening", fresh[g.ID], nil)
+			})
+		}
+	}
+}
+
+func TestNextVisibleDatesPreservesCallerTransaction(t *testing.T) {
+	for _, isolation := range []sql.IsolationLevel{sql.LevelRepeatableRead, sql.LevelSerializable, sql.LevelReadCommitted} {
+		t.Run(isolation.String(), func(t *testing.T) {
+			app := testApp(t)
+			leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+			viewer := newTestUser(t, app, "viewer", "password1234", models.RoleMember)
+			g := newTestGroup(t, app, leader, "Choir", models.GroupActive)
+			originalDescription := g.Description
+			start := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Minute)
+			ev, _ := nextEventSeed(t, app, g, leader.ID, start, models.VisibilityInviteOnly, nil)
+			tx := app.DB.Begin(&sql.TxOptions{Isolation: isolation})
+			if tx.Error != nil {
+				t.Fatal(tx.Error)
+			}
+			defer tx.Rollback()
+			// Only this transaction can see the opened event and the viewer's
+			// new membership. Escaping to the pool for either read is wrong.
+			if err := tx.Model(&ev).Update("visibility", models.VisibilityPublic).Error; err != nil {
+				t.Fatal(err)
+			}
+			got, err := nextVisibleDates(tx, nil, []uint{g.ID})
+			if isolation == sql.LevelReadCommitted {
+				if !errors.Is(err, errNextDatesSnapshot) || got != nil {
+					t.Fatalf("read-committed caller: result=%v err=%v", got, err)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				requireNextAt(t, "caller's uncommitted event", got[g.ID], &start)
+				if err := tx.Model(&ev).Update("visibility", models.VisibilityInviteOnly).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := tx.Create(&models.Membership{GroupID: g.ID, UserID: viewer.ID,
+					Status: models.MembershipActive, Role: models.MembershipMember}).Error; err != nil {
+					t.Fatal(err)
+				}
+				got, err = nextVisibleDates(tx, viewer, []uint{g.ID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				requireNextAt(t, "caller's uncommitted membership", got[g.ID], &start)
+			}
+			// The helper must neither commit the caller nor turn it read-only,
+			// even when it refuses the caller's isolation level.
+			if err := tx.Model(g).Update("description", "Still writable").Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Rollback().Error; err != nil {
+				t.Fatal(err)
+			}
+			var stored models.Event
+			if err := app.DB.First(&stored, ev.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if stored.Visibility != models.VisibilityInviteOnly {
+				t.Fatal("helper committed its caller's event edit")
+			}
+			var storedGroup models.Group
+			if err := app.DB.First(&storedGroup, g.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if storedGroup.Description != originalDescription {
+				t.Fatal("caller transaction was not rolled back")
+			}
+		})
+	}
+}
+
+func createEventBodyForTest() map[string]any {
+	return map[string]any{"title": "Held event", "startsLocal": time.Now().UTC().AddDate(0, 0, 7).Format("2006-01-02") + "T19:00", "durationMinutes": 60, "tzid": "UTC"}
+}
+
+func createEventWriteCounts(t *testing.T, app *App) map[string]int64 {
+	t.Helper()
+	out := map[string]int64{}
+	for name, model := range map[string]any{
+		"events": &models.Event{}, "dates": &models.EventOccurrence{}, "audit": &models.AuditLog{},
+		"notices": &models.Notification{}, "bookings": &models.RoomBooking{}, "jobs": &models.Job{},
+	} {
+		out[name] = contactCount(t, app, model, "1 = 1")
+	}
+	return out
+}
+
+func TestCreateEventRechecksAfterHeldBody(t *testing.T) {
+	for _, change := range []string{"removed leader", "demoted admin", "disabled account", "archived group", "deleted group", "hidden group"} {
+		t.Run(change, func(t *testing.T) {
+			app := testApp(t)
+			leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+			other := newTestUser(t, app, "other", "password1234", models.RoleAdmin)
+			g := newTestGroup(t, app, leader, "Choir", models.GroupActive)
+			addMember(t, app, other, g, models.MembershipLeader)
+			actor := leader
+			if change == "demoted admin" {
+				actor = newTestUser(t, app, "non-leading admin", "password1234", models.RoleAdmin)
+			}
+			client := loginHeld(t, app, actor.Email, "password1234")
+			admin := loginHeld(t, app, other.Email, "password1234")
+			body := createEventBodyForTest()
+			// A revoked writer must fail before any attempt to book this room.
+			body["roomId"] = 999999
+			held := client.doHeld("POST", "/api/v1/groups/"+itoa(g.ID)+"/events", body)
+			want, code := http.StatusForbidden, ""
+			switch change {
+			case "removed leader", "hidden group":
+				if err := app.DB.Model(&models.Membership{}).Where("user_id = ? AND group_id = ?", actor.ID, g.ID).
+					Update("status", models.MembershipRemoved).Error; err != nil {
+					t.Fatal(err)
+				}
+				if change == "hidden group" {
+					apiDo(t, admin, "PUT", "/api/v1/groups/"+itoa(g.ID), map[string]any{"visibility": models.VisibilityInviteOnly, "confirm": true}, http.StatusOK)
+					want = http.StatusNotFound
+				}
+			case "demoted admin":
+				apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(actor.ID), map[string]any{"role": models.RoleMember}, http.StatusOK)
+				want = http.StatusUnauthorized
+			case "disabled account":
+				apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(actor.ID), map[string]any{"status": models.UserDisabled}, http.StatusOK)
+				want = http.StatusUnauthorized
+			case "archived group":
+				apiDo(t, admin, "PUT", "/api/v1/groups/"+itoa(g.ID), map[string]any{"status": models.GroupArchived}, http.StatusOK)
+				want, code = http.StatusConflict, "group_events_not_approved"
+			case "deleted group":
+				if err := app.DB.Delete(g).Error; err != nil {
+					t.Fatal(err)
+				}
+				want = http.StatusNotFound
+			}
+			before := createEventWriteCounts(t, app)
+			held.release()
+			w := held.wait(t)
+			if w.Code != want || (code != "" && !strings.Contains(w.Body.String(), `"code":"`+code+`"`)) {
+				t.Fatalf("create after %s: %d %s, want %d %s", change, w.Code, w.Body.String(), want, code)
+			}
+			if want == http.StatusForbidden && w.Body.String() != `{"code":"not_allowed","error":"forbidden"}` {
+				t.Fatalf("changed preflight refusal body: %s", w.Body.String())
+			}
+			if want == http.StatusNotFound && w.Body.String() != `{"code":"not_found","error":"group not found"}` {
+				t.Fatalf("changed preflight hidden body: %s", w.Body.String())
+			}
+			if after := createEventWriteCounts(t, app); !reflect.DeepEqual(before, after) {
+				t.Fatalf("refused create wrote rows: before=%v after=%v", before, after)
+			}
+		})
+	}
+}
+
+func requireCreatedEvent(t *testing.T, app *App, w *httptest.ResponseRecorder) models.Event {
+	t.Helper()
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create event: %d %s", w.Code, w.Body.String())
+	}
+	var body eventSeriesResponseJSON
+	decodeJSON(t, w, &body)
+	var ev models.Event
+	if err := app.DB.First(&ev, body.Event.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if n := contactCount(t, app, &models.AuditLog{}, "target_type = 'event' AND target_id = ? AND action = ?", ev.ID, audit.EventCreated); n != 1 {
+		t.Fatalf("event.created audits = %d, want exactly one", n)
+	}
+	if n := contactCount(t, app, &models.EventOccurrence{}, "event_id = ?", ev.ID); n != 1 {
+		t.Fatalf("created dates = %d, want one", n)
+	}
+	var created models.AuditLog
+	if err := app.DB.Where("target_type = 'event' AND target_id = ? AND action = ?", ev.ID, audit.EventCreated).First(&created).Error; err != nil {
+		t.Fatal(err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(created.MetaJSON), &meta); err != nil {
+		t.Fatal(err)
+	}
+	if meta["visibility"] != ev.Visibility {
+		t.Fatalf("created-event audit visibility = %v, saved %s", meta["visibility"], ev.Visibility)
+	}
+	return ev
+}
+
+func requireCreateVisibilityAudit(t *testing.T, app *App, ev models.Event, groupVisibility, action string) {
+	t.Helper()
+	var rows []models.AuditLog
+	if err := app.DB.Where("target_type = 'event' AND target_id = ? AND action IN ?", ev.ID,
+		[]string{audit.VisibilityChanged, audit.VisibilityOverride}).Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if action == "" {
+		if len(rows) != 0 {
+			t.Fatalf("inherited/equal visibility wrote audit: %+v", rows)
+		}
+		return
+	}
+	if len(rows) != 1 || rows[0].Action != action {
+		t.Fatalf("visibility audits = %+v, want one %s", rows, action)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(rows[0].MetaJSON), &meta); err != nil {
+		t.Fatal(err)
+	}
+	if meta["oldVisibility"] != groupVisibility || meta["groupVisibility"] != groupVisibility || meta["newVisibility"] != ev.Visibility ||
+		meta["atCreation"] != true || meta["oldLeaderOpened"] != false || meta["leaderOpened"] != ev.LeaderOpened {
+		t.Fatalf("creation visibility audit used stale facts: %v", meta)
+	}
+}
+
+func TestCreateEventUsesGroupVisibilityAfterHeldBody(t *testing.T) {
+	for _, explicit := range []bool{false, true} {
+		t.Run(fmt.Sprintf("explicit=%v", explicit), func(t *testing.T) {
+			app := testApp(t)
+			leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+			other := newTestUser(t, app, "other leader", "password1234", models.RoleMember)
+			admin := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+			g := newTestGroup(t, app, leader, "Choir", models.GroupActive)
+			addMember(t, app, other, g, models.MembershipLeader)
+			client := loginHeld(t, app, leader.Email, "password1234")
+			coLeader := loginHeld(t, app, other.Email, "password1234")
+			body := createEventBodyForTest()
+			if explicit {
+				body["visibility"], body["visibilityReason"] = models.VisibilityPublic, "Guests welcome"
+			}
+			held := client.doHeld("POST", "/api/v1/groups/"+itoa(g.ID)+"/events", body)
+			apiDo(t, coLeader, "PUT", "/api/v1/groups/"+itoa(g.ID), map[string]any{"visibility": models.VisibilityPrivate, "confirm": true}, http.StatusOK)
+			held.release()
+			ev := requireCreatedEvent(t, app, held.wait(t))
+			want, action := models.VisibilityPrivate, ""
+			if explicit {
+				want, action = models.VisibilityPublic, audit.VisibilityOverride
+			}
+			if ev.Visibility != want || ev.LeaderOpened != explicit {
+				t.Fatalf("saved visibility=%s leaderOpened=%v, want %s/%v", ev.Visibility, ev.LeaderOpened, want, explicit)
+			}
+			requireCreateVisibilityAudit(t, app, ev, models.VisibilityPrivate, action)
+			for _, u := range []*models.User{leader, other, admin} {
+				wantNotices := int64(0)
+				if explicit && u.ID != leader.ID {
+					wantNotices = 1
+				}
+				if n := contactCount(t, app, &models.Notification{}, "user_id = ? AND kind = ? AND subject_id = ?", u.ID, notify.VisibilityOverride, ev.ID); n != wantNotices {
+					t.Fatalf("override notices for %s = %d, want %d", u.Name, n, wantNotices)
+				}
+			}
+			if !explicit {
+				anon := newAPIClient(t, app)
+				var occ models.EventOccurrence
+				if err := app.DB.Where("event_id = ?", ev.ID).First(&occ).Error; err != nil {
+					t.Fatal(err)
+				}
+				for _, surface := range []struct {
+					path   string
+					status int
+				}{
+					{"/api/v1/groups/" + itoa(g.ID), http.StatusNotFound},
+					{"/api/v1/groups", http.StatusOK},
+					{"/cal/public.ics", http.StatusOK},
+				} {
+					w := anon.do("GET", surface.path, nil, false)
+					if w.Code != surface.status || strings.Contains(w.Body.String(), ev.Title) || strings.Contains(w.Body.String(), occ.StartsAt.UTC().Format(time.RFC3339)) {
+						t.Fatalf("anonymous surface %s disclosed private create: %d %s", surface.path, w.Code, w.Body.String())
+					}
+					if surface.status == http.StatusNotFound && w.Body.String() != `{"code":"not_found","error":"group not found"}` {
+						t.Fatalf("private group detail changed non-disclosure body: %s", w.Body.String())
+					}
+					if surface.path == "/api/v1/groups" {
+						var listed groupListResponseJSON
+						decodeJSON(t, w, &listed)
+						if len(listed.Groups) != 0 {
+							t.Fatalf("private group or its nextEventAt appeared in anonymous directory: %s", w.Body.String())
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestCreateEventVisibilityDefaultsAndChoices(t *testing.T) {
+	for _, groupVis := range []string{models.VisibilityPublic, models.VisibilityPrivate, models.VisibilityInviteOnly} {
+		for _, choice := range []string{"", models.VisibilityPublic, models.VisibilityPrivate, models.VisibilityInviteOnly} {
+			t.Run(groupVis+"/"+choice, func(t *testing.T) {
+				app := testApp(t)
+				leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+				admin := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+				g := activeGroup(t, app, leader, "Choir", groupVis, "")
+				client := loginHeld(t, app, leader.Email, "password1234")
+				body := createEventBodyForTest()
+				want := groupVis
+				if choice != "" {
+					body["visibility"] = choice
+					want = choice
+				}
+				ev := requireCreatedEvent(t, app, client.do("POST", "/api/v1/groups/"+itoa(g.ID)+"/events", body, true))
+				opened := policy.MoreOpen(want, groupVis)
+				if ev.Visibility != want || ev.LeaderOpened != opened {
+					t.Fatalf("visibility=%s leaderOpened=%v, want %s/%v", ev.Visibility, ev.LeaderOpened, want, opened)
+				}
+				action := ""
+				if want != groupVis {
+					action = audit.VisibilityChanged
+					if opened {
+						action = audit.VisibilityOverride
+					}
+				}
+				requireCreateVisibilityAudit(t, app, ev, groupVis, action)
+				wantNotices := int64(0)
+				if opened {
+					wantNotices = 1
+				}
+				if n := contactCount(t, app, &models.Notification{}, "kind = ? AND subject_id = ?", notify.VisibilityOverride, ev.ID); n != wantNotices {
+					t.Fatalf("visibility notices = %d, want %d for admin %d", n, wantNotices, admin.ID)
+				}
+			})
+		}
+	}
+}
+
+func TestCreateEventWaitsForLockedGroup(t *testing.T) {
+	app := testApp(t)
+	leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+	g := newTestGroup(t, app, leader, "Choir", models.GroupActive)
+	client := loginHeld(t, app, leader.Email, "password1234")
+	tx := app.DB.Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	defer tx.Rollback()
+	var blocker int
+	if err := tx.Raw("SELECT pg_backend_pid()").Scan(&blocker).Error; err != nil {
+		t.Fatal(err)
+	}
+	var locked models.Group
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, g.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Model(&locked).Update("visibility", models.VisibilityPrivate).Error; err != nil {
+		t.Fatal(err)
+	}
+	body := createEventBodyForTest()
+	done := queueContact(func() *httptest.ResponseRecorder {
+		return client.do("POST", "/api/v1/groups/"+itoa(g.ID)+"/events", body, true)
+	})
+	// This holder deliberately has no contact gate. A SHARE waiter proves the
+	// writing transaction, rather than the preflight, reads the new group row.
+	testdb.WaitUntil(t, "create waiting on the group SHARE lock", 5*time.Second, func() bool {
+		var waiting bool
+		err := app.DB.Raw(`SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock'
+			AND query LIKE '%FROM "groups"%' AND query LIKE '%FOR SHARE%'
+			AND ? = ANY(pg_blocking_pids(pid)))`, blocker).Scan(&waiting).Error
+		if err != nil {
+			t.Fatal(err)
+		}
+		return waiting
+	})
+	if err := tx.Commit().Error; err != nil {
+		t.Fatal(err)
+	}
+	ev := requireCreatedEvent(t, app, awaitContactResponse(t, done))
+	if ev.Visibility != models.VisibilityPrivate || ev.LeaderOpened {
+		t.Fatalf("create used pre-lock group visibility: %+v", ev)
+	}
+	requireCreateVisibilityAudit(t, app, ev, models.VisibilityPrivate, "")
+}
+
+// Invitation acceptance and departure lock the group before the creating
+// leader's user row. Both orders at the gate must serialize without a cycle.
+func TestCreateEventSerializesWithGroupFirstWriters(t *testing.T) {
+	for _, writer := range []string{"invitation", "departure"} {
+		for iteration := 0; iteration < 4; iteration++ {
+			t.Run(fmt.Sprintf("%s/%d", writer, iteration), func(t *testing.T) {
+				app := testApp(t)
+				logs := captureServerLog(t)
+				states := erasureTestSQLStates(t, app)
+				leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+				g := newTestGroup(t, app, leader, "Choir", models.GroupActive)
+				creator := loginHeld(t, app, leader.Email, "password1234")
+				otherClient := cloneContactClient(creator)
+				method, path, otherBody := "POST", "", map[string]any{}
+				if writer == "invitation" {
+					const email = "new-invitee@example.com"
+					apiDo(t, creator, "POST", "/api/v1/invitations", map[string]any{"email": email, "groupId": g.ID}, http.StatusCreated)
+					token := tokenInEmail(t, latestEmail(t, app, email))
+					otherClient = newAPIClient(t, app)
+					otherClient.fetchCSRF()
+					otherClient.holdNotices = true
+					path = "/api/v1/invitations/accept"
+					otherBody = map[string]any{"token": token, "name": "Invitee", "password": "password1234", "ageBand": "adult"}
+				} else {
+					subject := newTestUser(t, app, "departing member", "password1234", models.RoleMember)
+					addMember(t, app, subject, g, models.MembershipMember)
+					path = "/api/v1/groups/" + itoa(g.ID) + "/members/" + itoa(subject.ID) + "/departure"
+					preview := getDeparturePreview(t, otherClient, path+"-preview", http.StatusOK)
+					otherBody = map[string]any{"snapshot": preview.Snapshot, "keepOccurrenceIds": []uint{}}
+				}
+				body := createEventBodyForTest()
+				create := func() *httptest.ResponseRecorder {
+					return creator.do("POST", "/api/v1/groups/"+itoa(g.ID)+"/events", body, true)
+				}
+				write := func() *httptest.ResponseRecorder { return otherClient.do(method, path, otherBody, true) }
+				gate := holdContactGate(t, app)
+				first, second := create, write
+				if iteration%2 != 0 {
+					first, second = write, create
+				}
+				one := queueContact(first)
+				waitContactWaiters(t, app, 1)
+				two := queueContact(second)
+				waitContactWaiters(t, app, 2)
+				if err := gate.Commit().Error; err != nil {
+					t.Fatal(err)
+				}
+				firstResponse, secondResponse := awaitContactResponse(t, one), awaitContactResponse(t, two)
+				created, changed := firstResponse, secondResponse
+				if iteration%2 != 0 {
+					created, changed = secondResponse, firstResponse
+				}
+				requireCreatedEvent(t, app, created)
+				if changed.Code != http.StatusOK {
+					t.Fatalf("%s interleaving: %d %s", writer, changed.Code, changed.Body.String())
+				}
+				if states.Count("40P01") != 0 || strings.Contains(logs.String(), "40P01") || strings.Contains(logs.String(), "deadlock detected") {
+					t.Fatalf("%s/create deadlocked: %s", writer, logs.String())
+				}
+			})
+		}
+	}
+}
+
+func TestCreateEventRefusesMembersAndTeens(t *testing.T) {
+	app := testApp(t)
+	leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+	g := newTestGroup(t, app, leader, "Choir", models.GroupActive)
+	for _, accountType := range []string{models.AccountAdult, models.AccountTeen} {
+		u := newTestUser(t, app, accountType, "password1234", models.RoleMember)
+		if err := app.DB.Model(u).Update("account_type", accountType).Error; err != nil {
+			t.Fatal(err)
+		}
+		addMember(t, app, u, g, models.MembershipMember)
+		client := loginHeld(t, app, u.Email, "password1234")
+		before := createEventWriteCounts(t, app)
+		apiDo(t, client, "POST", "/api/v1/groups/"+itoa(g.ID)+"/events", createEventBodyForTest(), http.StatusForbidden)
+		if after := createEventWriteCounts(t, app); !reflect.DeepEqual(before, after) {
+			t.Fatalf("%s member create wrote rows: %v -> %v", accountType, before, after)
+		}
+	}
+}
+
+func TestUpdateOccurrenceUsesZoneAfterHeldBody(t *testing.T) {
+	for _, tc := range []struct {
+		zone      string
+		clock     string
+		utcOffset time.Duration
+	}{
+		{"Asia/Tokyo", "00:30", -8*time.Hour - 30*time.Minute},
+		{"Pacific/Honolulu", "23:30", 33*time.Hour + 30*time.Minute},
+	} {
+		t.Run(tc.zone, func(t *testing.T) {
+			f := newEventWriterRace(t, false)
+			eventPath := "/api/v1/events/" + itoa(f.event.ID)
+			wall := f.date + "T" + tc.clock
+			held := f.actor.doHeld("PUT", eventPath+"/occurrences/"+f.date,
+				map[string]any{"startsLocal": " " + wall + " ", "durationMinutes": 90})
+			apiDo(t, f.admin, "PUT", eventPath, map[string]any{"tzid": tc.zone}, http.StatusOK)
+			var before models.EventOccurrence
+			if err := f.app.DB.Where("event_id = ? AND original_date = ?", f.event.ID, f.date).First(&before).Error; err != nil {
+				t.Fatal(err)
+			}
+			held.release()
+			w := held.wait(t)
+			if w.Code != http.StatusOK {
+				t.Fatalf("date edit after zone change: %d %s", w.Code, w.Body.String())
+			}
+			day, err := models.ParseCalendarDate(f.date)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantStart := day.Add(tc.utcOffset)
+			wantEnd := wantStart.Add(90 * time.Minute)
+			var response occurrenceResponseJSON
+			decodeJSON(t, w, &response)
+			got := response.Occurrence
+			if got.ID != before.ID || got.Date != f.date || got.TZID != tc.zone || got.StartsLocal != wall ||
+				!got.StartsAt.Equal(wantStart) || !got.EndsAt.Equal(wantEnd) || got.DurationMinutes != 90 {
+				t.Fatalf("date response: %+v, want %s in %s, UTC %s to %s on original date %s", got, wall, tc.zone, wantStart, wantEnd, f.date)
+			}
+			var saved models.EventOccurrence
+			if err := f.app.DB.First(&saved, before.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if !saved.StartsAt.Equal(wantStart) || !saved.EndsAt.Equal(wantEnd) ||
+				saved.StartsAtOverride == nil || !saved.StartsAtOverride.Equal(wantStart) ||
+				saved.DurationOverride == nil || *saved.DurationOverride != 90 ||
+				models.FormatCalendarDate(saved.OriginalDate) != f.date || saved.Status != before.Status || saved.CancelSource != before.CancelSource {
+				t.Fatalf("saved date: %+v, want UTC %s to %s with date and status preserved", saved, wantStart, wantEnd)
+			}
+		})
+	}
+}
+
+func TestUpdateOccurrenceInvalidStartAfterHeldBodyWritesNothing(t *testing.T) {
+	f := newEventWriterRace(t, false)
+	eventPath := "/api/v1/events/" + itoa(f.event.ID)
+	held := f.actor.doHeld("PUT", eventPath+"/occurrences/"+f.date, map[string]any{
+		"startsLocal": "not a wall time", "durationMinutes": 90, "title": "Changed date",
+		"location": "New hall", "visibility": models.VisibilityPrivate, "confirm": true,
+	})
+	apiDo(t, f.admin, "PUT", eventPath, map[string]any{"tzid": "Asia/Tokyo"}, http.StatusOK)
+	before := eventWriterState(t, f.app, f.event.ID)
+	held.release()
+	w := held.wait(t)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid date start: %d %s", w.Code, w.Body.String())
+	}
+	var answer map[string]any
+	decodeJSON(t, w, &answer)
+	if len(answer) != 2 || answer["code"] != errInvalidStart.Code || answer["error"] != errInvalidStart.Message {
+		t.Fatalf("invalid date start answer: %v", answer)
+	}
+	if after := eventWriterState(t, f.app, f.event.ID); before != after {
+		t.Fatalf("invalid date start changed rows:\nbefore %s\nafter %s", before, after)
+	}
+}
+
+func TestUpdateOccurrenceEventDeletedAfterHeldBody(t *testing.T) {
+	f := newEventWriterRace(t, false)
+	eventPath := "/api/v1/events/" + itoa(f.event.ID)
+	held := f.actor.doHeld("PUT", eventPath+"/occurrences/"+f.date, map[string]any{
+		"startsLocal": f.date + "T21:00", "location": "New hall", "visibility": models.VisibilityPrivate,
+	})
+	apiDo(t, f.admin, "DELETE", eventPath, nil, http.StatusOK)
+	before := eventWriterState(t, f.app, f.event.ID)
+	held.release()
+	w := held.wait(t)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("date edit after event deletion: %d %s", w.Code, w.Body.String())
+	}
+	var answer map[string]any
+	decodeJSON(t, w, &answer)
+	if len(answer) != 2 || answer["code"] != "not_found" || answer["error"] != "event not found" {
+		t.Fatalf("deleted event answer: %v", answer)
+	}
+	if after := eventWriterState(t, f.app, f.event.ID); before != after {
+		t.Fatalf("date edit after event deletion changed rows:\nbefore %s\nafter %s", before, after)
+	}
+}
+
+func TestEventSiblingWritersRecheckAfterHeldBody(t *testing.T) {
+	for _, writer := range []string{"series", "cancel"} {
+		for _, change := range []string{"demoted admin", "disabled account", "removed leader"} {
+			t.Run(writer+"/"+change, func(t *testing.T) {
+				f := newEventWriterRace(t, change == "demoted admin")
+				method, path := "PUT", "/api/v1/events/"+itoa(f.event.ID)
+				body := map[string]any{"title": "Changed series", "location": "New hall"}
+				if writer == "cancel" {
+					method, path, body = "POST", path+"/cancel", map[string]any{"date": f.date}
+				}
+				held := f.actor.doHeld(method, path, body)
+				f.revoke(t, change)
+				before := eventWriterState(t, f.app, f.event.ID)
+				held.release()
+				w := held.wait(t)
+				want := http.StatusUnauthorized
+				if change == "removed leader" {
+					want = http.StatusForbidden
+				}
+				if w.Code != want {
+					t.Fatalf("%s after %s: %d %s, want %d", writer, change, w.Code, w.Body.String(), want)
+				}
+				if after := eventWriterState(t, f.app, f.event.ID); before != after {
+					t.Fatalf("refused %s changed rows:\nbefore %s\nafter %s", writer, before, after)
+				}
+			})
+		}
+	}
+}
+
+// DELETE has no body. Queue a real demotion first at the contact gate, then
+// the authenticated delete, so its transaction must judge the revoked actor.
+func TestDeleteEventRechecksAfterContactGate(t *testing.T) {
+	f := newEventWriterRace(t, true)
+	before := eventRow(t, f.app, f.event.ID)
+	gate := holdContactGate(t, f.app)
+	demotion := queueContact(func() *httptest.ResponseRecorder {
+		return f.admin.do("PUT", "/api/v1/admin/users/"+itoa(f.user.ID), map[string]any{"role": models.RoleMember}, true)
+	})
+	waitContactWaiters(t, f.app, 1)
+	deletion := queueContact(func() *httptest.ResponseRecorder {
+		return f.actor.do("DELETE", "/api/v1/events/"+itoa(f.event.ID), nil, true)
+	})
+	waitContactWaiters(t, f.app, 2)
+	if err := gate.Commit().Error; err != nil {
+		t.Fatal(err)
+	}
+	if w := awaitContactResponse(t, demotion); w.Code != http.StatusOK {
+		t.Fatalf("demotion: %d %s", w.Code, w.Body.String())
+	}
+	if w := awaitContactResponse(t, deletion); w.Code != http.StatusUnauthorized {
+		t.Fatalf("delete by demoted admin: %d %s", w.Code, w.Body.String())
+	}
+	if after := eventRow(t, f.app, f.event.ID); !reflect.DeepEqual(before, after) {
+		t.Fatalf("refused delete changed event: before=%+v after=%+v", before, after)
+	}
+	if n := contactCount(t, f.app, &models.EventOccurrence{}, "event_id = ?", f.event.ID); n != 1 {
+		t.Fatalf("refused delete left %d dates, want 1", n)
+	}
+	if n := contactCount(t, f.app, &models.AuditLog{}, "target_type = 'event' AND target_id = ? AND action = ?", f.event.ID, audit.EventDeleted); n != 0 {
+		t.Fatalf("refused delete wrote %d deletion audits", n)
+	}
+}
+
+// A user row held by an ungated writer must not stop these gated writers
+// before their event lock. Adding an actor row lock here would create a
+// user/event cycle with registration paths that already hold the user.
+func TestEventWritersKeepEventFirstLockOrder(t *testing.T) {
+	for _, writer := range []string{"visibility", "series", "delete", "cancel", "date"} {
+		t.Run(writer, func(t *testing.T) {
+			f := newEventWriterRace(t, false)
+			tx := f.app.DB.Begin()
+			if tx.Error != nil {
+				t.Fatal(tx.Error)
+			}
+			defer tx.Rollback()
+			var blocker int
+			if err := tx.Raw("SELECT pg_backend_pid()").Scan(&blocker).Error; err != nil {
+				t.Fatal(err)
+			}
+			var actor models.User
+			if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&actor, f.user.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			var ev models.Event
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&ev, f.event.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			method, path, body := "PUT", "/api/v1/events/"+itoa(f.event.ID), map[string]any{"title": "Changed title"}
+			switch writer {
+			case "visibility":
+				path, body = path+"/visibility", map[string]any{"visibility": models.VisibilityPrivate}
+			case "delete":
+				method, body = "DELETE", nil
+			case "cancel":
+				method, path, body = "POST", path+"/cancel", map[string]any{"date": f.date}
+			case "date":
+				path, body = path+"/occurrences/"+f.date, map[string]any{"visibility": models.VisibilityPrivate}
+			}
+			done := queueContact(func() *httptest.ResponseRecorder { return f.actor.do(method, path, body, true) })
+			testdb.WaitUntil(t, "event writer waiting on its first row lock", 5*time.Second, func() bool {
+				var waiting bool
+				err := f.app.DB.Raw(`SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+					WHERE datname = current_database() AND wait_event_type = 'Lock'
+					AND query LIKE '%FROM "events"%' AND query LIKE '%FOR UPDATE%'
+					AND ? = ANY(pg_blocking_pids(pid)))`, blocker).Scan(&waiting).Error
+				if err != nil {
+					t.Fatal(err)
+				}
+				return waiting
+			})
+			if err := tx.Commit().Error; err != nil {
+				t.Fatal(err)
+			}
+			if w := awaitContactResponse(t, done); w.Code != http.StatusOK {
+				t.Fatalf("%s after lock release: %d %s", writer, w.Code, w.Body.String())
+			}
+		})
 	}
 }

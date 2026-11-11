@@ -511,6 +511,20 @@ func TestNarrowEventHiddenFromGroupLists(t *testing.T) {
 	priv := scheduleGroupEvent(t, admin, gid, "Signed-in social")
 	setVisibility(t, admin, priv.ID, models.VisibilityPrivate, "", http.StatusOK)
 
+	// The soonest date is a hidden one: the card must not give its time away.
+	soonAt := time.Now().UTC().Add(12 * time.Hour).Truncate(time.Minute)
+	earlyW := admin.do("POST", "/api/v1/groups/"+itoa(gid)+"/events", map[string]any{
+		"title": "Hidden early", "startsLocal": soonAt.Format("2006-01-02T15:04"), "durationMinutes": 60, "tzid": "UTC",
+	}, true)
+	if earlyW.Code != http.StatusCreated {
+		t.Fatalf("create early event: %d %s", earlyW.Code, earlyW.Body.String())
+	}
+	var early struct {
+		Event eventJSON `json:"event"`
+	}
+	decodeJSON(t, earlyW, &early)
+	setVisibility(t, admin, early.Event.ID, models.VisibilityInviteOnly, "", http.StatusOK)
+
 	newTestUser(t, app, "out", "password1234", models.RoleMember)
 	outC := loginAPI(t, app, "out", "password1234")
 	anon := newAPIClient(t, app)
@@ -538,6 +552,13 @@ func TestNarrowEventHiddenFromGroupLists(t *testing.T) {
 	}
 	if !strings.Contains(ad, secret.Title) {
 		t.Fatal("admin lost the invite-only event")
+	}
+	anonNext, anonBody := nextAtOf(t, anon, "/api/v1/groups/"+itoa(gid), 0)
+	if (anonNext != nil && anonNext.Equal(soonAt)) || strings.Contains(anonBody, rfc3339(soonAt)) {
+		t.Fatalf("anonymous nextEventAt gave away the hidden early date: %v %s", anonNext, anonBody)
+	}
+	if adminNext, _ := nextAtOf(t, admin, "/api/v1/groups/"+itoa(gid), 0); adminNext == nil || !adminNext.Equal(soonAt) {
+		t.Fatalf("admin nextEventAt = %v, want %s", adminNext, rfc3339(soonAt))
 	}
 }
 
@@ -2278,4 +2299,243 @@ func TestConcurrentJoinsAndRestoreRespectLimit(t *testing.T) {
 	if !patBack && membershipStatus(app, pat, g) != "none" {
 		t.Fatalf("pat: %s", membershipStatus(app, pat, g))
 	}
+}
+
+// nextEventSeed adds one event to g that starts at start with its own
+// visibility and, optionally, a visibility override on that one date.
+func nextEventSeed(t *testing.T, app *App, g *models.Group, by uint, start time.Time, vis string, override *string) (models.Event, models.EventOccurrence) {
+	t.Helper()
+	ev, occ := seedEvent(t, app, g, by, start)
+	if err := app.DB.Model(&ev).Update("visibility", vis).Error; err != nil {
+		t.Fatal(err)
+	}
+	ev.Visibility = vis
+	if override != nil {
+		if err := app.DB.Model(&occ).Update("visibility_override", *override).Error; err != nil {
+			t.Fatal(err)
+		}
+		occ.VisibilityOverride = override
+	}
+	return ev, occ
+}
+
+func rfc3339(at time.Time) string { return at.UTC().Format(time.RFC3339Nano) }
+
+// nextAtOf reads nextEventAt of group id from a list, or of a detail when
+// id is zero, and returns the raw body for leak checks.
+func nextAtOf(t *testing.T, c *apiClient, path string, id uint) (*time.Time, string) {
+	t.Helper()
+	w := c.do("GET", path, nil, false)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET %s: %d %s", path, w.Code, w.Body.String())
+	}
+	if id == 0 {
+		var detail struct {
+			Group groupSummaryJSON `json:"group"`
+		}
+		decodeJSON(t, w, &detail)
+		return detail.Group.NextEventAt, w.Body.String()
+	}
+	var list struct {
+		Groups []groupSummaryJSON `json:"groups"`
+	}
+	decodeJSON(t, w, &list)
+	for _, g := range list.Groups {
+		if g.ID == id {
+			return g.NextEventAt, w.Body.String()
+		}
+	}
+	return nil, w.Body.String()
+}
+
+func requireNextAt(t *testing.T, who string, got *time.Time, want *time.Time) {
+	t.Helper()
+	switch {
+	case want == nil && got != nil:
+		t.Fatalf("%s: nextEventAt = %s, want null", who, rfc3339(*got))
+	case want != nil && (got == nil || !got.Equal(*want)):
+		t.Fatalf("%s: nextEventAt = %v, want %s", who, got, rfc3339(*want))
+	}
+}
+
+// A group's nextEventAt is the viewer's first visible date: a hidden event's
+// time never shows on the card, in the list, or anywhere in the body.
+func TestGroupNextEventAtCountsOnlyVisibleDates(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+	member := newTestUser(t, app, "member", "password1234", models.RoleMember)
+	newTestUser(t, app, "out", "password1234", models.RoleMember)
+	g := newTestGroup(t, app, leader, "Choir", models.GroupActive)
+	addMember(t, app, member, g, models.MembershipMember)
+
+	base := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Minute)
+	inviteAt, privateAt, publicAt := base, base.Add(24*time.Hour), base.Add(48*time.Hour)
+	nextEventSeed(t, app, g, leader.ID, inviteAt, models.VisibilityInviteOnly, nil)
+	nextEventSeed(t, app, g, leader.ID, privateAt, models.VisibilityPrivate, nil)
+	nextEventSeed(t, app, g, leader.ID, publicAt, models.VisibilityPublic, nil)
+	detail, list := "/api/v1/groups/"+itoa(g.ID), "/api/v1/groups"
+	cases := []struct {
+		who    string
+		client *apiClient
+		want   time.Time
+		hidden []time.Time
+	}{
+		{"signed out", newAPIClient(t, app), publicAt, []time.Time{inviteAt, privateAt}},
+		{"signed-in non-member", loginAPI(t, app, "out", "password1234"), privateAt, []time.Time{inviteAt}},
+		{"member", loginAPI(t, app, "member", "password1234"), inviteAt, nil},
+		{"admin", loginAPI(t, app, "admin", "password1234"), inviteAt, nil},
+	}
+	for _, tc := range cases {
+		want := tc.want
+		for _, path := range []string{detail, list} {
+			id := uint(0)
+			if path == list {
+				id = g.ID
+			}
+			got, body := nextAtOf(t, tc.client, path, id)
+			requireNextAt(t, tc.who+" "+path, got, &want)
+			for _, h := range tc.hidden {
+				if strings.Contains(body, rfc3339(h)) {
+					t.Fatalf("%s %s leaked the hidden start %s: %s", tc.who, path, rfc3339(h), body)
+				}
+			}
+		}
+	}
+	got, _ := nextAtOf(t, cases[2].client, "/api/v1/me/groups", g.ID)
+	requireNextAt(t, "member /me/groups", got, &inviteAt)
+	got, _ = nextAtOf(t, cases[3].client, "/api/v1/admin/groups", g.ID)
+	requireNextAt(t, "admin group list", got, &inviteAt)
+	leaderC := loginAPI(t, app, "leader", "password1234")
+	w := leaderC.do("PUT", detail, map[string]any{"description": "Updated"}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("update group: %d %s", w.Code, w.Body.String())
+	}
+	var updated struct {
+		Group groupSummaryJSON `json:"group"`
+	}
+	decodeJSON(t, w, &updated)
+	requireNextAt(t, "leader update response", updated.Group.NextEventAt, &inviteAt)
+
+	pending := newTestGroup(t, app, leader, "Pending choir", models.GroupPending)
+	nextEventSeed(t, app, pending, leader.ID, inviteAt, models.VisibilityInviteOnly, nil)
+	got, _ = nextAtOf(t, cases[3].client, "/api/v1/admin/pending", pending.ID)
+	requireNextAt(t, "admin pending list", got, &inviteAt)
+}
+
+func TestGroupNextEventAtSkipsDeletedGroups(t *testing.T) {
+	app := testApp(t)
+	leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+	g := newTestGroup(t, app, leader, "Deleted", models.GroupActive)
+	start := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Minute)
+	nextEventSeed(t, app, g, leader.ID, start, models.VisibilityPublic, nil)
+	if err := app.DB.Delete(g).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, viewer := range []*models.User{nil, leader} {
+		got, err := app.groupSummaries(viewer, []models.Group{*g})
+		if err != nil {
+			t.Fatal(err)
+		}
+		requireNextAt(t, "deleted group", got[0].NextEventAt, nil)
+	}
+}
+
+// A per-date override decides visibility for that date alone, both ways.
+func TestGroupNextEventAtFollowsDateOverrides(t *testing.T) {
+	app := testApp(t)
+	admin := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	g := newTestGroup(t, app, admin, "Choir", models.GroupActive)
+	adminC := loginAPI(t, app, "admin", "password1234")
+	anon := newAPIClient(t, app)
+	detail := "/api/v1/groups/" + itoa(g.ID)
+
+	first := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Minute)
+	second := first.Add(24 * time.Hour)
+	ev, occ := nextEventSeed(t, app, g, admin.ID, first, models.VisibilityPublic, nil)
+	later := models.EventOccurrence{EventID: ev.ID, OriginalDate: calDate(second.Format("2006-01-02")), StartsAt: second, EndsAt: second.Add(time.Hour), Status: models.OccurrenceScheduled}
+	if err := app.DB.Create(&later).Error; err != nil {
+		t.Fatal(err)
+	}
+	got, _ := nextAtOf(t, anon, detail, 0)
+	requireNextAt(t, "before narrowing", got, &first)
+
+	apiDo(t, adminC, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, models.FormatCalendarDate(occ.OriginalDate)),
+		map[string]any{"visibility": models.VisibilityInviteOnly, "confirm": true}, http.StatusOK)
+	got, body := nextAtOf(t, anon, detail, 0)
+	requireNextAt(t, "after narrowing the soonest date", got, &second)
+	if strings.Contains(body, rfc3339(first)) {
+		t.Fatalf("anonymous body leaked the narrowed date: %s", body)
+	}
+	got, _ = nextAtOf(t, adminC, detail, 0)
+	requireNextAt(t, "admin after narrowing", got, &first)
+
+	// An invite-only series with one public date shows exactly that date.
+	g2 := newTestGroup(t, app, admin, "Band", models.GroupActive)
+	public := models.VisibilityPublic
+	_, _ = nextEventSeed(t, app, g2, admin.ID, first, models.VisibilityInviteOnly, nil)
+	_, widened := nextEventSeed(t, app, g2, admin.ID, second, models.VisibilityInviteOnly, &public)
+	got, _ = nextAtOf(t, anon, "/api/v1/groups/"+itoa(g2.ID), 0)
+	requireNextAt(t, "widened date", got, &widened.StartsAt)
+}
+
+// The directory orders by what the viewer can see: a group whose only
+// sooner date is hidden sorts by its next visible date, or last.
+func TestGroupDirectoryOrderUsesVisibleNextDate(t *testing.T) {
+	app := testApp(t)
+	leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+	member := newTestUser(t, app, "member", "password1234", models.RoleMember)
+	a := newTestGroup(t, app, leader, "Aardvarks", models.GroupActive)
+	b := newTestGroup(t, app, leader, "Badgers", models.GroupActive)
+	addMember(t, app, member, a, models.MembershipMember)
+	soon := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Minute)
+	later := soon.Add(24 * time.Hour)
+	nextEventSeed(t, app, a, leader.ID, soon, models.VisibilityInviteOnly, nil)
+	nextEventSeed(t, app, b, leader.ID, later, models.VisibilityPublic, nil)
+
+	order := func(c *apiClient) ([]uint, map[uint]*time.Time) {
+		t.Helper()
+		w := c.do("GET", "/api/v1/groups", nil, false)
+		var body struct {
+			Groups []groupSummaryJSON `json:"groups"`
+		}
+		decodeJSON(t, w, &body)
+		ids, nexts := []uint{}, map[uint]*time.Time{}
+		for _, g := range body.Groups {
+			ids = append(ids, g.ID)
+			nexts[g.ID] = g.NextEventAt
+		}
+		return ids, nexts
+	}
+	ids, nexts := order(newAPIClient(t, app))
+	if !reflect.DeepEqual(ids, []uint{b.ID, a.ID}) || nexts[a.ID] != nil {
+		t.Fatalf("signed out: order %v, A next %v, want B then A with A null", ids, nexts[a.ID])
+	}
+	requireNextAt(t, "signed-out B", nexts[b.ID], &later)
+	ids, nexts = order(loginAPI(t, app, "member", "password1234"))
+	if !reflect.DeepEqual(ids, []uint{a.ID, b.ID}) {
+		t.Fatalf("member of A: order %v, want A then B", ids)
+	}
+	requireNextAt(t, "member A", nexts[a.ID], &soon)
+}
+
+// Dates of a group that is not active belong to its leaders (CanSeeEvent).
+func TestGroupNextEventAtForPendingAndArchivedGroups(t *testing.T) {
+	app := testApp(t)
+	leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+	member := newTestUser(t, app, "member", "password1234", models.RoleMember)
+	start := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Minute)
+	pending := newTestGroup(t, app, leader, "Pending", models.GroupPending)
+	archived := newTestGroup(t, app, leader, "Archived", models.GroupArchived)
+	addMember(t, app, member, archived, models.MembershipMember)
+	nextEventSeed(t, app, pending, leader.ID, start, models.VisibilityPublic, nil)
+	nextEventSeed(t, app, archived, leader.ID, start, models.VisibilityPublic, nil)
+
+	leaderC := loginAPI(t, app, "leader", "password1234")
+	got, _ := nextAtOf(t, leaderC, "/api/v1/groups/"+itoa(pending.ID), 0)
+	requireNextAt(t, "leader of pending group", got, &start)
+	got, _ = nextAtOf(t, leaderC, "/api/v1/me/groups", archived.ID)
+	requireNextAt(t, "leader of archived group", got, &start)
+	got, _ = nextAtOf(t, loginAPI(t, app, "member", "password1234"), "/api/v1/me/groups", archived.ID)
+	requireNextAt(t, "member of archived group", got, nil)
 }

@@ -20,6 +20,7 @@ import (
 	"fold/storage"
 	"image"
 	"image/png"
+	"io"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -393,6 +394,125 @@ func (c *apiClient) do(method, path string, jsonBody any, csrf bool) *httptest.R
 	}
 	if !c.holdNotices && c.app != nil {
 		drainNotices(c.t, c.app)
+	}
+	return w
+}
+
+type heldBodyReader struct {
+	*io.PipeReader
+	reading chan struct{}
+	once    sync.Once
+}
+
+func (r *heldBodyReader) Read(p []byte) (int, error) {
+	r.once.Do(func() { close(r.reading) })
+	return r.PipeReader.Read(p)
+}
+
+type heldRequest struct {
+	client  *apiClient
+	path    string
+	reading <-chan struct{}
+	done    <-chan *httptest.ResponseRecorder
+	writer  *io.PipeWriter
+	last    []byte
+	once    sync.Once
+	written chan error
+}
+
+// doHeld stops in JSON binding after auth, CSRF and the handler's preflight.
+// An incomplete JSON value prevents the handler from entering its transaction
+// while a test commits a real concurrent mutation.
+func (c *apiClient) doHeld(method, path string, jsonBody any) *heldRequest {
+	c.t.Helper()
+	b, err := json.Marshal(jsonBody)
+	if err != nil || len(b) < 2 {
+		c.t.Fatalf("held body: %q, %v", b, err)
+	}
+	reader, writer := io.Pipe()
+	reading := make(chan struct{})
+	body := &heldBodyReader{PipeReader: reader, reading: reading}
+	req := httptest.NewRequest(method, path, body)
+	if c.ctx != nil {
+		req = req.WithContext(c.ctx)
+	}
+	if c.ua != "" {
+		req.Header.Set("User-Agent", c.ua)
+	}
+	if c.ip != "" {
+		req.RemoteAddr = net.JoinHostPort(c.ip, "1234")
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", c.token)
+	for _, ck := range c.jar {
+		req.AddCookie(ck)
+	}
+	done := make(chan *httptest.ResponseRecorder, 1)
+	h := &heldRequest{client: c, path: path, reading: reading, done: done,
+		writer: writer, last: b[len(b)-1:], written: make(chan error, 1)}
+	c.t.Cleanup(func() { _ = reader.Close(); _ = writer.Close() })
+	go func() {
+		w := httptest.NewRecorder()
+		c.router.ServeHTTP(w, req)
+		done <- w
+	}()
+	prefix := make(chan error, 1)
+	go func() { _, err := writer.Write(b[:len(b)-1]); prefix <- err }()
+	select {
+	case <-h.reading:
+	case w := <-done:
+		c.t.Fatalf("held request returned before reading its body: %d %s", w.Code, w.Body.String())
+	case <-time.After(8 * time.Second):
+		c.t.Fatal("held request never read its body")
+	}
+	select {
+	case err := <-prefix:
+		if err != nil {
+			c.t.Fatalf("held body prefix: %v", err)
+		}
+	case <-time.After(8 * time.Second):
+		c.t.Fatal("held request did not consume its body prefix")
+	}
+	return h
+}
+
+func (h *heldRequest) release() {
+	h.once.Do(func() {
+		go func() {
+			_, err := h.writer.Write(h.last)
+			closeErr := h.writer.Close()
+			if err == nil {
+				err = closeErr
+			}
+			h.written <- err
+		}()
+	})
+}
+
+func (h *heldRequest) wait(t *testing.T) *httptest.ResponseRecorder {
+	t.Helper()
+	var w *httptest.ResponseRecorder
+	select {
+	case w = <-h.done:
+	case <-time.After(8 * time.Second):
+		t.Fatal("held request timed out (possible deadlock)")
+	}
+	select {
+	case err := <-h.written:
+		if err != nil {
+			t.Fatalf("release held body: %v", err)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("held body was not released")
+	}
+	for _, ck := range w.Result().Cookies() {
+		h.client.jar[ck.Name] = ck
+	}
+	if signInPaths[h.path] && setsCookie(w, sessionName) {
+		h.client.fetchCSRF()
+	}
+	if !h.client.holdNotices && h.client.app != nil {
+		drainNotices(t, h.client.app)
 	}
 	return w
 }

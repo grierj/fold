@@ -427,3 +427,224 @@ func TestRegistrationCancelledNoticeSerializesWithRealAdminDelete(t *testing.T) 
 		}
 	})
 }
+
+// eventWriterRace keeps notice jobs queued so refusal snapshots cover every
+// effect of the writer, without a delivery worker changing rows between reads.
+type eventWriterRace struct {
+	app          *App
+	admin, actor *apiClient
+	user         *models.User
+	group        *models.Group
+	event        models.Event
+	date         string
+}
+
+func newEventWriterRace(t *testing.T, adminActor bool) eventWriterRace {
+	t.Helper()
+	app := testApp(t)
+	owner := newTestUser(t, app, "owner", "password1234", models.RoleAdmin)
+	admin := loginHeld(t, app, owner.Email, "password1234")
+	g := activeGroup(t, app, owner, "Choir", models.VisibilityPublic, "")
+	role := models.RoleMember
+	if adminActor {
+		role = models.RoleAdmin
+	}
+	actor := newTestUser(t, app, "writer", "password1234", role)
+	if !adminActor {
+		addMember(t, app, actor, &g, models.MembershipLeader)
+	}
+	client := loginHeld(t, app, actor.Email, "password1234")
+	ev := requireCreatedEvent(t, app, admin.do("POST", "/api/v1/groups/"+itoa(g.ID)+"/events", createEventBodyForTest(), true))
+	var occ models.EventOccurrence
+	if err := app.DB.Where("event_id = ?", ev.ID).First(&occ).Error; err != nil {
+		t.Fatal(err)
+	}
+	return eventWriterRace{app: app, admin: admin, actor: client, user: actor, group: &g, event: ev,
+		date: models.FormatCalendarDate(occ.OriginalDate)}
+}
+
+func (f eventWriterRace) revoke(t *testing.T, change string) {
+	t.Helper()
+	switch change {
+	case "demoted admin":
+		apiDo(t, f.admin, "PUT", "/api/v1/admin/users/"+itoa(f.user.ID), map[string]any{"role": models.RoleMember}, http.StatusOK)
+	case "disabled account":
+		apiDo(t, f.admin, "PUT", "/api/v1/admin/users/"+itoa(f.user.ID), map[string]any{"status": models.UserDisabled}, http.StatusOK)
+	case "removed leader":
+		path := "/api/v1/groups/" + itoa(f.group.ID) + "/members/" + itoa(f.user.ID) + "/departure"
+		preview := getDeparturePreview(t, f.admin, path+"-preview", http.StatusOK)
+		apiDo(t, f.admin, "POST", path, map[string]any{"snapshot": preview.Snapshot, "keepOccurrenceIds": []uint{}}, http.StatusOK)
+	default:
+		t.Fatalf("unknown event writer revocation %q", change)
+	}
+}
+
+func eventWriterState(t *testing.T, app *App, id uint) string {
+	t.Helper()
+	var state struct {
+		Event         models.Event
+		Dates         []models.EventOccurrence
+		Registrations []models.Registration
+		Bookings      []models.RoomBooking
+		Counts        map[string]int64
+	}
+	if err := app.DB.Unscoped().First(&state.Event, id).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Where("event_id = ?", id).Order("id").Find(&state.Dates).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Where("occurrence_id IN (SELECT id FROM event_occurrences WHERE event_id = ?)", id).
+		Order("id").Find(&state.Registrations).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Order("id").Find(&state.Bookings).Error; err != nil {
+		t.Fatal(err)
+	}
+	state.Counts = createEventWriteCounts(t, app)
+	b, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func TestEventVisibilityRechecksAfterHeldBody(t *testing.T) {
+	for _, change := range []string{"demoted admin", "removed leader", "disabled account"} {
+		for _, noOp := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/no-op=%v", change, noOp), func(t *testing.T) {
+				f := newEventWriterRace(t, change == "demoted admin")
+				path := "/api/v1/events/" + itoa(f.event.ID) + "/visibility"
+				apiDo(t, f.admin, "PUT", path, map[string]any{"visibility": models.VisibilityInviteOnly}, http.StatusOK)
+				vis := models.VisibilityPublic
+				if noOp {
+					vis = models.VisibilityInviteOnly
+				}
+				held := f.actor.doHeld("PUT", path, map[string]any{"visibility": vis, "confirm": true})
+				f.revoke(t, change)
+				before := eventWriterState(t, f.app, f.event.ID)
+				held.release()
+				w := held.wait(t)
+				want := http.StatusUnauthorized
+				if change == "removed leader" {
+					want = http.StatusForbidden
+				}
+				if w.Code != want {
+					t.Fatalf("visibility after %s: %d %s, want %d", change, w.Code, w.Body.String(), want)
+				}
+				if after := eventWriterState(t, f.app, f.event.ID); before != after {
+					t.Fatalf("refused visibility write changed rows:\nbefore %s\nafter %s", before, after)
+				}
+			})
+		}
+	}
+}
+
+func TestEventVisibilityUsesGroupAfterHeldBody(t *testing.T) {
+	f := newEventWriterRace(t, false)
+	path := "/api/v1/events/" + itoa(f.event.ID) + "/visibility"
+	held := f.actor.doHeld("PUT", path, map[string]any{"visibility": models.VisibilityPrivate, "confirm": true, "reason": "Welcome friends"})
+	apiDo(t, f.admin, "PUT", "/api/v1/groups/"+itoa(f.group.ID), map[string]any{"visibility": models.VisibilityInviteOnly, "confirm": true}, http.StatusOK)
+	held.release()
+	w := held.wait(t)
+	if w.Code != http.StatusOK {
+		t.Fatalf("visibility after group tightening: %d %s", w.Code, w.Body.String())
+	}
+	var answer eventPage
+	decodeJSON(t, w, &answer)
+	ev := eventRow(t, f.app, f.event.ID)
+	if ev.Visibility != models.VisibilityPrivate || !ev.LeaderOpened || answer.Event.Visibility != ev.Visibility || !answer.Event.LeaderOpened {
+		t.Fatalf("fresh group visibility not used in saved row or response: %+v %+v", ev, answer.Event)
+	}
+	var row models.AuditLog
+	if err := f.app.DB.Where("target_type = 'event' AND target_id = ? AND action = ?", ev.ID, audit.VisibilityOverride).First(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(row.MetaJSON), &meta); err != nil {
+		t.Fatal(err)
+	}
+	if meta["groupVisibility"] != models.VisibilityInviteOnly || meta["leaderOpened"] != true || row.ActorID == nil || *row.ActorID != f.user.ID {
+		t.Fatalf("override audit used stale facts: %+v %v", row, meta)
+	}
+	if n := contactCount(t, f.app, &models.Notification{}, "user_id = ? AND kind = ? AND subject_id = ?", f.group.LeaderID, notify.VisibilityOverride, ev.ID); n != 1 {
+		t.Fatalf("override notices to the other leader = %d, want 1", n)
+	}
+}
+
+func TestEventVisibilityImpactIncludesHeldBodyRegistrants(t *testing.T) {
+	for _, confirm := range []bool{false, true} {
+		t.Run(fmt.Sprintf("confirm=%v", confirm), func(t *testing.T) {
+			f := newEventWriterRace(t, false)
+			var people []*models.User
+			for _, name := range []string{"first", "second"} {
+				people = append(people, newTestUser(t, f.app, name, "password1234", models.RoleMember))
+			}
+			registerPerson := func(u *models.User) {
+				t.Helper()
+				c := loginHeld(t, f.app, u.Email, "password1234")
+				if code, body := registerAs(c, f.event.ID, f.date, models.RegGoing, nil); code != http.StatusOK {
+					t.Fatalf("register: %d %s", code, body)
+				}
+			}
+			registerPerson(people[0])
+			held := f.actor.doHeld("PUT", "/api/v1/events/"+itoa(f.event.ID)+"/visibility",
+				map[string]any{"visibility": models.VisibilityInviteOnly, "confirm": confirm})
+			registerPerson(people[1])
+			before := eventWriterState(t, f.app, f.event.ID)
+			held.release()
+			w := held.wait(t)
+			if !confirm {
+				var answer struct {
+					NeedsDecision bool                 `json:"needsDecision"`
+					Impact        visibilityImpactJSON `json:"impact"`
+				}
+				decodeJSON(t, w, &answer)
+				if w.Code != http.StatusConflict || !answer.NeedsDecision || len(answer.Impact.Tightened) != 1 || answer.Impact.Tightened[0].Registrants != 2 {
+					t.Fatalf("preview missed a concurrent registrant: %d %s", w.Code, w.Body.String())
+				}
+				if after := eventWriterState(t, f.app, f.event.ID); before != after {
+					t.Fatal("unconfirmed tightening changed rows")
+				}
+				return
+			}
+			if w.Code != http.StatusOK {
+				t.Fatalf("confirmed tightening: %d %s", w.Code, w.Body.String())
+			}
+			var occ models.EventOccurrence
+			if err := f.app.DB.Where("event_id = ?", f.event.ID).First(&occ).Error; err != nil {
+				t.Fatal(err)
+			}
+			for _, u := range people {
+				if got := regStatus(t, f.app, u.ID, occ.ID); got != models.RegCancelled {
+					t.Fatalf("registration of %s = %s, want cancelled", u.Name, got)
+				}
+				if n := contactCount(t, f.app, &models.Notification{}, "user_id = ? AND kind = ?", u.ID, notify.RegistrationCancelled); n != 1 {
+					t.Fatalf("cancellation notices for %s = %d, want 1", u.Name, n)
+				}
+			}
+		})
+	}
+}
+
+func TestChurchEventVisibilityRechecksRemovedHostAfterHeldBody(t *testing.T) {
+	app := testApp(t)
+	owner := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	host := newTestUser(t, app, "host", "password1234", models.RoleMember)
+	admin := loginHeld(t, app, owner.Email, "password1234")
+	client := loginHeld(t, app, host.Email, "password1234")
+	body := createEventBodyForTest()
+	body["hosts"] = []string{owner.Email, host.Email}
+	ev := requireCreatedEvent(t, app, admin.do("POST", "/api/v1/events", body, true))
+	held := client.doHeld("PUT", "/api/v1/events/"+itoa(ev.ID)+"/visibility", map[string]any{"visibility": models.VisibilityPrivate, "confirm": true})
+	apiDo(t, admin, "DELETE", "/api/v1/events/"+itoa(ev.ID)+"/hosts/"+itoa(host.ID), nil, http.StatusOK)
+	before := eventWriterState(t, app, ev.ID)
+	held.release()
+	w := held.wait(t)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("removed host visibility: %d %s", w.Code, w.Body.String())
+	}
+	if after := eventWriterState(t, app, ev.ID); before != after {
+		t.Fatal("removed host changed event rows")
+	}
+}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"log"
@@ -413,8 +414,8 @@ func toEventJSON(ev *models.Event) eventJSON {
 	return j
 }
 
-func (a *App) groupSummary(g *models.Group) (groupSummaryJSON, error) {
-	out, err := a.groupSummaries([]models.Group{*g})
+func (a *App) groupSummary(viewer *models.User, g *models.Group) (groupSummaryJSON, error) {
+	out, err := a.groupSummaries(viewer, []models.Group{*g})
 	if err != nil {
 		return groupSummaryJSON{}, err
 	}
@@ -423,7 +424,11 @@ func (a *App) groupSummary(g *models.Group) (groupSummaryJSON, error) {
 
 // groupSummaries is served only after the caller selects visible groups. Each
 // related kind is loaded once, regardless of the number of groups on the page.
-func (a *App) groupSummaries(groups []models.Group) ([]groupSummaryJSON, error) {
+// NextEventAt is the viewer's first scheduled date at or after now that they
+// may see, decided per date by visibleSet.canSeeDate (event visibility and the
+// date's override), never by a SQL copy of the policy: a hidden date must not
+// reveal its time through the group card or the directory order.
+func (a *App) groupSummaries(viewer *models.User, groups []models.Group) ([]groupSummaryJSON, error) {
 	out := make([]groupSummaryJSON, 0, len(groups))
 	if len(groups) == 0 {
 		return out, nil
@@ -452,22 +457,9 @@ func (a *App) groupSummaries(groups []models.Group) ([]groupSummaryJSON, error) 
 	for _, leader := range leaders {
 		names[leader.ID] = leader.PublicName()
 	}
-	var dates []struct {
-		GroupID  uint
-		StartsAt time.Time
-	}
-	if err := a.DB.Table("event_occurrences").Select("events.group_id, min(event_occurrences.starts_at) AS starts_at").
-		Joins("JOIN events ON events.id = event_occurrences.event_id AND events.deleted_at IS NULL").
-		Where("events.group_id IN ? AND event_occurrences.status = ? AND event_occurrences.starts_at >= ?", ids, models.OccurrenceScheduled, time.Now().UTC()).
-		Group("events.group_id").Scan(&dates).Error; err != nil {
+	next, err := nextVisibleDates(a.DB, viewer, ids)
+	if err != nil {
 		return nil, err
-	}
-	next := make(map[uint]*time.Time, len(dates))
-	for _, row := range dates {
-		if !row.StartsAt.IsZero() {
-			start := row.StartsAt.UTC()
-			next[row.GroupID] = &start
-		}
 	}
 	for _, g := range groups {
 		out = append(out, groupSummaryJSON{
@@ -481,6 +473,96 @@ func (a *App) groupSummaries(groups []models.Group) ([]groupSummaryJSON, error) 
 		})
 	}
 	return out, nil
+}
+
+// nextVisibleDates maps each group to the viewer's first upcoming scheduled
+// date. Whether a date is visible depends only on its event, the viewer and the
+// date's override, so one grouped minimum per (event, override) holds the
+// first visible date without reading every occurrence. The number of
+// statements does not grow with the number of groups. The parity test against
+// full upcoming occurrences guards the synthetic occurrence used below.
+func nextVisibleDates(db *gorm.DB, viewer *models.User, groupIDs []uint) (map[uint]*time.Time, error) {
+	if db == nil || db.Statement == nil {
+		return nil, errNextDatesSnapshot
+	}
+	var next map[uint]*time.Time
+	load := func(tx *gorm.DB) error {
+		var err error
+		next, err = nextVisibleDatesIn(tx, viewer, groupIDs)
+		return err
+	}
+	var err error
+	if c, borrowed := db.Statement.ConnPool.(gorm.TxCommitter); borrowed {
+		if c == nil || reflect.ValueOf(c).IsNil() {
+			return nil, errNextDatesSnapshot
+		}
+		// GORM implements a nested Transaction with a savepoint and ignores its
+		// isolation options. Never upgrade or end a transaction owned by a caller.
+		var isolation string
+		if err = db.Raw("SHOW transaction_isolation").Scan(&isolation).Error; err == nil {
+			if isolation != "repeatable read" && isolation != "serializable" {
+				err = errNextDatesSnapshot
+			} else {
+				err = load(db)
+			}
+		}
+	} else {
+		err = db.Transaction(load, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	}
+	if err != nil {
+		return nil, err
+	}
+	return next, nil
+}
+
+var errNextDatesSnapshot = errors.New("next visible dates requires a repeatable-read snapshot")
+
+// Candidates, policy facts and all minimum chunks must share a snapshot: a
+// tightening committed between them must not pair old authority with new dates.
+func nextVisibleDatesIn(tx *gorm.DB, viewer *models.User, groupIDs []uint) (map[uint]*time.Time, error) {
+	now := time.Now().UTC()
+	vs, err := loadCandidates(tx, viewer, tx.Where(
+		"group_id IN ? AND id IN (SELECT event_id FROM event_occurrences WHERE status = ? AND starts_at >= ?)",
+		groupIDs, models.OccurrenceScheduled, now), false)
+	if err != nil {
+		return nil, err
+	}
+	next := map[uint]*time.Time{}
+	if len(vs.IDs) == 0 {
+		return next, nil
+	}
+	err = eachIDChunk(vs.IDs, func(ids []uint) error {
+		var rows []struct {
+			EventID            uint
+			VisibilityOverride *string
+			StartsAt           time.Time
+		}
+		if err := tx.Table("event_occurrences").
+			Select("event_id, visibility_override, min(starts_at) AS starts_at").
+			Where("event_id IN ? AND status = ? AND starts_at >= ?", ids, models.OccurrenceScheduled, now).
+			Group("event_id, visibility_override").Scan(&rows).Error; err != nil {
+			return err
+		}
+		for _, row := range rows {
+			ev := vs.ByID[row.EventID]
+			if ev == nil || ev.GroupID == nil || row.StartsAt.IsZero() {
+				continue
+			}
+			occ := models.EventOccurrence{EventID: row.EventID, VisibilityOverride: row.VisibilityOverride, StartsAt: row.StartsAt}
+			if !vs.canSeeDate(viewer, ev, &occ) {
+				continue
+			}
+			start := row.StartsAt.UTC()
+			if cur := next[*ev.GroupID]; cur == nil || start.Before(*cur) {
+				next[*ev.GroupID] = &start
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return next, nil
 }
 
 type eventBody struct {
@@ -784,7 +866,7 @@ func (a *App) createEventIn(tx *gorm.DB, ev *models.Event, creator *models.User,
 
 func (a *App) apiCreateEvent(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
-	g, rel, ok := a.loadManagedGroupID(c, uint(id))
+	g, _, ok := a.loadManagedGroupID(c, uint(id))
 	if !ok {
 		return
 	}
@@ -795,9 +877,7 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 	}
 	me := apiUser(c)
 	gid := g.ID
-	// The group's visibility is copied once; later group changes only
-	// tighten it (DEC-48).
-	ev, err := a.draftEvent(body, models.Event{GroupID: &gid, Visibility: g.Visibility, CreatedBy: me.ID})
+	ev, err := a.draftEvent(body, models.Event{GroupID: &gid, CreatedBy: me.ID})
 	if err != nil {
 		fail(c, err)
 		return
@@ -810,47 +890,85 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 		fail(c, errReasonTooLong)
 		return
 	}
-	if body.Visibility != nil && strings.TrimSpace(*body.Visibility) != "" {
-		vis := strings.TrimSpace(*body.Visibility)
-		if !policy.CanSetEventVisibility(asPerson(me), viewOf(&ev, false), rel, vis) {
+	vis := ""
+	if body.Visibility != nil {
+		vis = strings.TrimSpace(*body.Visibility)
+		if vis != "" && !policy.ValidVisibility(vis) {
 			fail(c, errVisibilityNotAllowed)
 			return
 		}
-		ev.Visibility = vis
-		ev.LeaderOpened = policy.MoreOpen(vis, g.Visibility)
 	}
-	err = a.DB.Transaction(func(tx *gorm.DB) error {
-		// DEC-147: read inside the writing transaction, before anything is
-		// written, so a refusal leaves no event, date, audit row or booking.
-		if ok, err := groupSchedulesIn(tx, &g.ID); err != nil {
+	errCreateGroupHidden := errors.New("group not found")
+	errCreateGroupForbidden := errors.New("group event create forbidden")
+	err = a.contactMutation(contactChange{GroupID: gid}, func(tx *gorm.DB) error {
+		// The gate serializes group-first invitation/departure writers with
+		// this actor-first order. No event is held before the group SHARE,
+		// unlike the booking paths that need groupSchedulesIn's plain read.
+		actor, err := lockActorIn(tx, me, actorNoKeyUpdate)
+		if err != nil {
 			return err
-		} else if !ok {
+		}
+		var locked models.Group
+		if err := tx.Clauses(clause.Locking{Strength: "SHARE"}).First(&locked, gid).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errCreateGroupHidden
+			}
+			return err
+		}
+		rel, err := groupRel(tx, actor.ID, gid)
+		if err != nil {
+			return err
+		}
+		if !policy.CanSeeGroup(asPerson(actor), asGroup(&locked), rel) {
+			return errCreateGroupHidden
+		}
+		if !policy.CanManageGroup(asPerson(actor), rel) {
+			return errCreateGroupForbidden
+		}
+		// DEC-147: a refusal writes no event, date, audit row or booking.
+		if !policy.GroupCanSchedule(locked.Status) {
 			return errGroupEventsNotApproved
 		}
-		meta := map[string]any{"groupId": g.ID, "churchWide": false, "visibility": ev.Visibility}
-		return a.createEventIn(tx, &ev, me, c.ClientIP(), body.RoomID, meta, func() error {
-			if ev.Visibility == g.Visibility {
+		ev.Visibility, ev.LeaderOpened = locked.Visibility, false
+		if vis != "" {
+			if !policy.CanSetEventVisibility(asPerson(actor), viewOf(&ev, false), rel, vis) {
+				return errVisibilityNotAllowed
+			}
+			ev.Visibility = vis
+			ev.LeaderOpened = policy.MoreOpen(vis, locked.Visibility)
+		}
+		meta := map[string]any{"groupId": gid, "churchWide": false, "visibility": ev.Visibility}
+		return a.createEventIn(tx, &ev, actor, c.ClientIP(), body.RoomID, meta, func() error {
+			if ev.Visibility == locked.Visibility {
 				return nil
 			}
 			action := audit.VisibilityChanged
 			if ev.LeaderOpened {
 				action = audit.VisibilityOverride
 			}
-			meta := map[string]any{"oldVisibility": g.Visibility, "newVisibility": ev.Visibility,
-				"oldLeaderOpened": false, "leaderOpened": ev.LeaderOpened, "groupVisibility": g.Visibility, "atCreation": true}
+			meta := map[string]any{"oldVisibility": locked.Visibility, "newVisibility": ev.Visibility,
+				"oldLeaderOpened": false, "leaderOpened": ev.LeaderOpened, "groupVisibility": locked.Visibility, "atCreation": true}
 			if reason != "" {
 				meta["reason"] = reason
 			}
-			if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: action, TargetType: "event", TargetID: ev.ID,
+			if err := audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: action, TargetType: "event", TargetID: ev.ID,
 				Meta: meta, IP: c.ClientIP()}); err != nil {
 				return err
 			}
 			if ev.LeaderOpened {
-				return notifyVisibilityOverride(tx, me.ID, &ev, g, ev.Visibility, reason)
+				return notifyVisibilityOverride(tx, actor.ID, &ev, &locked, ev.Visibility, reason)
 			}
 			return nil
 		})
 	})
+	if errors.Is(err, errCreateGroupHidden) {
+		jsonError(c, http.StatusNotFound, "group not found")
+		return
+	}
+	if errors.Is(err, errCreateGroupForbidden) {
+		jsonError(c, http.StatusForbidden, "forbidden")
+		return
+	}
 	if err != nil {
 		fail(c, err)
 		return
@@ -891,10 +1009,11 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 	// values built from a stale copy. A validation failure is returned as its
 	// answer and rolls back (nothing is written yet).
 	err = a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
-		lockedEv, _, err := lockManagedEventIn(tx, me, ev.ID)
+		actor, lockedEv, _, err := lockManagedEventIn(tx, me, ev.ID)
 		if err != nil {
 			return err
 		}
+		me = actor
 		locked = *lockedEv
 		spec, whens, err := a.specFrom(body, &locked, false)
 		if err != nil {
@@ -1122,22 +1241,26 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 	c.JSON(http.StatusOK, eventSeriesResponseJSON{Event: j})
 }
 
-// lockManagedEventIn locks the event row and checks again, on the locked row,
-// that me may manage it: what loadManagedEvent saw before the lock may have
-// changed. The error is errCannotChangeEvent when they no longer can.
-func lockManagedEventIn(tx *gorm.DB, me *models.User, eventID uint) (*models.Event, eventFacts, error) {
+// lockManagedEventIn requires the contact gate, which serializes role and
+// relationship revocations. A plain actor read keeps the event as the first
+// row lock: locking the actor could cycle with ungated registration writers.
+func lockManagedEventIn(tx *gorm.DB, session *models.User, eventID uint) (*models.User, *models.Event, eventFacts, error) {
+	actor, err := lockActorIn(tx, session, actorRead)
+	if err != nil {
+		return nil, nil, eventFacts{}, err
+	}
 	var locked models.Event
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, eventID).Error; err != nil {
-		return nil, eventFacts{}, err
+		return nil, nil, eventFacts{}, err
 	}
-	f, err := eventFactsIn(tx, me, &locked)
+	f, err := eventFactsIn(tx, actor, &locked)
 	if err != nil {
-		return nil, eventFacts{}, err
+		return nil, nil, eventFacts{}, err
 	}
-	if !f.canManage(me) {
-		return nil, eventFacts{}, errCannotChangeEvent
+	if !f.canManage(actor) {
+		return nil, nil, eventFacts{}, errCannotChangeEvent
 	}
-	return &locked, f, nil
+	return actor, &locked, f, nil
 }
 
 // answerEventWrite answers a failed write on a locked event: its own answer,
@@ -1159,7 +1282,7 @@ func (a *App) apiDeleteEvent(c *gin.Context) {
 		return
 	}
 	err := a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
-		ev, _, err := lockManagedEventIn(tx, apiUser(c), ev.ID)
+		actor, ev, _, err := lockManagedEventIn(tx, apiUser(c), ev.ID)
 		if err != nil {
 			return err
 		}
@@ -1167,7 +1290,7 @@ func (a *App) apiDeleteEvent(c *gin.Context) {
 		if ev.GroupID != nil {
 			meta["groupId"] = *ev.GroupID
 		}
-		if err := audit.Write(tx, audit.Entry{Actor: &apiUser(c).ID, Action: audit.EventDeleted, TargetType: "event", TargetID: ev.ID,
+		if err := audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: audit.EventDeleted, TargetType: "event", TargetID: ev.ID,
 			Meta: meta, IP: c.ClientIP()}); err != nil {
 			return err
 		}
@@ -1251,7 +1374,8 @@ func (a *App) apiCancelOccurrence(c *gin.Context) {
 		return
 	}
 	err := a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
-		if _, _, err := lockManagedEventIn(tx, apiUser(c), ev.ID); err != nil {
+		actor, _, _, err := lockManagedEventIn(tx, apiUser(c), ev.ID)
+		if err != nil {
 			return err
 		}
 		res := tx.Model(&models.EventOccurrence{}).Where("id = ? AND status <> ?", occ.ID, models.OccurrenceCancelled).
@@ -1267,7 +1391,7 @@ func (a *App) apiCancelOccurrence(c *gin.Context) {
 			}
 			return res.Error
 		}
-		err := notifyOccurrences(tx, apiUser(c).ID, []uint{occ.ID}, notify.OccurrenceCancelled)
+		err = notifyOccurrences(tx, actor.ID, []uint{occ.ID}, notify.OccurrenceCancelled)
 		if err != nil {
 			return err
 		}
@@ -1328,16 +1452,6 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		fail(c, errInvalidDuration)
 		return
 	}
-	var wallStart *time.Time
-	if body.StartsLocal != nil {
-		t, _, err := events.ParseWall(strings.TrimSpace(*body.StartsLocal), ev.TZID)
-		if err != nil {
-			fail(c, specAnswer(err))
-			return
-		}
-		u := t.UTC()
-		wallStart = &u
-	}
 	if err := validateEventText(strings.TrimSpace(strOrEmpty(body.Title)), "", strings.TrimSpace(strOrEmpty(body.Location))); err != nil {
 		fail(c, err)
 		return
@@ -1346,6 +1460,11 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 	var inst occurrenceJSON
 	var impact visibilityImpactJSON
 	err := a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
+		actor, err := lockActorIn(tx, me, actorRead)
+		if err != nil {
+			return err
+		}
+		me = actor
 		var current models.Event
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&current, ev.ID).Error; err != nil {
 			return err
@@ -1357,6 +1476,16 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		}
 		if !f.canManage(me) {
 			return errOccurrenceNotFound
+		}
+		// A series edit may have changed the zone while the body arrived.
+		var wallStart *time.Time
+		if body.StartsLocal != nil {
+			t, _, err := events.ParseWall(strings.TrimSpace(*body.StartsLocal), ev.TZID)
+			if err != nil {
+				return specAnswer(err)
+			}
+			u := t.UTC()
+			wallStart = &u
 		}
 		var o models.EventOccurrence
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
@@ -1508,6 +1637,12 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		return
 	case errors.Is(err, errOccurrenceNotFound):
 		jsonError(c, http.StatusNotFound, "that date is not on this event")
+		return
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		jsonError(c, http.StatusNotFound, "event not found")
+		return
+	case isAPIError(err):
+		fail(c, err)
 		return
 	case err != nil:
 		jsonError(c, http.StatusInternalServerError, "could not update this date")
