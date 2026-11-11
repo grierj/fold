@@ -28,8 +28,12 @@
 # whenever its command ends, however it ends: the docker client can die while the
 # daemon keeps the container running, and --rm only acts when the container itself
 # exits. Only the container named here is removed. The removal is bounded by
-# FOLD_PG_INFO_TIMEOUT; if the container is still there after that, the script
-# names it on stderr and keeps the command's own exit status. SIGKILL of the script
+# FOLD_PG_INFO_TIMEOUT, as one absolute deadline for all its docker commands; if
+# the container is still there after that, the script names it on stderr and keeps
+# the command's own exit status. When told to stop, ending the command and the
+# removal together take at most FOLD_PG_KILL_GRACE + FOLD_PG_INFO_TIMEOUT plus
+# about two seconds, so a caller that signals the script should wait longer than
+# that before it kills the script's process group. SIGKILL of the script
 # itself cannot be caught; a caller that may do that should signal the script's
 # process group first (restore_fence_test.go does).
 #
@@ -48,7 +52,8 @@
 # taken from them; use a postgres:// URL, or FOLD_PG_BIN.
 # A URL's host, port and ?host= / ?port= are percent-decoded as libpq does
 # (%2F is "/", %20 a blank), to choose the probe, the network and the mounted
-# directory; the tool still gets the URL as written. A "%" not followed by two
+# directory (a repeated ?host= or ?port= takes the last, as libpq does); the tool
+# still gets the URL as written. A "%" not followed by two
 # hex digits, %00, or a control character in the host or port is refused (74). So
 # is a comma in the host or port, which libpq reads as a list of hosts.
 # Nothing here prints the arguments, so a password in a URL or a connection
@@ -100,6 +105,12 @@ kill_grace=$(seconds FOLD_PG_KILL_GRACE 3)
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/pg-client.XXXXXX")
 
+# The caller's stderr, kept for the one message cleanup may print. A signal that
+# arrives inside a `{ wait ...; } 2>/dev/null` runs its trap with that redirection
+# still in force, so a plain >&2 there would be lost. Nothing started here keeps it
+# open (4>&-), so a caller waiting for the output pipe is not held by a stray child.
+exec 4>&2
+
 # What this script has running, for cleanup. Job control makes every `&` command
 # the leader of its own process group, so one signal to -$job reaches whatever it
 # started, including a child that outlives it; without it a command's children
@@ -130,16 +141,19 @@ name_container() {
 	container=$prog-$$-$RANDOM$RANDOM-$container_seq
 }
 
-# limited <seconds> <outfile> <command...> runs a short command of the daemon's
-# (stdout to the file, stderr dropped) as a job of its own and returns its status;
-# a command still running after the limit is killed and returns 137. $rmjob names
-# it while it runs, so cleanup can end it if this script is told to stop meanwhile.
-# The limit counts $SECONDS, so it holds whatever granularity `sleep` has.
+# limited <deadline> <outfile> <command...> runs a short command of the daemon's
+# (stdout to the file, stderr dropped) as a job of its own and returns its status.
+# The deadline is an absolute $SECONDS value, shared by every command of one
+# removal, so the commands together cannot outlast it; one that has no time left is
+# not started, and one still running at the deadline is killed. Either returns 137.
+# $rmjob names the job while it runs, so cleanup can end it if this script is told
+# to stop meanwhile. $SECONDS makes the limit hold whatever granularity `sleep` has.
 rmjob=
 limited() {
-	local deadline=$((SECONDS + $1 + 1)) out=$2 rc=0
+	local deadline=$1 out=$2 rc=0
 	shift 2
-	"$@" >"$out" 2>/dev/null </dev/null &
+	[[ $SECONDS -lt $deadline ]] || return 137
+	"$@" >"$out" 2>/dev/null </dev/null 4>&- &
 	rmjob=$!
 	while kill -0 "$rmjob" 2>/dev/null; do
 		if [[ $SECONDS -ge $deadline ]]; then
@@ -153,24 +167,24 @@ limited() {
 	return "$rc"
 }
 
-# remove_container <name> ends the container with exactly that name, whether or
+# remove_container <name> <deadline> ends the container with exactly that name, whether or
 # not the docker client that started it is still alive, and returns 0 once it is
 # gone. `docker rm -f` failing is not yet a failure: the container may be gone
 # already (--rm removed it first, the usual case), or be mid-removal, so what
-# counts is whether the exact name is still listed. It tries again until
-# FOLD_PG_INFO_TIMEOUT has passed, then names the container on stderr and returns
-# 1; the caller keeps the status of the command it ran. Nothing but this name is
-# touched, and nothing here reads $job or $watch.
+# counts is whether the exact name is still listed. It tries again until the
+# absolute $SECONDS deadline, which every command and every pause is checked
+# against (a command is given only what remains, and none is started after it),
+# then names the container on stderr and returns 1; the caller keeps the status of
+# the command it ran. Nothing but this name is touched, and nothing here reads
+# $job or $watch.
 remove_container() {
-	local name=$1 deadline=$((SECONDS + info_timeout + 1)) left rc line present
-	while :; do
-		left=$((deadline - SECONDS))
-		[[ $left -ge 1 ]] || left=1
+	local name=$1 deadline=$2 rc line present
+	while [[ $SECONDS -lt $deadline ]]; do
 		rc=0
-		limited "$left" "$work/rm.out" docker rm -f "$name" || rc=$?
+		limited "$deadline" "$work/rm.out" docker rm -f "$name" || rc=$?
 		[[ $rc -eq 0 ]] && return 0
 		rc=0
-		limited "$left" "$work/rm.out" docker ps -a --filter "name=$name" --format '{{.Names}}' || rc=$?
+		limited "$deadline" "$work/rm.out" docker ps -a --filter "name=$name" --format '{{.Names}}' || rc=$?
 		if [[ $rc -eq 0 ]]; then
 			present=0
 			while IFS= read -r line || [[ -n $line ]]; do
@@ -183,17 +197,20 @@ remove_container() {
 		[[ $SECONDS -lt $deadline ]] || break
 		sleep 0.2 2>/dev/null || sleep 1
 	done
-	echo "$prog: could not remove container $name; it may still be running. Remove it yourself: docker rm -f $name" >&2
+	echo "$prog: could not remove container $name; it may still be running. Remove it yourself: docker rm -f $name" >&4
 	return 1
 }
 
 # cleanup runs on every exit, including TERM, INT and HUP (below). A signal that
-# arrives while it runs is ignored, so it finishes: it is bounded by the grace and
-# the daemon timeout. It also ends a removal that a signal interrupted, and does
-# that removal again, so a stop during cleanup does not abandon the container.
+# arrives while it runs is ignored, so it finishes. One absolute deadline, the kill
+# grace plus the daemon timeout (and a second for $SECONDS' granularity), bounds all
+# of it: ending the command, then the removal with whatever time is left. It also
+# ends a removal that a signal interrupted, and does that removal again, so a stop
+# during cleanup does not abandon the container.
 # shellcheck disable=SC2329 # run by the EXIT trap below
 cleanup() {
 	trap '' TERM INT HUP
+	local deadline=$((SECONDS + kill_grace + info_timeout + 1))
 	if [[ -n $rmjob ]]; then
 		kill -KILL -- "-$rmjob" 2>/dev/null || kill -KILL "$rmjob" 2>/dev/null || true
 		rmjob=
@@ -205,7 +222,7 @@ cleanup() {
 		stop_group "$job"
 	fi
 	if [[ -n $container ]]; then
-		remove_container "$container"
+		remove_container "$container" "$deadline" || true # a refusal is named on stderr; the exit status stays the signal's
 	fi
 	rm -rf "$work"
 }
@@ -222,11 +239,11 @@ bounded() {
 	local secs=$1 rc=0
 	shift
 	rm -f "$work/timedout"
-	"$@" >"$work/out" 2>"$work/err" </dev/null &
+	"$@" >"$work/out" 2>"$work/err" </dev/null 4>&- &
 	job=$!
 	(
 		set +m # its sleep stays in the watcher's group, so one KILL ends both
-		exec >/dev/null 2>&1 </dev/null
+		exec >/dev/null 2>&1 </dev/null 4>&-
 		sleep "$secs"
 		: >"$work/timedout"
 		stop_group "$job"
@@ -242,7 +259,7 @@ bounded() {
 	# the container: the daemon owns it. $container stays set until the removal has
 	# finished, so a stop meanwhile still removes it.
 	if [[ -n $container ]]; then
-		remove_container "$container" || true
+		remove_container "$container" $((SECONDS + info_timeout + 1)) || true
 		container=
 	fi
 	if [[ -e $work/timedout ]]; then
@@ -623,14 +640,14 @@ else
 		exec 3<&0
 	fi
 	docker run --rm -i --name "$container" "${net[@]}" --user "$user" \
-		${mounts[@]+"${mounts[@]}"} --entrypoint "$tool" "$image_id" "$@" <&3 &
+		${mounts[@]+"${mounts[@]}"} --entrypoint "$tool" "$image_id" "$@" <&3 4>&- &
 	job=$!
 	exec 3<&-
 	{ wait "$job" || rc=$?; } 2>/dev/null
 	kill -KILL -- "-$job" 2>/dev/null || true
 	job=
 	# The tool's status is $rc whatever the removal does.
-	remove_container "$container" || true
+	remove_container "$container" $((SECONDS + info_timeout + 1)) || true
 	container=
 fi
 case $rc in

@@ -101,9 +101,15 @@ mounted path, a connection with no host, a socket directory that is missing).
   die (a lost connection, an OOM kill) while the daemon keeps the container, and `--rm` acts only
   when the container itself exits. The removal is `docker rm -f` on the generated name, then, if
   that fails, a listing by exact name (a container `--rm` already removed is gone, not an error),
-  retried for at most `FOLD_PG_INFO_TIMEOUT`. If the container is still there after that, the wrapper
-  says on stderr which one (`docker rm -f <name>`) and still exits with the tool's own status. A
-  stop that arrives during the removal ends it and repeats it, so the container is not abandoned.
+  retried until one absolute deadline of `FOLD_PG_INFO_TIMEOUT` that every docker command of the
+  removal is checked against (each gets only what is left, and none starts after it). If the
+  container is still there after that, the wrapper says on stderr which one (`docker rm -f <name>`)
+  and still exits with the tool's own status. A stop that arrives during the removal ends it and
+  repeats it, so the container is not abandoned. After a stop, ending the command and the removal
+  share one deadline of `FOLD_PG_KILL_GRACE` plus `FOLD_PG_INFO_TIMEOUT` plus about two seconds
+  (under 30s by default), which is why the Go side's 45s grace (`pgCleanupGrace`) is enough; a
+  caller that raises either variable raises its own grace too. A removal that does not finish is
+  killed, so no `docker rm` or `docker ps` of the wrapper's is left running after it exits.
   Only the generated name is removed or listed; no other container or process is touched.
   The Go side (`pgRun`, for discovery; a dump or restore itself has no deadline) runs the wrapper in
   a group of its own and signals the group at its deadline, because exec's own kill reaches only the wrapper's pid. KILL of the wrapper itself cannot
@@ -140,8 +146,13 @@ mounted path, a connection with no host, a socket directory that is missing).
   named in a docker call. `...NamesAContainerItCannotRemove` has the daemon refuse (the wrapper
   names the container, ends in bounded time, keeps the tool's status), and
   `...FinishesRemovalWhenToldToStop` sends TERM while the first `docker rm` hangs and expects the
-  removal to be done again. The encoded-URL cases are in `...ConnectionForms` (an encoded TCP
-  host and port, a socket directory with blanks in the authority and in the query) and
+  removal to be done again. `...CleanupHoldsWhenRemovalStalls` runs the wrapper through `pgRun`
+  with a stubborn tool and a daemon whose `rm`, `ps`, or both hang, cancels it, and expects the
+  wrapper to end itself (143, not killed by the Go side) inside the Go grace, its stalled docker
+  commands (groups of their own, out of the Go side's reach) dead, the container named on stderr,
+  and the bystanders untouched. The encoded-URL cases are in `...ConnectionForms` (an encoded TCP
+  host and port, a socket directory with blanks in the authority and in the query, and a repeated
+  `host=` or `port=`, where the last one wins as in libpq) and
   `...RefusesURLEncodingsItCannotTrust`. `TestPGClientWrapperProbeWithRealDocker` runs real Docker and `pg_isready`
   against a closed local port and expects the "unreachable" diagnosis (73), skipping where Docker
   is not usable (failing under `CI`). The fake tests show the wrapper builds the right

@@ -616,8 +616,9 @@ const pgDiscoveryLimit = 6 * time.Minute
 
 // pgCleanupGrace is how long a command that was told to stop (SIGTERM) gets to
 // finish before it is killed. The wrapper, told to stop, ends its own commands
-// (its kill grace) and removes their containers (up to its daemon timeout), so
-// the grace has to outlast both.
+// and removes their containers inside one deadline of its kill grace plus its
+// daemon timeout (3s + 20s by default, and a second of rounding), so the grace has
+// to outlast that. TestPGClientWrapperCleanupHoldsWhenRemovalStalls holds it to that.
 const pgCleanupGrace = 45 * time.Second
 
 // pgRun runs argv for at most limit with the given output writers. The command
@@ -1328,7 +1329,9 @@ func isRestoreFenceStatement(sql string) bool {
 // group; "docker ps" lists, and "docker rm -f" ends, only those by name, and
 // rm of a name nobody has says so and exits 1, as docker does.
 // FAKE_RM=fail makes every rm refuse and leave the container alone;
-// FAKE_RM=slow_first makes the first rm hang (it writes rm.began), the later ones work.
+// FAKE_RM=slow_first makes the first rm hang (it writes rm.began), the later ones work;
+// FAKE_RM=hang and FAKE_PS=hang make every rm, or every ps, hang. A hung call's pid
+// goes to the file hung, not pids, because the container it was to remove stays.
 const fakeDockerScript = `#!/usr/bin/env bash
 { echo "---"; for a in "$@"; do printf '%s\n' "$a"; done; } >>"$FAKE_DOCKER_DIR/log"
 id=${FAKE_DOCKER_ID:-sha256:feedbeef}
@@ -1382,6 +1385,10 @@ pull)
 rm)
 	# rm -f <name>: the daemon ends the container, group and all.
 	name=${@: -1}
+	if [[ ${FAKE_RM:-} == hang ]]; then
+		echo $$ >>"$FAKE_DOCKER_DIR/hung"
+		exec sleep 60
+	fi
 	if [[ ${FAKE_RM:-} == fail ]]; then
 		echo "Error response from daemon: permission denied" >&2
 		exit 1
@@ -1404,6 +1411,10 @@ rm)
 	;;
 ps)
 	# ps -a --filter name=<part> --format {{.Names}}: the names that contain it.
+	if [[ ${FAKE_PS:-} == hang ]]; then
+		echo $$ >>"$FAKE_DOCKER_DIR/hung"
+		exec sleep 60
+	fi
 	part=
 	for a in "$@"; do [[ $a == name=* ]] && part=${a#name=}; done
 	for f in "$FAKE_DOCKER_DIR"/c.*; do
@@ -2412,6 +2423,81 @@ func TestPGClientWrapperNamesAContainerItCannotRemove(t *testing.T) {
 			}
 			onlyRemovedItsOwn(t, calls)
 			bystanders(t)
+		})
+	}
+}
+
+// TestPGClientWrapperCleanupHoldsWhenRemovalStalls: the Go side signals the
+// wrapper's group at its deadline and kills it a grace later. The wrapper's own
+// cleanup (ending the stubborn tool, then rm and ps on a daemon that answers neither)
+// must finish inside that grace, by one absolute deadline for all of it. The docker
+// commands it starts have groups of their own, which the Go side's final kill does
+// not reach, so any still running when the wrapper is gone were left by it. With
+// separate allowances for rm and ps, the two stall in turn and the run takes
+// 1s (the tool) + 5s + 5s here, past the 10s grace.
+func TestPGClientWrapperCleanupHoldsWhenRemovalStalls(t *testing.T) {
+	if signal.Ignored(syscall.SIGTERM) {
+		t.Skip("SIGTERM is ignored in this process, so a shell it starts cannot trap it")
+	}
+	const limit, grace = 3 * time.Second, 10 * time.Second
+	for _, tc := range []struct {
+		name string
+		env  []string
+	}{
+		{"rm and ps both stall", []string{"FAKE_RM=hang", "FAKE_PS=hang"}},
+		{"rm stalls", []string{"FAKE_RM=hang"}},
+		{"ps stalls after a refused rm", []string{"FAKE_RM=fail", "FAKE_PS=hang"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeDocker(t, true)
+			bystanders := f.bystanders(t)
+			t.Cleanup(func() {
+				for _, file := range []string{"pids", "hung"} {
+					b, _ := os.ReadFile(filepath.Join(f.dir, file))
+					for _, s := range strings.Fields(string(b)) {
+						if pid, err := strconv.Atoi(s); err == nil {
+							_ = syscall.Kill(-pid, syscall.SIGKILL)
+							_ = syscall.Kill(pid, syscall.SIGKILL)
+						}
+					}
+				}
+			})
+			argv := append([]string{"env", "PATH=" + f.path, "TMPDIR=" + f.dir, "FAKE_DOCKER_DIR=" + f.dir,
+				"FAKE_DOCKER_PRESENT=1", "FAKE_STUBBORN=tool", "FOLD_PG_INFO_TIMEOUT=4", "FOLD_PG_KILL_GRACE=1"}, tc.env...)
+			argv = append(argv, pgWrapperPath(), "16", "pg_dump", "-Fc")
+			var out bytes.Buffer
+			start := time.Now()
+			err := pgRun(limit, grace, &out, &out, argv...)
+			took := time.Since(start)
+			if code := exitCodeOf(err); code != 143 {
+				t.Errorf("exit %d after %v, want 143 (the wrapper ended itself, not killed by the Go side): %v\n%s", code, took, err, out.String())
+			}
+			if took > limit+grace {
+				t.Errorf("took %v: the cleanup outlasted the Go side's grace", took)
+			}
+			hung, _ := os.ReadFile(filepath.Join(f.dir, "hung"))
+			if len(strings.Fields(string(hung))) == 0 {
+				t.Fatal("no docker rm or ps stalled: the scenario did not run")
+			}
+			for _, s := range strings.Fields(string(hung)) {
+				pid, _ := strconv.Atoi(s)
+				deadline := time.Now().Add(time.Second)
+				for alive(pid) && time.Now().Before(deadline) {
+					time.Sleep(20 * time.Millisecond)
+				}
+				if alive(pid) {
+					t.Errorf("a stalled docker command (pid %d) outlived the wrapper", pid)
+				}
+			}
+			if !strings.Contains(out.String(), "could not remove container") {
+				t.Errorf("the output does not name the container it could not remove: %s", out.String())
+			}
+			calls := f.calls(t)
+			onlyRemovedItsOwn(t, calls)
+			bystanders(t)
+			if left, _ := filepath.Glob(filepath.Join(f.dir, "pg-client.*")); len(left) != 0 {
+				t.Errorf("the wrapper left its work directory: %v", left)
+			}
 		})
 	}
 }
