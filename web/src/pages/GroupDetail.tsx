@@ -5,7 +5,7 @@ import { RequestContactButton } from "../components/RequestContactButton";
 import { ContactDetails } from "../components/ContactDetails";
 import { Badge } from "../components/ui/Badge";
 import { useHousehold } from "../lib/useHousehold";
-import { canDemoteLeader, canMakeLeader, canAskForContact, canRegisterAsGuest, canRemoveMember, isActiveAdult } from "../lib/can";
+import { canDemoteLeader, canMakeLeader, canAskForContact, canRegisterAsGuest, canRemoveMember, groupCanSchedule, isActiveAdult } from "../lib/can";
 import { SeriesEditor } from "../components/SeriesEditor";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -341,6 +341,10 @@ function GroupDetailContent() {
   }
 
   const { group, members, upcomingEvents, canManage, isMember } = detail;
+  const canSchedule = groupCanSchedule(group.status);
+  const scheduleReason = group.status === "pending"
+    ? "You can schedule events once an admin approves this group."
+    : "This group is archived, so it can't schedule new events.";
   const events: EventOccurrence[] = upcomingEvents ?? [];
   // Count only loaded, visible dates: a capped page is not a series total.
   const nextDates: EventOccurrence[] = [];
@@ -583,10 +587,12 @@ function GroupDetailContent() {
             <div className="flex shrink-0 flex-wrap gap-2">
               {canManage && (
                 <>
-                  <ButtonLink to={`/groups/${group.id}/events/new`} variant="primary-inverse">
-                    Schedule event
-                  </ButtonLink>
-                  {/* One primary action (Schedule event); the rest live in More (DEC-63). */}
+                  {canSchedule && (
+                    <ButtonLink to={`/groups/${group.id}/events/new`} variant="primary-inverse">
+                      Schedule event
+                    </ButtonLink>
+                  )}
+                  {/* One primary action once the group is active (Schedule event); the rest live in More (DEC-63, DEC-147). */}
                   <Menu
                     label="More group actions"
                     items={[
@@ -679,17 +685,20 @@ function GroupDetailContent() {
             {tab === "events" && (
               <div className="space-y-4">
                 <h2 className="sr-only">Upcoming events</h2>
+                {canManage && !canSchedule && events.length > 0 && <p className="text-text-muted">{scheduleReason}</p>}
                 {events.length === 0 && (
                   <EmptyState
                     illustration={<Illustration name="no-events" />}
-                    title={canManage ? "Schedule your group's first meeting" : "No upcoming events"}
+                    title={canManage && canSchedule ? "Schedule your group's first meeting" : "No upcoming events"}
                     body={
                       canManage
-                        ? "It takes about a minute."
+                        ? canSchedule
+                          ? "It takes about a minute."
+                          : scheduleReason
                         : "When a leader schedules something, it will show up here."
                     }
                     action={
-                      canManage ? (
+                      canManage && canSchedule ? (
                         <ButtonLink to={`/groups/${group.id}/events/new`} variant="primary" layout="w-full sm:w-auto">
                           Schedule event
                         </ButtonLink>

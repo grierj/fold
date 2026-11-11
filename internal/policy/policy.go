@@ -480,6 +480,13 @@ func LeadsApprovedGroup(statuses []string) bool {
 // invitation into any other group could never be accepted.
 func CanInviteIntoGroup(groupStatus string) bool { return groupStatus == GroupActive }
 
+// GroupCanSchedule reports whether a group with this status may have new
+// events created or rooms booked (DEC-147, Grier, Nov 10, 2026). The answer
+// depends on the group, not the actor: an admin approves or reactivates the
+// group first. Events and bookings that already exist are kept when a group
+// stops being active, and releasing a room is never refused.
+func GroupCanSchedule(groupStatus string) bool { return groupStatus == GroupActive }
+
 // CanInvite reports whether p may create an invitation (5.10, DEC-4, M1.2).
 // Admins may invite anyone, into any group or none. Leaders may invite into
 // a group they lead, or with no group at all. leadsTarget is p's leadership

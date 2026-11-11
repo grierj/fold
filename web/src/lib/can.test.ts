@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canAskForContact, canDemoteLeader, canMakeLeader, canRegisterAsGuest, canRemoveMember, isActiveAdult, isNotTeen, publicName } from "./can";
+import { canAskForContact, canDemoteLeader, canMakeLeader, canRegisterAsGuest, canRemoveMember, groupCanSchedule, isActiveAdult, isNotTeen, publicName } from "./can";
 
 const adult = { id: 1, status: "active", accountType: "adult" } as const;
 
@@ -56,4 +56,11 @@ it("names a person by display name, then name, then Member, never the email", ()
   expect(publicName({ displayName: "", name: "Samuel Jones" })).toBe("Samuel Jones");
   expect(publicName({ displayName: "", name: "" })).toBe("Member");
   expect(publicName({})).toBe("Member");
+});
+
+it("offers scheduling only for an active group", () => {
+  expect(groupCanSchedule("active")).toBe(true);
+  expect(groupCanSchedule("pending")).toBe(false);
+  expect(groupCanSchedule("archived")).toBe(false);
+  expect(groupCanSchedule("")).toBe(false);
 });

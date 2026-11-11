@@ -39,7 +39,7 @@ async function ready() {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(Groups.get).mockResolvedValue({
-    group: { name: "Choir", location: "Hall", visibility: "public" },
+    group: { name: "Choir", location: "Hall", visibility: "public", status: "active" },
     canManage: true,
   } as never);
   vi.mocked(Groups.createEvent).mockResolvedValue({ event: { id: 9 } } as never);
@@ -47,6 +47,21 @@ beforeEach(() => {
 });
 
 describe("NewEvent", () => {
+  it.each([
+    ["pending", /once an admin approves it/],
+    ["archived", /is archived, so it can't schedule new events/],
+  ])("explains instead of showing the form for a %s group (DEC-147)", async (status, sentence) => {
+    vi.mocked(Groups.get).mockResolvedValue({
+      group: { name: "Choir", location: "Hall", visibility: "public", status },
+      canManage: true,
+    } as never);
+    renderForm();
+    expect(await screen.findByText(sentence)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Back to group" })).toHaveAttribute("href", "/groups/5");
+    expect(screen.queryByLabelText(/Title/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Schedule event" })).not.toBeInTheDocument();
+  });
+
   it("puts the title and description first, then When, Location and More options", async () => {
     renderForm();
     await ready();

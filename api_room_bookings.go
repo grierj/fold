@@ -344,6 +344,15 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").First(&models.Event{}, ev.ID).Error; err != nil {
 			return err
 		}
+		// DEC-147: a group that isn't active books no new room; releasing
+		// (roomId null) is always allowed. Checked before anything is deleted.
+		if body.RoomID != nil {
+			if ok, err := groupSchedulesIn(tx, ev.GroupID); err != nil {
+				return err
+			} else if !ok {
+				return errGroupRoomsNotApproved
+			}
+		}
 		// Book against the date as it is under the lock: a reschedule or a
 		// cancel that committed since it was read must win.
 		locked, err := lockOccurrence(tx, occ.ID)
@@ -461,6 +470,9 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 		return
 	case errors.Is(err, errBusy):
 		fail(c, errRoomBusy)
+		return
+	case errors.Is(err, errGroupRoomsNotApproved):
+		fail(c, err)
 		return
 	case err != nil:
 		jsonError(c, http.StatusInternalServerError, "could not save the room")

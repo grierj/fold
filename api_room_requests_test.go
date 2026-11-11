@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"fold/internal/audit"
 	"fold/internal/eventdates"
 	"fold/internal/notify"
 	"fold/models"
@@ -559,5 +560,55 @@ func TestRoomDecisionNoticeSerializesWithAdminLeaderErasure(t *testing.T) {
 				settle(t, s)
 			})
 		})
+	}
+}
+
+// DEC-147: a request waiting on an admin can't be confirmed once its group
+// stopped being active. It stays waiting, and can still be rejected.
+func TestConfirmRoomRequestNeedsActiveGroup(t *testing.T) {
+	f := newBookingFixture(t)
+	approvalOn(t, f)
+	series := createFeedEvent(t, f.leader, f.group, "Weekly", f.startOn.AddDate(0, 0, 1), "FREQ=WEEKLY;COUNT=2")
+	if code, out := f.seriesRoom(t, f.leader, series, map[string]any{"roomId": f.hall.ID}); code != http.StatusOK || out.Pending != 2 {
+		t.Fatalf("series: %d %+v", code, out)
+	}
+	reqs := listRequests(t, f.admin)
+	if len(reqs) != 1 {
+		t.Fatalf("requests: %+v", reqs)
+	}
+	f.archiveGroup(t)
+	// Counted after the archive, which writes its own rows: a refused confirm
+	// must add none.
+	auditBefore := contactCount(t, f.app, &models.AuditLog{}, "1 = 1")
+	noticesBefore := contactCount(t, f.app, &models.Notification{}, "1 = 1")
+
+	w := f.admin.do("POST", "/api/v1/admin/room-requests/"+itoa(reqs[0].ID)+"/confirm", map[string]any{}, true)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), `"code":"group_rooms_not_approved"`) {
+		t.Fatalf("confirming for an archived group: %d %s", w.Code, w.Body.String())
+	}
+	if n := contactCount(t, f.app, &models.AuditLog{}, "1 = 1"); n != auditBefore {
+		t.Fatalf("a refused confirm wrote audit rows: %d -> %d", auditBefore, n)
+	}
+	if n := contactCount(t, f.app, &models.AuditLog{}, "action = ?", audit.RoomRequestConfirmed); n != 0 {
+		t.Fatalf("%d confirmed audit rows", n)
+	}
+	if n := contactCount(t, f.app, &models.Notification{}, "1 = 1"); n != noticesBefore {
+		t.Fatalf("a refused confirm wrote notices: %d -> %d", noticesBefore, n)
+	}
+	if n := contactCount(t, f.app, &models.Notification{}, "kind = ? AND waiting AND resolved_at IS NULL", notify.RoomRequested); n != 1 {
+		t.Fatalf("%d open admin tasks; the request's task should stay open", n)
+	}
+	if n := contactCount(t, f.app, &models.RoomRequest{}, "id = ? AND status = ?", reqs[0].ID, models.RoomRequestPending); n != 1 {
+		t.Fatal("the request should still be pending")
+	}
+	if n := contactCount(t, f.app, &models.RoomBooking{}, "status = ?", models.BookingRequested); n != 2 {
+		t.Fatalf("%d requested bookings; both should still wait", n)
+	}
+	if n := contactCount(t, f.app, &models.RoomBooking{}, "status = ?", models.BookingConfirmed); n != 0 {
+		t.Fatalf("%d confirmed bookings; none should be made", n)
+	}
+
+	if w := f.admin.do("POST", "/api/v1/admin/room-requests/"+itoa(reqs[0].ID)+"/reject", map[string]any{}, true); w.Code != http.StatusOK {
+		t.Fatalf("reject still works: %d %s", w.Code, w.Body.String())
 	}
 }

@@ -205,3 +205,70 @@ func TestEffectivePlaceSQLAgreesWithGo(t *testing.T) {
 		}
 	}
 }
+
+// DEC-147: matching a typed place books a room, so it skips the dates and
+// series of a group that isn't active, in the list and in the match alike.
+func TestRoomLocationMatchingSkipsInactiveGroups(t *testing.T) {
+	f := newBookingFixture(t)
+	active := newTestGroup(t, f.app, f.leaderUser, "Still active", models.GroupActive)
+	pending := newTestGroup(t, f.app, f.leaderUser, "Soon pending", models.GroupActive)
+	create := func(gid uint, title string, start time.Time, rule string) eventJSON {
+		t.Helper()
+		body := map[string]any{"title": title, "startsLocal": start.Format("2006-01-02T15:04"), "durationMinutes": 60, "tzid": "UTC", "location": "Fellowship Hall"}
+		if rule != "" {
+			body["recurrenceRule"] = rule
+		}
+		w := f.leader.do("POST", "/api/v1/groups/"+itoa(gid)+"/events", body, true)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create %s: %d %s", title, w.Code, w.Body.String())
+		}
+		var out struct {
+			Event eventJSON `json:"event"`
+		}
+		decodeJSON(t, w, &out)
+		return out.Event
+	}
+	start := f.startOn.AddDate(0, 0, 1)
+	quiet := create(f.group, "Quiet single", start, "")
+	quietSeries := create(f.group, "Quiet series", start.AddDate(0, 0, 1), "FREQ=WEEKLY;COUNT=2")
+	live := create(active.ID, "Live series", start.AddDate(0, 0, 2), "FREQ=WEEKLY;COUNT=2")
+	waiting := create(pending.ID, "Waiting single", start.AddDate(0, 0, 3), "")
+	f.archiveGroup(t)
+	if w := f.admin.do("PUT", "/api/v1/groups/"+itoa(pending.ID), map[string]any{"status": models.GroupPending}, true); w.Code != http.StatusOK {
+		t.Fatalf("set pending: %d %s", w.Code, w.Body.String())
+	}
+
+	var list struct {
+		Locations []typedLocationJSON `json:"locations"`
+	}
+	decodeJSON(t, f.admin.do("GET", "/api/v1/admin/rooms/locations", nil, false), &list)
+	// The fixture's own two events have no typed place and no group place.
+	if len(list.Locations) != 1 || list.Locations[0].Dates != 2 || list.Locations[0].Events != 1 {
+		t.Fatalf("only the active group's two dates should be listed: %+v", list.Locations)
+	}
+
+	w := f.admin.do("POST", "/api/v1/admin/rooms/locations/match", map[string]any{"location": "Fellowship Hall", "roomId": f.hall.ID}, true)
+	var out map[string]any
+	decodeJSON(t, w, &out)
+	if w.Code != http.StatusOK || out["booked"] != float64(2) || out["series"] != float64(1) {
+		t.Fatalf("match: %d %+v", w.Code, out)
+	}
+	for _, id := range []uint{quiet.ID, quietSeries.ID, waiting.ID} {
+		if n := contactCount(t, f.app, &models.RoomBooking{}, "occurrence_id IN (SELECT id FROM event_occurrences WHERE event_id = ?)", id); n != 0 {
+			t.Fatalf("event %d of an archived group got %d bookings", id, n)
+		}
+		var ev models.Event
+		f.app.DB.First(&ev, id)
+		if ev.DefaultRoomID != nil {
+			t.Fatalf("event %d of an archived group got a series room", id)
+		}
+	}
+	var ev models.Event
+	f.app.DB.First(&ev, live.ID)
+	if ev.DefaultRoomID == nil || *ev.DefaultRoomID != f.hall.ID {
+		t.Fatalf("the active group's series gets the hall: %+v", ev.DefaultRoomID)
+	}
+	if n := seriesBookings(t, f.app, live.ID, models.BookingConfirmed); n != 2 {
+		t.Fatalf("%d bookings for the active group's series; want 2", n)
+	}
+}

@@ -58,3 +58,10 @@ export function canRegisterAsGuest(signedIn: boolean, visibility: string | undef
 export function publicName(person: { displayName?: string | null; name?: string | null }): string {
   return person.displayName || person.name || "Member";
 }
+
+// policy.GroupCanSchedule (DEC-147): new events and room bookings need an
+// approved, active group, for leaders and admins alike. Display only; the
+// server refuses the write.
+export function groupCanSchedule(status: string): boolean {
+  return status === "active";
+}

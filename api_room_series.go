@@ -192,6 +192,8 @@ func (a *App) apiSetSeriesRoom(c *gin.Context) {
 		jsonError(c, http.StatusNotFound, "room not found")
 	case errors.Is(err, errRestricted):
 		fail(c, errRoomRestricted)
+	case errors.Is(err, errGroupRoomsNotApproved):
+		fail(c, err)
 	case err != nil:
 		jsonError(c, http.StatusInternalServerError, "could not save the room")
 	default:
@@ -208,8 +210,18 @@ func (a *App) apiSetSeriesRoom(c *gin.Context) {
 //
 // With approval on (DEC-102), a leader's or host's free dates wait on one
 // request for the whole series (DEC-106); busy ones are lost as above.
+//
+// A group that isn't active books no room (DEC-147); stopping the series room
+// (roomID nil) is always allowed.
 func bookWholeSeries(tx *gorm.DB, ev *models.Event, roomID *uint, user *models.User, reason, ip string) (seriesBookingJSON, error) {
 	out := seriesBookingJSON{Lost: []string{}}
+	if roomID != nil {
+		if ok, err := groupSchedulesIn(tx, ev.GroupID); err != nil {
+			return out, err
+		} else if !ok {
+			return out, errGroupRoomsNotApproved
+		}
+	}
 	me := asPerson(user)
 	if !policy.CanDoubleBookRoom(me) {
 		reason = ""
@@ -346,7 +358,8 @@ func bookWholeSeries(tx *gorm.DB, ev *models.Event, roomID *uint, user *models.U
 // bookSeriesRoom books the series room for dates that were just added (by
 // the daily extender or a series edit) or brought back (DEC-91) and have no
 // booking. A busy date keeps a requested booking; its date is returned.
-// A series room that was since deactivated books nothing.
+// A series room that was since deactivated books nothing, and neither does a
+// group that isn't active (DEC-147): no booking, request or room.lost notice.
 //
 // A series room not yet approved (default_room_pending) books new dates as
 // a request while approval is on: into the waiting series request, or a
@@ -354,6 +367,9 @@ func bookWholeSeries(tx *gorm.DB, ev *models.Event, roomID *uint, user *models.U
 func bookSeriesRoom(tx *gorm.DB, ev *models.Event, occurrenceIDs []uint, by *uint) ([]string, error) {
 	if ev.DefaultRoomID == nil || len(occurrenceIDs) == 0 {
 		return nil, nil
+	}
+	if ok, err := groupSchedulesIn(tx, ev.GroupID); err != nil || !ok {
+		return nil, err
 	}
 	var occs []models.EventOccurrence
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
