@@ -24,23 +24,52 @@ setup, a source guard or the e2e harness is what you are changing or debugging.
 `DATABASE_URL`) are opt-in (`FOLD_UPLOAD_MEASURE=1`, not run in CI), e.g.
 `FOLD_UPLOAD_MEASURE=1 go test ./internal/images -run '^TestMeasureNormalize$' -count=1 -v` and
 `FOLD_UPLOAD_MEASURE=1 go test . -run '^TestMeasureUploadRequests$' -count=1 -v`. Each runs every
-`imagetest.WorstCases` picture (the most the estimate accepts for each format) in a process of its
-own (`FOLD_UPLOAD_MEASURE_CASE=<name>` runs one) and logs a `MEASURE {...}` JSON line. Run them
-alone: they are about memory, so other work on the machine skews them.
+`imagetest.WorstCases` picture (sized so its estimate is 80% to 100% of the budget, one for each way
+the estimate adds up) in a process of its own (`FOLD_UPLOAD_MEASURE_CASE=<name>` runs one) and logs a
+`MEASURE {...}` JSON line. Run them alone: they are about memory, so other work on the machine skews
+them. They need Linux with `/proc/self/clear_refs` writable (a container is fine) and fail without
+it, since the process peak could not be told from the fixtures' own.
 
-- The first runs waves of `MaxConcurrentProcessing` normalizations with more attempts refused
-  while full, and checks that every slot recovers. The second sends concurrent avatar and cover
-  requests through the router, cancels half of them mid-flight, and first runs a control of the
+- The first runs 4 waves of `MaxConcurrentProcessing` normalizations with more attempts refused
+  while full, and checks that every slot recovers. The second sends 3 waves of 8 concurrent avatar
+  and cover requests through the router, once with half cancelled mid-flight, after a control of the
   same size that is not a picture, so what the picture adds over it is the processing.
+- What fails: a worst case outside 80% to 100% of the budget; a call that allocates more than its
+  estimate (`totalAllocBytesPerCall` over `estimateBytesPerCall`); a process peak
+  (`vmHWMOverBaselineKB`) over `images.ProcessAllowanceBytes` (320 MiB; in the second test plus the
+  control's own peak, which is the ingress); a leaked slot or temp file. Change the allowance only
+  with the budget and slots it is derived from (`internal/images/upload.go`) and the docs that quote it.
 - The numbers differ: `estimateBytesPerCall` is the pre-decode estimate; `peakHeapObjectsBytes` is
   the sampled peak of Go heap objects, dead ones not yet freed included, over the baseline;
-  `peakGoMappedBytes` is the runtime's mapped memory; `vmHWMOverBaselineKB` is the process's resident
-  high-water mark after the baseline was reset (`/proc/self/clear_refs`, Linux; `vmHWMResetWorked`
-  says whether it did); `totalAlloc*` is cumulative and says nothing about peak.
-- Limits: sampled every millisecond, so a short spike can be missed; the second test's process also
-  holds the database client, the app and each body once more in the test client; the first leaves
-  out multipart ingress. Neither reproduces a 1 GB droplet's swap and cgroup behavior; that is a
-  hand check in `docs/FIRST-CHURCH-CHECKS.md`.
+  `peakGoMappedBytes` is the runtime's mapped memory (it can include pages already given back);
+  `vmHWMOverBaselineKB` is the process's resident high-water mark after the baseline was reset
+  (`/proc/self/clear_refs`, Linux); `totalAlloc*` is cumulative and says nothing about peak on its own.
+  Only the resident mark is held to the allowance; the others explain it. A temporary file's page cache
+  is not in the process's resident size, so it does not show here.
+- Constrained memory. The same pictures can be run under a container memory limit with swap off, so an
+  overrun is an out-of-memory kill (exit 137) rather than a number. Build the test binaries on the host
+  and run them in a bare container, so the compiler's memory is not in the limit:
+
+  ```bash
+  CGO_ENABLED=0 go test -c -o /tmp/images.test ./internal/images
+  docker run --rm --memory=512m --memory-swap=512m --tmpfs /tmp:size=64m \
+    -v /tmp/images.test:/images.test:ro -e FOLD_UPLOAD_MEASURE=1 debian:stable-slim \
+    /images.test -test.run '^TestMeasureNormalize$' -test.count=1 -test.v
+  ```
+
+  512 MiB is the allowance plus room for the test binary and the fixture each case builds (raise it if
+  a fixture's own build is what gets killed, and say so). It is a stricter check of the same picture work than the harness's
+  own number, not a model of the droplet. The HTTP test needs a database, so run it the same way with
+  `DATABASE_URL` pointing at one the container can reach (`--network host`, or the compose dev
+  database's published port), and with a higher limit, as the database client and every request body
+  count too.
+- Limits: sampled every millisecond, so a short spike can be missed; one machine, one Go version
+  (the estimate is derived from that toolchain's decoders and the tests that hold it to them run on
+  every `go test`), one kernel; the second test's process also holds the database client, the app and
+  each body once more in the test client; the first leaves out multipart ingress. A container limit
+  does not reproduce a 1 GB droplet's swap, the other services' memory or kernel pressure; that is a
+  hand check in `docs/FIRST-CHURCH-CHECKS.md`, so the 1 GB floor is neither proven nor changed by these
+  numbers.
 
 ### Restore tests
 

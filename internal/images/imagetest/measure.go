@@ -35,18 +35,21 @@ type Case struct {
 }
 
 // WorstCases are the accepted pictures that need the most memory to process,
-// one for each way the estimate adds up: plain and interlaced PNG, a PNG whose
+// one for each way the estimate adds up: plain and interlaced PNG, PNGs of 16
+// bits a channel (which are written back a pixel at a time) and one whose
 // transparency widens it, baseline JPEG that needs turning, progressive JPEG in
-// each color layout, and a long GIF.
+// each color layout, one whose Adobe segment comes after every scan, and a long
+// GIF. Each is sized so its estimate is within a few percent of the budget
+// (NearBudget); the measurement refuses one that has drifted below it.
 func WorstCases() []Case {
 	progressive := func(w, h int, ids, hv []byte, adobe int) func(*testing.T) []byte {
 		return func(*testing.T) []byte { return ProgressiveJPEG(w, h, ids, hv, adobe) }
 	}
 	return []Case{
-		{"png-rgba-25mp", "image/png", func(t *testing.T) []byte {
-			img := image.NewNRGBA(image.Rect(0, 0, 5000, 5000))
-			for y := 0; y < 5000; y++ {
-				for x := 0; x < 5000; x++ {
+		{"png-rgba-3700", "image/png", func(t *testing.T) []byte {
+			img := image.NewNRGBA(image.Rect(0, 0, 3700, 3700))
+			for y := 0; y < 3700; y++ {
+				for x := 0; x < 3700; x++ {
 					img.SetNRGBA(x, y, color.NRGBA{R: uint8(x % 251), G: uint8(y % 251), B: 80, A: 255})
 				}
 			}
@@ -56,12 +59,14 @@ func WorstCases() []Case {
 			}
 			return b.Bytes()
 		}},
-		{"png-adam7-rgb-3900", "image/png", func(t *testing.T) []byte { return Adam7RGBPNG(t, 3900, 3900) }},
-		{"png-gray16-trns-3900", "image/png", func(t *testing.T) []byte { return GrayTransparentPNG(t, 3900, 3900) }},
-		{"jpeg-baseline-420-12mp-turned", "image/jpeg", func(t *testing.T) []byte {
-			img := image.NewRGBA(image.Rect(0, 0, 4000, 3000))
-			for y := 0; y < 3000; y++ {
-				for x := 0; x < 4000; x++ {
+		{"png-adam7-rgb-2600", "image/png", func(t *testing.T) []byte { return Adam7RGBPNG(t, 2600, 2600) }},
+		{"png-gray16-3700", "image/png", func(t *testing.T) []byte { return Gray16PNG(t, 3700, 3700) }},
+		{"png-gray16-trns-1800", "image/png", func(t *testing.T) []byte { return GrayTransparentPNG(t, 1800, 1800) }},
+		{"png-nrgba64-1800", "image/png", func(t *testing.T) []byte { return SixteenBitPNG(t, 1800, 1800, false) }},
+		{"jpeg-baseline-420-turned-3600x2700", "image/jpeg", func(t *testing.T) []byte {
+			img := image.NewRGBA(image.Rect(0, 0, 3600, 2700))
+			for y := 0; y < 2700; y++ {
+				for x := 0; x < 3600; x++ {
 					img.SetRGBA(x, y, color.RGBA{R: uint8(x >> 4), G: uint8(y >> 4), B: uint8((x + y) >> 5), A: 255})
 				}
 			}
@@ -71,13 +76,16 @@ func WorstCases() []Case {
 			}
 			return WithEXIF(b.Bytes(), ExifBlock(6))
 		}},
-		{"jpeg-progressive-420-12mp", "image/jpeg", progressive(4000, 3000, []byte{1, 2, 3}, []byte{0x22, 0x11, 0x11}, -1)},
-		{"jpeg-progressive-444-2800", "image/jpeg", progressive(2800, 2800, []byte{1, 2, 3}, []byte{0x11, 0x11, 0x11}, -1)},
-		{"jpeg-progressive-rgb-2500", "image/jpeg", progressive(2500, 2500, []byte("RGB"), []byte{0x11, 0x11, 0x11}, -1)},
-		{"jpeg-progressive-cmyk-2200", "image/jpeg", progressive(2200, 2200, []byte{1, 2, 3, 4}, []byte{0x11, 0x11, 0x11, 0x11}, 0)},
-		{"gif-60-frames-1000", "image/gif", func(t *testing.T) []byte {
+		{"jpeg-progressive-420-3000x2400", "image/jpeg", progressive(3000, 2400, []byte{1, 2, 3}, []byte{0x22, 0x11, 0x11}, -1)},
+		{"jpeg-progressive-444-1900", "image/jpeg", progressive(1900, 1900, []byte{1, 2, 3}, []byte{0x11, 0x11, 0x11}, -1)},
+		{"jpeg-progressive-rgb-1500", "image/jpeg", progressive(1500, 1500, []byte("RGB"), []byte{0x11, 0x11, 0x11}, -1)},
+		{"jpeg-progressive-444-late-adobe-1500", "image/jpeg", func(*testing.T) []byte {
+			return WithLateAdobe(ProgressiveJPEG(1500, 1500, []byte{1, 2, 3}, []byte{0x11, 0x11, 0x11}, -1), 0)
+		}},
+		{"jpeg-progressive-cmyk-1400", "image/jpeg", progressive(1400, 1400, []byte{1, 2, 3, 4}, []byte{0x11, 0x11, 0x11, 0x11}, 0)},
+		{"gif-26-frames-1000", "image/gif", func(t *testing.T) []byte {
 			g := &gif.GIF{}
-			for i := 0; i < 60; i++ {
+			for i := 0; i < 26; i++ {
 				g.Image = append(g.Image, image.NewPaletted(image.Rect(0, 0, 1000, 1000), palette.Plan9))
 				g.Delay = append(g.Delay, 5)
 			}
@@ -89,6 +97,10 @@ func WorstCases() []Case {
 		}},
 	}
 }
+
+// NearBudget is the share of the budget a worst case's estimate must reach for
+// the measurement to count it as one.
+const NearBudget = 0.8
 
 // MeasureCase is how a measurement test starts. Without MeasureEnv it skips.
 // Without CaseEnv it runs testName again once for every worst case, each in a

@@ -361,36 +361,53 @@ Resource bounds for avatar and cover uploads (one path, `readImageUpload`):
   `408 upload_canceled` (also when it had gone before reading began) with
   nothing stored.
 - Before decoding, from the header and, for JPEG and PNG, the segments or
-  chunks before the pixel data, an estimate of what the standard decoder
-  allocates is added to the encoded input and compared with 128 MiB. Over it
-  answers `400 image_too_large`, as the pixel and frame caps do. The estimate
-  counts: for PNG, the bytes per pixel of the color model, widened for a
-  grayscale picture that a `tRNS` chunk could make transparent, and doubled
-  for Adam7 interlacing (the canvas and its passes); for JPEG, the sample
-  planes padded to whole blocks of the file's sampling, 256 bytes of
-  coefficients per 8 x 8 block of every component of a progressive file, the
-  RGBA or CMYK copy built for RGB and CMYK files, and the RGBA copy made to
-  turn a picture upright; for GIF, two bytes per pixel of every frame. A
-  5000 x 5000 16-bit PNG (a few hundred KB on the wire, 200 MB to decode) and
-  the same canvas as an 8-bit interlaced PNG or a progressive 4:4:4 JPEG are
-  refused; a baseline 12 megapixel phone photo, turned or not, and 25
-  megapixels of plain 8-bit PNG are accepted. A progressive JPEG that also
-  needs turning is refused at about 12 megapixels. The figure is an estimate
-  from the allocations of the pinned Go toolchain's decoders, not a limit on
-  the process, and it counts what the decoders allocate whether or not the
-  garbage collector has freed it yet.
+  chunks, an estimate of what normalizing the picture allocates is compared
+  with 64 MiB (`maxWorkingBytes`). Over it answers `400 image_too_large`, as the
+  pixel and frame caps do. The estimate is of allocation in all, decode, turn
+  and encode, so it is above what is live at any moment. It is the encoded
+  input plus 8 MiB of fixed overhead, plus:
+  - PNG: the decoder's canvas, at the bytes a pixel of the color model,
+    widened for a grayscale picture that a `tRNS` chunk could make
+    transparent, doubled for Adam7 interlacing (the canvas and its passes);
+    and for every 16-bit picture a second canvas, because the encoder reads
+    it a pixel at a time and allocates each color.
+  - JPEG: the sample planes padded to whole blocks of the file's sampling;
+    for a progressive file 256 bytes of coefficients per 8 x 8 block of every
+    component; for a CMYK file, or a three-component file that is or may be
+    RGB, the RGBA or CMYK copy the decoder builds and a second one for the
+    colors the encoder or the turn reads one at a time; and the RGBA copy that
+    turns a picture upright. "May be RGB" includes any file with an Adobe
+    APP14 marker after its frame header, because the decoder decides RGB only
+    after the last scan and `DecodeConfig` does not see it.
+  - GIF: two bytes per pixel of every frame.
+
+  So, roughly: 8-bit color PNG up to about 14 megapixels (7 interlaced, 3.5
+  at 16 bits a channel), baseline JPEG up to the 25 megapixel cap upright and
+  about 10 megapixels when it must be turned, progressive JPEG up to about 7
+  megapixels, and about 28 million pixels of GIF frames in all. A 5000 x 5000 16-bit
+  PNG (a few hundred KB on the wire, 200 MB to decode) is refused. The figure
+  comes from the allocations of the pinned Go toolchain's decoders and
+  encoders, and tests hold it against what they really allocate; it is not a
+  limit on the process.
 - The re-encoded picture is written to a second temporary file through a
   writer that stops at 10 MiB (twice the upload limit) and answers
   `400 image_too_large`, so output is never held in memory. The 5 MB upload
   limit applies to what is sent.
+- The allowance for the process: with both slots busy, the picture work should
+  add no more than 320 MiB of resident memory (`images.ProcessAllowanceBytes`,
+  2.5 times the two budgets: the collector lets the heap reach about twice what
+  is live, and the runtime keeps freed pages a while). Nothing in the server
+  enforces it. The opt-in measurements (`docs/agents/testing.md`) run the
+  worst accepted picture of each format in repeated concurrent waves, with
+  cancellations, and fail when a call allocates more than its estimate or the
+  process peak passes the allowance. That is a check of this machine and Go
+  version, not of a 1 GB droplet with other services and swap; that is a hand
+  check (`docs/FIRST-CHURCH-CHECKS.md`).
 - Not covered: the request body is capped at 5 MB plus 1 MiB of multipart
   overhead per request, whether or not it declares its length, and the CSRF
   check reads that body before sign-in, so concurrent requests still buffer
   one body each ahead of the slot check; the cap bounds each request, not
-  their number. There is no per-user quota and no whole-server memory cap. The
-  slots bound only the picture work: with two slots at the budget that is about
-  256 MiB of decoder memory at once, plus the application and the database
-  (`docs/agents/testing.md` describes the opt-in measurement of it).
+  their number. There is no per-user quota and no whole-server memory cap.
 
 ### Groups
 

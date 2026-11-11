@@ -303,3 +303,54 @@ func AssertGrid(t *testing.T, img image.Image, cols, rows int, want []color.RGBA
 		}
 	}
 }
+
+// WithLateAdobe inserts an Adobe APP14 segment with the given color transform
+// just before the end-of-image marker, after every scan. A decoder that reads
+// that far finishes the picture by it (transform 0 means RGB), though
+// DecodeConfig stops at the first scan and does not see it.
+func WithLateAdobe(jpg []byte, transform byte) []byte {
+	payload := append([]byte("Adobe\x00\x64\x00\x00\x00\x00"), transform)
+	seg := []byte{0xFF, 0xEE, byte((len(payload) + 2) >> 8), byte(len(payload) + 2)}
+	end := len(jpg) - 2 // the EOI marker the fixture ends with
+	out := append([]byte(nil), jpg[:end]...)
+	out = append(out, seg...)
+	out = append(out, payload...)
+	return append(out, jpg[end:]...)
+}
+
+// SixteenBitPNG is a real w x h PNG of 16 bits a channel: RGB (color type 2)
+// when opaque, RGBA (type 6) when not. image/png decodes it to a 16-bit RGBA or
+// NRGBA picture and reads it back a pixel at a time to write it again.
+func SixteenBitPNG(t *testing.T, w, h int, opaque bool) []byte {
+	t.Helper()
+	img := image.NewRGBA64(image.Rect(0, 0, w, h))
+	for i := 0; i+8 <= len(img.Pix); i += 8 {
+		if opaque {
+			img.Pix[i], img.Pix[i+2], img.Pix[i+4] = byte(i>>3), byte(i>>11), byte(i>>19)
+			img.Pix[i+6], img.Pix[i+7] = 0xFF, 0xFF
+		} else {
+			img.Pix[i+6] = 0x80 // half transparent black: premultiplied, so no color
+		}
+	}
+	var b bytes.Buffer
+	if err := png.Encode(&b, img); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
+
+// Gray16PNG is a real w x h 16-bit grayscale PNG whose every sample is 256 or
+// more, so reading it back through image.Image.At allocates a color for each
+// pixel (the runtime shares the boxes of the smallest values).
+func Gray16PNG(t *testing.T, w, h int) []byte {
+	t.Helper()
+	img := image.NewGray16(image.Rect(0, 0, w, h))
+	for i := 0; i+2 <= len(img.Pix); i += 2 {
+		img.Pix[i], img.Pix[i+1] = 1, byte(i>>1)
+	}
+	var b bytes.Buffer
+	if err := png.Encode(&b, img); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}

@@ -397,17 +397,18 @@ func TestPNGMayBeTransparent(t *testing.T) {
 // 200 MB. The header is enough to refuse it.
 func TestNormalizeRefusesSixteenBitPNGByMemoryEstimate(t *testing.T) {
 	for name, hdr := range map[string][]byte{
-		"16-bit RGBA": imagetest.PNGHeader(5000, 5000, 16, 6, 0),
-		"16-bit RGB":  imagetest.PNGHeader(5000, 5000, 16, 2, 0),
+		"16-bit RGBA":         imagetest.PNGHeader(5000, 5000, 16, 6, 0),
+		"16-bit RGB":          imagetest.PNGHeader(5000, 5000, 16, 2, 0),
+		"8-bit RGBA at 25 MP": imagetest.PNGHeaderOnly(5000, 5000), // 100 MB to decode
 	} {
 		if _, _, err := normalizeBytes(t, hdr, "image/png"); !errors.Is(err, ErrTooLarge) {
 			t.Errorf("%s: %v, want ErrTooLarge", name, err)
 		}
 	}
-	// 8-bit RGBA at 25 MP needs 100 MB: inside the budget, so it is read as far
-	// as its (absent) pixels.
-	if _, _, err := normalizeBytes(t, imagetest.PNGHeaderOnly(5000, 5000), "image/png"); !errors.Is(err, ErrUnreadable) {
-		t.Errorf("8-bit RGBA at 25 MP: %v, want it to pass the estimate and fail as unreadable", err)
+	// 8-bit RGBA at 3500 x 3500 needs 49 MB: inside the budget, so it is read as
+	// far as its (absent) pixels.
+	if _, _, err := normalizeBytes(t, imagetest.PNGHeaderOnly(3500, 3500), "image/png"); !errors.Is(err, ErrUnreadable) {
+		t.Errorf("8-bit RGBA at 3500 x 3500: %v, want it to pass the estimate and fail as unreadable", err)
 	}
 }
 
@@ -415,27 +416,66 @@ func TestNormalizeRefusesSixteenBitPNGByMemoryEstimate(t *testing.T) {
 // but a tRNS chunk makes the decoder build a 16-bit NRGBA picture, four times
 // as large. The same canvas is refused with the chunk and accepted without it.
 func TestNormalizeCountsGrayscaleTransparency(t *testing.T) {
-	plain := append(imagetest.PNGHeader(5000, 5000, 16, 0, 0), junkIDAT()...)
-	transparent := append(append(imagetest.PNGHeader(5000, 5000, 16, 0, 0), trns16...), junkIDAT()...)
+	plain := append(imagetest.PNGHeader(2000, 2000, 16, 0, 0), junkIDAT()...)
+	transparent := append(append(imagetest.PNGHeader(2000, 2000, 16, 0, 0), trns16...), junkIDAT()...)
 	if _, _, err := normalizeBytes(t, transparent, "image/png"); !errors.Is(err, ErrTooLarge) {
-		t.Errorf("16-bit gray with tRNS at 25 MP: %v, want ErrTooLarge", err)
+		t.Errorf("16-bit gray with tRNS at 2000 x 2000: %v, want ErrTooLarge", err)
 	}
 	if _, _, err := normalizeBytes(t, plain, "image/png"); !errors.Is(err, ErrUnreadable) {
-		t.Errorf("16-bit gray at 25 MP: %v, want it to pass the estimate and fail as unreadable", err)
+		t.Errorf("16-bit gray at 2000 x 2000: %v, want it to pass the estimate and fail as unreadable", err)
 	}
 }
 
 // An Adam7 PNG allocates its canvas and then its seven passes, twice a plain
-// one. 4700 x 4700 of 8-bit color is inside the budget plain and over it
+// one. 3600 x 3600 of 8-bit color is inside the budget plain and over it
 // interlaced.
 func TestNormalizeCountsAdam7Passes(t *testing.T) {
-	plain := append(imagetest.PNGHeader(4700, 4700, 8, 2, 0), junkIDAT()...)
-	interlaced := append(imagetest.PNGHeader(4700, 4700, 8, 2, 1), junkIDAT()...)
+	plain := append(imagetest.PNGHeader(3600, 3600, 8, 2, 0), junkIDAT()...)
+	interlaced := append(imagetest.PNGHeader(3600, 3600, 8, 2, 1), junkIDAT()...)
 	if _, _, err := normalizeBytes(t, interlaced, "image/png"); !errors.Is(err, ErrTooLarge) {
 		t.Errorf("interlaced: %v, want ErrTooLarge", err)
 	}
 	if _, _, err := normalizeBytes(t, plain, "image/png"); !errors.Is(err, ErrUnreadable) {
 		t.Errorf("plain: %v, want it to pass the estimate and fail as unreadable", err)
+	}
+}
+
+// png.Encode reads a 16-bit picture a pixel at a time and allocates every
+// color, which is about one more canvas on top of the decode. A canvas whose
+// decode alone fits the budget is refused once the encode is counted, for each
+// 16-bit kind; the same pixels at 8 bits need no such copy and are accepted.
+func TestNormalizeCountsTheEncodeOfSixteenBitPNG(t *testing.T) {
+	for name, tc := range map[string]struct {
+		hdr     []byte
+		refused bool
+	}{
+		"16-bit gray, decode alone 32 MB":     {imagetest.PNGHeader(4000, 4000, 16, 0, 0), true},
+		"16-bit RGBA, decode alone 46 MB":     {imagetest.PNGHeader(2400, 2400, 16, 6, 0), true},
+		"16-bit RGB, decode alone 46 MB":      {imagetest.PNGHeader(2400, 2400, 16, 2, 0), true},
+		"16-bit gray, decode and encode 55MB": {imagetest.PNGHeader(3700, 3700, 16, 0, 0), false},
+		"8-bit RGBA, 46 MB, nothing to copy":  {imagetest.PNGHeader(3400, 3400, 8, 6, 0), false},
+	} {
+		_, _, err := normalizeBytes(t, append(tc.hdr, junkIDAT()...), "image/png")
+		if tc.refused && !errors.Is(err, ErrTooLarge) {
+			t.Errorf("%s: %v, want ErrTooLarge", name, err)
+		}
+		if !tc.refused && !errors.Is(err, ErrUnreadable) {
+			t.Errorf("%s: %v, want it to pass the estimate and fail as unreadable", name, err)
+		}
+	}
+}
+
+func TestPNGBoxesPixels(t *testing.T) {
+	for _, tc := range []struct {
+		m    color.Model
+		want bool
+	}{
+		{color.Palette{color.Black}, false}, {color.GrayModel, false}, {color.RGBAModel, false}, {color.NRGBAModel, false},
+		{color.Gray16Model, true}, {color.RGBA64Model, true}, {color.NRGBA64Model, true}, {nil, true},
+	} {
+		if got := pngBoxesPixels(tc.m); got != tc.want {
+			t.Errorf("pngBoxesPixels(%v) = %v, want %v", tc.m, got, tc.want)
+		}
 	}
 }
 
@@ -454,6 +494,12 @@ func allocatedBy(f func()) int64 {
 // pixels it would hide are many times this.
 const decoderOverhead = 512 << 10
 
+// normalizeOverhead is the same for a whole Normalize: the encoders' state
+// (flate's hash tables, Huffman tables, row buffers) and the copy of the
+// result back into the upload. It stays far under scratchBytes, which budgets
+// for it.
+const normalizeOverhead = 4 << 20
+
 func decodeConfig(t *testing.T, data []byte) image.Config {
 	t.Helper()
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
@@ -463,54 +509,90 @@ func decodeConfig(t *testing.T, data []byte) image.Config {
 	return cfg
 }
 
+// allocatedByNormalize is what Normalize allocates in all for data.
+func allocatedByNormalize(t *testing.T, data []byte, mime string) int64 {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "img-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	return allocatedBy(func() {
+		if _, _, err := Normalize(f, mime); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+// pngCases are real PNGs of every layout the decoder builds a different
+// picture for, each large enough that its pixels dwarf the fixed overheads.
+func pngCases(t *testing.T) map[string][]byte {
+	t.Helper()
+	enc := func(img image.Image) []byte {
+		var b bytes.Buffer
+		if err := png.Encode(&b, img); err != nil {
+			t.Fatal(err)
+		}
+		return b.Bytes()
+	}
+	canvas := image.Rect(0, 0, 1200, 1200)
+	gray := enc(image.NewGray(canvas))
+	return map[string][]byte{
+		"RGBA":                       enc(image.NewRGBA(canvas)),
+		"palette":                    enc(image.NewPaletted(canvas, color.Palette{color.Black, color.White})),
+		"gray":                       gray,
+		"16-bit gray":                imagetest.Gray16PNG(t, 1200, 1200),
+		"16-bit gray with tRNS":      imagetest.GrayTransparentPNG(t, 1200, 1200),
+		"16-bit RGB":                 imagetest.SixteenBitPNG(t, 1200, 1200, true),
+		"16-bit RGBA":                imagetest.SixteenBitPNG(t, 1200, 1200, false),
+		"Adam7 RGB":                  imagetest.Adam7RGBPNG(t, 1200, 1200),
+		"Adam7 RGB, an odd canvas":   imagetest.Adam7RGBPNG(t, 1201, 1197),
+		"gray with tRNS, depth 8":    imagetest.PNGWithChunkBeforeIDAT(t, gray, imagetest.PNGChunk("tRNS", []byte{0, 7})),
+		"RGBA PNG with a text chunk": imagetest.PNGWithText(t, image.NewRGBA(canvas)),
+	}
+}
+
 // The PNG estimate is held against what image/png really allocates for real
 // files (cumulatively, so it bounds the heap whenever the collector runs): if
 // it is lower than the decoder, the budget is not a bound.
 func TestPNGEstimateCoversTheDecoder(t *testing.T) {
-	var plain bytes.Buffer
-	if err := png.Encode(&plain, image.NewRGBA(image.Rect(0, 0, 1200, 1200))); err != nil {
-		t.Fatal(err)
-	}
-	var palette bytes.Buffer
-	if err := png.Encode(&palette, image.NewPaletted(image.Rect(0, 0, 1200, 1200), color.Palette{color.Black, color.White})); err != nil {
-		t.Fatal(err)
-	}
-	var gray bytes.Buffer
-	if err := png.Encode(&gray, image.NewGray(image.Rect(0, 0, 1200, 1200))); err != nil {
-		t.Fatal(err)
-	}
-	var gray16 bytes.Buffer
-	if err := png.Encode(&gray16, image.NewGray16(image.Rect(0, 0, 1200, 1200))); err != nil {
-		t.Fatal(err)
-	}
-	for name, in := range map[string][]byte{
-		"RGBA":                       plain.Bytes(),
-		"palette":                    palette.Bytes(),
-		"gray":                       gray.Bytes(),
-		"16-bit gray":                gray16.Bytes(),
-		"16-bit gray with tRNS":      imagetest.GrayTransparentPNG(t, 1200, 1200),
-		"Adam7 RGB":                  imagetest.Adam7RGBPNG(t, 1200, 1200),
-		"Adam7 RGB, an odd canvas":   imagetest.Adam7RGBPNG(t, 1201, 1197),
-		"gray with tRNS, depth 8":    imagetest.PNGWithChunkBeforeIDAT(t, gray.Bytes(), imagetest.PNGChunk("tRNS", []byte{0, 7})),
-		"RGBA PNG with a text chunk": imagetest.PNGWithText(t, image.NewRGBA(image.Rect(0, 0, 1200, 1200))),
-	} {
-		est := pngDecodeBytes(in, decodeConfig(t, in))
+	for name, in := range pngCases(t) {
+		decode, _ := pngBytes(in, decodeConfig(t, in))
 		got := allocatedBy(func() {
 			if _, err := png.Decode(bytes.NewReader(in)); err != nil {
 				t.Fatalf("%s: %v", name, err)
 			}
 		})
-		if got > est+decoderOverhead {
-			t.Errorf("%s: png.Decode allocated %d bytes, the estimate is %d", name, got, est)
+		if got > decode+decoderOverhead {
+			t.Errorf("%s: png.Decode allocated %d bytes, the estimate is %d", name, got, decode)
 		}
 	}
 	// The files above are what makes the transparent and interlaced estimates
 	// matter: without them the decoder would need several times as much.
-	if est := pngDecodeBytes(imagetest.GrayTransparentPNG(t, 1200, 1200), image.Config{ColorModel: color.Gray16Model, Width: 1200, Height: 1200}); est != 1200*1200*8 {
-		t.Errorf("16-bit gray with tRNS counted %d bytes, want 8 a pixel", est)
+	decode, encode := pngBytes(imagetest.GrayTransparentPNG(t, 1200, 1200), image.Config{ColorModel: color.Gray16Model, Width: 1200, Height: 1200})
+	if decode != 1200*1200*8 || encode != 1200*1200*8 {
+		t.Errorf("16-bit gray with tRNS counted %d and %d bytes, want 8 a pixel each", decode, encode)
 	}
-	if est := pngDecodeBytes(imagetest.Adam7RGBPNG(t, 1200, 1200), image.Config{ColorModel: color.RGBAModel, Width: 1200, Height: 1200}); est != 1200*1200*4*2 {
-		t.Errorf("Adam7 RGB counted %d bytes, want two canvases", est)
+	decode, encode = pngBytes(imagetest.Adam7RGBPNG(t, 1200, 1200), image.Config{ColorModel: color.RGBAModel, Width: 1200, Height: 1200})
+	if decode != 1200*1200*4*2 || encode != 0 {
+		t.Errorf("Adam7 RGB counted %d and %d bytes, want two canvases and no encode copy", decode, encode)
+	}
+}
+
+// The whole of Normalize, the decode and the encode, is held against the
+// estimate for every PNG layout, so a per-pixel allocation in the encoder
+// cannot hide behind a decoder-only check: 16-bit pictures allocate a color a
+// pixel there.
+func TestNormalizeAllocationIsCoveredForPNG(t *testing.T) {
+	for name, in := range pngCases(t) {
+		decode, encode := pngBytes(in, decodeConfig(t, in))
+		got := allocatedByNormalize(t, in, "image/png")
+		if want := decode + encode + int64(len(in)) + normalizeOverhead; got > want {
+			t.Errorf("%s: Normalize allocated %d bytes, the estimate is %d", name, got, want)
+		}
 	}
 }
 
@@ -533,22 +615,31 @@ func jpegCases(t *testing.T) []jpegCase {
 	if err := jpeg.Encode(&grayBaseline, image.NewGray(image.Rect(0, 0, 1201, 1003)), nil); err != nil {
 		t.Fatal(err)
 	}
+	turn := func(in []byte) []byte { return imagetest.WithEXIF(in, imagetest.ExifBlock(6)) }
+	cmyk := imagetest.ProgressiveJPEG(1200, 1200, []byte{1, 2, 3, 4}, []byte{0x11, 0x11, 0x11, 0x11}, 0)
 	return []jpegCase{
 		{"baseline 4:2:0, an odd canvas", baseline.Bytes()},
+		{"baseline 4:2:0, turned", turn(baseline.Bytes())},
 		{"baseline gray", grayBaseline.Bytes()},
 		{"progressive 4:4:4", imagetest.ProgressiveJPEG(1200, 1200, []byte{1, 2, 3}, []byte{0x11, 0x11, 0x11}, -1)},
 		{"progressive 4:2:0, an odd canvas", imagetest.ProgressiveJPEG(1201, 1003, []byte{1, 2, 3}, []byte{0x22, 0x11, 0x11}, -1)},
 		{"progressive 4:2:2", imagetest.ProgressiveJPEG(1200, 1200, []byte{1, 2, 3}, []byte{0x21, 0x11, 0x11}, -1)},
 		{"progressive gray", imagetest.ProgressiveJPEG(1201, 1003, []byte{1}, []byte{0x11}, -1)},
 		{"progressive RGB", imagetest.ProgressiveJPEG(1200, 1200, []byte{'R', 'G', 'B'}, []byte{0x11, 0x11, 0x11}, -1)},
-		{"progressive CMYK", imagetest.ProgressiveJPEG(1200, 1200, []byte{1, 2, 3, 4}, []byte{0x11, 0x11, 0x11, 0x11}, 0)},
+		{"progressive CMYK", cmyk},
+		{"progressive CMYK, turned", turn(cmyk)},
 		{"progressive YCCK", imagetest.ProgressiveJPEG(1200, 1200, []byte{1, 2, 3, 4}, []byte{0x22, 0x11, 0x11, 0x22}, 2)},
+		// DecodeConfig stops at the first scan and calls these YCbCr; the decoder
+		// reads the Adobe segment after the scans and makes an RGB picture.
+		{"progressive 4:4:4, a late Adobe segment says RGB", imagetest.WithLateAdobe(imagetest.ProgressiveJPEG(1200, 1200, []byte{1, 2, 3}, []byte{0x11, 0x11, 0x11}, -1), 0)},
+		{"progressive 4:2:0, a late Adobe segment says RGB", imagetest.WithLateAdobe(imagetest.ProgressiveJPEG(1201, 1003, []byte{1, 2, 3}, []byte{0x22, 0x11, 0x11}, -1), 0)},
 	}
 }
 
 // The JPEG estimate is held against what image/jpeg really allocates for real
 // baseline and progressive files in each color layout, including the converted
-// copy of an RGB or CMYK file.
+// copy of an RGB or CMYK file and of one an Adobe segment after the scans turns
+// into RGB.
 func TestJPEGEstimateCoversTheDecoder(t *testing.T) {
 	for _, tc := range jpegCases(t) {
 		cfg := decodeConfig(t, tc.data)
@@ -556,7 +647,7 @@ func TestJPEGEstimateCoversTheDecoder(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s: frame not found", tc.name)
 		}
-		est := jpegDecodeBytes(frame, cfg)
+		est := jpegDecodeBytes(frame, cfg, frame.converted(cfg, tc.data))
 		got := allocatedBy(func() {
 			if _, err := jpeg.Decode(bytes.NewReader(tc.data)); err != nil {
 				t.Fatalf("%s: %v", tc.name, err)
@@ -565,6 +656,74 @@ func TestJPEGEstimateCoversTheDecoder(t *testing.T) {
 		if got > est+decoderOverhead {
 			t.Errorf("%s: jpeg.Decode allocated %d bytes, the estimate is %d", tc.name, got, est)
 		}
+	}
+}
+
+// The whole of Normalize, decode, turn and encode, is held against the
+// estimate: a CMYK picture is written back a pixel at a time, and a turned one
+// is copied.
+func TestNormalizeAllocationIsCoveredForJPEG(t *testing.T) {
+	for _, tc := range jpegCases(t) {
+		cfg := decodeConfig(t, tc.data)
+		frame, ok := scanJPEGFrame(tc.data)
+		if !ok {
+			t.Fatalf("%s: frame not found", tc.name)
+		}
+		got := allocatedByNormalize(t, tc.data, "image/jpeg")
+		if want := jpegWorkingBytes(frame, cfg, tc.data, jpegOrientation(tc.data)) + int64(len(tc.data)) + normalizeOverhead; got > want {
+			t.Errorf("%s: Normalize allocated %d bytes, the estimate is %d", tc.name, got, want)
+		}
+	}
+}
+
+// converted decides whether the decoder may build a second picture. The
+// pictures of the first group never need one; DecodeConfig's color model hides
+// that an Adobe segment after the first scan makes the second group RGB, and
+// that only a segment after the frame header can.
+func TestJPEGConverted(t *testing.T) {
+	prog := func(ids string, hv []byte, adobe int) []byte {
+		return imagetest.ProgressiveJPEG(64, 64, []byte(ids), hv, adobe)
+	}
+	yuv := []byte{0x11, 0x11, 0x11}
+	for name, tc := range map[string]struct {
+		in   []byte
+		want bool
+	}{
+		"gray":                               {prog("\x01", []byte{0x11}, -1), false},
+		"YCbCr":                              {prog("\x01\x02\x03", yuv, -1), false},
+		"YCbCr, Adobe before the frame":      {prog("\x01\x02\x03", yuv, 1), false},
+		"CMYK":                               {prog("\x01\x02\x03\x04", []byte{0x11, 0x11, 0x11, 0x11}, 0), true},
+		"RGB by its component ids":           {prog("RGB", yuv, -1), true},
+		"RGB by an Adobe segment up front":   {prog("\x01\x02\x03", yuv, 0), true},
+		"YCbCr, an Adobe segment at the end": {imagetest.WithLateAdobe(prog("\x01\x02\x03", yuv, -1), 0), true},
+		"YCbCr, an Adobe YCbCr at the end":   {imagetest.WithLateAdobe(prog("\x01\x02\x03", yuv, -1), 1), true},
+	} {
+		frame, ok := scanJPEGFrame(tc.in)
+		if !ok {
+			t.Fatalf("%s: frame not found", name)
+		}
+		if got := frame.converted(decodeConfig(t, tc.in), tc.in); got != tc.want {
+			t.Errorf("%s: converted = %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
+// A progressive 4:4:4 picture of 1800 x 1800 is inside the budget, and
+// DecodeConfig calls it YCbCr with or without an Adobe segment after the scans,
+// but with one the decoder builds an RGBA copy too, which with the copy the
+// encoder reads it through takes it over the budget. Only the plain one may
+// be decoded.
+func TestNormalizeCountsALateAdobeSegment(t *testing.T) {
+	plain := imagetest.ProgressiveJPEG(1800, 1800, []byte{1, 2, 3}, []byte{0x11, 0x11, 0x11}, -1)
+	late := imagetest.WithLateAdobe(plain, 0)
+	if cfg := decodeConfig(t, late); cfg.ColorModel != color.YCbCrModel {
+		t.Fatalf("DecodeConfig reports %v for the late-Adobe file, the test needs YCbCr", cfg.ColorModel)
+	}
+	if _, _, err := normalizeBytes(t, plain, "image/jpeg"); err != nil {
+		t.Errorf("plain: %v, want it accepted", err)
+	}
+	if _, _, err := normalizeBytes(t, late, "image/jpeg"); !errors.Is(err, ErrTooLarge) {
+		t.Errorf("late Adobe: %v, want ErrTooLarge", err)
 	}
 }
 
@@ -582,6 +741,12 @@ func TestScanJPEGFrame(t *testing.T) {
 			jpegFrame{progressive: true, n: 4, h: [4]int{1, 1, 1, 1}, v: [4]int{1, 1, 1, 1}}},
 	} {
 		got, ok := scanJPEGFrame(tc.in)
+		// end is the offset of the segment after the SOF, which the fixtures
+		// make a DHT.
+		if !ok || got.end < 2 || got.end+1 >= len(tc.in) || tc.in[got.end] != 0xFF || tc.in[got.end+1] != 0xC4 {
+			t.Errorf("%s: end %d is not where the segment after the SOF starts", tc.name, got.end)
+		}
+		got.end = 0
 		if !ok || got != tc.want {
 			t.Errorf("%s: %+v %v, want %+v", tc.name, got, ok, tc.want)
 		}
@@ -647,7 +812,7 @@ func TestJPEGFlexLayouts(t *testing.T) {
 	// Flex pictures keep full-size chroma planes, so they cost more than the
 	// same sampling would on its own.
 	cfg := image.Config{ColorModel: color.YCbCrModel, Width: 1024, Height: 1024}
-	if flex, std := jpegDecodeBytes(frame(1, 1, 2, 2, 2, 2), cfg), jpegDecodeBytes(frame(2, 2, 1, 1, 1, 1), cfg); flex <= std {
+	if flex, std := jpegDecodeBytes(frame(1, 1, 2, 2, 2, 2), cfg, false), jpegDecodeBytes(frame(2, 2, 1, 1, 1, 1), cfg, false); flex <= std {
 		t.Errorf("flex layout counted %d bytes, a standard one %d", flex, std)
 	}
 }
@@ -671,25 +836,33 @@ func TestNormalizeRefusesProgressiveAndCMYKJPEGByMemoryEstimate(t *testing.T) {
 	}
 }
 
-// What a baseline or progressive phone-sized picture needs, with and without
-// the turned copy, against the budget. The picture is real and small; its
-// config is passed in as 4000 x 3000, so the estimate is under test, not a 12
-// MP decode. Accepted means normalizeJPEG went on and decoded the small file.
+// What a baseline or progressive picture needs, with and without the turned
+// copy, against the budget: a 6 megapixel picture in each form fits except a
+// progressive one that must also be turned, and at 12 megapixels only a
+// baseline one that stays upright does. The pictures are real and small; their
+// config is passed in as 3000 x 2000 or 4000 x 3000, so the estimate is under
+// test, not a large decode. Accepted means normalizeJPEG went on and decoded the
+// small file.
 func TestNormalizeJPEGBudgetAtPhoneSize(t *testing.T) {
-	phone := image.Config{ColorModel: color.YCbCrModel, Width: 4000, Height: 3000}
+	six := image.Config{ColorModel: color.YCbCrModel, Width: 3000, Height: 2000}
+	twelve := image.Config{ColorModel: color.YCbCrModel, Width: 4000, Height: 3000}
 	baseline := imagetest.JPEGBytes(t, imagetest.BlockImage(2, 3, imagetest.GridColors))
 	progressive := imagetest.ProgressiveJPEG(64, 64, []byte{1, 2, 3}, []byte{0x22, 0x11, 0x11}, -1)
 	turn := func(in []byte) []byte { return imagetest.WithEXIF(in, imagetest.ExifBlock(6)) }
 	for name, tc := range map[string]struct {
 		in      []byte
+		cfg     image.Config
 		refused bool
 	}{
-		"baseline, upright":                  {baseline, false},
-		"baseline, turned":                   {turn(baseline), false},
-		"progressive, upright":               {progressive, false},
-		"progressive, turned (its copy too)": {turn(progressive), true},
+		"6 MP baseline, upright":                          {baseline, six, false},
+		"6 MP baseline, turned":                           {turn(baseline), six, false},
+		"6 MP progressive, upright":                       {progressive, six, false},
+		"6 MP progressive, turned (its copy too)":         {turn(progressive), six, true},
+		"12 MP baseline, upright":                         {baseline, twelve, false},
+		"12 MP baseline, turned (its copy is 48 MB)":      {turn(baseline), twelve, true},
+		"12 MP progressive, upright (coefficients 72 MB)": {progressive, twelve, true},
 	} {
-		err := normalizeJPEG(io.Discard, tc.in, phone)
+		err := normalizeJPEG(io.Discard, tc.in, tc.cfg)
 		if tc.refused != errors.Is(err, ErrTooLarge) || (!tc.refused && err != nil) {
 			t.Errorf("%s: %v, refused = %v", name, err, tc.refused)
 		}

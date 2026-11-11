@@ -483,7 +483,9 @@ func uploadWave(t *testing.T, f *uploadFixture, payload []byte, requests int, ca
 // control run sends bodies of the same size that are not pictures, so they take
 // the same multipart parse and copy but are refused before any decode; what the
 // picture adds over the control is the processing. Every slot must be free after
-// each wave, no temp file left, and a valid upload must still work.
+// each wave, no temp file left, and a valid upload must still work. The
+// process peak with pictures, cancelled or not, must stay within
+// images.ProcessAllowanceBytes plus the control's own peak, or it fails.
 //
 // Limits: the process is the whole test binary (database client, app and test
 // client included), and each request's body also exists once more in the test
@@ -503,11 +505,14 @@ func TestMeasureUploadRequests(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir()) // so a leaked temp file is seen
 	const waves, requests = 3, 8
 
-	measure := func(payload []byte, cancelHalf bool) map[string]any {
+	measure := func(payload []byte, cancelHalf bool) (map[string]any, int64) {
 		runtime.GC()
 		debug.FreeOSMemory()
 		resetOK := imagetest.ResetPeak()
 		baseHWM := imagetest.ProcessKB("VmHWM")
+		if !resetOK || baseHWM < 0 {
+			t.Fatal("the process's peak resident memory cannot be reset or read here (Linux 4.0 or later with /proc): run the measurement there")
+		}
 		samples := []metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}, {Name: "/memory/classes/total:bytes"}}
 		metrics.Read(samples)
 		baseObjects := samples[0].Value.Uint64()
@@ -536,15 +541,23 @@ func TestMeasureUploadRequests(t *testing.T) {
 		close(stop)
 		<-done
 		runtime.ReadMemStats(&after)
+		peakKB := imagetest.ProcessKB("VmHWM") - baseHWM
 		return map[string]any{
 			"answers":              answers,
 			"peakHeapObjectsBytes": peakObjects - min(peakObjects, baseObjects),
 			"peakGoMappedBytes":    peakMapped,
-			"vmHWMOverBaselineKB":  imagetest.ProcessKB("VmHWM") - baseHWM,
+			"vmHWMOverBaselineKB":  peakKB,
 			"vmHWMResetWorked":     resetOK,
 			"totalAllocBytes":      after.TotalAlloc - before.TotalAlloc,
-		}
+		}, peakKB
 	}
+	controlReport, controlKB := measure(control, false)
+	picturesReport, picturesKB := measure(data, false)
+	cancelledReport, cancelledKB := measure(data, true)
+	// What a picture may add over the same bytes that are not one: the
+	// processing allowance. The control's own peak is the ingress (bodies,
+	// the test client's copies, the database client) and is allowed on top.
+	allowanceKB := int64(images.ProcessAllowanceBytes)/1024 + controlKB
 	report := map[string]any{
 		"case":              c.Name,
 		"inputBytes":        len(data),
@@ -552,9 +565,10 @@ func TestMeasureUploadRequests(t *testing.T) {
 		"waves":             waves,
 		"requestsPerWave":   requests,
 		"goVersion":         runtime.Version(),
-		"controlNotPicture": measure(control, false),
-		"pictures":          measure(data, false),
-		"picturesCancelled": measure(data, true),
+		"allowanceKB":       allowanceKB,
+		"controlNotPicture": controlReport,
+		"pictures":          picturesReport,
+		"picturesCancelled": cancelledReport,
 	}
 	left, _ := filepath.Glob(filepath.Join(os.TempDir(), "upload-*"))
 	report["tempFilesLeft"] = len(left)
@@ -562,6 +576,11 @@ func TestMeasureUploadRequests(t *testing.T) {
 	t.Logf("MEASURE %s", out)
 	if len(left) != 0 {
 		t.Errorf("%d temp files left", len(left))
+	}
+	for name, kb := range map[string]int64{"pictures": picturesKB, "cancelled pictures": cancelledKB} {
+		if kb > allowanceKB {
+			t.Errorf("%s: the process peak grew %d kB, over the %d kB allowance (processing allowance plus the control's %d kB)", name, kb, allowanceKB, controlKB)
+		}
 	}
 	requireFreeSlots(t)
 	wantCode(t, "avatar after the waves", postUpload(t, f.memberC, f.avatarPath, "avatar", tinyPNG(t), uploadOptions{}), http.StatusOK, "")

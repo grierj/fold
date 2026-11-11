@@ -14,8 +14,19 @@ const MaxUploadBytes = 5 << 20 // 5MB
 
 // MaxConcurrentProcessing is how many uploads may be copied, decoded and
 // re-encoded at once, in the whole process. Each is bounded by maxWorkingBytes,
-// so this times that is the most the pictures may hold.
+// so this times that is the most the pictures may allocate at once.
 const MaxConcurrentProcessing = 2
+
+// ProcessAllowanceBytes is the resident memory the picture work may add to the
+// process with every slot busy: 2.5 times the slots' budgets. It is not a limit
+// the process enforces; it is what the opt-in measurements (docs/agents/
+// testing.md) hold the worst accepted pictures to, and they fail above it. The
+// factor is the collector's headroom (the heap may reach about twice what is
+// live before garbage is freed) and the runtime's slack for freed pages and
+// fragmentation. The allowance leaves the rest of a 1 GB machine (docs/
+// DEPLOY-DIGITALOCEAN.md) to the application, the database, the proxy and the
+// system, which is why the budget is as small as it is.
+const ProcessAllowanceBytes = 5 * MaxConcurrentProcessing * maxWorkingBytes / 2
 
 // ErrBusy means every processing slot is taken. It is an answer, not a queue:
 // a caller that is refused tells its client to try again.

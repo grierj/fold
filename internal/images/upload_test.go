@@ -104,8 +104,8 @@ func (p *memoryPeaks) finish() (objects, mapped uint64) {
 	return p.objects - min(p.objects, p.baseObject), p.mapped
 }
 
-// measureEstimate is the estimate Normalize applies to data: decode memory and
-// encoded buffers.
+// measureEstimate is the estimate Normalize applies to data: what the decode,
+// the turn and the encode allocate, and the encoded buffers.
 func measureEstimate(t *testing.T, mime string, data []byte) int64 {
 	t.Helper()
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
@@ -118,9 +118,10 @@ func measureEstimate(t *testing.T, mime string, data []byte) int64 {
 		if !ok {
 			t.Fatal("no JPEG frame")
 		}
-		return jpegDecodeBytes(frame, cfg) + jpegOrientationBytes(jpegOrientation(data), cfg) + bufferBytes(len(data))
+		return jpegWorkingBytes(frame, cfg, data, jpegOrientation(data)) + bufferBytes(len(data))
 	case "image/png":
-		return pngDecodeBytes(data, cfg) + bufferBytes(len(data))
+		decode, encode := pngBytes(data, cfg)
+		return decode + encode + bufferBytes(len(data))
 	}
 	_, pixels, _ := scanGIF(data)
 	return int64(pixels)*2 + bufferBytes(len(data))
@@ -146,14 +147,17 @@ func processFile(src, mime string) error {
 	return err
 }
 
-// TestMeasureNormalize is the opt-in measurement of the decode work behind the
+// TestMeasureNormalize is the opt-in measurement of the work behind the
 // processing limit (FOLD_UPLOAD_MEASURE=1, docs/agents/testing.md): for each
 // worst-case picture, in a process of its own, waves of MaxConcurrentProcessing
 // Normalize calls run at the same time while more attempts are refused, then
 // every slot must be free again. It reports the estimate, peak heap objects,
 // the Go runtime's mapped memory, the process high-water mark (VmHWM) over its
 // baseline, and cumulative allocation per call, which are four different
-// numbers. HTTP multipart ingress is not in it (TestMeasureUploadRequests).
+// numbers. It fails when a case is not near the budget (so it is not a worst
+// case), when a call allocates more than its estimate, or when the process
+// peak passes ProcessAllowanceBytes. HTTP multipart ingress is not in it
+// (TestMeasureUploadRequests).
 func TestMeasureNormalize(t *testing.T) {
 	c, ok := imagetest.MeasureCase(t, "TestMeasureNormalize")
 	if !ok {
@@ -173,10 +177,16 @@ func TestMeasureNormalize(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir()) // so a leaked temp file is seen
 
 	const waves, extraAttempts = 4, 8
+	if got := float64(estimate) / float64(maxWorkingBytes); got < imagetest.NearBudget || got > 1 {
+		t.Fatalf("%s: the estimate is %.0f%% of the budget, want %.0f%% to 100%%: resize the case", c.Name, got*100, imagetest.NearBudget*100)
+	}
 	runtime.GC()
 	debug.FreeOSMemory()
 	resetOK := imagetest.ResetPeak()
 	baseHWM := imagetest.ProcessKB("VmHWM")
+	if !resetOK || baseHWM < 0 {
+		t.Fatal("the process's peak resident memory cannot be reset or read here (Linux 4.0 or later with /proc): run the measurement there")
+	}
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
 	peaks := startMemoryPeaks()
@@ -236,6 +246,8 @@ func TestMeasureNormalize(t *testing.T) {
 		defer release()
 	}
 	left, _ := filepath.Glob(filepath.Join(os.TempDir(), "upload-*"))
+	peakKB := imagetest.ProcessKB("VmHWM") - baseHWM
+	allocPerCall := int64(after.TotalAlloc-before.TotalAlloc) / (waves * MaxConcurrentProcessing)
 	report, _ := json.Marshal(map[string]any{
 		"case":                      c.Name,
 		"inputBytes":                inputBytes,
@@ -246,9 +258,10 @@ func TestMeasureNormalize(t *testing.T) {
 		"refusedWhileFull":          refused,
 		"peakHeapObjectsBytes":      objects,
 		"peakGoMappedBytes":         mapped,
-		"vmHWMOverBaselineKB":       imagetest.ProcessKB("VmHWM") - baseHWM,
+		"vmHWMOverBaselineKB":       peakKB,
+		"allowanceKB":               int64(ProcessAllowanceBytes) / 1024,
 		"vmHWMResetWorked":          resetOK,
-		"totalAllocBytesPerCall":    int64(after.TotalAlloc-before.TotalAlloc) / (waves * MaxConcurrentProcessing),
+		"totalAllocBytesPerCall":    allocPerCall,
 		"tempFilesLeft":             len(left),
 		"goVersion":                 runtime.Version(),
 		"estimateTimesSlotsInBytes": estimate * MaxConcurrentProcessing,
@@ -256,5 +269,11 @@ func TestMeasureNormalize(t *testing.T) {
 	t.Logf("MEASURE %s", report)
 	if len(left) != 0 {
 		t.Errorf("%d temp files left", len(left))
+	}
+	if allocPerCall > estimate {
+		t.Errorf("%s: a call allocated %d bytes, more than its estimate of %d", c.Name, allocPerCall, estimate)
+	}
+	if peakKB > int64(ProcessAllowanceBytes)/1024 {
+		t.Errorf("%s: the process peak grew %d kB, over the %d kB allowance", c.Name, peakKB, int64(ProcessAllowanceBytes)/1024)
 	}
 }

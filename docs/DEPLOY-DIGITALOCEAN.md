@@ -42,13 +42,19 @@ also copies `docker-compose.build.yml`) needs the 2 GB size. No separate
 build machine is part of this guide.
 
 Picture uploads (profile photos and group covers) are decoded in memory, at
-most two at a time in the whole process, each bounded by an estimate of
-128 MiB, so about 256 MiB at once on top of the app's own use; a third
-upload at that moment is told to try again. The estimate is not a limit on
-the process, and a request body is read before that check (5 MB plus
-overhead each, uncapped in number). `docs/API.md` has the details; the
-1 GB droplet with swap stays a check to run on the real machine
-(`docs/FIRST-CHURCH-CHECKS.md`).
+most two at a time in the whole process; a third at that moment is told to
+try again. Each is refused before decoding when an estimate of what it would
+allocate passes 64 MiB, so pictures above about 14 megapixels of 8-bit color
+PNG or 10 megapixels of turned JPEG are refused with "too large" (the
+browser resizes most photos before sending them). The allowance for the
+picture work is 320 MiB of resident memory with both slots busy, which
+leaves the rest of a 1 GB droplet to the app, Postgres, Caddy and the system.
+That figure is a check made on a development machine, not a guarantee that a
+1 GB droplet never swaps: nothing in the server enforces it, and a request
+body is read before the slot check (5 MB plus overhead each, uncapped in
+number). `docs/API.md` has the details; the droplet check stays a check to
+run on the real machine (`docs/FIRST-CHURCH-CHECKS.md`). The floor stays 1 GB
+with swap.
 
 **No release is published yet.** Until the first release exists there is
 no image to pull: use the 2 GB size with `--allow-onbox-build`, as the
