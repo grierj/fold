@@ -1,10 +1,12 @@
 # Design R4-4b: bounded conversion-IP minimization (option P2)
 
-**Design revision r1.** Design only. This file changes no production code, migration, sweep
+**Design revision r2.** Design only. This file changes no production code, migration, sweep
 version, test, audit row or owner decision. It is the input to the independent review that
 issue #303 requires (DG-9 item 3), and to the implementation in #305, which stays deferred
 until that review approves this exact revision. **No review verdict is recorded in this
-revision** (section 12), so nothing here is approved.
+revision** (section 12), so nothing here is approved. Revision r1 received combined
+independent findings R303-01, R303-02, F-COUNT, F-GAP, F-RESIDUE and F-LOCK; r2 addresses
+them below and needs a fresh review of this exact revision.
 
 Sources: `docs/plan/M7.4-ERASURE-INVENTORY.md` (sections 1, 3, 6.5.1, 6.5.2, 6.9, 12.1),
 `docs/agents/erasure.md`, `account_erasure_audit.go`, `account_erasure_tombstones.go`,
@@ -34,8 +36,11 @@ action is **not** one of decision 5's two actions, and this design does not touc
 This design chooses nothing beyond P2. It does not propose, authorize or prepare P1, P3, P4 or
 P5. It does not establish G-8 (history precondition: stays **unestablished**) and does not
 close G-9 (stays **OPEN**). It does not decide whether a group retained as malformed or
-ambiguous counts as "identified" for the owner; it takes the conservative reading (such groups
-are never touched, section 5) and says so as a judgment call for the reviewer (section 13).
+ambiguous counts as "identified" for the owner, nor whether a request with a missing
+identity link does; it takes the conservative reading (such groups are never touched,
+section 5, G1 to G5) and says so as judgment calls for the reviewer (section 13). Q3 —
+the owner's disposition of every residue item in section 11 — stays open and is not
+answered here.
 
 Out of scope here, by the task: changes to the R4-4a attribution rules, the other audit
 actions, any step row of a living person, `account_requests.ip`, migrations, the delete dialog
@@ -80,11 +85,24 @@ Two deliberate readings, flagged in section 13:
 `discoverAuditConversionsIn` already reads, so that one candidate-row query still serves all
 of the erased person's conversions (inventory 6.5.1 "one pass, not one scan per request"):
 
+An approved conversion request stays discoverable for diagnostics even when one of its
+identity links is missing. The request query therefore has **no** `approved_user_id IS NOT
+NULL` filter (r1 had one; R303-01): `approved_user_id` is nullable in the schema
+(`migrations/00001_baseline.sql:407`) and its foreign key is `ON DELETE SET NULL`
+(`:3275`), while the existing discovery reads every approved request with
+`decided_by = U` (`account_erasure_audit.go:366-369`). A NULL link also escapes the
+partial unique indexes on approved conversions (baseline 2588, 2595), so the
+"at most one `R` per `P` and per `S`" claim does not hold for link-missing requests.
+Missing links never authorize clearing: section 5 admits a group to the cleared set only
+when `R`'s `household_person_id`, `invitation_id` and `approved_user_id` are all
+non-NULL. Reporting eligibility (counted, retained) and clearing eligibility (changed)
+are different gates.
+
 ```sql
 SELECT r.id, r.household_person_id AS person_id, r.invitation_id, r.approved_user_id AS user_id, h.household_id,
  EXISTS (SELECT 1 FROM audit_logs m WHERE m.action = 'household.person_updated' AND m.target_type = 'household_person' AND m.target_id = r.household_person_id) AS marker
 FROM account_requests r LEFT JOIN household_people h ON h.id = r.household_person_id
-WHERE r.source = 'household_conversion' AND r.status = 'approved' AND r.approved_user_id IS NOT NULL
+WHERE r.source = 'household_conversion' AND r.status = 'approved'
  AND (r.decided_by = CAST(@uid AS bigint)
   OR EXISTS (SELECT 1 FROM invitations i WHERE i.id = r.invitation_id AND i.invited_by = CAST(@uid AS bigint))
   OR EXISTS (SELECT 1 FROM guardian_links g WHERE g.teen_user_id = r.approved_user_id AND g.confirmed_by = CAST(@uid AS bigint))
@@ -97,8 +115,13 @@ WHERE r.source = 'household_conversion' AND r.status = 'approved' AND r.approved
 All five keys survive erasure: users are only soft-deleted, and no erasure step writes
 `decided_by`, `invited_by`, `confirmed_by`, `granted_by` or an audit `actor_id` (T01, T12, T36,
 T17 and the audit rows; `eraseHouseholdRecordsIn` revokes links but keeps `confirmed_by`), so the same query gives the same answer for a fresh deletion and for a
-tombstone swept later. The `approved_user_id IS NOT NULL` condition matches the two partial
-unique indexes on approved conversions, so at most one `R` exists per `P` and per `S`.
+tombstone swept later. For requests whose links are all present, the two partial unique
+indexes on approved conversions (baseline 2588, 2595) allow at most one `R` per `P` and
+per `S`. Requests with a NULL link are outside those indexes; they are still discovered
+and reported, but section 5 never admits them to the cleared set. The K3 to K5 arms
+compare against `r.approved_user_id`, so a NULL `approved_user_id` simply matches no arm;
+K1 and K2 still discover the request through `decided_by` and the invitation's
+`invited_by` for diagnostics.
 
 Index use (to be confirmed by `EXPLAIN` in #305, which proposes no index): the outer scan reads
 approved conversion requests, a population bounded by the number of conversions; K2 uses
@@ -128,10 +151,17 @@ statements are disjoint by action. `auditRetentionReportSQL` is not edited, whic
 
 Transaction and locks: the same transaction as every other erasure step; no new lock, no new
 job. Concurrent erasures of two candidates of one conversion are serialized by the exclusive
-contact gate that both `apiAdminDeleteUser` and `eraseTombstoneOnce` already hold (erasure.md,
-inventory 12.1), and nothing else updates `audit_logs` rows. The `UPDATE` visits ids in
-ascending order anyway. A failure anywhere after step 5 rolls its blanks back with the rest of
-the attempt, and counts of a rolled-back attempt are never returned (inventory 6.9).
+contact gate both entry points already hold: `apiAdminDeleteUser` runs through
+`fencedContactMutation` (`api_admin.go:604`) and `eraseTombstoneOnce` through
+`contactMutationCtx` (`account_erasure_tombstones.go:102`), which takes the exclusive
+`lockContacts` (`pg_advisory_xact_lock`, `contact_lifecycle.go:30-31,292`). Step 5 adds no
+new lock, and no non-erasure writer updates these `audit_logs.ip` values. The cleared id
+list is sorted ascending for determinism only: `UPDATE ... WHERE id = ANY(sorted array)`
+does not guarantee rows are visited or locked in array order, and this design makes no
+lock-order claim from it (F-LOCK). Deadlock freedom beyond the gate is not claimed
+(inventory 9.5 already records the erasure as not proven deadlock-free). A failure
+anywhere after step 5 rolls its blanks back with the rest of the attempt, and counts of a
+rolled-back attempt are never returned (inventory 6.9).
 
 ## 5. Which discovered groups may be cleared
 
@@ -143,14 +173,19 @@ clears a group only when it is **identified**, defined as all of:
 - **G3 (V2)** `transferCount` is a non-negative JSON integer equal to the number of transfer
   rows, and their `target_id` are pairwise distinct;
 - **G4** `H` was read (`HouseholdID != nil`, so `HouseholdFallbackSkipped = 0`), so the
-  household check of `ShapeC` was real and not skipped.
+  household check of `ShapeC` was real and not skipped;
+- **G5** `R`'s `household_person_id`, `invitation_id` and `approved_user_id` are all non-NULL,
+  so the candidate set, the join tuple `(P, I, S)` and the K3 to K5 arms all name real rows
+  (R303-01). A group whose request lacks any link is retained whole, valid rows included,
+  classified `malformed_candidate`, and counted as today.
 
 V3 (history precondition, G-8) and V4 (adult/teen/completion class) are **not read**. P2 does
 not classify a row as approval or completion and does not decide who the caller was; that is
-what lets it work with G-8 unestablished. The reason codes the report already gives
-(`history_unestablished` and the failures) are unchanged. In code, `classifyAuditConversion`
+what lets it work with G-8 unestablished. The classification reason codes the report already
+gives (`history_unestablished` and the failures) are unchanged **as diagnostics**; section 7
+defines separately what counts as retained. In code, `classifyAuditConversion`
 sets one new field on `auditConversionGroupCounts`, `Identified bool`, to
-`G1 && G2 && G3 && G4`; it is not derived from `Reason`, so a later V4 cannot change it.
+`G1 && G2 && G3 && G4 && G5`; it is not derived from `Reason`, so a later V4 cannot change it.
 
 Groups that are not identified (`malformed_candidate`, `no_converted_row`,
 `duplicate_converted_row`, `count_mismatch`, household unknown) are retained whole, valid
@@ -162,15 +197,18 @@ rows included, and counted as today. That is IR-3, and P2 never reaches it.
 cleared = (union of ids of identified groups) minus (union of ids of every other group)
 ```
 
-The subtraction costs nothing today (a valid row of one request cannot also match another
-request's arms, because `P`, `S` and `I` are unique per request) and keeps the rule fail-closed
+The subtraction costs nothing today (a valid row of one fully-linked request cannot also
+match another request's arms, because `P`, `S` and `I` are unique per request; link-missing
+requests are outside that claim, which is why G5 excludes them from clearing) and keeps the
+rule fail-closed
 if a restored backup or a manual repair breaks that. Total per group is the actual discovered
 number, never `1 + transferCount` assumed (6.5.1).
 
 ## 6. The clearing statement
 
 One statement per chunk of the cleared set (`eachIDChunk`, `lookupChunk` = 5000 ids; ids
-sorted ascending; the array bound with `pgBigintArray`, as the other statements in the file):
+sorted ascending for determinism only, not for lock order — section 4; the array bound with
+`pgBigintArray`, as the other statements in the file):
 
 ```sql
 UPDATE audit_logs SET ip = ''
@@ -178,6 +216,7 @@ WHERE id = ANY(CAST(@ids AS bigint[])) AND ip <> ''
   AND ((action = 'household.person_converted' AND target_type = 'household')
     OR (action = 'registration.changed' AND target_type = 'registration'
         AND (jsonb_exists(meta_json, 'invitationId') OR jsonb_exists(meta_json, 'formerRegisteredBy'))))
+RETURNING id
 ```
 
 The action/target/key predicate repeats what validation already proved, so a wrong id list can
@@ -185,7 +224,8 @@ never change a different kind of row. Everything else about the statement is a c
 
 - **Changed:** `ip` of the listed rows, from a non-empty value to `''` (the writer's own
   "no address" value, `internal/audit/audit.go`). A `NULL` or already-empty `ip` is not
-  rewritten (`ip <> ''` is false), so a rerun changes no row.
+  rewritten (`ip <> ''` is false), so a rerun changes no row. `RETURNING id` returns the
+  rows actually changed, which section 7 maps back to groups for per-group `Blanked`.
 - **Never changed:** `action`, `target_type`, `target_id`, `actor_id`, `at`, `meta_json` (so
   `personId`, `userId`, `invitationId`, `householdId`, `accountType`, `transferCount`,
   `formerRegisteredBy`, `clearedChildcareRequested`), the three authorization snapshots, the
@@ -204,17 +244,59 @@ never change a different kind of row. Everything else about the statement is a c
 
 `Conversion.Blanked` is the number of rows the step-5 statement changed in this run (the sum
 of `RowsAffected`); `BlankedByClass[auditIPConversion]` and `IPsBlanked` take the same number,
-so the existing totals stay consistent. `Conversion.Discovered` and `Groups` count the
-(wider) candidate request set. New meaning of `Conversion.Retained`: **distinct discovered
-rows that are not in the cleared set**, whatever their current `ip`. Therefore
+so the existing totals stay consistent. New meaning of `Conversion.Retained`: **distinct
+discovered rows that are not in the cleared set**, whatever their current `ip`. Therefore
 `Retained + |cleared| = Discovered`, an identified group contributes `0` to `Retained` on
 every run (also when its addresses were already empty, e.g. an age-job completion), and a rerun
 reports `Blanked = 0` with the same `Retained`. `activityEntriesKept` (the sum of RETAIN_* counts
-and `Conversion.Retained`, `newErasureReport`) falls by the cleared rows; it still describes
+and `Conversion.Retained`, `newErasureReport`) falls by `|cleared|` relative to today's
+`Retained = Discovered`; it still describes
 entries, never personal addresses, and still claims nothing about completeness. The response
 and the `user.erasure_swept` marker keep their fields; no new key is added to either. The
 delete dialog's statement that some addresses can remain is unchanged (G-9 is open; copy is
 #308's).
+
+All counts above are over **distinct audit row ids**. Per-group detail counts keep the
+existing overlap rule (a row discovered under two requests counts in each group's detail,
+once in every total); totals count each actual row once
+(`account_erasure_audit.go:406-412`). `Groups` is the number of candidate requests in the
+(wider) section-3 set. `Discovered` is the number of distinct discovered row ids.
+`cleared` is the section-5 id set.
+
+- **Per-group `Details[i]`**: `ConvertedRetained`/`TransfersRetained` = that group's found
+  rows minus the group's rows that are in `cleared` (an identified group reports `0`/`0`;
+  a retained group reports its found counts, overlap included, as today). Per-group
+  `Blanked` = the number of that group's rows actually changed, attributed from the
+  statement's per-row result (`UPDATE ... RETURNING id`, mapped back to groups; when one
+  chunked `UPDATE` spans groups, the `RETURNING` ids allocate the count, never an
+  estimate). An id excluded from `cleared` by the overlap subtraction contributes `0` to
+  every group's `Blanked`. The sum of per-group `Blanked` equals total `Blanked`, and the
+  sum of per-group retained counts equals total `Retained` plus the overlap double-count,
+  exactly as today's detail-vs-total rule.
+- **`ByReason`** stays a diagnostic classification, not a retention ledger: it maps each
+  existing reason code to the distinct discovered ids carrying it, computed exactly as
+  today (`account_erasure_audit.go:393-412`), including `history_unestablished` for cleared
+  identified groups. Clearing does not rewrite a group's reason. A reader must not sum
+  `ByReason` as retained rows once clearing exists; `Retained` is the retention count.
+  This reconciles P2-4 with N-10: P2-4's "no reason reported as a retention" means no
+  reason code feeds a retention total, while the diagnostic classification is unchanged.
+- **`Blanked` (total)** = rows actually changed (sum of `RowsAffected`), so `Blanked <=
+  |cleared|`, with strict inequality when some cleared rows already had an empty `ip`.
+- **Rerun**: discovery is id-only and reads no `ip`, and every selector key survives
+  erasure, so a second run (or erasing a second candidate of the same conversion)
+  discovers the same groups and the same `cleared` set; the statement matches no row
+  (`ip <> ''` is false everywhere in it), so the rerun reports `Blanked = 0` with
+  `Retained`, `Discovered`, `ByReason` and every detail field unchanged.
+
+**Worked example.** L1 adult approval with `C` + 2 `T` rows, all holding an address, erased
+by `D`: `Groups = 1`, `Discovered = 3`, `cleared` = all 3 ids, `Retained = 0`,
+`Blanked = 3`, `Details[0] = {ConvertedRetained: 0, TransfersRetained: 0, Blanked: 3}`,
+`ByReason = {history_unestablished: 3}` (diagnostic only). Rerun: `Blanked = 0`, everything
+else identical. L3 age-job completion (addresses already `""`): first run `Discovered = 3`,
+`Retained = 0`, `Blanked = 0`, `ByReason = {history_unestablished: 3}`. With two
+conversions where `U` is a candidate of `R1` only: `R1`'s group contributes its cleared
+ids, `R2`'s valid group is retained whole with its found counts, and totals follow the
+distinct-id arithmetic above.
 
 ## 8. The tombstone sweep, version 2
 
@@ -278,8 +360,11 @@ labelled fallback fixtures, each marked as a simulated anomaly. A "before/after"
   `G` (who did neither), `E` and `S` blanks none. Repeat with consent recorded by a confirmed
   guardian `G`: then `G` is in the set (K4).
 - P2-4 **L3 (birthday, job completion).** The group's addresses are already empty: erasing `D`
-  changes no row, `Blanked = 0`, `Retained = 0` (the group is identified), no reason is
-  reported as a retention. This replaces today's `history_unestablished` retention for it.
+  changes no row, `Blanked = 0`, `Retained = 0` (the group is identified). No reason code
+  feeds a retention total; `ByReason` still records `history_unestablished: 3` as a
+  diagnostic classification (section 7). A variant with mixed empty/non-empty addresses
+  asserts `Blanked` equals exactly the non-empty count and per-group `Blanked` names those
+  rows.
 - P2-5 **L4 and L5 (suspended, enabled by `E`).** Erasing `E` blanks the group (K5). Erasing
   `D` blanks the group too, and `E`'s own `user.enabled` row **keeps** `192.0.2.5`.
 - P2-6 **Coincident identities.** `D` also the inviter, `D` also `E`: one group, cleared once,
@@ -306,6 +391,16 @@ labelled fallback fixtures, each marked as a simulated anomaly. A "before/after"
   or `null` identity, all identity keys wrong-typed at `H`), `duplicate_converted_row`,
   `no_converted_row`, `count_mismatch` and a repeated transfer `target_id`: nothing in the
   discovered group changes, valid rows included, and the report gives the actual counts.
+  Per-group detail keeps the found counts as retained, and the total `Retained` includes
+  every discovered id of the group.
+- N-3b **Link-missing approved request (R303-01).** An approved conversion request with
+  `decided_by = U`, retained person/invitation links, and `approved_user_id = NULL` (the
+  schema permits it; the FK is `ON DELETE SET NULL`): the request is discovered through K1
+  (and K2 where the invitation names `U`), its rows are classified `malformed_candidate`
+  (G5 fails), nothing in the group changes byte-identically (valid rows included), and
+  `Groups`, `Discovered`, `Retained` and `activityEntriesKept` still count it. A second
+  variant with `household_person_id = NULL` proves the same. This test fails if the
+  request query filters on `approved_user_id IS NOT NULL`.
 - N-4 **Household unknown (G4).** The `household_people` row cannot be read: the group is
   retained whole, `HouseholdFallbackSkipped = 1`.
 - N-5 **Undiscoverable rows stay.** The 15d variants (a `registration.changed` with all
@@ -326,7 +421,18 @@ labelled fallback fixtures, each marked as a simulated anomaly. A "before/after"
   access trigger path still passes (`TestAuditErasurePreservesAccessProvenanceTrigger`).
 - N-9 **`NULL` and empty `ip`** are neither rewritten nor counted as `Blanked`.
 - N-10 **G-8 stays disabled.** No test or code path reads the marker, `accountType` or the
-  history to widen the cleared set; the reasons reported for identified groups are unchanged.
+  history to widen the cleared set; the diagnostic classification reasons for identified
+  groups are unchanged (`history_unestablished` still recorded in `ByReason`), while no
+  reason code feeds a retention total (section 7).
+- N-11 **Count contract (R303-02/F-COUNT).** One named test pins every field of section 7
+  on a two-group fixture (one identified group with mixed empty/non-empty addresses, one
+  retained malformed group) plus an overlapping id shared by two requests: `Groups`,
+  `Discovered`, `Retained`, `Blanked`, `ByReason`, each group's `ConvertedRetained`,
+  `TransfersRetained` and `Blanked`, the `Retained + |cleared| = Discovered` arithmetic,
+  per-group `Blanked` summing to total `Blanked`, and `activityEntriesKept`. It asserts
+  the cleared rows are exactly the `RETURNING` ids named per group, reruns report
+  `Blanked = 0` with all other fields unchanged, and any implementation that leaves a
+  cleared row counted as retained (or drops a retained row from the counts) fails.
 
 **Idempotence, order and sweep**
 
@@ -373,42 +479,92 @@ candidate set of that conversion and the group is identified.
 | `api_admin.go` non-Enable completion (current equivalent) | nothing | see below | owner disposition |
 | Erased people outside the candidate set | nothing | see below | owner disposition |
 
-**The non-Enable gap, as it is now.** `apiAdminUpdateUser` calls `completeTeenConversionIfReady`
-with the request's address after *every* admin update that reaches its transaction (name,
-display name, phone, email, role or status), but writes a `user.enabled` row only inside the
-`wasDisabled` branch. An admin edit that is not an Enable and that completes a conversion
-writes conversion rows with that admin's address and **no key** (not `decided_by`, not the
-inviter, not a link or consent row, not `user.enabled`) that names the admin. Erasing that admin
-is outside the candidate set: IR-1 and IR-2 rows stay. The age job passes `""`, so it leaves
-no address. Whether any other state makes the gap reachable was not traced beyond the code
-above; it is not claimed closed or complete. P2 deliberately does not add "any admin who
-edited `S`" to the set: that would be a new selector and a new product decision.
+**The non-Enable gap, stated conditionally (F-GAP).** What the code shows:
+`apiAdminUpdateUser` calls `completeTeenConversionIfReady` with the request's address after
+every admin update that reaches its transaction (`api_admin.go:469`), but writes a
+`user.enabled` row only when the account was disabled (`:458-463`); the age job passes `""`
+(`age_rollover.go:181`). What the code also shows: completion returns early while the
+account is administratively disabled (`api_teen_conversion.go:144`). Whether a non-Enable
+update can actually be the first completer — i.e. a concrete reachable sequence of account
+state, prior link/consent/age facts and the exact update, with `AdministrativelyDisabled`
+false at that point — **was not traced at this base and is not claimed here**. The
+inventory says the same (6.5.2: "whether such an update can complete a conversion was not
+traced"). Conditional residue scenario S-nonEnable: *if* such a completion is reachable,
+its caller leaves conversion rows carrying that admin's address with **no key** (not
+`decided_by`, not the inviter, not a link or consent row, not `user.enabled`) naming the
+admin; erasing that admin is outside the candidate set and IR-1/IR-2 rows stay. P2
+deliberately does not add "any admin who edited `S`" to the set: that would be a new
+selector and a new product decision. The gap is presented neither as proven nor as closed;
+its disposition belongs to the owner in #304.
 
 **Erased people outside the set** (their addresses on `C`/`T` rows stay): the converted
-person `S`; a guardian who confirmed no link and granted no consent; an admin who only edited
-`S` (non-Enable); any person in a conversion whose group is not identified; any person whose
-conversion `R` is not `approved` (no rows exist or none are discoverable).
+person `S`; a guardian who confirmed no link and granted no consent; an admin whose only
+contact with `S` is an edit that left no candidate key (conditional scenario S-nonEnable
+above — reachability not traced, disposition to the owner); any person in a conversion
+whose group is not identified; any person whose conversion `R` is not `approved` (no rows
+exist or none are discoverable); any person whose request link is missing (G5).
 
-**RETAIN_UNATTRIBUTED actions (inventory 6.9).** `household.person_converted` and
-conversion-shaped `registration.changed` are class CONVERSION, not RETAIN_*, and are the only
-rows P2 can change. **P2 reaches none of the actions below**; each stays a Q3 residue
-needing the owner's disposition, not an approved retention, and the shapes listed in 6.9 for
-each are unchanged:
+**RETAIN_UNATTRIBUTED actions (inventory 6.9, F-RESIDUE).** `household.person_converted`
+and conversion-shaped `registration.changed` are class CONVERSION, not RETAIN_*, and are the
+only rows P2 can change. **P2 reaches none of the actions below**; each row stays a Q3
+residue needing the owner's disposition in #304, not an approved retention. Shapes are the
+6.9 shapes, reproduced here so this design stands alone (the 6.9 enumeration stays
+normative if they ever differ):
 
-- `invitation.accepted`, `membership.added_over_limit`;
-- `guardian_link.requested` (unknown or missing source, claim without actor, signup with zero
-  or several matching requests, conversion nominations with invalid linkage);
-- `account.requested`; `registration.changed` (non-conversion shape without a valid event
-  target or actor); `registration.cancelled` (inconsistent actor-null subjects);
-  `password.reset_requested` (non-user target);
-- every ordinary ACTOR action with an unexpected missing actor and a non-empty `ip`, and every
-  system-only action with an unexpected non-empty `ip`, on each registered action of the 6.9
-  list: `account.*`, `add.*`, `calendar_token.*`, `contact.*`, `contact_history.exported`,
-  `email.*`, `event.*`, `group.*`, `guardian_link.*`, `household.*`, `invitation.*`, `job.*`,
-  `membership.*`, `message.*`, `occurrence.*`, `occurrence_access.*`, `password.*`, `push.*`,
-  `registration.*`, `room.*`, `room_booking.*`, `room_feed.*`, `room_request.*`, `setting.*`,
-  `teen_consent.*` and `user.*` (the exact action codes are the 6.9 list);
-- any unregistered historical action with a non-empty `ip`.
+| Action | Retained shape (all with a non-empty `ip`) |
+|---|---|
+| `invitation.accepted` | missing, mixed, null or non-numeric identity keys, or an invalid target shape |
+| `membership.added_over_limit` | missing or malformed numeric identity keys, or a manager shape without an actor |
+| `guardian_link.requested` (unknown or missing source) | no source to attribute |
+| `guardian_link.requested` (claim) | claim without actor |
+| `guardian_link.requested` (signup) | zero or several matching requests, invalid teen identity, unknown request source, or missing member inviter |
+| `guardian_link.requested` (conversion nomination) | invalid target or identity, missing or ambiguous approved request, or missing decider; malformed nominations are counted separately and not added twice |
+| `account.requested` | unknown source, or a missing required actor/target |
+| `registration.changed` (non-conversion) | without a valid event target or actor (conversion shapes stay in CONVERSION) |
+| `registration.cancelled` | inconsistent or malformed actor-null subject identities or target |
+| `password.reset_requested` | a non-user target |
+| every ordinary ACTOR action with an unexpected missing actor | the writer's `actor_id` is absent, so no ACTOR rule fires; residue on each registered action in the code list below |
+| every system-only action with an unexpected non-empty `ip` | a writer that should store no address stored one; residue on each registered action in the code list below |
+| any unregistered historical action | any other stored action code with a non-empty `ip`; reported internally by actual code, without treating it as a known writer |
+
+Registered action codes the last three rows can occur on (inventory 6.9 list, reproduced
+exactly): `account.approved`, `account.expired`, `account.rejected`, `account.requested`,
+`account.setup_completed`; `add.completed`, `add.decision`, `add.ended`, `add.expired`,
+`add.refused`, `add.requested`, `add.withdrawn`; `calendar_token.regenerated`,
+`calendar_token.revoked`, `calendar_token.scope_changed`; `contact.decision`,
+`contact.ended`, `contact.expired`, `contact.granted`, `contact.privacy_changed`,
+`contact.refused`, `contact.requested`, `contact.reveal`, `contact.revoked`,
+`contact.withdrawn`; `contact_history.exported`; `email.change_cancelled`,
+`email.change_requested`, `email.changed`, `email.suppression_cleared`; `event.created`,
+`event.dates_restored`, `event.deleted`, `event.host_added`, `event.host_removed`,
+`event.visibility_changed`, `event.visibility_override`; `group.approved`, `group.deleted`,
+`group.rejected`; `guardian_link.confirmed`, `guardian_link.rejected`,
+`guardian_link.requested`, `guardian_link.revoked`; `household.account_turned_adult`,
+`household.child_turned_13`, `household.created`, `household.person_added`,
+`household.person_removed`, `household.person_updated`, `household.updated`;
+`invitation.accepted`, `invitation.created`, `invitation.rate_limited`,
+`invitation.refused`, `invitation.resent`, `invitation.revoked`; `job.dismissed`,
+`job.retried`; `membership.added`, `membership.added_over_limit`,
+`membership.not_restored`, `membership.removed`, `membership.restored`,
+`membership.role_changed`; `message.cancelled`, `message.edited`, `message.refused`,
+`message.retried`, `message.scheduled`, `message.sent`, `message.test_sent`;
+`occurrence.blocked`, `occurrence.refused`; `occurrence_access.added`,
+`occurrence_access.ended`; `password.changed`, `password.reset_completed`,
+`password.reset_requested`; `push.device_on`, `push.keys_reset`, `push.keys_rotated`,
+`push.test_sent`; `registration.added`, `registration.added_over_capacity`,
+`registration.cancelled`, `registration.changed`, `registration.not_restored`,
+`registration.promoted`, `registration.removed`, `registration.restored`;
+`room.created`, `room.location_matched`, `room.updated`; `room_booking.booked`,
+`room_booking.overlap`, `room_booking.released`, `room_booking.series`;
+`room_feed.created`, `room_feed.revoked`; `room_request.confirmed`,
+`room_request.rejected`; `setting.church_address_changed`,
+`setting.guardian_copies_changed`, `setting.push_enabled_changed`,
+`setting.reply_to_changed`, `setting.room_approval_changed`,
+`setting.rooms_enabled_changed`, `setting.self_signup_changed`; `teen_consent.granted`,
+`teen_consent.revoked`; `user.created`, `user.deleted`, `user.disabled`,
+`user.email_changed`, `user.enabled`, `user.role_changed`, `user.turned_18`.
+(`household.person_converted` is always CONVERSION and is listed under IR-1 to IR-4, not
+here.)
 
 `account.approved`, the conversion `guardian_link.requested` rows and `account_requests.ip`
 follow their existing R4-4a classes; P2 changes none of them. No RETAIN_ESSENTIAL action and
@@ -424,18 +580,24 @@ or reads the SQL of sections 3 and 6 against the schema, and gives an explicit v
 
 1. scope: only `ip`, only the two actions, only the candidate set, nothing of a living
    person's step row (sections 1, 3, 6);
-2. the five selectors and the two readings in section 13;
-3. the identified-group gate and the fail-closed intersection (section 5);
+2. the five selectors and the readings in section 13 (K4 narrowing, late-actor
+   over-inclusion, and the G5 link condition);
+3. the identified-group gate and the fail-closed intersection (section 5), including that
+   link-missing requests are discovered but never cleared;
 4. the tombstone version-2 transition and its no-op claims (section 8);
-5. the tests of section 10, including that each negative case would fail if the implementation
-   over-cleared;
-6. the residue statement: every item named, none implying that describing it authorizes
-   retention.
+5. the count contract of section 7 and the tests of section 10, including that each
+   negative case would fail if the implementation over-cleared and that N-11 pins every
+   reported field;
+6. the residue statement: every item named (IR-1 to IR-4, the conditional S-nonEnable
+   scenario, every 6.9 RETAIN_UNATTRIBUTED action and shape), none implying that
+   describing it authorizes retention.
 
 Any scope or over-clearing finding blocks. Approval of an exact revision covers that revision
 only; a later change to this file needs a new review of what changed.
 
-**Review record: none. No reviewer has read this revision. Nothing here is approved.**
+**Review record: r1 received two independent combined reviews with findings (R303-01,
+R303-02, F-COUNT, F-GAP, F-RESIDUE, F-LOCK) and no approval. No reviewer has read r2.
+Nothing here is approved.**
 
 What an approval would not do: approve #305's code, change a sweep version or a migration,
 close G-9, establish G-8, authorize P1, P3, P4 or P5, widen decision 5, or answer Q3. #305 stays
@@ -452,11 +614,19 @@ exists in an approved design. After approval, the inventory (6.5.2, DG-9 items 2
   is the conversion rows' `actor_id`, and may also be an admin who completed the step; the
   reviewer should confirm that "may have caused" covers it, since erasing a plain inviter now
   clears a group that holds `D`'s or a completer's address.
-- **J3 Identified groups only (G1 to G4).** Decision 5 does not say whether a malformed or
-  ambiguous group counts as "identified". This design chooses not to touch them. G4 adds one
-  condition to 6.5.1's V0 (household read), because an unread household would skip a real check.
+- **J3 Identified groups only (G1 to G5).** Decision 5 does not say whether a malformed,
+  ambiguous or link-missing group counts as "identified". This design chooses not to touch
+  them. G4 adds one condition to 6.5.1's V0 (household read), because an unread household
+  would skip a real check; G5 adds the request-link condition (R303-01), because a NULL
+  link escapes the uniqueness indexes and no K-arm or join can name the missing row.
 - **J4 Discovery widened to the candidate request set** for the existing counts too, instead of
   a second scan. This changes `Groups`, `Discovered` and `Retained` for erasures of non-deciding
   candidates, and the tests listed in section 10 move with it.
 - **J5 No time key.** Late confirmers and late enablers are candidates (P2-9). This is the cost
   of using no time, adjacency or address as a key, which the inventory forbids.
+- **J6 Counts: reasons stay diagnostic.** `ByReason` keeps the existing classification codes
+  (so `history_unestablished` still appears for cleared groups) while `Retained` alone
+  counts retention; per-group `Blanked` is attributed from `RETURNING id`, never estimated.
+  An alternative — rewriting a cleared group's reason — would change the existing
+  classification contract, so this design does not take it. The reviewer should confirm
+  the split in section 7 reads unambiguously.
