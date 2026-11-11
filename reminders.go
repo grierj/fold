@@ -292,14 +292,10 @@ func (a *App) reminderReaders(db *gorm.DB, occID uint, ids []uint, now time.Time
 	out := map[uint]bool{}
 	for i := range users {
 		u := &users[i]
-		// A guest is never loaded as an actor (AGENTS.md, C5): they see what
-		// a signed-out visitor sees, so only a public date, and hold no
-		// exact-date invitations.
-		viewer := u
-		if u.Status == models.UserGuest {
-			viewer = nil
-		}
-		vs, err := a.dateCandidates(viewer, db.Where("id = ?", occ.EventID))
+		// A guest sees what a signed-out visitor sees, so only a public
+		// date, and holds no exact-date invitations (eventViewer).
+		viewer := eventViewer(u)
+		vs, err := dateCandidatesIn(db, viewer, db.Where("id = ?", occ.EventID))
 		if err != nil {
 			return nil, err
 		}
@@ -310,7 +306,7 @@ func (a *App) reminderReaders(db *gorm.DB, occID uint, ids []uint, now time.Time
 		if viewer == nil {
 			continue
 		}
-		scoped, err := a.scopedOccurrenceReads(u, db.Model(&models.EventOccurrence{}).Where("id = ?", occ.ID), now)
+		scoped, err := scopedOccurrenceReadsIn(db, u, db.Model(&models.EventOccurrence{}).Where("id = ?", occ.ID), now)
 		if err != nil {
 			return nil, err
 		}
@@ -319,6 +315,29 @@ func (a *App) reminderReaders(db *gorm.DB, occID uint, ids []uint, now time.Time
 		}
 	}
 	return out, nil
+}
+
+// reminderRowMaySee is whether the person a claimed reminder email row
+// shows the date to may still see it: the recipient, or for a guardian copy
+// the teen whose reminder it copies. It runs on the row's own transaction
+// and answers a failed read as an error, never as "may not". A date that is
+// gone, or a reminder with no date, shows nothing to anyone.
+func (a *App) reminderRowMaySee(tx *gorm.DB, m *models.Message, row models.MessageRecipient, now time.Time) (bool, error) {
+	if m.OccurrenceID == nil {
+		return false, nil
+	}
+	subject := row.UserID
+	if row.CopyOfUserID != nil {
+		subject = *row.CopyOfUserID
+	}
+	can, err := a.reminderReaders(tx, *m.OccurrenceID, []uint{subject}, now)
+	if errors.Is(err, errAudienceGone) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return can[subject], nil
 }
 
 // messageCategory is the email settings kind a message follows: event

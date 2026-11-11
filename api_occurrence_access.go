@@ -30,17 +30,24 @@ type occurrenceRead struct {
 // enter the ordinary visible set. All related facts are batched, including live
 // registration provenance; no attendee/contact directory is loaded here.
 func (a *App) scopedOccurrenceReads(viewer *models.User, q *gorm.DB, now time.Time) (map[uint]*occurrenceRead, error) {
+	return scopedOccurrenceReadsIn(a.DB, viewer, q, now)
+}
+
+// scopedOccurrenceReadsIn is scopedOccurrenceReads on db, for a caller that
+// holds a transaction or a context-bound handle: db and q must come from the
+// same one, and no read here touches another connection.
+func scopedOccurrenceReadsIn(db *gorm.DB, viewer *models.User, q *gorm.DB, now time.Time) (map[uint]*occurrenceRead, error) {
 	out := map[uint]*occurrenceRead{}
 	if viewer == nil {
 		return out, nil
 	}
 	var grants []models.Registration
-	err := a.DB.Where("registrations.user_id = ? AND "+registrationAccessLiveSQL+" AND registrations.occurrence_id IN (?)", viewer.ID,
+	err := db.Where("registrations.user_id = ? AND "+registrationAccessLiveSQL+" AND registrations.occurrence_id IN (?)", viewer.ID,
 		q.Session(&gorm.Session{}).Model(&models.EventOccurrence{}).Select("id")).Find(&grants).Error
 	if err != nil || len(grants) == 0 {
 		return out, err
 	}
-	reads, err := occurrenceInvitationReadsIn(a.DB, grants, now)
+	reads, err := occurrenceInvitationReadsIn(db, grants, now)
 	if err != nil {
 		return nil, err
 	}
@@ -69,16 +76,18 @@ const scopedInviteProbeBatch = 50
 // read loaders here, it claims no transaction or snapshot: a grant committed
 // while the pages load may or may not affect the answer, and the next load
 // rechecks.
-func (a *App) hasScopedUntitledRead(viewer *models.User, eventID uint, now time.Time) (bool, error) {
+// Every read goes through db (a transaction or a context-bound handle, with
+// no second connection), as in scopedOccurrenceReadsIn.
+func hasScopedUntitledRead(db *gorm.DB, viewer *models.User, eventID uint, now time.Time) (bool, error) {
 	if viewer == nil {
 		return false, nil
 	}
 	var lastID uint
 	for {
 		var ids []uint
-		grants := a.DB.Model(&models.Registration{}).Select("occurrence_id").
+		grants := db.Model(&models.Registration{}).Select("occurrence_id").
 			Where("registrations.user_id = ? AND "+registrationAccessLiveSQL, viewer.ID)
-		if err := a.DB.Model(&models.EventOccurrence{}).
+		if err := db.Model(&models.EventOccurrence{}).
 			Where("event_id = ? AND status = ? AND title_override IS NULL AND id > ? AND id IN (?)", eventID, models.OccurrenceScheduled, lastID, grants).
 			Order("id").Limit(scopedInviteProbeBatch).Pluck("id", &ids).Error; err != nil {
 			return false, err
@@ -86,7 +95,7 @@ func (a *App) hasScopedUntitledRead(viewer *models.User, eventID uint, now time.
 		if len(ids) == 0 {
 			return false, nil
 		}
-		scoped, err := a.scopedOccurrenceReads(viewer, a.DB.Where("id IN ?", ids), now)
+		scoped, err := scopedOccurrenceReadsIn(db, viewer, db.Where("id IN ?", ids), now)
 		if err != nil {
 			return false, err
 		}

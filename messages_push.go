@@ -256,10 +256,11 @@ func (a *App) deliverMessagePush(ctx context.Context, rowID, deviceID uint, plan
 	return a.sendPush(ctx, t, body, recipientPushOptions(row.ID, pushTTL), "")
 }
 
-// pushValues are u's merge values for m's push. The lock screen never
-// carries a link, so only the first name and the event's title and time
-// matter; the registration reads behind those run only when the subject
-// or text uses one.
+// pushValues are u's merge values for m's push, read when the payload is
+// built. The lock screen never carries a link, so only the first name and the
+// event's title and time matter; the live access checks behind those run only
+// when the subject or text uses one, and fill only what u may see of the
+// event or date now (message_event_visibility.go).
 func (a *App) pushValues(db *gorm.DB, m *models.Message, u *models.User) (map[string]string, error) {
 	needsEvent := false
 	for _, f := range content.FieldsIn(m.Subject + "\n" + m.BodyText) {
@@ -272,8 +273,7 @@ func (a *App) pushValues(db *gorm.DB, m *models.Message, u *models.User) (map[st
 	}
 	var au audienceJSON
 	_ = json.Unmarshal([]byte(m.Audience), &au)
-	values, err := a.recipientValues(db, m, au, map[uint]*models.User{u.ID: u})
-	return values[u.ID], err
+	return a.pushEventValues(db, u.ID, au, time.Now().UTC())
 }
 
 // pushWaitReason is a waiting push row's reason: when quiet hours end on the

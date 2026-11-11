@@ -7,13 +7,11 @@ import (
 	"fmt"
 	"html"
 	"log"
-	"maps"
 	"net/http"
 	"strings"
 	"time"
 
 	"fold/internal/audit"
-	"fold/internal/content"
 	"fold/internal/jobs"
 	"fold/internal/mail"
 	"fold/internal/policy"
@@ -492,16 +490,8 @@ func (a *App) deliverMessageBatchOnce(ctx context.Context, p messageBatchJob) er
 	if len(rows) == 0 {
 		return db.Transaction(func(tx *gorm.DB) error { return a.settleMessage(tx, m.ID) })
 	}
-	readers, err := a.batchReaders(db, rows)
-	if err != nil {
-		return err
-	}
 	var au audienceJSON
 	_ = json.Unmarshal([]byte(m.Audience), &au)
-	values, err := a.recipientValues(db, &m, au, readers)
-	if err != nil {
-		return err
-	}
 	blocked, err := batchSuppressions(db, rows)
 	if err != nil {
 		return err
@@ -522,7 +512,6 @@ func (a *App) deliverMessageBatchOnce(ctx context.Context, p messageBatchJob) er
 	optOut := categoryScope(messageCategory(&m))
 	last := jobs.LastAttempt(ctx)
 	for _, row := range rows {
-		reader := readers[row.UserID]
 		err := db.Transaction(func(tx *gorm.DB) error {
 			var held uint
 			if err := tx.Raw("SELECT id FROM message_recipients WHERE id = ? AND status = ? FOR UPDATE SKIP LOCKED", row.ID, models.RecipientQueued).Scan(&held).Error; err != nil {
@@ -531,8 +520,14 @@ func (a *App) deliverMessageBatchOnce(ctx context.Context, p messageBatchJob) er
 			if held == 0 {
 				return nil // another worker has it, or it is done
 			}
-			// Who the reader is now: someone disabled or opted out since
-			// the snapshot doesn't get it.
+			// Who the reader is now, read after the claim for this row alone:
+			// someone disabled or opted out since the snapshot doesn't get
+			// it, and the event fields follow their role and groups as they
+			// stand at this send (message_event_visibility.go).
+			reader, readers, err := rowReaders(tx, row)
+			if err != nil {
+				return err
+			}
 			if reader == nil || !(reader.Status == models.UserActive || reader.Status == models.UserGuest && guestMayGet(messageCategory(&m))) {
 				return markRecipient(tx, row.ID, models.RecipientSuppressed, skipNotActive, "", "")
 			}
@@ -546,6 +541,22 @@ func (a *App) deliverMessageBatchOnce(ctx context.Context, p messageBatchJob) er
 			}
 			if off.Off(row.UserID, row.Address, optOut) {
 				return markRecipient(tx, row.ID, models.RecipientSuppressed, skipOptedOutOf(messageCategory(&m)), "", "")
+			}
+			// A reminder's own text carries the date's place, written when it
+			// was prepared, so someone who can no longer see the date gets no
+			// reminder at all, not one with the fields blanked.
+			if m.Category == models.MessageCategoryReminder {
+				may, err := a.reminderRowMaySee(tx, &m, row, time.Now())
+				if err != nil {
+					return err
+				}
+				if !may {
+					return markRecipient(tx, row.ID, models.RecipientSuppressed, skipCantSeeDate, "", "")
+				}
+			}
+			values, err := a.rowValues(tx, row, readers, au, time.Now())
+			if err != nil {
+				return err
 			}
 			msg, err := a.messageEmail(&m, row, reader, readers, values, footer)
 			if err != nil {
@@ -584,25 +595,6 @@ func markRecipient(tx *gorm.DB, id uint, status, reason, providerID, errText str
 		updates["sent_at"] = time.Now()
 	}
 	return tx.Model(&models.MessageRecipient{}).Where("id = ? AND status = ?", id, models.RecipientQueued).Updates(updates).Error
-}
-
-func (a *App) batchReaders(db *gorm.DB, rows []models.MessageRecipient) (map[uint]*models.User, error) {
-	ids := []uint{}
-	for _, r := range rows {
-		ids = append(ids, r.UserID)
-		if r.CopyOfUserID != nil {
-			ids = append(ids, *r.CopyOfUserID)
-		}
-	}
-	var users []models.User
-	if err := db.Where("id IN ?", dedupeIDs(ids)).Find(&users).Error; err != nil {
-		return nil, err
-	}
-	out := make(map[uint]*models.User, len(users))
-	for i := range users {
-		out[users[i].ID] = &users[i]
-	}
-	return out, nil
 }
 
 // batchSuppressions are the open suppression reasons on the batch's
@@ -669,55 +661,6 @@ func (a *App) messageEmail(m *models.Message, row models.MessageRecipient, reade
 		Stream: providers.StreamBroadcast, Optional: true, ListUnsubscribe: r.Unsubscribe}, nil
 }
 
-// recipientValues are each reader's merge values (PLAN 7.3), by user id:
-// the first name, and for one event's people the event, with the date and
-// page of the reader's own registration in the audience's statuses (the
-// next one, for a series).
-func (a *App) recipientValues(db *gorm.DB, m *models.Message, au audienceJSON, readers map[uint]*models.User) (map[uint]map[string]string, error) {
-	out := map[uint]map[string]string{}
-	for id, u := range readers {
-		out[id] = map[string]string{content.FieldFirstName: firstName(u.PublicName())}
-	}
-	if au.Type != policy.AudienceOccurrence && au.Type != policy.AudienceEventSeries {
-		return out, nil
-	}
-	ids, err := a.audienceEventIDs(db, au)
-	if err != nil || len(ids) != 1 {
-		return out, err
-	}
-	var ev models.Event
-	if err := db.Select("id, title, tzid").First(&ev, ids[0]).Error; errors.Is(err, gorm.ErrRecordNotFound) {
-		return out, nil // the event is gone: the fields stay unset
-	} else if err != nil {
-		return nil, err
-	}
-	dates, err := audienceRegisteredDates(db, ev.ID, au, keysOf(readers), time.Now())
-	if err != nil {
-		return nil, err
-	}
-	var titleOverride *string
-	if au.Type == policy.AudienceOccurrence {
-		// One date: its own title, when it has one.
-		var occ models.EventOccurrence
-		if err := db.Select("id, title_override").First(&occ, au.OccurrenceID).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, err
-		} else if err == nil {
-			titleOverride = occ.TitleOverride
-		}
-	}
-	facts := newMessageEvent(ev, au, titleOverride)
-	for id := range out {
-		maps.Copy(out[id], a.eventFields(facts, nil))
-	}
-	for _, d := range dates {
-		if v := out[d.UID]; v != nil {
-			v[content.FieldEventTime] = facts.timeText(d.StartsAt)
-			v[content.FieldManageLink] = a.emailLink(occurrenceDatePath(ev.ID, models.FormatCalendarDate(d.OriginalDate)))
-		}
-	}
-	return out, nil
-}
-
 // registeredDate is one person's registration date in an audience: the next
 // one in the audience's statuses (the audience's own date, for a one-date
 // audience), by the holder's id.
@@ -755,14 +698,6 @@ func audienceRegisteredDates(db *gorm.DB, eventID uint, au audienceJSON, readerI
 		out[d.UID] = d
 	}
 	return out, nil
-}
-
-func keysOf(m map[uint]*models.User) []uint {
-	out := make([]uint, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	return out
 }
 
 // reapMessages is the daily backstop for a send that stopped in a way no

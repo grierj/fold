@@ -607,7 +607,7 @@ func TestReaderEventValuesReturnsReadErrors(t *testing.T) {
 	f.app.DB = original.WithContext(ctx)
 	t.Cleanup(func() { f.app.DB = original })
 	for name, au := range map[string]audienceJSON{"occurrence": f.occAudience(f.occs[0]), "series": f.seriesAudience()} {
-		if vals, err := f.app.readerEventValues(f.reader, au, time.Now().UTC()); err == nil {
+		if vals, err := f.app.readerEventValues(f.app.DB, f.reader, au, time.Now().UTC()); err == nil {
 			t.Errorf("%s: a failed read answered %v, no error", name, vals)
 		}
 	}
