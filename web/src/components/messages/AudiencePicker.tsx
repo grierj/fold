@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Messages } from "../../api/messages";
 import type { AudienceRecipient, AudienceSummary, ComposeOptions } from "../../types";
 import { errorText } from "../../lib/errors";
-import { audienceKey, ROLE_CHOICES, STATUS_CHOICES, pushLine, summaryLine, teenLine, toAudience, type AudienceChoice } from "../../lib/messages";
+import { AUDIENCE_LABEL_MAX, audienceKey, audienceLabels, ROLE_CHOICES, STATUS_CHOICES, pushLine, shortLabel, summaryLine, teenLine, toAudience, type AudienceChoice } from "../../lib/messages";
 import { formatWhen } from "../../lib/when";
 import { SmartphoneIcon } from "../icons";
 import { Badge } from "../ui/Badge";
@@ -57,6 +57,18 @@ export function AudiencePicker({ options, choice, onChange, error, id, push = fa
     return target === "" || (target === "all" && options.canMessageEveryone) ||
       (k === "group" && options.groups.some((g) => g.id === n)) || (k === "event" && options.events.some((e) => e.id === n));
   };
+  // The chosen label in full, for the select's title, and its shortened form
+  // as an option shows it. The full name also goes on a line under the select
+  // when the option had to be cut.
+  const earlier = kind === "group" ? "The group you chose earlier" : kind === "event" ? "The event you chose earlier" : "The date you chose earlier";
+  const named = kind === "group" ? options.groups.find((g) => g.id === Number(raw))?.name : event?.title;
+  const chosenLabel = choice.target === "" ? undefined : !listed(choice.target) ? earlier : choice.target === "all" ? "Everyone at church" : named;
+  const fullNameId = `${id}-full-name`;
+  const showFullName = named !== undefined && shortLabel(named, AUDIENCE_LABEL_MAX).shortened;
+  // One pass over groups then events, so two names alike at both ends are told apart across the whole select.
+  const labels = audienceLabels([...options.groups.map((g) => g.name), ...options.events.map((e) => e.title)]);
+  const groupLabel = (i: number) => labels[i].label;
+  const eventLabel = (i: number) => labels[options.groups.length + i].label;
   const datesListed = choice.dates === "all" || !!event?.dates.some((d) => String(d.occurrenceId) === choice.dates);
   const current = summary?.key === key ? summary.summary : null;
   const failed = countError?.key === key ? countError.text : "";
@@ -71,23 +83,27 @@ export function AudiencePicker({ options, choice, onChange, error, id, push = fa
   return (
     <div className="space-y-4">
       <Field id={id} label="Send to" hint="Your groups and the events you lead or host." error={error}>
-        <Select value={choice.target} onChange={(e) => onChange({ ...choice, target: e.target.value, dates: "all" })}>
+        <Select
+          value={choice.target}
+          title={chosenLabel}
+          aria-describedby={showFullName ? fullNameId : undefined}
+          onChange={(e) => onChange({ ...choice, target: e.target.value, dates: "all" })}
+        >
           <option value="">Choose a group or event</option>
-          {!listed(choice.target) && (
-            <option value={choice.target}>{kind === "group" ? "The group you chose earlier" : kind === "event" ? "The event you chose earlier" : "The date you chose earlier"}</option>
-          )}
+          {!listed(choice.target) && <option value={choice.target}>{earlier}</option>}
           {options.groups.length > 0 && (
             <optgroup label="Groups">
-              {options.groups.map((g) => <option key={g.id} value={`group:${g.id}`}>{g.name}</option>)}
+              {options.groups.map((g, i) => <option key={g.id} value={`group:${g.id}`}>{groupLabel(i)}</option>)}
             </optgroup>
           )}
           {options.events.length > 0 && (
             <optgroup label="Events">
-              {options.events.map((e) => <option key={e.id} value={`event:${e.id}`}>{e.title}</option>)}
+              {options.events.map((e, i) => <option key={e.id} value={`event:${e.id}`}>{eventLabel(i)}</option>)}
             </optgroup>
           )}
           {options.canMessageEveryone && <option value="all">Everyone at church</option>}
         </Select>
+        {showFullName && <p id={fullNameId} className="mt-1 break-words text-sm text-text">{named}</p>}
       </Field>
 
       {event && (

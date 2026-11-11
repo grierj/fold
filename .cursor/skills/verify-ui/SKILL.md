@@ -54,7 +54,7 @@ UI_PAGES=schedule-event,admin UI_WIDTHS=390 node .cursor/skills/verify-ui/drive-
    - **Setup wizard:** completed through the real form (`[name=site_name]` …, button "Create site").
    - **Admin:** `verify-admin@example.com`, password `password1234`.
    - **Other people:** `verify-leader@example.com` (Lee Leader, leader) and `verify-member@example.com` (Sam Member, member), created with the same `/api/v1/admin/users` call the Admin "New user" form makes.
-   - **Groups:** "Tuesday Bible Study" (public, limit 12, tags `bible-study` and `adults`) and "Youth Choir".
+   - **Groups:** "Tuesday Bible Study" (public, limit 12, tags `bible-study` and `adults`) and "Youth Choir", plus an invite-only group with a long name ending in "(North Campus)", led by the leader, for the composer's Send to check.
    - **Event:** a weekly 4-date series "Romans 8" at 7:00 PM America/Boise.
    - **Re-runs:** the seed is idempotent, so the script can run again on the same instance.
 2. **Signs in through `/login`** for each role (labels "Email" and "Password", button "Log in"), in a context with locale `en-US` and timezone `America/Boise`.
@@ -78,6 +78,7 @@ UI_PAGES=schedule-event,admin UI_WIDTHS=390 node .cursor/skills/verify-ui/drive-
    | schedule-event | leader | `/groups/<id>/events/new` |
    | messages | leader | `/messages` |
    | compose | leader | `/messages/new?group=<id>` |
+   | compose-long-name | leader | `/messages/new?group=<long id>` |
    | admin | admin | `/admin` |
    | admin-users | admin | `/admin?tab=users` |
    | new-group | admin | `/groups/new` |
@@ -102,7 +103,7 @@ UI_PAGES=schedule-event,admin UI_WIDTHS=390 node .cursor/skills/verify-ui/drive-
 ## Evidence
 
 Everything goes to `$VERIFY_EVIDENCE/ui/` (that is, `/tmp/fold-verify-proof/<RUN_ID>/ui/`):
-- `<page>-<width>.png`: a full-page screenshot for every page and width (26 pages × 3 widths = 78 files for a full run).
+- `<page>-<width>.png`: a full-page screenshot for every page and width (27 pages × 3 widths = 81 files for a full run).
 - `results.json`: the URL, the seed ids, and per page and width: failures, the screenshot name, and the under-44px list at 390.
 - `result.txt`: the feature id (`ui-checks`), the entry point, the hard-failure count, and one line per page and width.
 

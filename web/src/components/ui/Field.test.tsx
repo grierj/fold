@@ -38,6 +38,23 @@ describe("Field (DEC-65)", () => {
     render(<Field label="Zone"><Select value="b" onChange={() => {}} options={[{ value: "a", label: "A" }, { value: "b", label: "America/Los_Angeles" }]} /></Field>);
     expect(screen.getByLabelText("Zone")).toHaveAttribute("title", "America/Los_Angeles");
   });
+  it("keeps a caller's title and adds its description to the hint and error", () => {
+    render(
+      <Field id="send" label="Send to" hint="Pick one." error="Choose one.">
+        <Select value="a" title="The whole name" aria-describedby="whole" onChange={() => {}}><option value="a">The who…</option></Select>
+        <p id="whole">The whole name, in full.</p>
+      </Field>,
+    );
+    const select = screen.getByLabelText("Send to");
+    expect(select).toHaveAttribute("title", "The whole name");
+    expect(select).toHaveAttribute("aria-describedby", "send-hint send-error whole");
+    expect(select).toHaveAttribute("aria-invalid", "true");
+    expect(select).toHaveAccessibleDescription("Pick one. Choose one. The whole name, in full.");
+  });
+  it("describes a select by its hint alone when the caller adds nothing", () => {
+    render(<Field id="send" label="Send to" hint="Pick one."><Select value="a" onChange={() => {}}><option value="a">A</option></Select></Field>);
+    expect(screen.getByLabelText("Send to")).toHaveAttribute("aria-describedby", "send-hint");
+  });
 });
 
 describe("Choices, Radio and Checkbox rows", () => {

@@ -1,6 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test as setup } from "@playwright/test";
-import { apiAs, email, PASSWORD } from "./helpers";
+import { apiAs, email, LONG_GROUP_NAME, PASSWORD } from "./helpers";
 
 // Runs once per `make e2e`, on the fresh database e2e/server.sh made.
 // Members-only circle (private) and Invite-only circle (Sam is a member).
@@ -101,6 +101,13 @@ setup("first-run setup and seed data", async ({ page, request }) => {
     });
     await admin("POST", `/admin/groups/${g.id}/members`, { userId: ids.sam, role: "member" });
   }
+  // A long-named group for the composer's long-name UI check (#288), led by Lee.
+  // It is made here, once, not in uiPages(), which every layout and a11y shard
+  // runs at the same time. Invite-only keeps it off the directory and home pages.
+  const { group: longGroup } = await admin("POST", "/groups", {
+    name: LONG_GROUP_NAME, description: "Not for visitors.", tags: [], imageUrl: "", location: "", visibility: "invite_only", memberLimit: null,
+  });
+  await admin("POST", `/admin/groups/${longGroup.id}/members`, { userId: ids.lee, role: "leader" });
   // Dedicated household fixtures leave the existing account-only flows intact.
   await admin("POST", "/admin/users", { ageBand: "adult", name: "Household Parent", email: email("household-parent"), password: PASSWORD, role: "member" });
   const parent = await apiAs(request, "household-parent");

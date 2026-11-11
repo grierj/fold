@@ -76,21 +76,27 @@ export function Textarea({ layout, ...props }: Omit<TextareaHTMLAttributes<HTMLT
   return <textarea className={cls(layout)} {...props} {...wire(useField("Textarea"))} />;
 }
 
-// Select's title is the chosen label, so a long one cut off at 390px can
-// still be read on hover and by assistive tech (PR #51). Use it for five or
-// more choices; two to four use radio rows (Choices) or a segmented control.
-// Pass options, or <option> children when the labels need markup.
+// With options, Select's title is the chosen label, a hover supplement for a
+// long one cut off at 390px (PR #51); a caller's title wins. Title is not the
+// screen-reader path: for a label that is shortened, point aria-describedby
+// at a line that holds the full text (it joins the hint and error ids).
+// Use it for five or more choices; two to four use radio rows (Choices) or a
+// segmented control. Pass options, or <option> children when the labels need
+// markup.
 export function Select({
   options,
   value,
   layout,
   children,
+  "aria-describedby": callerDescribedBy,
   ...rest
 }: Omit<SelectHTMLAttributes<HTMLSelectElement>, "id" | "className" | "style" | "value"> &
   Layout & { value: string | number; options?: { value: string; label: string }[] }) {
+  const w = useField("Select");
   const chosen = options?.find((o) => o.value === String(value))?.label;
+  const describedBy = [w.describedBy, callerDescribedBy].filter(Boolean).join(" ") || undefined;
   return (
-    <select className={cls(layout)} value={value} title={chosen} {...rest} {...wire(useField("Select"))}>
+    <select className={cls(layout)} value={value} title={chosen} {...rest} {...wire(w)} aria-describedby={describedBy}>
       {options ? options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>) : children}
     </select>
   );

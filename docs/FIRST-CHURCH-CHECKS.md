@@ -79,6 +79,10 @@ section 11 cross-references these items.
 
 - [ ] **A direct account email after recovery (M7.5, R6-4).** With a test account and the real provider, briefly make the provider unreachable, request a password reset, and restart Fold after the request finishes. Restore the connection before retries run out. You should receive a working reset link after recovery, without requesting another. If the provider accepted an earlier attempt before the connection failed, more than one email may arrive; use the latest link, and confirm earlier links no longer work. Then try an invitation and an email change: delayed mail must not gain a later expiry, and cancelling the email change must prevent its queued verification from changing the address.
 
+## Messages (#288)
+
+- [ ] **A long group name in the composer's Send to field, on real phones.** On an iPhone (Safari) and an Android phone (Chrome), open New message for a group whose name is long and ends in a campus, such as "Saint Brigid's Wednesday Evening Women's Bible Study and Prayer Fellowship (North Campus)", and have a sister group ending "(South Campus)". You should see the start and the campus end of the name in the Send to field with an ellipsis between, and the full name wrapped on the line under it. Open the native picker: the list should be readable and the two campuses easy to tell apart. With VoiceOver on the iPhone and TalkBack on the Android phone, focus the Send to field: it should read out the full name.
+
 ## UI on real browsers (PR #225 follow-up)
 
 Listed when #232 merged (DEC-128). An agent can shoot Chromium and WebKit in CI; these need a real Safari stack and a real inbox.

@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { composeOptions, recipients, summary } from "../test/compose";
-import { audienceLabel, confirmLine, emptyChoice, failedLine, fromAudience, guardianLine, historyLine, historyTeenLine, isOneEvent, prefillChoice, pushBadge, pushHistoryLine, pushLine, retryQuestion, statusLabel, summaryLine, teenLine, toAudience } from "./messages";
+import { AUDIENCE_LABEL_MAX, AUDIENCE_LABEL_WIDTH_EM, audienceLabel, audienceLabels, confirmLine, emptyChoice, failedLine, fromAudience, guardianLine, historyLine, historyTeenLine, isOneEvent, prefillChoice, pushBadge, pushHistoryLine, pushLine, labelWidthEm, retryQuestion, shortLabel, statusLabel, summaryLine, teenLine, toAudience } from "./messages";
 
 describe("audiences", () => {
   it("turns the picker's choice into the API's audience and back", () => {
@@ -174,5 +174,196 @@ describe("push words", () => {
     expect(pushBadge({ status: "waiting" })).toBe("Push waiting");
     expect(pushBadge({ status: "missed" })).toBe("Push didn't go out");
     expect(pushBadge({ status: "missed", reason: "push turned off by the church" })).toBe("Push didn't go out: notifications turned off by the church");
+  });
+});
+
+// Intl.Segmenter has no types in this project's lib, so the tests use the
+// same minimal shape the code does.
+const segmenter = new (Intl as unknown as { Segmenter: new (locale: undefined, o: { granularity: "grapheme" }) => { segment(s: string): Iterable<{ segment: string }> } }).Segmenter(undefined, { granularity: "grapheme" });
+const clusters = (s: string) => Array.from(segmenter.segment(s), (x) => x.segment);
+const count = (s: string) => clusters(s).length;
+
+// A cut is whole when the label's two ends are the name's own graphemes.
+function cutsWholeClusters(name: string, label: string) {
+  const [head, tail] = label.split("…");
+  const all = clusters(name);
+  const first = all.slice(0, count(head)).join("");
+  const last = tail === "" ? "" : all.slice(-count(tail)).join("");
+  return first === head && last === tail;
+}
+
+const LONG = "Saint Brigid's Wednesday Evening Women's Bible Study and Prayer Fellowship (North Campus)";
+const FAMILY = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}\u200D\u{1F466}";
+
+describe("shortLabel (#288)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("leaves a name that fits as it is", () => {
+    expect(shortLabel("Book club")).toEqual({ label: "Book club", shortened: false });
+    expect(shortLabel("")).toEqual({ label: "", shortened: false });
+    // Exactly max graphemes, and narrow enough for the width.
+    const exact = "il".repeat(AUDIENCE_LABEL_MAX / 2);
+    expect(shortLabel(exact)).toEqual({ label: exact, shortened: false });
+    expect(shortLabel(exact + "i").shortened).toBe(true);
+  });
+
+  it("keeps both ends of a long name around one ellipsis", () => {
+    const { label, shortened } = shortLabel(LONG);
+    expect(shortened).toBe(true);
+    expect(label.startsWith("Saint Brigid's")).toBe(true);
+    expect(label.endsWith("(North Campus)")).toBe(true);
+    expect(label.split("…")).toHaveLength(2);
+    expect(count(label)).toBeLessThanOrEqual(AUDIENCE_LABEL_MAX);
+    expect(labelWidthEm(label)).toBeLessThanOrEqual(AUDIENCE_LABEL_WIDTH_EM);
+  });
+
+  it("tells alike names apart by their ends", () => {
+    const north = shortLabel(LONG).label;
+    const south = shortLabel(LONG.replace("North", "South")).label;
+    expect(north).not.toBe(south);
+    expect(south.endsWith("(South Campus)")).toBe(true);
+  });
+
+  it("cuts at word boundaries and trims what the cut leaves dangling", () => {
+    const { label } = shortLabel("Men's Ministry, Extraordinarily Wonderful Breakfast Gathering of Brothers (East Campus)");
+    expect(label).toMatch(/^Men's Ministry….*\(East Campus\)$/);
+    expect(label).not.toContain(",");
+    expect(label).not.toMatch(/\s…|…\s/);
+  });
+
+  it("cuts a name with no word boundary by graphemes, under both limits", () => {
+    const name = "abcdefghij".repeat(20);
+    const { label, shortened } = shortLabel(name);
+    expect(shortened).toBe(true);
+    expect(label.startsWith("abcde")).toBe(true);
+    expect(label.endsWith(name.slice(-5))).toBe(true);
+    expect(label.split("…")).toHaveLength(2);
+    expect(count(label)).toBeLessThanOrEqual(AUDIENCE_LABEL_MAX);
+    expect(labelWidthEm(label)).toBeLessThanOrEqual(AUDIENCE_LABEL_WIDTH_EM);
+  });
+
+  it("gives wide characters fewer graphemes than narrow ones, and never overruns the width", () => {
+    const narrow = count(shortLabel("i".repeat(40)).label);
+    for (const wide of ["W", "m", "@", "字", "\u{1F600}", FAMILY]) {
+      const { label } = shortLabel(wide.repeat(40));
+      expect(labelWidthEm(label)).toBeLessThanOrEqual(AUDIENCE_LABEL_WIDTH_EM);
+      expect(count(label)).toBeLessThan(narrow);
+    }
+    expect(labelWidthEm("W".repeat(30))).toBeGreaterThan(labelWidthEm("i".repeat(30)));
+    // A short run of wide characters is still too wide to leave alone.
+    expect(shortLabel("W".repeat(20)).shortened).toBe(true);
+  });
+
+  it("never cuts inside an accent or a joined emoji", () => {
+    const name = "e\u0301".repeat(25) + FAMILY.repeat(10);
+    const { label, shortened } = shortLabel(name);
+    expect(shortened).toBe(true);
+    expect(cutsWholeClusters(name, label)).toBe(true);
+    expect(label.endsWith(FAMILY)).toBe(true);
+    expect(labelWidthEm(label)).toBeLessThanOrEqual(AUDIENCE_LABEL_WIDTH_EM);
+  });
+
+  it("keeps clusters whole where Intl.Segmenter is missing", async () => {
+    vi.stubGlobal("Intl", Object.create(Intl, { Segmenter: { value: undefined } }));
+    vi.resetModules();
+    const plain = await import("./messages");
+    const name = "e\u0301".repeat(25) + FAMILY.repeat(10) + "\u{1F1FA}\u{1F1F8}".repeat(10);
+    const { label, shortened } = plain.shortLabel(name);
+    expect(shortened).toBe(true);
+    expect(cutsWholeClusters(name, label)).toBe(true);
+    expect(plain.labelWidthEm(label)).toBeLessThanOrEqual(AUDIENCE_LABEL_WIDTH_EM);
+  });
+});
+
+// Two names that are alike at both ends and differ only in the middle.
+const WEDNESDAY = "Saint Brigid's Wednesday Evening Women's Bible Study (North Campus)";
+const THURSDAY = WEDNESDAY.replace("Wednesday", "Thursday");
+
+// Every piece between ellipses is the name's own text, in the name's order.
+function onlyTheNamesText(name: string, label: string) {
+  let from = 0;
+  for (const piece of label.split("…").filter((p) => p !== "")) {
+    const at = name.indexOf(piece, from);
+    if (at < 0) return false;
+    from = at + piece.length;
+  }
+  return true;
+}
+
+describe("audienceLabels (#288)", () => {
+  it("is shortLabel when no two names share a label", () => {
+    const names = ["Book club", LONG, LONG.replace("North", "South")];
+    expect(audienceLabels(names)).toEqual(names.map((n) => shortLabel(n)));
+  });
+
+  it("starts from the case it fixes: the plain cut gives two middles one label", () => {
+    expect(shortLabel(WEDNESDAY).label).toBe(shortLabel(THURSDAY).label);
+  });
+
+  it("tells middle-different names apart, keeping both ends and only the names' own text", () => {
+    const [wed, thu] = audienceLabels([WEDNESDAY, THURSDAY]);
+    expect(wed.label).not.toBe(thu.label);
+    expect(wed.shortened && thu.shortened).toBe(true);
+    expect(wed.label).toContain("Wednesday");
+    expect(thu.label).toContain("Thursday");
+    for (const [name, { label }] of [[WEDNESDAY, wed], [THURSDAY, thu]] as const) {
+      expect(label.startsWith("Saint")).toBe(true);
+      expect(label.endsWith("Campus)")).toBe(true);
+      expect(label.split("…")).toHaveLength(3);
+      expect(onlyTheNamesText(name, label)).toBe(true);
+      expect(count(label)).toBeLessThanOrEqual(AUDIENCE_LABEL_MAX);
+      expect(labelWidthEm(label)).toBeLessThanOrEqual(AUDIENCE_LABEL_WIDTH_EM);
+    }
+  });
+
+  it("tells a group from an event of a different middle in one list, and keeps the order", () => {
+    // Groups first, then events, as the select lists them.
+    const out = audienceLabels(["Book club", WEDNESDAY, THURSDAY, "Potluck"]);
+    expect(out.map((o) => o.label)[0]).toBe("Book club");
+    expect(out[3].label).toBe("Potluck");
+    expect(out[1].label).toContain("Wednesday");
+    expect(out[2].label).toContain("Thursday");
+    expect(out[1].label).not.toBe(out[2].label);
+  });
+
+  it("tells apart three names, one more than a pair", () => {
+    const friday = WEDNESDAY.replace("Wednesday", "Friday");
+    const out = audienceLabels([WEDNESDAY, THURSDAY, friday]).map((o) => o.label);
+    expect(new Set(out).size).toBe(3);
+    expect(out[2]).toContain("Friday");
+  });
+
+  it("gives the same name the same label and never invents text to tell them apart", () => {
+    const same = audienceLabels([WEDNESDAY, WEDNESDAY]);
+    expect(same[0]).toEqual(same[1]);
+    expect(same[0]).toEqual(shortLabel(WEDNESDAY));
+    // Beside a different middle: the repeats stay alike, the other differs.
+    const out = audienceLabels([WEDNESDAY, THURSDAY, WEDNESDAY]);
+    expect(out[0]).toEqual(out[2]);
+    expect(out[0].label).not.toBe(out[1].label);
+    // A name that fits is never touched, even when twice in the list.
+    expect(audienceLabels(["Book club", "Book club"])).toEqual([{ label: "Book club", shortened: false }, { label: "Book club", shortened: false }]);
+  });
+
+  it("leaves the plain label where the names differ in no word it could show", () => {
+    // One long word differing in its middle: there is no word boundary to show.
+    const a = "a".repeat(40) + "x" + "a".repeat(40);
+    const b = "a".repeat(40) + "y" + "a".repeat(40);
+    expect(audienceLabels([a, b])).toEqual([shortLabel(a), shortLabel(b)]);
+    // One name is the other's words and more: the plain labels differ already.
+    const extra = LONG + " Extra";
+    expect(audienceLabels([LONG, extra])).toEqual([shortLabel(LONG), shortLabel(extra)]);
+  });
+
+  it("cuts a very long differing word, and holds the width and grapheme limits", () => {
+    const a = "Saint Brigid's Wednesdayeveningwomensbiblestudy Fellowship (North Campus)";
+    const b = a.replace("Wednesday", "Thursdayxx");
+    const out = audienceLabels([a, b]);
+    expect(out[0].label).not.toBe(out[1].label);
+    for (const [name, { label }] of [[a, out[0]], [b, out[1]]] as const) {
+      expect(onlyTheNamesText(name, label)).toBe(true);
+      expect(count(label)).toBeLessThanOrEqual(AUDIENCE_LABEL_MAX);
+      expect(labelWidthEm(label)).toBeLessThanOrEqual(AUDIENCE_LABEL_WIDTH_EM);
+    }
   });
 });

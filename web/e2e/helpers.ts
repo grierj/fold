@@ -6,6 +6,11 @@ import { expect, type APIRequestContext, type Locator, type Page } from "@playwr
 export const PASSWORD = "password1234";
 export const email = (name: string) => `${name}@example.com`;
 
+// A group name long enough to cut off the composer's Send to select at 390px,
+// ending in the campus suffix that tells it from a sister group (#288). Well
+// under the 200-character name limit (text_limits.go).
+export const LONG_GROUP_NAME = "Saint Brigid's Wednesday Evening Women's Bible Study and Prayer Fellowship (North Campus)";
+
 // Sign in through the real login form, always from a signed-out browser.
 // /login redirects a signed-in visitor, so switching users without this
 // broke specs twice (hosts.spec.ts in 2722a5d, waitlist.spec.ts in 0a10b04).

@@ -79,6 +79,212 @@ export const isOneEvent = (a: MessageAudience | null) => a?.type === "occurrence
 // counts.
 export const audienceKey = (a: MessageAudience | null) => (a ? JSON.stringify(a) : "");
 
+// A native select can't wrap its chosen label, so a long group or event name
+// must be cut to fit the roughly 324px of text room the Send to select has at
+// 390px (web/e2e/ui-measure.mjs measures the real glyphs; the layout gate's
+// clipped-select check, PR #51). The cut is in the middle, since the end is
+// often what tells alike names apart ("(North Campus)" and "(South Campus)").
+// The full name stays in the title, the accessible description and a line
+// under the select.
+export const AUDIENCE_LABEL_MAX = 32;
+// The text room in ems at the select's 16px font: 20em is 320px.
+/** @public tested directly: the width a shortened Send to label is held to. */
+export const AUDIENCE_LABEL_WIDTH_EM = 20;
+
+// Widths are whole hundredths of an em so sums are exact. A grapheme's width
+// is an estimate. For Latin letters, digits and punctuation each class (W, M,
+// m, w, @ and %, other capitals, other lowercase, digits, narrow letters,
+// narrow punctuation) is sized at or above the widest advance in it in Inter
+// (the shipped font, measured) and in DejaVu Sans, the widest common system
+// sans. Other scripts get a flat guess. No estimate is exact (a wider
+// fallback font could still overflow), which is why the layout gate measures
+// the real select.
+const WIDTH_BUDGET = AUDIENCE_LABEL_WIDTH_EM * 100;
+const ELLIPSIS = "…";
+// The tail (the end of the name) may take half of what the label has room
+// for, so it can't be starved and the head still gets the rest.
+const TAIL_SHARE = 0.5;
+
+const widthsOf = (chars: string, width: number): [string, number][] => [...chars].map((c) => [c, width]);
+const GLYPH_WIDTHS = new Map<string, number>([
+  ...widthsOf("W@%—…ÆŒæœ‰", 110),
+  ...widthsOf("mM", 100),
+  ...widthsOf("w", 85),
+  ...widthsOf("ijlftr", 55),
+  ...widthsOf(".,:;!'|-()[]/\\\"`", 50),
+  ...widthsOf("‘’“”", 65),
+  ...widthsOf("0123456789", 70),
+]);
+
+// Emoji, flags, East Asian wide and fullwidth forms are about two ems each.
+const WIDE_GLYPH = /[\p{Extended_Pictographic}\p{Emoji_Modifier}\p{Regional_Indicator}\u1100-\u115f\u2e80-\ua4cf\ua960-\ua97f\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe6f\uff00-\uff60\uffe0-\uffe6\u{20000}-\u{3fffd}]/u;
+
+function glyphWidth(cp: string): number {
+  if (/[\p{Mn}\p{Me}\p{Cf}]/u.test(cp)) return 0;
+  if (WIDE_GLYPH.test(cp)) return 200;
+  if (cp === " " || cp === "\u00a0" || /\p{Cc}/u.test(cp)) return 40;
+  if (/\s/u.test(cp)) return 100;
+  const known = GLYPH_WIDTHS.get(cp);
+  if (known !== undefined) return known;
+  if (/\p{Script=Latin}/u.test(cp)) return /\p{Lu}/u.test(cp) ? 80 : /\p{Ll}/u.test(cp) ? 66 : 90;
+  return /\p{L}/u.test(cp) ? 100 : 90;
+}
+
+// Emoji sequences and keycaps usually occupy one wide glyph.
+function graphemeWidth(g: string): number {
+  if (WIDE_GLYPH.test(g)) return 200;
+  let sum = 0;
+  for (const cp of g) sum += glyphWidth(cp);
+  return g.includes("\u20e3") ? Math.max(sum, 200) : sum;
+}
+
+/** @public tested directly: the estimate the Send to label is held to, in ems. */
+export const labelWidthEm = (text: string) => graphemes(text).reduce((sum, g) => sum + graphemeWidth(g), 0) / 100;
+
+type GraphemeSegmenter = { segment(text: string): Iterable<{ segment: string }> };
+
+// Intl.Segmenter keeps an accent with its letter and a ZWJ emoji whole. Where
+// it is missing, code points join to the one before them by the same rules for
+// marks, joiners, skin tones and flag pairs.
+function makeSegmenter(): GraphemeSegmenter | null {
+  const Segmenter = (Intl as unknown as { Segmenter?: new (locale: undefined, o: { granularity: "grapheme" }) => GraphemeSegmenter }).Segmenter;
+  return typeof Segmenter === "function" ? new Segmenter(undefined, { granularity: "grapheme" }) : null;
+}
+const segmenter = makeSegmenter();
+
+function codePointClusters(text: string): string[] {
+  const out: string[] = [];
+  for (const cp of text) {
+    const prev = out[out.length - 1];
+    const joins = prev !== undefined && (/[\p{M}\p{Cf}\p{Emoji_Modifier}]/u.test(cp) || prev.endsWith("\u200d") ||
+      (/\p{Regional_Indicator}/u.test(cp) && /^\p{Regional_Indicator}$/u.test(prev)));
+    if (joins) out[out.length - 1] = prev + cp;
+    else out.push(cp);
+  }
+  return out;
+}
+
+const graphemes = (text: string): string[] =>
+  segmenter ? Array.from(segmenter.segment(text), (s) => s.segment) : codePointClusters(text);
+
+// What a cut leaves dangling at its edge: spaces and ,;:- at both, an opening
+// bracket after the head and a closing one before the tail.
+const HEAD_EDGE = new Set([",", ";", ":", "-", "(", "[", "{"]);
+const TAIL_EDGE = new Set([",", ";", ":", "-", ")", "]", "}"]);
+
+const isSpace = (x: string) => /^\s+$/u.test(x);
+
+// cutAround picks where a name is cut for a label of at most max graphemes and
+// budget width: the head is g[0, head) and the tail is g[tail, end), around
+// one ellipsis.
+function cutAround(g: string[], w: number[], max: number, budget: number): { head: number; tail: number } {
+  const space = g.map(isSpace);
+  const roomCount = max - 1;
+  const roomWidth = budget - graphemeWidth(ELLIPSIS);
+
+  // The tail first: the longest whole-word suffix within its share, or when
+  // the last word alone is longer than that, a suffix of its graphemes.
+  const tailCount = Math.floor(roomCount * TAIL_SHARE);
+  const tailWidth = Math.floor(roomWidth * TAIL_SHARE);
+  let fit = g.length;
+  for (let n = 0, sum = 0; fit > 0 && n < tailCount && sum + w[fit - 1] <= tailWidth; n++) sum += w[--fit];
+  let tail = fit;
+  for (let i = fit; i < g.length; i++) {
+    if (!space[i] && (i === 0 || space[i - 1])) { tail = i; break; }
+  }
+  while (tail < g.length && (space[tail] || TAIL_EDGE.has(g[tail]))) tail++;
+
+  // The head fills what is left: the longest whole-word prefix, or when the
+  // first word is too long, a prefix of its graphemes.
+  const headCount = roomCount - (g.length - tail);
+  const headWidth = roomWidth - w.slice(tail).reduce((a, b) => a + b, 0);
+  let reach = 0;
+  for (let n = 0, sum = 0; reach < tail && n < headCount && sum + w[reach] <= headWidth; n++) sum += w[reach++];
+  let head = reach;
+  for (let e = reach; e > 0; e--) {
+    if (!space[e - 1] && (e === g.length || space[e])) { head = e; break; }
+  }
+  while (head > 0 && (space[head - 1] || HEAD_EDGE.has(g[head - 1]))) head--;
+  return { head, tail };
+}
+
+// shortLabel is a name as the Send to select shows it: unchanged when it fits
+// max graphemes and the width budget, else the start and the end of the name
+// at word boundaries around one ellipsis, e.g. "Saint Brigid's…(North
+// Campus)". A name with no word boundary to cut at is cut by graphemes. Two
+// names alike at both ends can share a label; audienceLabels tells those apart.
+export function shortLabel(text: string, max = AUDIENCE_LABEL_MAX): { label: string; shortened: boolean } {
+  const g = graphemes(text);
+  const w = g.map(graphemeWidth);
+  if (g.length <= max && w.reduce((a, b) => a + b, 0) <= WIDTH_BUDGET) return { label: text, shortened: false };
+  const { head, tail } = cutAround(g, w, max, WIDTH_BUDGET);
+  return { label: g.slice(0, head).join("") + ELLIPSIS + g.slice(tail).join(""), shortened: true };
+}
+
+// The first word that tells names apart is shown in the cut, up to this long.
+const MID_MAX = 12;
+const MID_WIDTH = 800;
+// A cut needs this much room left for its two ends to be worth showing.
+const MIN_ENDS = 8;
+
+// withMiddle shows each of texts as its two ends around the word where they
+// first differ ("Saint…Wednesday…Campus)"), or null when that can't be done
+// for all of them, or when the labels still would not be different.
+function withMiddle(texts: string[], max: number): Map<string, string> | null {
+  const parsed = texts.map((text) => {
+    const g = graphemes(text);
+    const words: { start: number; end: number; text: string }[] = [];
+    g.forEach((x, i) => {
+      if (isSpace(x)) return;
+      const last = words[words.length - 1];
+      if (i > 0 && last && last.end === i) { last.end = i + 1; last.text += x; } else words.push({ start: i, end: i + 1, text: x });
+    });
+    return { text, g, w: g.map(graphemeWidth), words };
+  });
+  const shared = Math.min(...parsed.map((p) => p.words.length));
+  let at = 0;
+  while (at < shared && parsed.every((p) => p.words[at].text === parsed[0].words[at].text)) at++;
+  if (at >= shared) return null;
+
+  const out = new Map<string, string>();
+  for (const p of parsed) {
+    const word = p.words[at];
+    const mid: string[] = [];
+    let midWidth = 0;
+    for (const x of graphemes(word.text)) {
+      if (mid.length >= MID_MAX || midWidth + graphemeWidth(x) > MID_WIDTH) break;
+      mid.push(x);
+      midWidth += graphemeWidth(x);
+    }
+    const room = max - 1 - mid.length;
+    if (room - 1 < MIN_ENDS) return null;
+    const { head, tail } = cutAround(p.g, p.w, room, WIDTH_BUDGET - graphemeWidth(ELLIPSIS) - midWidth);
+    // The word must sit in what the cut leaves out, or the label would repeat or reorder text.
+    if (word.start < head || word.end > tail) return null;
+    out.set(p.text, p.g.slice(0, head).join("") + ELLIPSIS + mid.join("") + ELLIPSIS + p.g.slice(tail).join(""));
+  }
+  return new Set(out.values()).size === texts.length ? out : null;
+}
+
+// audienceLabels is shortLabel for every name in one select, in order. Names
+// that are cut to the same label but differ in the middle get the word where
+// they first differ shown between two ellipses, so an unchosen option can be
+// told from its sibling. The same name twice stays the same: two groups
+// called alike are the select's own doing, and invented text would mislead.
+// Where no such word fits, the labels stay alike and the line under the select
+// names the one chosen.
+export function audienceLabels(names: string[], max = AUDIENCE_LABEL_MAX): { label: string; shortened: boolean }[] {
+  const out = names.map((n) => shortLabel(n, max));
+  const alike = new Map<string, number[]>();
+  out.forEach((o, i) => { if (o.shortened) alike.set(o.label, [...(alike.get(o.label) ?? []), i]); });
+  for (const at of alike.values()) {
+    const texts = [...new Set(at.map((i) => names[i]))];
+    const labels = texts.length > 1 ? withMiddle(texts, max) : null;
+    if (labels) for (const i of at) out[i] = { label: labels.get(names[i])!, shortened: true };
+  }
+  return out;
+}
+
 const statusWords = (s: AudienceStatus[] | undefined) =>
   STATUS_CHOICES.filter((x) => (s ?? DEFAULT_STATUSES).includes(x.id)).map((x) => x.label).join(", ");
 const roleWords = (r: AudienceRole[] | undefined) =>

@@ -75,10 +75,22 @@ await signIn(seedPage, "admin");
     await api(seedPage, "POST", `/admin/groups/${group.id}/members`, { userId: ids.member, role: "member" });
     await api(seedPage, "POST", "/groups", { name: "Youth Choir", description: "Ages 13 to 17.", tags: ["music", "youth"], imageUrl: "", location: "Choir room", visibility: "public", memberLimit: null });
   }
+  // A long-named group for the composer's Send to check (#288). Looked up by name
+  // so a repeat run finds it; the leader's id is resolved from the user list when
+  // the Tuesday branch above was skipped.
+  const longName = "Saint Brigid's Wednesday Evening Women's Bible Study and Prayer Fellowship (North Campus)";
+  let longGroup = groups.find((g) => g.name === longName);
+  if (!longGroup) {
+    const { users = [] } = await api(seedPage, "GET", "/admin/users");
+    const leaderId = users.find((u) => u.email === people.leader[0])?.id;
+    if (!leaderId) throw new Error("seed: verify-leader is missing, so the long group has no leader");
+    longGroup = (await api(seedPage, "POST", "/groups", { name: longName, description: "Not for visitors.", tags: [], imageUrl: "", location: "", visibility: "invite_only", memberLimit: null })).group;
+    await api(seedPage, "POST", `/admin/groups/${longGroup.id}/members`, { userId: leaderId, role: "leader" });
+  }
   const now = new Date(); const d = new Date(now.getTime() + 7 * 864e5).toISOString().slice(0, 10);
   const { events = [] } = await api(seedPage, "GET", `/groups/${group.id}/events`).catch(() => ({}));
   const event = events[0] ?? (await api(seedPage, "POST", `/groups/${group.id}/events`, { title: "Romans 8", startsLocal: `${d}T19:00`, durationMinutes: 90, tzid: "America/Boise", location: "Fellowship Hall", recurrenceRule: "FREQ=WEEKLY;COUNT=4" })).event;
-  seed = { groupId: group.id, eventId: event.id };
+  seed = { groupId: group.id, eventId: event.id, longGroupId: longGroup.id, longName };
 }
 await seedPage.context().close();
 
@@ -106,6 +118,7 @@ const pages = [
   ["schedule-event", "leader", `/groups/${seed.groupId}/events/new`, (p) => p.getByLabel("Time zone")],
   ["messages", "leader", "/messages", (p) => p.getByRole("heading", { name: "Messages", level: 1 })],
   ["compose", "leader", `/messages/new?group=${seed.groupId}`, (p) => p.getByRole("textbox", { name: "Message" })],
+  ["compose-long-name", "leader", `/messages/new?group=${seed.longGroupId}`, (p) => p.getByRole("textbox", { name: "Message" })],
   ["admin", "admin", "/admin", (p) => p.getByRole("heading", { name: "Admin" })],
   ["admin-users", "admin", "/admin?tab=users", (p) => p.getByRole("heading", { name: "Admin" })],
   ["new-group", "admin", "/groups/new", (p) => p.getByLabel("Group name")],
