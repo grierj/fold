@@ -302,16 +302,23 @@ Grier's rule. An agent may merge a fold PR, as a normal merge commit, when all o
    - **security, privacy and safeguarding**: attacks, and also who can see a name, a place or
      contact details, whether erased data stays erased, and what minors and guardians get;
    - **correctness against the plan, with tests that prove it**: the backend, API and UI do what
-     the plan and its decisions say, and the tests would fail if the behavior broke;
-   - **operations and docs**: deployment stays one `docker compose up`, migrations are
-     expand-then-contract, upgrade, rollback and recovery levels still work, new config is in
-     `.env.example`, and `docs/API.md`, `STATUS.md` and the plan files are updated in the same PR.
+     the plan and its decisions say. For a behavior change, a test fails without it; otherwise
+     the reviewer says why no test applies;
+   - **operations and docs**, where the change affects them: deployment stays one
+     `docker compose up`; migrations are expand-then-contract (`docs/agents/migrations.md`);
+     upgrade, rollback and recovery levels still work (`docs/agents/deploy.md`); and the docs move
+     in the same PR: `docs/API.md` for an API change, `.env.example` for new config, `STATUS.md`
+     for a milestone's status, and the design or milestone files in `docs/plan/` for a change to
+     what is built or planned.
 
    One reviewer may cover several concerns. A concern the change doesn't touch still gets an
-   explicit "not affected" from the reviewer. The review names the exact head SHA it reviewed; a
-   new commit on the PR needs that head reviewed again before merging (a merge of master that
-   changes nothing in the PR's own files counts as the same head). Keep the findings with the PR
-   (its description or a comment), and resolve blocking findings before merging.
+   explicit "not affected" from the reviewer. The review names the exact head SHA it reviewed.
+   Every new commit, a merge of master included, is a new head and needs a review naming it
+   before merging. That re-review may cover only what changed since the reviewed head, but it
+   reads the master side of a merge and any conflict resolution and gives each concern a fresh
+   verdict; it is a full review when master touched the PR's files, its subsystem, migrations or
+   dependencies. Keep the findings with the PR (its description or a comment), and resolve
+   blocking findings before merging.
 3. No product concern needs a human. No Grier decision on the PR is still open, and it makes no
    new product decision. Changes to security or visibility policy, repo settings, or production
    and deploy are product concerns unless Grier already decided that change. A check that only a
