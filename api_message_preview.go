@@ -62,9 +62,8 @@ type renderedMessage struct {
 	Unsubscribe string `json:"-"`
 }
 
-// sampleValues are the merge-field values for previewing m as me: what
-// recipientValues would give me, with the date the audience's next (or, with
-// none upcoming, latest) one. An event that is gone leaves its fields out.
+// sampleValues previews the audience's next date, or its latest when none is
+// upcoming. An event that is gone leaves its fields out.
 func (a *App) sampleValues(m *models.Message, me *models.User) (map[string]string, error) {
 	vals := map[string]string{content.FieldFirstName: firstName(me.PublicName())}
 	var au audienceJSON
