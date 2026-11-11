@@ -633,6 +633,10 @@ func jpegCases(t *testing.T) []jpegCase {
 		// reads the Adobe segment after the scans and makes an RGB picture.
 		{"progressive 4:4:4, a late Adobe segment says RGB", imagetest.WithLateAdobe(imagetest.ProgressiveJPEG(1200, 1200, []byte{1, 2, 3}, []byte{0x11, 0x11, 0x11}, -1), 0)},
 		{"progressive 4:2:0, a late Adobe segment says RGB", imagetest.WithLateAdobe(imagetest.ProgressiveJPEG(1201, 1003, []byte{1, 2, 3}, []byte{0x22, 0x11, 0x11}, -1), 0)},
+		// An early JFIF segment makes DecodeConfig call RGB ids YCbCr; a later APP0
+		// that is not JFIF clears the flag and the decoder ends with RGB.
+		{"progressive RGB ids, early JFIF and a late non-JFIF APP0", imagetest.WithLateAPP0(imagetest.WithEarlyJFIF(imagetest.ProgressiveJPEG(1200, 1200, []byte("RGB"), []byte{0x11, 0x11, 0x11}, -1)))},
+		{"progressive 4:2:0 RGB ids, early JFIF and a late non-JFIF APP0", imagetest.WithLateAPP0(imagetest.WithEarlyJFIF(imagetest.ProgressiveJPEG(1201, 1003, []byte("RGB"), []byte{0x22, 0x11, 0x11}, -1)))},
 	}
 }
 
@@ -689,14 +693,17 @@ func TestJPEGConverted(t *testing.T) {
 		in   []byte
 		want bool
 	}{
-		"gray":                               {prog("\x01", []byte{0x11}, -1), false},
-		"YCbCr":                              {prog("\x01\x02\x03", yuv, -1), false},
-		"YCbCr, Adobe before the frame":      {prog("\x01\x02\x03", yuv, 1), false},
-		"CMYK":                               {prog("\x01\x02\x03\x04", []byte{0x11, 0x11, 0x11, 0x11}, 0), true},
-		"RGB by its component ids":           {prog("RGB", yuv, -1), true},
-		"RGB by an Adobe segment up front":   {prog("\x01\x02\x03", yuv, 0), true},
-		"YCbCr, an Adobe segment at the end": {imagetest.WithLateAdobe(prog("\x01\x02\x03", yuv, -1), 0), true},
-		"YCbCr, an Adobe YCbCr at the end":   {imagetest.WithLateAdobe(prog("\x01\x02\x03", yuv, -1), 1), true},
+		"gray":                                {prog("\x01", []byte{0x11}, -1), false},
+		"YCbCr":                               {prog("\x01\x02\x03", yuv, -1), false},
+		"YCbCr, Adobe before the frame":       {prog("\x01\x02\x03", yuv, 1), false},
+		"CMYK":                                {prog("\x01\x02\x03\x04", []byte{0x11, 0x11, 0x11, 0x11}, 0), true},
+		"RGB by its component ids":            {prog("RGB", yuv, -1), true},
+		"RGB by an Adobe segment up front":    {prog("\x01\x02\x03", yuv, 0), true},
+		"YCbCr, an Adobe segment at the end":  {imagetest.WithLateAdobe(prog("\x01\x02\x03", yuv, -1), 0), true},
+		"YCbCr, an Adobe YCbCr at the end":    {imagetest.WithLateAdobe(prog("\x01\x02\x03", yuv, -1), 1), true},
+		"YCbCr, an APP0 at the end":           {imagetest.WithLateAPP0(prog("\x01\x02\x03", yuv, -1)), true},
+		"RGB ids, JFIF up front":              {imagetest.WithEarlyJFIF(prog("RGB", yuv, -1)), false},
+		"RGB ids, JFIF up front, APP0 at end": {imagetest.WithLateAPP0(imagetest.WithEarlyJFIF(prog("RGB", yuv, -1))), true},
 	} {
 		frame, ok := scanJPEGFrame(tc.in)
 		if !ok {
@@ -724,6 +731,48 @@ func TestNormalizeCountsALateAdobeSegment(t *testing.T) {
 	}
 	if _, _, err := normalizeBytes(t, late, "image/jpeg"); !errors.Is(err, ErrTooLarge) {
 		t.Errorf("late Adobe: %v, want ErrTooLarge", err)
+	}
+}
+
+// An early JFIF segment makes DecodeConfig report YCbCr for a file with RGB
+// component identifiers, and a non-JFIF APP0 after the scans clears the flag,
+// so the decoder builds an RGBA picture DecodeConfig did not announce. A 1800 x
+// 1800 progressive picture is inside the budget without that copy and over it
+// with it, so only the file with the late APP0 is refused, and before decoding.
+func TestNormalizeCountsALateAPP0Segment(t *testing.T) {
+	plain := imagetest.WithEarlyJFIF(imagetest.ProgressiveJPEG(1800, 1800, []byte("RGB"), []byte{0x11, 0x11, 0x11}, -1))
+	late := imagetest.WithLateAPP0(plain)
+	for name, in := range map[string][]byte{"plain": plain, "late": late} {
+		if cfg := decodeConfig(t, in); cfg.ColorModel != color.YCbCrModel {
+			t.Fatalf("DecodeConfig reports %v for the %s file, the test needs YCbCr", cfg.ColorModel, name)
+		}
+	}
+	img, err := jpeg.Decode(bytes.NewReader(late))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := img.(*image.RGBA); !ok {
+		t.Fatalf("full decode of the late-APP0 file is %T, the test needs *image.RGBA", img)
+	}
+	img, err = jpeg.Decode(bytes.NewReader(plain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := img.(*image.YCbCr); !ok {
+		t.Fatalf("full decode of the plain file is %T, the test needs *image.YCbCr", img)
+	}
+	if _, _, err := normalizeBytes(t, plain, "image/jpeg"); err != nil {
+		t.Errorf("plain: %v, want it accepted", err)
+	}
+	got := allocatedBy(func() {
+		if _, _, err := normalizeBytes(t, late, "image/jpeg"); !errors.Is(err, ErrTooLarge) {
+			t.Errorf("late APP0: %v, want ErrTooLarge", err)
+		}
+	})
+	// A refusal before decoding allocates nothing like the 22 MB of planes and
+	// coefficients, let alone the RGBA copy.
+	if got > 8<<20 {
+		t.Errorf("the refusal allocated %d bytes, so the file was decoded", got)
 	}
 }
 

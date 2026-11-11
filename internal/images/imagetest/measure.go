@@ -82,6 +82,9 @@ func WorstCases() []Case {
 		{"jpeg-progressive-444-late-adobe-1500", "image/jpeg", func(*testing.T) []byte {
 			return WithLateAdobe(ProgressiveJPEG(1500, 1500, []byte{1, 2, 3}, []byte{0x11, 0x11, 0x11}, -1), 0)
 		}},
+		{"jpeg-progressive-rgb-ids-early-jfif-late-app0-1500", "image/jpeg", func(*testing.T) []byte {
+			return WithLateAPP0(WithEarlyJFIF(ProgressiveJPEG(1500, 1500, []byte("RGB"), []byte{0x11, 0x11, 0x11}, -1)))
+		}},
 		{"jpeg-progressive-cmyk-1400", "image/jpeg", progressive(1400, 1400, []byte{1, 2, 3, 4}, []byte{0x11, 0x11, 0x11, 0x11}, 0)},
 		{"gif-26-frames-1000", "image/gif", func(t *testing.T) []byte {
 			g := &gif.GIF{}

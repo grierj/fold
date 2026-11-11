@@ -318,6 +318,33 @@ func WithLateAdobe(jpg []byte, transform byte) []byte {
 	return append(out, jpg[end:]...)
 }
 
+// WithEarlyJFIF inserts a JFIF APP0 segment right after the start-of-image
+// marker. image/jpeg's DecodeConfig returns at the frame header while a JFIF
+// segment is the last APP0 it has read, and then calls a three-component file
+// YCbCr whatever its component identifiers say.
+func WithEarlyJFIF(jpg []byte) []byte {
+	payload := []byte("JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00")
+	out := append([]byte(nil), jpg[:2]...)
+	out = append(out, 0xFF, 0xE0, byte((len(payload)+2)>>8), byte(len(payload)+2))
+	out = append(out, payload...)
+	return append(out, jpg[2:]...)
+}
+
+// WithLateAPP0 inserts an APP0 segment that is not JFIF just before the
+// end-of-image marker, after every scan. The decoder reads it and clears the
+// JFIF flag an earlier segment set, so a file with RGB component identifiers
+// ends as an RGB picture, though DecodeConfig stopped at the frame header and
+// called it YCbCr.
+func WithLateAPP0(jpg []byte) []byte {
+	payload := []byte("NOTJFIF\x00")
+	seg := []byte{0xFF, 0xE0, byte((len(payload) + 2) >> 8), byte(len(payload) + 2)}
+	end := len(jpg) - 2 // the EOI marker the fixture ends with
+	out := append([]byte(nil), jpg[:end]...)
+	out = append(out, seg...)
+	out = append(out, payload...)
+	return append(out, jpg[end:]...)
+}
+
 // SixteenBitPNG is a real w x h PNG of 16 bits a channel: RGB (color type 2)
 // when opaque, RGBA (type 6) when not. image/png decodes it to a 16-bit RGBA or
 // NRGBA picture and reads it back a pixel at a time to write it again.

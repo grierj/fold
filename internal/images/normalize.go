@@ -321,14 +321,21 @@ func (f jpegFrame) flex(maxH, maxV int) bool {
 // picture: always for four components (CMYK), and for three when they may be
 // RGB. DecodeConfig stops at the first scan, so its color model (RGBA when the
 // file says RGB, else YCbCr) is not final: the decoder decides isRGB only when
-// it has read every marker, and an Adobe APP14 segment after the frame header
-// can turn a YCbCr picture into an RGB one. Any 0xFF 0xEE after the SOF could
-// be one (entropy-coded data never holds that pair), so it counts.
+// it has read every marker, and two segments after the frame header can turn a
+// YCbCr picture into an RGB one: an Adobe APP14 (transform 0), and an APP0 that
+// is not JFIF, which clears the JFIF flag an earlier APP0 set (DecodeConfig
+// returns at the frame header while that flag is set, so it reports YCbCr for
+// RGB component ids). Any 0xFF 0xEE or 0xFF 0xE0 after the SOF could be one
+// (entropy-coded data never holds either pair), so each counts.
 func (f jpegFrame) converted(cfg image.Config, data []byte) bool {
 	if f.n == 4 {
 		return true
 	}
-	return f.n == 3 && (cfg.ColorModel != color.YCbCrModel || bytes.Contains(data[f.end:], []byte{0xFF, 0xEE}))
+	if f.n != 3 {
+		return false
+	}
+	late := data[f.end:]
+	return cfg.ColorModel != color.YCbCrModel || bytes.Contains(late, []byte{0xFF, 0xEE}) || bytes.Contains(late, []byte{0xFF, 0xE0})
 }
 
 // jpegDecodeBytes is what image/jpeg allocates to decode a picture of cfg's

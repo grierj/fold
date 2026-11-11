@@ -377,8 +377,9 @@ Resource bounds for avatar and cover uploads (one path, `readImageUpload`):
     RGB, the RGBA or CMYK copy the decoder builds and a second one for the
     colors the encoder or the turn reads one at a time; and the RGBA copy that
     turns a picture upright. "May be RGB" includes any file with an Adobe
-    APP14 marker after its frame header, because the decoder decides RGB only
-    after the last scan and `DecodeConfig` does not see it.
+    APP14 or an APP0 marker after its frame header, because the decoder
+    decides RGB only after the last scan (a later APP0 that is not JFIF
+    clears the JFIF flag an earlier one set) and `DecodeConfig` does not see it.
   - GIF: two bytes per pixel of every frame.
 
   So, roughly: 8-bit color PNG up to about 14 megapixels (7 interlaced, 3.5
