@@ -175,24 +175,37 @@ self_test_main() {
 	tmp=$(mktemp -d)
 	tmp=$(cd "$tmp" && pwd -P)
 	# Everything this test starts carries one marker in its environment, so a case that fails or is cut short cannot leave a process behind: the exit below ends
-	# whatever still has it. find_marked ENTRY puts in FOUND the pids (not this shell's) whose environment holds exactly ENTRY; a gone process or a zombie has none.
+	# whatever still has it. find_marked ENTRY... puts in FOUND the pids (not this shell's) whose environment holds every ENTRY exactly; a gone process or a zombie has
+	# none. A caller that ends processes always names the run's marker and the case's label together, so another run's process, or one that only borrows a label,
+	# is never selected. The exit trap reads the marker from the exported variable, not from a local of this function: the trap runs after the function has returned.
 	export REASON_SCALE_SELFTEST="$tmp"
+	PROBE_PIDS=()
 	find_marked() {
-		local d p
+		local d p e ok
 		FOUND=()
 		for d in /proc/[0-9]*; do
 			p=${d#/proc/}
 			[[ $p != "$$" && $p != "$BASHPID" ]] || continue
-			if grep -zqxF -- "$1" "$d/environ" 2>/dev/null; then FOUND+=("$p"); fi
+			ok=1
+			for e in "$@"; do
+				grep -zqxF -- "$e" "$d/environ" 2>/dev/null || {
+					ok=0
+					break
+				}
+			done
+			if ((ok)); then FOUND+=("$p"); fi
 		done
 	}
 	# shellcheck disable=SC2329 # reached through the EXIT trap.
 	reap_selftest() {
-		find_marked "REASON_SCALE_SELFTEST=$tmp"
+		local dir=${REASON_SCALE_SELFTEST:-}
+		[[ -n $dir && $dir != / ]] || return 0
+		find_marked "REASON_SCALE_SELFTEST=$dir"
 		((${#FOUND[@]} == 0)) || kill -KILL "${FOUND[@]}" 2>/dev/null || true
+		((${#PROBE_PIDS[@]} == 0)) || kill -KILL "${PROBE_PIDS[@]}" 2>/dev/null || true
+		rm -rf -- "$dir" || true
 	}
-	# shellcheck disable=SC2064 # expand now: $tmp is fixed
-	trap "reap_selftest; rm -rf '$tmp'" EXIT
+	trap reap_selftest EXIT
 	trap 'exit 130' INT
 	trap 'exit 143' TERM
 	trap 'exit 129' HUP
@@ -579,6 +592,7 @@ hang() {
 	[[ -z ${STUB_HANG_STUBBORN:-} ]] || trap '' TERM INT HUP
 	sleep 600 &
 	printf '%s\n%s\n' "$$" "$!" >>"$STUB_FAKE/hung.pids"
+	printf 'case=%s run=%s\n' "${STUB_CASE:-}" "${REASON_SCALE_SELFTEST:-}" >>"$STUB_FAKE/hung.marks"
 	[[ -z ${1:-} ]] || : >"$STUB_FAKE/$1"
 	wait
 	exit 1
@@ -831,17 +845,57 @@ DESC
 		done
 		((n >= 2)) || t_fail "$1: no stalled docker client was started (the case did not exercise a hang)"
 	}
-	# n_no_stragglers NAME: nothing the case started (its environment carries STUB_CASE=NAME) is left running once the runner has returned: not a supervisor holding a
+	# n_no_stragglers NAME: nothing the case started (its environment carries this run's marker and STUB_CASE=NAME) is left running once the runner has returned: not a supervisor holding a
 	# client's group (it sleeps 3600 seconds), not a stalled client. Whatever is found is ended, so a failed case leaves nothing behind.
 	n_no_stragglers() {
 		local i
 		for ((i = 0; i < 20; i++)); do
-			find_marked "STUB_CASE=$1"
+			find_marked "REASON_SCALE_SELFTEST=$tmp" "STUB_CASE=$1"
 			((${#FOUND[@]})) || return 0
 			sleep 0.1
 		done
 		t_fail "$1: the run left processes behind (pids ${FOUND[*]}): a client's group was not ended"
 		kill -KILL "${FOUND[@]}" 2>/dev/null || true
+	}
+	# n_case_marked NAME: a stalled client of the case was seen by the stub with the case's label and this run's marker in its environment, so the scan in
+	# n_no_stragglers looks for what the case really carries and an empty result means something.
+	n_case_marked() {
+		grep -qxF -- "case=$1 run=$tmp" "$fake/hung.marks" 2>/dev/null || t_fail "$1: no stalled client carried the case label and the run marker (the straggler scan would find nothing either way)"
+	}
+	# n_probe_markers: find_marked selects a process only when it carries the run's marker and the case's label together. Four idle processes stand for the cases:
+	# the case's own (both entries), a same-user process that borrows the label with no run marker, one with another run's marker, and one of this run under
+	# another label. Only the first is found; n_no_stragglers ends what it finds and the others survive it. The positive result comes first, so an empty scan
+	# cannot pass for a working one.
+	n_probe_markers() {
+		local label=probe-case ours i p
+		(exec env "STUB_CASE=$label" sleep 60) </dev/null >/dev/null 2>&1 &
+		ours=$!
+		PROBE_PIDS=("$ours")
+		(exec env -u REASON_SCALE_SELFTEST "STUB_CASE=$label" sleep 60) </dev/null >/dev/null 2>&1 &
+		PROBE_PIDS+=("$!")
+		(exec env "REASON_SCALE_SELFTEST=$tmp.other" "STUB_CASE=$label" sleep 60) </dev/null >/dev/null 2>&1 &
+		PROBE_PIDS+=("$!")
+		(exec env "STUB_CASE=other-$label" sleep 60) </dev/null >/dev/null 2>&1 &
+		PROBE_PIDS+=("$!")
+		# A process has its final environment once it has become the sleep.
+		for p in "${PROBE_PIDS[@]}"; do
+			for ((i = 0; i < 100; i++)); do
+				[[ $(cat "/proc/$p/comm" 2>/dev/null || true) == sleep ]] && break
+				sleep 0.05
+			done
+		done
+		find_marked "REASON_SCALE_SELFTEST=$tmp" "STUB_CASE=$label"
+		if [[ ${FOUND[*]:-} != "$ours" ]]; then t_fail "markers: the scan found '${FOUND[*]:-}', want only the case's own process $ours"; fi
+		# What the scan found is ended, as n_no_stragglers does; it then has nothing left to find (it would wait and fail if it selected a process it must not).
+		kill -KILL "${FOUND[@]}" 2>/dev/null || true
+		wait "$ours" 2>/dev/null || true
+		n_no_stragglers "$label"
+		for p in "${PROBE_PIDS[@]:1}"; do
+			t_alive "$p" || t_fail "markers: the process $p, which is not this run's under this label, was ended"
+		done
+		kill -KILL "${PROBE_PIDS[@]}" 2>/dev/null || true
+		wait "${PROBE_PIDS[@]}" 2>/dev/null || true
+		PROBE_PIDS=()
 	}
 	# n_left_gone NAME: the children that docker clients answered and exited with, leaving them behind (and ignoring TERM), are gone; at least one was left.
 	n_left_gone() {
@@ -1015,9 +1069,10 @@ signal_in_launch() {
 }
 trap signal_in_launch DEBUG
 HOOK
+	n_probe_markers
 	rm -f "$tmp/launch-signal-sent"
 	t0=$SECONDS
-	n_run nest-launch-signalSTUB_CASE=nest-launch-signal STUB_QUICK=1 STUB_SCAN_HANG_FIRST=1 STUB_HANG_STUBBORN=1 "BASH_ENV=$tmp/signal-in-launch.sh" "LAUNCH_SIGNAL_MARK=$tmp/launch-signal-sent" FOLD_NESTED_CALL_TIMEOUT=2 FOLD_NESTED_STOP_GRACE=8 FOLD_NESTED_KILL_WAIT=4 FOLD_NESTED_CLEANUP_BUDGET=30 FOLD_NESTED_RM_RESERVE=6 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-launch-signal" --qc1
+	n_run nest-launch-signal STUB_CASE=nest-launch-signal STUB_QUICK=1 STUB_SCAN_HANG_FIRST=1 STUB_HANG_STUBBORN=1 "BASH_ENV=$tmp/signal-in-launch.sh" "LAUNCH_SIGNAL_MARK=$tmp/launch-signal-sent" FOLD_NESTED_CALL_TIMEOUT=2 FOLD_NESTED_STOP_GRACE=8 FOLD_NESTED_KILL_WAIT=4 FOLD_NESTED_CLEANUP_BUDGET=30 FOLD_NESTED_RM_RESERVE=6 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-launch-signal" --qc1
 	[[ -e $tmp/launch-signal-sent ]] || t_fail "nest-launch-signal: the signal was never sent while the client was being launched (the case did not exercise the interval)"
 	[[ $rc == 143 ]] || t_fail "nest-launch-signal: exit $rc, want 143 for a signal taken during the launch (124 means the runner never returned)"
 	n_took nest-launch-signal "$t0" 20
@@ -1025,6 +1080,7 @@ HOOK
 	n_no_stragglers nest-launch-signal
 	n_only_ours nest-launch-signal
 	grep -q 'interrupted by TERM' "$tmp/nest-launch-signal/INTERRUPTED.txt" 2>/dev/null || t_fail "nest-launch-signal: the signal was not recorded as the reason the run stopped (the cleanup was cut short)"
+	n_case_marked nest-launch-signal
 	[[ ! -e $tmp/nest-launch-signal/COLLECTION-FAILED.txt ]] || t_fail "nest-launch-signal: a collection failure was recorded: $(tr '\n' ' ' <"$tmp/nest-launch-signal/COLLECTION-FAILED.txt")"
 	[[ -s $tmp/nest-launch-signal/done && -s $tmp/nest-launch-signal/prep/browser-runtime.json ]] || t_fail "nest-launch-signal: the evidence and the preparation record were not both copied after the signal"
 	n_before '^cp c\{64\}:/work/out/\. ' '^rm -fv ' || t_fail "nest-launch-signal: the container was removed before the evidence was copied"

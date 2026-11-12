@@ -323,9 +323,12 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   `BASH_ENV` fires it just before `LIMITED_JOB` is assigned) ends the run with 143 having finished
   its cleanup (`INTERRUPTED.txt` says TERM, no collection failure, evidence and preparation copied
   before the container is removed), ends every stalled client and its child, leaves nothing the case
-  started running (every process of the case carries `STUB_CASE=<name>`, and the self-test ends
-  whatever still carries its own marker when it exits, also when a case fails) while a bystander
-  survives, a budget the
+  started running (every process of the case carries `STUB_CASE=<name>` and the run's
+  `REASON_SCALE_SELFTEST` marker, the stub records that it saw both, and only a process with both is
+  ever selected: a probe shows that one borrowing the label with no or another run's marker
+  survives; the exit trap reads the marker from the exported variable, so a temporary directory
+  with spaces is handled, and ends whatever still carries the run's marker, also when a case
+  fails) while a bystander survives, a budget the
   runner cannot use or one that does not fit the wrapper's grace is refused, a
   removal that stalls once is retried, one that never works names the container and fails the
   run, and a process or container that is not the run's is untouched; and that a failed copy or an
