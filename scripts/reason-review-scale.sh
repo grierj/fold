@@ -571,7 +571,9 @@ STUB
 	# The real restore-drill-nested.sh, against a docker that models one container: its files are tmp/fake. The workload runs in a process
 	# group of its own with the run's marker in its environment (the stub turns `docker exec -e` into the workload's environment, as the
 	# daemon does), so a signal that reaches the docker client on this host does not reach it. The ownership scan the runner sends through
-	# `docker exec sh -c` is executed for real, on this host's /proc: it can only find, and signal, processes carrying the marker.
+	# `docker exec sh -c` is executed for real, on this host's /proc, but only in its read-only mode (count): this host's numbers are never signalled by it. What the
+	# runner asks of the container in the other two modes reaches the simulated processes as flag files (sig-term, sig-end) that they act on themselves, and the scan's
+	# own signalling is checked on a copy of the process table (n_scan_identity) and with its signal replaced by a recorder (n_scan_sees).
 	local nroot=$tmp/nrepo fake=$tmp/fake bin=$tmp/stubbin n_want_removed=1
 	mkdir -p "$nroot/scripts" "$nroot/deploy/digitalocean" "$bin"
 	cp "$me" "$nroot/scripts/reason-review-scale.sh"
@@ -584,8 +586,9 @@ STUB
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$STUB_LOG"
 # The container is a directory, and the processes in it are simulated by ones that watch it (stub-workload, stub-desc): removal is the flag `removed`, which ends
-# every one of them by itself; the freeze is the flag `paused`, which stops them writing; and what they write is the beat of the workload and the late.txt of the
-# writer. No process is signalled by a number here: the numbers they record are for the test to compare with what a scan finds, nothing more.
+# every one of them by itself; the freeze is the flag `paused`, which stops them writing; the ownership lookup's TERM and KILL are the flags `sig-term` (the workload
+# shell runs its TERM handling) and `sig-end` (every process ends); and what they write is the beat of the workload and the late.txt of the writer. No process is
+# signalled by a number here: the numbers they record are for the test to compare with what a scan finds, nothing more.
 # written: what the processes in the container have written so far.
 written() { stat -c %s "$STUB_FAKE/work/out/late.txt" "$STUB_FAKE/beat.wl" 2>/dev/null | tr '\n' ' '; return 0; }
 # writing: something in the container wrote in the last half second, so it was running when this was asked.
@@ -673,14 +676,22 @@ exec)
 			hang scan-hung
 		fi
 		[[ -z ${STUB_SCAN_FAIL:-} ]] || exit 1
+		# The lookup is run for real in its read-only mode: the mode asked for (the last argument) becomes a flag that the simulated processes act on, after the count is
+		# taken, as the real lookup counts before it signals. Nothing on this host is signalled by it.
+		mode=${*: -1}
+		set -- "${@:1:$#-1}" count
 		# A client that answers and exits while a child of its own, one that ignores TERM, stays behind in its process group.
 		if [[ -n ${STUB_SCAN_LEAVE:-} ]]; then
 			(trap '' TERM INT HUP; exec sleep 90) </dev/null >/dev/null 2>&1 &
 			echo $! >>"$STUB_FAKE/left.pids"
-			"$@"
-			exit
 		fi
-		exec "$@"
+		scan_rc=0
+		"$@" || scan_rc=$?
+		case $mode in
+		termroots) : >"$STUB_FAKE/sig-term" ;;
+		killall) : >"$STUB_FAKE/sig-end" ;;
+		esac
+		exit "$scan_rc"
 		;;
 	*browser-prepare.sh*)
 		mkdir -p "$STUB_FAKE/work/prep"
@@ -712,7 +723,13 @@ exec)
 		env "${envs[@]}" "$STUB_BIN/stub-workload" &
 		wl=$!
 		echo "$wl" >"$STUB_FAKE/workload.pid"
-		until [[ -e $STUB_FAKE/wl-ready ]]; do sleep 0.02; done
+		# The wait for the workload is bounded by the container's directory, the lease every simulated process holds (when the run that owns it is interrupted its exit
+		# removes it, and nothing here may go on waiting for a readiness that can no longer come), and by a limit of its own.
+		wl_t0=$SECONDS
+		until [[ -e $STUB_FAKE/wl-ready ]]; do
+			[[ -d $STUB_FAKE ]] && ((SECONDS - wl_t0 < 60)) || exit 1
+			sleep 0.02
+		done
 		: >"$STUB_FAKE/running"
 		wait "$wl"
 		exit $?
@@ -722,21 +739,24 @@ exec)
 esac
 exit 0
 DOCKER
-	# The simulated workload shell: it holds the TERM trap, optionally leaves a TERM-ignoring non-bash writer behind, and idles without
-	# creating child processes (read on a fifo), so the processes carrying the marker are exactly the ones the test names.
+	# The simulated workload shell: it takes TERM and KILL from the runner's lookup as the flags sig-term (its TERM handling, unless it is stubborn) and sig-end, optionally
+	# leaves a TERM-ignoring non-bash writer behind, and idles without creating child processes (read on a fifo), so the processes carrying the marker are exactly
+	# the ones the test names. STUB_WL_NEVER holds it from ever becoming ready (n_startup_interrupt).
 	cat >"$bin/stub-workload" <<'WORKLOAD'
 #!/usr/bin/env bash
-if [[ -n ${STUB_INNER_STUBBORN:-} ]]; then
-	trap '' TERM
-else
-	trap 'echo "{\"aborted\":{\"signal\":\"TERM\"}}" >"$STUB_FAKE/work/out/evidence-status.json"; rm -f "$STUB_FAKE/running"; exit 143' TERM
-fi
+on_term() {
+	echo "{\"aborted\":{\"signal\":\"TERM\"}}" >"$STUB_FAKE/work/out/evidence-status.json"
+	rm -f "$STUB_FAKE/running"
+	exit 143
+}
 [[ -z ${STUB_DESC:-} ]] || "$STUB_BIN/stub-desc"
 exec 3<>"$STUB_FAKE/idle"
-: >"$STUB_FAKE/wl-ready"
+[[ -n ${STUB_WL_NEVER:-} ]] || : >"$STUB_FAKE/wl-ready"
 # It runs while the container's directory exists and the container has not been removed, and writes its beat (one line a tenth of a second) except while it is frozen.
 while [[ -d $STUB_FAKE && ! -e $STUB_FAKE/removed ]]; do
 	read -r -t 0.1 -u 3 _ || true
+	if [[ -e $STUB_FAKE/sig-end ]]; then exit 137; fi
+	if [[ -z ${STUB_INNER_STUBBORN:-} && -e $STUB_FAKE/sig-term ]]; then on_term; fi
 	[[ -e $STUB_FAKE/paused ]] || echo >>"$STUB_FAKE/beat.wl" 2>/dev/null
 done
 WORKLOAD
@@ -745,9 +765,14 @@ WORKLOAD
 	cat >"$bin/stub-desc" <<'DESC'
 #!/usr/bin/env bash
 (
-	setsid sh -c "trap '' TERM; echo \$\$ >\"\$1\"; while [ -d \"\$3\" ] && [ ! -e \"\$3/removed\" ]; do sleep 0.1; [ -e \"\$3/paused\" ] || echo late >>\"\$2\"; done" _ "$STUB_FAKE/desc.pid" "$STUB_FAKE/work/out/late.txt" "$STUB_FAKE" </dev/null >/dev/null 2>&1 &
+	setsid sh -c "trap '' TERM; echo \$\$ >\"\$1\"; while [ -d \"\$3\" ] && [ ! -e \"\$3/removed\" ] && [ ! -e \"\$3/sig-end\" ]; do sleep 0.1; [ -e \"\$3/paused\" ] || echo late >>\"\$2\"; done" _ "$STUB_FAKE/desc.pid" "$STUB_FAKE/work/out/late.txt" "$STUB_FAKE" </dev/null >/dev/null 2>&1 &
 )
-until [[ -s $STUB_FAKE/desc.pid ]]; do sleep 0.02; done
+# Bounded by the container's directory, as every wait of the simulated container is: a writer that could not record itself because the directory is gone never will.
+for ((i = 0; i < 500; i++)); do
+	[[ -s $STUB_FAKE/desc.pid ]] && break
+	[[ -d $STUB_FAKE ]] || break
+	sleep 0.02
+done
 DESC
 	chmod +x "$bin/docker" "$bin/stub-workload" "$bin/stub-desc"
 	# n_reset: a fresh container. n_wait: the workload is running in it.
@@ -1043,6 +1068,115 @@ OUTER
 		((${#FOUND[@]} == 0)) || t_fail "bounded: processes of the interrupted shell remain after its runner finished (pids ${FOUND[*]}): something that could signal later"
 		exec {g}>&-
 	}
+	# n_startup_interrupt: the self-test is interrupted after the docker client has started the simulated workload and before the workload is ready. Its exit trap then removes
+	# the run's directory, the lease the simulated container holds (drop_selftest), and that is done here by hand at exactly that boundary: the client has recorded the
+	# workload it started, and the workload is held from ever becoming ready (STUB_WL_NEVER), so nothing depends on timing. The client's wait for readiness has to end by
+	# itself when the lease is gone (exit 1, not the limit's KILL), and so does the workload; every process of the case carries STARTUP_FIXTURE, so what is left is seen,
+	# not assumed. The client runs under bounded_exec as the real cases do, so a client that did not end could not hold the test for more than its limit. Nothing is
+	# signalled.
+	n_startup_interrupt() {
+		local dir=$tmp/startup client crc=0 i cid
+		printf -v cid 'c%.0s' {1..64}
+		mkdir -p "$dir/fake"
+		(cd "$nroot" && bounded_exec 40 env "PATH=$bin:$PATH" "STUB_FAKE=$dir/fake" "STUB_BIN=$bin" "STUB_LOG=$dir/log" "STARTUP_FIXTURE=$dir" STUB_WL_NEVER=1 \
+			"$bin/docker" exec -e FOLD_NESTED_RUN=startup "$cid" bash qc1-measure.sh) >"$dir/out" 2>&1 &
+		client=$!
+		for ((i = 0; i < 100; i++)); do
+			[[ -s $dir/fake/workload.pid ]] && break
+			sleep 0.05
+		done
+		if [[ ! -s $dir/fake/workload.pid || -e $dir/fake/wl-ready ]]; then
+			t_fail "startup: the case is not at the boundary (the workload was not started, or it was already ready)"
+		fi
+		rm -rf "$dir/fake"
+		for ((i = 0; i < 100; i++)); do
+			[[ " $(jobs -rp | tr '\n' ' ') " == *" $client "* ]] || break
+			sleep 0.1
+		done
+		if [[ " $(jobs -rp | tr '\n' ' ') " == *" $client "* ]]; then
+			t_fail "startup: the docker client was still waiting for the workload 10 seconds after its container's directory was gone"
+		fi
+		wait "$client" || crc=$?
+		[[ $crc == 1 ]] || t_fail "startup: the docker client exited $crc, want 1 (it gave up the wait itself; 137 is the limit's KILL)"
+		for ((i = 0; i < 100; i++)); do
+			find_marked "STARTUP_FIXTURE=$dir"
+			((${#FOUND[@]})) || break
+			sleep 0.05
+		done
+		((${#FOUND[@]} == 0)) || t_fail "startup: processes of the interrupted case remain (pids ${FOUND[*]}): a client or a workload outlived its container's directory"
+	}
+	# n_scan_identity: the ownership scan's own signalling, on a copy of the process table (OWN_PROC) with a recorder for its signals, so that no process and no number of
+	# this host is involved and the race is deterministic. Three processes: A (a root, start 111), B (A's child, start 222) and C (carries no marker). The recorder
+	# plays the world at the moment a signal arrives: the first signal sent to A (the STOP that holds it) finds A already gone (expire), or finds a different process
+	# under the same number, one with no marker (other) or one with the run's own marker but another start time (rerun). In every one of them nothing but STOP and
+	# CONT may be sent to A's number (a signal that stops nothing is a signal to nobody), B and C are never touched wrongly, and an undisturbed A or B gets its TERM or
+	# KILL only between a STOP and, for TERM, the CONT that resumes it.
+	n_scan_identity() {
+		local fp=$tmp/fakeproc scan rec=$tmp/scan-identity.rec mode race out
+		scan=$(sed -n "/^OWN_SCAN=\$(cat <<'SCAN'\$/,/^SCAN\$/p" "$nroot/$nested_tool" | sed '1d;$d')
+		if [[ -z $scan ]]; then
+			t_fail "identity: the ownership scan could not be extracted"
+			return 0
+		fi
+		# n_fake_proc PID PPID START MARKED: one entry of the copy.
+		n_fake_proc() {
+			mkdir -p "$fp/$1"
+			printf '%s (stub) S %s %s %s 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 %s 0 0\n' "$1" "$2" "$1" "$1" "$3" >"$fp/$1/stat"
+			if [[ $4 == yes ]]; then printf 'HOME=/x\0FOLD_NESTED_RUN=fake\0' >"$fp/$1/environ"; else printf 'HOME=/x\0' >"$fp/$1/environ"; fi
+		}
+		# shellcheck disable=SC2016 # the recorder is run by sh, which expands it
+		local recorder='kill() {
+	printf "%s %s\n" "$1" "$2" >>"$REC"
+	if [ "$1 $2" = "-STOP 4000001" ]; then
+		case $RACE in
+		expire) rm -rf "$OWN_PROC/4000001"; return 1 ;;
+		other) printf "HOME=/x\0" >"$OWN_PROC/4000001/environ"; sed -i "s/ 111 0 0\$/ 999 0 0/" "$OWN_PROC/4000001/stat" ;;
+		rerun) sed -i "s/ 111 0 0\$/ 999 0 0/" "$OWN_PROC/4000001/stat" ;;
+		esac
+	fi
+	return 0
+}
+'
+		for mode in count termroots killall; do
+			for race in none expire other rerun; do
+				[[ $mode != count || $race == none ]] || continue
+				rm -rf "$fp"
+				mkdir -p "$fp"
+				n_fake_proc 4000001 1 111 yes
+				n_fake_proc 4000002 4000001 222 yes
+				n_fake_proc 4000003 1 333 no
+				: >"$rec"
+				out=$(REC=$rec RACE=$race OWN_PROC=$fp sh -c "$recorder$scan" fold-owned-scan FOLD_NESTED_RUN=fake "$mode" 2>&1) || true
+				if [[ $out != 2 ]]; then t_fail "identity ($mode/$race): the scan printed '$out', want 2 (A and B; C has no marker)"; fi
+				if grep -q -- ' 4000003$' "$rec"; then t_fail "identity ($mode/$race): the process without the marker was signalled"; fi
+				case $mode in
+				count)
+					[[ ! -s $rec ]] || t_fail "identity (count): the read-only mode signalled: $(tr '\n' ' ' <"$rec")"
+					;;
+				termroots)
+					! grep -q -- '^-[A-Z]* 4000002$' "$rec" || t_fail "identity ($mode/$race): B, which is owned and not a root, was signalled: $(tr '\n' ' ' <"$rec")"
+					if [[ $race == none ]]; then
+						[[ $(tr '\n' ' ' <"$rec") == '-STOP 4000001 -TERM 4000001 -CONT 4000001 ' ]] || t_fail "identity (termroots/none): A did not get STOP, TERM, CONT in that order: $(tr '\n' ' ' <"$rec")"
+					else
+						! grep -q -- '^-TERM 4000001$' "$rec" || t_fail "identity ($mode/$race): TERM was sent to a number that was no longer the process selected: $(tr '\n' ' ' <"$rec")"
+					fi
+					;;
+				killall)
+					if [[ $race == none ]]; then
+						[[ $(tr '\n' ' ' <"$rec") == '-STOP 4000001 -KILL 4000001 -STOP 4000002 -KILL 4000002 ' ]] || t_fail "identity (killall/none): A and B did not each get STOP then KILL: $(tr '\n' ' ' <"$rec")"
+					else
+						! grep -q -- '^-KILL 4000001$' "$rec" || t_fail "identity ($mode/$race): KILL was sent to a number that was no longer the process selected: $(tr '\n' ' ' <"$rec")"
+						grep -q -- '^-KILL 4000002$' "$rec" || t_fail "identity ($mode/$race): the undisturbed B was not killed: $(tr '\n' ' ' <"$rec")"
+					fi
+					;;
+				esac
+				case $race in
+				other | rerun) grep -q -- '^-CONT 4000001$' "$rec" || t_fail "identity ($mode/$race): the process that was stopped by mistake was not resumed: $(tr '\n' ' ' <"$rec")" ;;
+				esac
+			done
+		done
+		rm -rf "$fp" "$rec"
+	}
 	# n_left_gone NAME: the children that docker clients answered and exited with, leaving them behind (and ignoring TERM), are gone; at least one was left. A survivor is
 	# reported, not signalled: its number is a record, and it carries a bound (a sleep of 90 seconds).
 	n_left_gone() {
@@ -1251,6 +1385,8 @@ HOOK
 	n_probe_markers
 	n_probe_interrupt
 	n_bounded_interrupt
+	n_scan_identity
+	n_startup_interrupt
 	rm -f "$tmp/launch-signal-sent"
 	t0=$SECONDS
 	n_run nest-launch-signal STUB_CASE=nest-launch-signal STUB_QUICK=1 STUB_SCAN_HANG_FIRST=1 STUB_HANG_STUBBORN=1 "BASH_ENV=$tmp/signal-in-launch.sh" "LAUNCH_SIGNAL_MARK=$tmp/launch-signal-sent" FOLD_NESTED_CALL_TIMEOUT=2 FOLD_NESTED_STOP_GRACE=8 FOLD_NESTED_KILL_WAIT=4 FOLD_NESTED_CLEANUP_BUDGET=30 FOLD_NESTED_RM_RESERVE=6 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-launch-signal" --qc1

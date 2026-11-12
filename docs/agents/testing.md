@@ -245,7 +245,7 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   ordered steps on every end, not only a signal: stop, then collect, then remove. Every process
   the workload starts carries `FOLD_NESTED_RUN=<run id>` in its environment (each `docker exec`
   passes it), so the runner finds Node, Chromium, npm and orphans as well as the bash scripts,
-  by that marker, with a lookup run inside the container. After a signal it TERMs the owned
+  by that marker, with a lookup run inside the container (a process is signalled only after it is held with STOP and its start time and marker are checked again). After a signal it TERMs the owned
   top-level processes (`FOLD_NESTED_STOP_GRACE` seconds, default 90), then KILLs every owned
   process (`FOLD_NESTED_KILL_WAIT`, default 15). A stop is established only by two successful
   lookups, a second apart, that both count zero; a lookup that fails is never read as "none".
@@ -364,10 +364,22 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   long answered, and a cancel whose removal stalls after the workload has ended. Every KILL the
   runner sends must hit a live process, which is a client group it still holds (the recorder must
   have seen the runner, so an empty record cannot pass), and the simulated container sends none.
-  The one signal that still reaches host processes by number is the runner's own container-side
-  lookup script, which the stub runs unchanged on this host's /proc: it can only signal a process
-  that carries the run's random `FOLD_NESTED_RUN` marker, and signalling those is what the case
-  tests. A
+  No signal reaches a host process by number. The runner's container-side lookup script is
+  run by the stub on this host's /proc in its read-only mode (`count`) only; the TERM and KILL
+  it would send arrive at the simulated processes as flag files (`sig-term`, `sig-end`) that
+  they act on themselves. The lookup's own signalling is proved on a copy of the process table
+  (`OWN_PROC`) with a recorder for its signals (`n_scan_identity`): a process is selected with
+  its start time and signalled only after it has been held with STOP and checked again (the
+  marker still in its environment, the same start time), so a process that ended between
+  selection and dispatch, or whose number was given to another process (one with no marker, or
+  one of the same run with another start time), receives only STOP and CONT and never TERM or
+  KILL; B, an owned child, and an unmarked process get nothing wrong; and the read-only mode
+  sends nothing. Every wait of the simulated container (the docker client's wait for the
+  workload's readiness, the writer's wait to record itself) ends when the container's
+  directory, the lease its processes hold, is gone; `n_startup_interrupt` removes it at the
+  boundary between the workload's launch and its readiness (the workload is held from ever
+  becoming ready) and checks that the client exits by itself (status 1, not the limit's KILL)
+  and that nothing carrying the case's marker remains. A
   bystander survives, a budget the
   runner cannot use or one that does not fit the wrapper's grace is refused, a
   removal that stalls once is retried, one that never works names the container and fails the

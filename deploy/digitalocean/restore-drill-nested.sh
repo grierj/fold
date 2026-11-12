@@ -245,24 +245,42 @@ limited() {
 OWN_MARK="FOLD_NESTED_RUN=$RUN_ID"
 # The lookup runs inside the container (busybox sh): it lists the processes whose environment holds the marker and, by mode, signals them. Modes: count (signal
 # nothing), termroots (TERM the owned processes whose parent is not owned, so a script's own trap can clean up its children), killall (KILL every owned
-# process). It prints how many it found; nothing else.
+# process). It prints how many it found; nothing else. A number alone is not a process: the selection can be minutes old by the time a signal is sent, and the
+# number may be someone else's by then. So a process is selected with its start time, and is signalled only after it has been held: SIGSTOP stops it from exiting
+# (a stopped process cannot end by itself, so its number cannot be given away), it is checked again (the marker still in its environment, the same start time),
+# and only that held, verified process gets TERM (and is then resumed) or KILL. What the STOP reached when the check fails is resumed unharmed. OWN_PROC names the
+# process table, /proc unless a test points it at a copy.
 OWN_SCAN=$(cat <<'SCAN'
-m=$1; mode=$2; self=$$; list=" "
-for d in /proc/[0-9]*; do
-  p=${d#/proc/}
+m=$1; mode=$2; self=$$; root=${OWN_PROC:-/proc}; list=" "; info=
+mine() { tr '\000' '\n' 2>/dev/null <"$root/$1/environ" | grep -qxF "$m"; }
+ident() { sed -n 's/^[0-9]* (.*) //p' "$root/$1/stat" 2>/dev/null | { read -r _ pp _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ st _ && echo "$pp $st"; }; }
+send() {
+  kill -STOP "$1" 2>/dev/null || return 0
+  if mine "$1" && id=$(ident "$1") && [ "${id#* }" = "$2" ]; then
+    kill -"$3" "$1" 2>/dev/null
+    [ "$3" = KILL ] && return 0
+  fi
+  kill -CONT "$1" 2>/dev/null
+  return 0
+}
+for d in "$root"/[0-9]*; do
+  p=${d##*/}
   [ "$p" = "$self" ] && continue
-  tr '\000' '\n' <"$d/environ" 2>/dev/null | grep -qxF "$m" && list="$list$p "
+  mine "$p" || continue
+  id=$(ident "$p")
+  [ -n "$id" ] || continue
+  list="$list$p "
+  info="$info$p:${id% *}:${id#* } "
 done
 n=0
-for p in $list; do
+for e in $info; do
+  p=${e%%:*}; r=${e#*:}; pp=${r%%:*}; start=${r#*:}
   n=$((n+1)); sig=
   case $mode in
     killall) sig=KILL ;;
-    termroots)
-      pp=$(sed -n 's/^[0-9]* (.*) [A-Za-z] \([0-9]*\) .*/\1/p' "/proc/$p/stat" 2>/dev/null)
-      case "$list" in *" $pp "*) ;; *) sig=TERM ;; esac ;;
+    termroots) case "$list" in *" $pp "*) ;; *) sig=TERM ;; esac ;;
   esac
-  [ -z "$sig" ] || kill -"$sig" "$p" 2>/dev/null
+  [ -z "$sig" ] || send "$p" "$start" "$sig"
 done
 echo "$n"
 SCAN
