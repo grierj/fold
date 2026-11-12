@@ -72,9 +72,11 @@
 # that ignores TERM included) and counted as a failure, never waited for. The cleanup as a whole has FOLD_NESTED_CLEANUP_BUDGET seconds (a whole number, at least 3,
 # else the run is refused; default 170, from the moment the stop begins, restarted by a signal); a signal-driven run under scripts/reason-review-scale.sh gets its
 # budget from that wrapper's grace, which refuses a budget that does not fit in it. The last FOLD_NESTED_RM_RESERVE seconds (default 30, at most a third of the
-# budget) belong to removal alone: the stop gets at most three quarters of the time before them, and the pause, the copies and the unpause (which may take half of
-# what is left, so a stalled one cannot use up the time removal needs) end before them. A single call gets FOLD_NESTED_CALL_TIMEOUT seconds (default 15); the
-# copy of /work/out is the exception, it may use whatever the stop and the other copy leave before the reserve. Removal always makes at least one attempt. If the
+# budget) belong to removal alone, and the window is laid out from its end so that no step can take what a later one needs (open_window): the evidence copy
+# of /work/out owns the 2 seconds before the reserve, the pause and the preparation copy end before those, and the stop ends 2 seconds before them (and takes at most
+# three quarters of the time before the reserve); a step with no time left is not started, and is said. The unpause comes after the copies and runs only if 2 seconds
+# would still be left for removal after it, ending by then, else it is skipped (and said if removal fails). A single call gets FOLD_NESTED_CALL_TIMEOUT seconds
+# (default 15); the copy of /work/out is the exception, it may use its whole slice. Removal always makes at least one attempt (2 seconds if less is left). If the
 # container still cannot be shown to be gone, its name and id are on stderr and in COLLECTION-FAILED.txt with the command to remove it by hand, and the run fails.
 #
 # Records in --out: INTERRUPTED.txt (how the run stopped), COLLECTION-FAILED.txt
@@ -128,7 +130,10 @@ ARMED=0 COLLECTED=0 INTERRUPTED="" STOPPED_HOW="none" INNER_CLIENT=""
 STOP_VERIFIED=0 STOP_LOOKUP_ERRORS=0 FROZEN=0 OWNED_N=""
 COLLECT_FAILED=()
 TO_LOOKUP=0 TO_PAUSE=0 TO_UNPAUSE=0 TO_RM=0 LIMITED_JOB="" LIMITED_TIMED_OUT=0
-CLEAN_END="" RM_AT="" STOP_END="" PHASE_END=""
+CLEAN_END="" RM_AT="" MAIN_AT="" STOP_LIMIT="" STOP_END="" PHASE_END="" UNPAUSE_SKIPPED=0
+# The least a call that must be able to start is given: whole-second deadlines may fall up to a second early, so two seconds is the shortest interval that is sure to
+# hold one call. The cleanup's allocation is built from it (open_window).
+STAGE_MIN=2
 # secs NAME DEFAULT MIN: the whole number in the environment variable NAME if it is one of at least MIN, else DEFAULT.
 secs() {
   local v="${!1:-}"
@@ -136,8 +141,13 @@ secs() {
 }
 CALL_T="$(secs FOLD_NESTED_CALL_TIMEOUT 15 1)"
 # The cleanup's clock. Every deadline below is an absolute $SECONDS value (whole seconds, so one may fall up to a second early), so a stalled call cannot stretch a
-# loop that counts iterations. open_window starts it once per cleanup: CLEAN_END is the end of all of it; RM_AT is where the time reserved for removal begins, and
-# nothing before removal (lookups, pause, copies) is given time past it. A signal restarts it (on_signal), because the wrapper's grace starts then.
+# loop that counts iterations. open_window starts it once per cleanup and lays the window out from its end, so that the later steps keep a slice that no earlier step
+# can use, however short the budget (a step with no time left is skipped and said, never given another's):
+#   CLEAN_END  the end of all of it;
+#   RM_AT      where the time reserved for removal (and the unpause before it) begins; the evidence copy ends here;
+#   MAIN_AT    STAGE_MIN before RM_AT: the evidence copy (/work/out) owns [MAIN_AT, RM_AT), so the pause and the preparation copy end by MAIN_AT;
+#   STOP_LIMIT STAGE_MIN before MAIN_AT: the stop ends by here, which leaves the pause a call's time (at least) before MAIN_AT.
+# A signal restarts the clock (on_signal), because the wrapper's grace starts then.
 open_window() {
   [[ -z "$CLEAN_END" ]] || return 0
   local budget reserve
@@ -146,6 +156,8 @@ open_window() {
   (( reserve * 3 <= budget )) || reserve=$((budget / 3))
   CLEAN_END=$((SECONDS + budget))
   RM_AT=$((CLEAN_END - reserve))
+  MAIN_AT=$((RM_AT - STAGE_MIN))
+  STOP_LIMIT=$((MAIN_AT - STAGE_MIN))
 }
 # shellcheck disable=SC2329 # reached through remove_container, which the EXIT trap runs.
 # call_deadline LIMIT: one call's deadline, CALL_T from now and never past LIMIT.
@@ -154,10 +166,10 @@ call_deadline() {
   (( d <= $1 )) || d=$1
   echo "$d"
 }
-# share_deadline LIMIT DIV: a call's deadline that also leaves the rest of the time before LIMIT to what follows it: at most 1/DIV of that time (and two seconds at least, so a clock tick cannot end it at once).
+# share_deadline LIMIT DIV: a call's deadline that also leaves the rest of the time before LIMIT to what follows it: at most 1/DIV of that time (and STAGE_MIN seconds at least, so a clock tick cannot end it at once; never past LIMIT, so a LIMIT already reached gives no time).
 share_deadline() {
   local s=$(( ($1 - SECONDS) / $2 )) d
-  (( s >= 2 )) || s=2
+  (( s >= STAGE_MIN )) || s=STAGE_MIN
   d=$((SECONDS + s))
   (( d <= SECONDS + CALL_T )) || d=$((SECONDS + CALL_T))
   (( d <= $1 )) || d=$1
@@ -280,8 +292,8 @@ inner_exec() {
 # stop_inner ends everything the workload left running, and says whether that is established. Nothing is copied before it returns. After an interruption the
 # owned top-level processes get TERM first (their traps finish the run's own cleanup); after a normal end only leftovers are asked. What is still there after
 # FOLD_NESTED_STOP_GRACE seconds (default 90) is killed, every owned process, and the stop is verified again, for up to FOLD_NESTED_KILL_WAIT seconds (default 15).
-# Both are absolute deadlines from the start of the stop, and together they get at most three quarters of the time before the removal reserve (open_window), so the
-# copies keep the rest. If a stop cannot be established (the lookup keeps failing or stalling, or a process will not die) the container is frozen, so what is copied
+# Both are absolute deadlines from the start of the stop, and together they get at most three quarters of the time before the removal reserve and end by STOP_LIMIT (open_window), so the
+# pause and the copies keep the rest. If a stop cannot be established (the lookup keeps failing or stalling, or a process will not die) the container is frozen, so what is copied
 # is at least one moment's state, and the caller records the copy as incomplete. The container's own daemon calls go through docker, so a TERM that reached only the
 # docker client on this host would stop nothing inside.
 # shellcheck disable=SC2329 # reached through the EXIT trap (cleanup).
@@ -293,6 +305,8 @@ stop_inner() {
   pre=$((RM_AT - SECONDS))
   (( pre > 0 )) || pre=0
   cap=$((pre * 3 / 4))
+  (( SECONDS + cap <= STOP_LIMIT )) || cap=$((STOP_LIMIT - SECONDS))
+  (( cap > 0 )) || cap=0
   STOP_END=$((SECONDS + cap))
   if (( grace + killwait > cap )); then
     if (( killwait > cap )); then killwait=$cap; grace=0; else grace=$((cap - killwait)); fi
@@ -321,7 +335,7 @@ stop_inner() {
     sleep 1
   done
   PHASE_END=""
-  d="$(share_deadline "$RM_AT" 3)"
+  d="$(share_deadline "$MAIN_AT" 3)"
   if limited "$d" "$TMP/pause.out" docker pause "$CID"; then
     FROZEN=1
   elif (( LIMITED_TIMED_OUT )); then
@@ -337,7 +351,7 @@ lookup_text() {
 }
 frozen_text() {
   if (( FROZEN )); then printf 'the container was frozen'
-  elif (( TO_PAUSE )); then printf 'the container may NOT be frozen: the pause stalled and was killed'
+  elif (( TO_PAUSE )); then printf 'the container may NOT be frozen: the pause stalled past its deadline or had no time left, and was killed or not started'
   else printf 'the container was NOT frozen'
   fi
 }
@@ -346,17 +360,18 @@ copy_out() {
   local rc=0
   COPY_WHY=""
   limited "$3" "$TMP/cp.out" docker cp "$CID:$1" "$2" || rc=$?
-  if (( LIMITED_TIMED_OUT )); then COPY_WHY=' (the copy stalled past its deadline and was killed; what was copied may be partial)'; fi
+  if (( LIMITED_TIMED_OUT )); then COPY_WHY=' (the copy stalled past its deadline, or had no time left, and was killed or not started; what was copied may be partial)'; fi
   return "$rc"
 }
 # collect_artifacts [prep] copies the preparation and run directories out (only the preparation with `prep`: a run that never started has no /work/out). A copy that
 # fails or stalls, and a stop that was not established, are said on stderr and recorded in COLLECTION-FAILED.txt; the caller must treat the run as failed. Both
-# copies end before the removal reserve; the preparation (small) never gets more than a quarter of the time left, nor more than one call's time, so a stalled one cannot starve the evidence.
+# copies end before the removal reserve. The evidence copy owns the last STAGE_MIN seconds of the time before it (MAIN_AT, open_window): the preparation copy (small) gets at most a
+# quarter of the time before MAIN_AT and one call's time, and when the stop and pause left none it is not started (and said), so the evidence is what runs.
 collect_artifacts() {
   local d
   COLLECT_FAILED=()
   open_window
-  d="$(share_deadline "$RM_AT" 4)"
+  d="$(share_deadline "$MAIN_AT" 4)"
   # With --no-browser there is no preparation directory, and its absence is not a failure.
   if ! copy_out /work/prep/. "$OUT/prep/" "$d" && (( ! skip_browser )); then
     COLLECT_FAILED+=("/work/prep (the browser runtime preparation) could not be copied out$COPY_WHY")
@@ -432,17 +447,22 @@ cleanup() {
   fi
   if [[ -n "$CID" ]]; then
     open_window
-    # Removal always gets an attempt: if the earlier phases left less than two seconds, it is given two.
-    (( CLEAN_END - SECONDS >= 2 )) || CLEAN_END=$((SECONDS + 2))
-    # The unpause may use half of what is left, so a stalled one cannot take the time removal needs.
+    # Removal always gets an attempt: if the earlier phases left less than STAGE_MIN seconds, it is given STAGE_MIN. The unpause is a courtesy to a paused container
+    # and comes second: it runs only if STAGE_MIN seconds would still remain for removal after a call's minimum, ends by then (half of the time before it at most), and
+    # is skipped, and said if removal then fails, when both do not fit; so a stalled unpause can never leave removal without a call.
+    (( CLEAN_END - SECONDS >= STAGE_MIN )) || CLEAN_END=$((SECONDS + STAGE_MIN))
     if (( FROZEN || TO_PAUSE )); then
-      limited "$(share_deadline "$CLEAN_END" 2)" "$TMP/unpause.out" docker unpause "$CID" || true
-      if (( LIMITED_TIMED_OUT )); then TO_UNPAUSE=1; fi
+      if (( CLEAN_END - SECONDS >= 2 * STAGE_MIN )); then
+        limited "$(share_deadline $((CLEAN_END - STAGE_MIN)) 2)" "$TMP/unpause.out" docker unpause "$CID" || true
+        if (( LIMITED_TIMED_OUT )); then TO_UNPAUSE=1; fi
+      else
+        UNPAUSE_SKIPPED=1
+      fi
     fi
     if ! remove_container; then
       # Removal could not be shown to have worked: the container may still be running, with its daemon, its volume and whatever the drill started in it. Say which one
       # and how to end it, where the person and the wrapper will read it, and fail a run that would have passed.
-      note="the container $NAME ($CID) could not be removed within the cleanup window$([[ $TO_RM == 0 ]] || echo " ($TO_RM removal calls stalled and were killed)")$([[ $TO_UNPAUSE == 0 ]] || echo " (the unpause stalled and was killed)"); it may still be running. Remove it yourself: docker rm -fv $CID"
+      note="the container $NAME ($CID) could not be removed within the cleanup window$([[ $TO_RM == 0 ]] || echo " ($TO_RM removal calls stalled and were killed)")$([[ $TO_UNPAUSE == 0 ]] || echo " (the unpause stalled and was killed)")$([[ $UNPAUSE_SKIPPED == 0 ]] || echo " (the unpause was skipped: too little time was left for it and the removal)"); it may still be running. Remove it yourself: docker rm -fv $CID"
       echo "restore-drill-nested: $note" >&2
       printf '%s\n' "$note" >>"$OUT/COLLECTION-FAILED.txt" || true
       if (( rc == 0 )) || (( CROSS && rc == 10 )); then rc=1; fi

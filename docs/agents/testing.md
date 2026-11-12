@@ -265,11 +265,15 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   descendant a client leaves behind after it exits; a stall is counted (a stalled lookup, pause or
   copy is said in `COLLECTION-FAILED.txt`). The whole cleanup has `FOLD_NESTED_CLEANUP_BUDGET`
   seconds (default 170; a whole number of at least 3, otherwise the runner refuses to start), a
-  single call `FOLD_NESTED_CALL_TIMEOUT` (15; the copy of `/work/out` may use what the stop and
-  the preparation copy leave), and the last `FOLD_NESTED_RM_RESERVE` seconds (30, at most a third
-  of the budget) are for removal alone: the stop gets at most three quarters of the time before
-  them, the preparation copy at most a quarter of what then remains, the pause a third and the
-  unpause half of what is left, so a stalled one cannot use up what the next step needs. The
+  single call `FOLD_NESTED_CALL_TIMEOUT` (15; the copy of `/work/out` may use its whole slice),
+  and the last `FOLD_NESTED_RM_RESERVE` seconds (30, at most a third of the budget) are for
+  removal alone. The window is laid out from its end, so a step cannot take what a later one
+  needs, however short the budget: the copy of `/work/out` owns the 2 seconds before the reserve,
+  the pause and the preparation copy end before those, and the stop ends 2 seconds before them
+  (and takes at most three quarters of the time before the reserve). A step with no time left is
+  not started and is said in `COLLECTION-FAILED.txt`. The unpause comes after the copies and runs
+  only if 2 seconds would still remain for removal after it (it ends by then, taking half of the
+  time before that at most); otherwise it is skipped and removal gets its attempt. The
   wrapper checks `FOLD_SCALE_STOP_GRACE` and the budget together before it starts anything (a
   `--dry-run` shows the result): the budget it sets is the grace less ten seconds (less five for a
   grace of 40 or shorter), a grace under 8 seconds is refused, and an explicit budget must leave

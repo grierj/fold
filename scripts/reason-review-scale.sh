@@ -989,6 +989,19 @@ DESC
 	n_hung_gone nest-hang-cp-prep-default
 	grep -q 'work/prep.*stalled past its deadline' "$tmp/nest-hang-cp-prep-default/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-hang-cp-prep-default: the stalled copy was not recorded as stalled"
 	[[ -s $tmp/nest-hang-cp-prep-default/done ]] || t_fail "nest-hang-cp-prep-default: the main evidence copy was starved by the stalled preparation copy"
+	# The shortest budgets, where a step could take the next one's whole slice. The window is laid out from its end (open_window): the evidence copy owns the 2 seconds
+	# before the removal reserve, so a stalled preparation copy that finds only that much left is not started. Budget 9 (reserve 3, the stop at most 2 seconds of the 6
+	# before it): the lookup stalls and ignores TERM so the stop uses all it has, the pause answers, the preparation copy stalls, and the evidence is still copied.
+	t0=$SECONDS
+	n_run nest-hang-cp-prep-slow STUB_QUICK=1 STUB_SCAN_HANG=1 STUB_CP_HANG=prep STUB_HANG_STUBBORN=1 FOLD_NESTED_CLEANUP_BUDGET=9 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-cp-prep-slow" --qc1
+	[[ $rc == 1 ]] || t_fail "nest-hang-cp-prep-slow: exit $rc, want 1 (124 means the runner never returned)"
+	n_took nest-hang-cp-prep-slow "$t0" 16
+	n_hung_gone nest-hang-cp-prep-slow
+	n_only_ours nest-hang-cp-prep-slow
+	[[ -s $tmp/nest-hang-cp-prep-slow/done ]] || t_fail "nest-hang-cp-prep-slow: the evidence copy got no time after a slow stop and a stalled preparation copy"
+	n_before '^pause c\{64\}$' '^cp c\{64\}:/work/out/\. ' || t_fail "nest-hang-cp-prep-slow: the container was not frozen before the evidence copy"
+	grep -q 'work/prep.*stalled past its deadline' "$tmp/nest-hang-cp-prep-slow/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-hang-cp-prep-slow: the preparation copy's failure was not recorded"
+	! grep -q 'work/out.*could not be copied' "$tmp/nest-hang-cp-prep-slow/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-hang-cp-prep-slow: the evidence copy was recorded as failed"
 	# A pause that stalls: it is ended and the record says the freeze is unknown, not that it worked.
 	t0=$SECONDS
 	# shellcheck disable=SC2086
@@ -1010,6 +1023,26 @@ DESC
 	n_before '^unpause c\{64\}$' '^rm -fv ' || t_fail "nest-hang-unpause: removal was not attempted after the stalled unpause"
 	grep -q 'was frozen' "$tmp/nest-hang-unpause/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-hang-unpause: the record does not say the container was frozen"
 	[[ -s $tmp/nest-hang-unpause/done ]] || t_fail "nest-hang-unpause: the evidence was not copied"
+	# The removal reserve is shorter than the unpause and the removal need together (budget 6: reserve 2; the evidence copy stalls up to the reserve, so exactly the
+	# reserve is left): the unpause is skipped, not given the removal's seconds, and removal is called and works although an unpause would have stalled.
+	t0=$SECONDS
+	n_run nest-hang-unpause-tight STUB_QUICK=1 STUB_SCAN_FAIL=1 STUB_CP_HANG=out STUB_UNPAUSE_HANG=1 STUB_HANG_STUBBORN=1 FOLD_NESTED_CALL_TIMEOUT=2 FOLD_NESTED_CLEANUP_BUDGET=6 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-unpause-tight" --qc1
+	[[ $rc == 1 ]] || t_fail "nest-hang-unpause-tight: exit $rc, want 1 (124 means the runner never returned)"
+	n_took nest-hang-unpause-tight "$t0" 12
+	n_hung_gone nest-hang-unpause-tight
+	n_only_ours nest-hang-unpause-tight
+	grep -q '^rm -fv c\{64\}$' "$tmp/nlog" || t_fail "nest-hang-unpause-tight: removal was never called"
+	! grep -q '^unpause ' "$tmp/nlog" || t_fail "nest-hang-unpause-tight: an unpause was started with too little time left for it and the removal"
+	grep -q 'could not be confirmed stopped' "$tmp/nest-hang-unpause-tight/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-hang-unpause-tight: the unestablished stop was not recorded"
+	# One more second than that (budget 15, reserve 5: the unpause may use 2 seconds): it is tried, stalls, is killed by its own deadline, and removal is still called and works.
+	t0=$SECONDS
+	n_run nest-hang-unpause-fit STUB_QUICK=1 STUB_SCAN_FAIL=1 STUB_CP_HANG=out STUB_UNPAUSE_HANG=1 STUB_HANG_STUBBORN=1 FOLD_NESTED_CALL_TIMEOUT=2 FOLD_NESTED_STOP_GRACE=2 FOLD_NESTED_KILL_WAIT=2 FOLD_NESTED_CLEANUP_BUDGET=15 FOLD_NESTED_RM_RESERVE=5 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-unpause-fit" --qc1
+	[[ $rc == 1 ]] || t_fail "nest-hang-unpause-fit: exit $rc, want 1 (124 means the runner never returned)"
+	n_took nest-hang-unpause-fit "$t0" 22
+	n_hung_gone nest-hang-unpause-fit
+	n_only_ours nest-hang-unpause-fit
+	n_before '^unpause c\{64\}$' '^rm -fv ' || t_fail "nest-hang-unpause-fit: the unpause was not tried before removal, or removal was never called"
+	! grep -q 'could not be removed' "$tmp/nest-hang-unpause-fit/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-hang-unpause-fit: a removal that worked was recorded as failed"
 	# The same stall followed by a removal that stalls too: the failure names the container and says the unpause stalled.
 	n_want_removed=0
 	t0=$SECONDS
