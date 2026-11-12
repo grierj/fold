@@ -287,6 +287,7 @@ mkdir "$WORK/stubbin"
 cat >"$WORK/stubbin/docker" <<'STUB'
 #!/usr/bin/env bash
 line=; sep=; for a in "$@"; do line+="$sep${a//$'\n'/\\n}"; sep=" "; done; printf '%s\n' "$line" >>"$STUB_LOG"   # one line per call; a newline inside an argument is written as \n
+[[ $1 != run ]] || : >"$STUB_LOG.argv"; { sep=; for a in "$@"; do printf '%s%q' "$sep" "$a"; sep=" "; done; printf '\n'; } >>"$STUB_LOG.argv"   # the same call with every argument %q-quoted, so that where one ends and the next begins survives (a launch starts with `run`, which starts the file anew)
 case "$1" in
   info) printf '{"Name":"x","ContainersRunning":0}\n' ;;
   run) printf 'c%.0s' {1..64}; echo ;;
@@ -301,16 +302,24 @@ git init -q "$LAUNCH"; git -C "$LAUNCH" config user.name fixture; git -C "$LAUNC
 git -C "$LAUNCH" config commit.gpgsign false; git -C "$LAUNCH" config core.hooksPath /dev/null
 git -C "$LAUNCH" add -A; git -C "$LAUNCH" commit -qm launcher
 launch() { STUB_LOG="$WORK/stub.log" PATH="$WORK/stubbin:$PATH" bash "$LAUNCH/deploy/digitalocean/restore-drill-nested.sh" "$@"; }
-# WRAP, the supervisor every docker exec runs the workload under, as the runner defines it (WRAP_ARG) and as the stub's log shows it: ONE argument whose newlines are written as \n
-# (WRAP_LOG), so that a call is still one line and the argument is neither split nor read as calls of its own. The supervisor's contract, read from the script itself: it loads the
+# WRAP, the supervisor every docker exec runs the workload under, as the runner defines it (WRAP_ARG). The stub's argv file (stub.log.argv) keeps every argument apart, so the check is
+# that WRAP is exactly one argument after bash -c and the workload's words follow it one by one. The supervisor's contract, read from the script itself: it loads the
 # Chromium the preparation found, polls for the stop request and TERMs the workload's group; it does not exec the command in its place.
 WRAP_ARG="$(sed -n "/^WRAP=\$(cat <<'WRAP'\$/,/^WRAP\$/p" "$HERE/restore-drill-nested.sh" | sed '1d;$d')"
 [[ -n "$WRAP_ARG" ]]
-WRAP_LOG="${WRAP_ARG//$'\n'/\\n}"
 grep -qF 'prep/browser.env' <<<"$WRAP_ARG"; grep -qF 'stop-request' <<<"$WRAP_ARG"; grep -qF 'kill -TERM -- "-$g"' <<<"$WRAP_ARG"
 if grep -qF 'exec "$@"' <<<"$WRAP_ARG"; then echo 'the supervisor execs the command in its place again' >&2; exit 1; fi
+# wrapped_call LOG WORDS...: LOG (the stub's argv file: one call per line, each argument %q-quoted, so no two arguments can read as one) holds a docker exec whose arguments END with
+# bash, -c, the WRAP text as exactly ONE argument, _, bash and then each of WORDS as an argument of its own. The negative case below shows that WRAP and the workload's words
+# joined into one argument are refused.
+WRAP_Q="$(printf '%q' "$WRAP_ARG")"
+wrapped_call() { local log=$1 want="bash -c $WRAP_Q _ bash" a l; shift; for a in "$@"; do want+=" $(printf '%q' "$a")"; done; while IFS= read -r l; do [[ "$l" == "exec "*" $want" ]] && return 0; done <"$log"; return 1; }
+printf 'exec -w /work/fold c bash -c %q\n' "$WRAP_ARG _ bash x y" >"$WORK/joined.argv"
+if wrapped_call "$WORK/joined.argv" x y; then echo 'wrapped_call accepts WRAP and the workload joined into one argument' >&2; exit 1; fi
+printf 'exec -w /work/fold c bash -c %q _ bash x y\n' "$WRAP_ARG" >"$WORK/exact.argv"
+wrapped_call "$WORK/exact.argv" x y
 # In EACH mode the browser is prepared once, after the clone and before the run, in the same container, and the run receives the Chromium the preparation found.
-check_mode() { # mode-name run-script label prepare-env-words
+check_mode() { # mode-name run-script label prepare-env-words run-words
   local clone_l prep_l run_l run_line
   clone_l="$(grep -n 'git clone' "$WORK/stub.log" | head -n 1 | cut -d: -f1)"
   prep_l="$(grep -n 'browser-prepare.sh /work/prep$' "$WORK/stub.log" | head -n 1 | cut -d: -f1)"
@@ -320,15 +329,16 @@ check_mode() { # mode-name run-script label prepare-env-words
   grep -q "^exec -e FOLD_NESTED_RUN=[0-9a-f]\{12\} $4-w /work/fold c\{64\} bash -c .* _ bash deploy/digitalocean/qc1/browser-prepare.sh /work/prep\$" "$WORK/stub.log" || { echo "$1: the preparation does not run with the environment $4" >&2; cat "$WORK/stub.log" >&2; exit 1; }
   run_line="$(sed -n "${run_l}p" "$WORK/stub.log")"
   grep -q -- '-e FOLD_DRILL_ISOLATED_DAEMON=1 -e QC1_NO_SANDBOX=1 -e QC1_WEB_DIR=/work/fold/web -w /work/fold' <<<"$run_line" || { echo "$1: the run does not get the runner switches" >&2; exit 1; }
-  grep -qF -- " bash -c $WRAP_LOG _ bash " <<<"$run_line" || { echo "$1: the run is not under the supervisor, or its argument was split" >&2; exit 1; }   # the exact WRAP, loading the prepared Chromium among other things
-  [[ "$(grep -cF -- " bash -c $WRAP_LOG _ bash " "$WORK/stub.log")" == 2 ]] || { echo "$1: the preparation and the run are not both under the supervisor" >&2; exit 1; }
+  read -ra run_w <<<"$5"   # the run's words, each its own argument after the supervisor's exact one
+  wrapped_call "$WORK/stub.log.argv" deploy/digitalocean/qc1/browser-prepare.sh /work/prep || { echo "$1: the preparation is not under the exact supervisor with its own arguments" >&2; exit 1; }
+  wrapped_call "$WORK/stub.log.argv" "${run_w[@]}" || { echo "$1: the run is not under the exact supervisor with its own arguments" >&2; exit 1; }
   grep -q "^cp c\{64\}:/work/prep/. $WORK/$3/prep/" "$WORK/stub.log"; grep -q "^cp c\{64\}:/work/out/. $WORK/$3/" "$WORK/stub.log"; grep -qE '^rm -fv c{64}$' "$WORK/stub.log"
 }
 : >"$WORK/stub.log"; launch --out "$WORK/m-drill" -- --keep >"$WORK/l.out" 2>&1; grep -q 'drill exit=0' "$WORK/l.out"
-check_mode drill 'restore-drill.sh --dir /work/out' m-drill '-e QC1_WEB_DIR=/work/fold/web -e QC1_PREPARE_FIREFOX=1 '
+check_mode drill 'restore-drill.sh --dir /work/out' m-drill '-e QC1_WEB_DIR=/work/fold/web -e QC1_PREPARE_FIREFOX=1 ' 'deploy/digitalocean/restore-drill.sh --dir /work/out --keep'
 if grep -q 'qc1-measure.sh' "$WORK/stub.log"; then echo 'the drill mode measured' >&2; exit 1; fi
 : >"$WORK/stub.log"; launch --out "$WORK/m-qc1" --qc1 -- --sizes 10000 >"$WORK/l.out" 2>&1; grep -q 'qc1 exit=0' "$WORK/l.out"
-check_mode qc1 'qc1-measure.sh --dir /work/out' m-qc1 '-e QC1_WEB_DIR=/work/fold/web '
+check_mode qc1 'qc1-measure.sh --dir /work/out' m-qc1 '-e QC1_WEB_DIR=/work/fold/web ' 'deploy/digitalocean/qc1-measure.sh --dir /work/out --sizes 10000'
 if grep -q 'QC1_PREPARE_FIREFOX' "$WORK/stub.log"; then echo 'the qc1 mode builds the Firefox runtime' >&2; exit 1; fi
 grep -q -- '_ bash deploy/digitalocean/qc1-measure.sh --dir /work/out --sizes 10000$' "$WORK/stub.log"
 if grep -q 'restore-drill.sh' "$WORK/stub.log"; then echo 'the qc1 mode ran the restore drill' >&2; exit 1; fi

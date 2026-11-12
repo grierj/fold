@@ -400,7 +400,10 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   request gets no signal. Its files are gone and no process carrying the case's marker remains.
   The case directory has a blank in its name, so a path is proved to be data. `n_wrap_interrupt` interrupts the self-test shell (TERM) with the real `WRAP` running a workload,
   once after the workload started and before any request to stop was written, with the runner registered, and once before the runner was registered (so the exit knows nothing of it).
-  The exit removes the directory the workload lives in; the workload, the leader and the supervisor end because it is gone, and nothing carrying the case's marker remains.
+  The workload (`gate.sh`) is held at a gate outside the directory immediately before its first write into it, and keeps creating files there until the directory is gone; the exit opens
+  the gate and removes the directory, so the removal runs against the creation. The exit revokes the lease first, by renaming the directory away (one atomic step, after which nothing
+  can be created under the old path), and only then deletes it. The workload, the leader and the supervisor end because the path is gone; the directory and its renamed copy are both
+  gone, and nothing carrying the case's marker remains.
   Every wait of
   the simulated container (the docker client's wait for the workload's readiness, the writer's
   wait to record itself) ends when the container's directory, the lease its processes hold, is
@@ -424,10 +427,12 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   unestablished stop turns a run that exited 0 (or a
   crossings-only 10) into exit 1, and fails the wrapper's step, with the reasons kept. Real runs
   on a droplet-class host are a hand check (`docs/FIRST-CHURCH-CHECKS.md`), not covered by this.
-- **The launcher fixtures** (`isolation-fixtures.sh`, `qc1-runtime-fixtures.sh`, `restore-drill-modes-fixtures.sh`, run by `make provision-dry-run`) log each Docker call as
-  one line with the arguments kept apart: a newline inside an argument is written as `\n`, so the supervisor script (`WRAP`, one multi-line argument) neither splits a call across lines nor
-  reads as calls of its own. They take `WRAP` out of `restore-drill-nested.sh` and require that the preparation and the run each carry exactly that text as the one `bash -c` argument,
-  and that it loads the prepared Chromium, polls for the stop request and TERMs the group, and does not exec the command in its place.
+- **The launcher fixtures** (`isolation-fixtures.sh`, `qc1-runtime-fixtures.sh`, `restore-drill-modes-fixtures.sh`, run by `make provision-dry-run`) log each Docker call twice: as one
+  line for the ordinary line checks (a newline inside an argument is written as `\n`, so the supervisor script, `WRAP`, one multi-line argument, neither splits a call across lines nor
+  reads as calls of its own), and in `<log>.argv` with every argument `%q`-quoted, which keeps where each argument ends (the file starts anew with each launch's `run`). They take `WRAP` out of
+  `restore-drill-nested.sh` and require, in the argv file, that each exec line ends with `bash -c`, exactly that text as ONE argument, `_`, `bash` and the workload's words as separate
+  arguments; a call whose `WRAP` and words are joined into one argument is refused (each fixture checks that on a made-up line). They also require that it loads the prepared Chromium,
+  polls for the stop request and TERMs the group, and does not exec the command in its place. The scale self-test's stub docker does the same, and `nest-done` checks the preparation's call.
 
 ### Source guards
 

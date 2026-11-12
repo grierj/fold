@@ -226,7 +226,7 @@ self_test_main() {
 	# the runners' own cleanup budget and the limit of bounded_exec.
 	# shellcheck disable=SC2329 # reached through the EXIT trap.
 	drop_selftest() {
-		local dir=${REASON_SCALE_SELFTEST:-} r
+		local dir=${REASON_SCALE_SELFTEST:-} r dead
 		trap '' INT TERM HUP
 		for r in ${RUNNERS[@]+"${RUNNERS[@]}"}; do
 			[[ " $(jobs -p | tr '\n' ' ') " == *" $r "* ]] || continue
@@ -234,6 +234,10 @@ self_test_main() {
 		done
 		for r in ${RUNNERS[@]+"${RUNNERS[@]}"}; do wait "$r" 2>/dev/null || true; done
 		[[ -n $dir && $dir != / ]] || return 0
+		# The lease is revoked by one rename, before anything is deleted: from that instant the path is gone for every process that holds it as a lease, and nothing can be
+		# created under it by name, so the removal cannot race a file being created in the tree it is deleting (an rm that lost that race left the directory, and the lease, in place).
+		dead=$dir.gone.$$
+		if mv -T -- "$dir" "$dead" 2>/dev/null; then dir=$dead; fi
 		rm -rf -- "$dir" || true
 	}
 	trap drop_selftest EXIT
@@ -602,7 +606,7 @@ STUB
 	# `docker exec sh -c` is executed for real, on this host's /proc, in its read-only mode (count) whichever mode is asked: it signals nothing in any, and this host's
 	# numbers are never signalled. What the runner asks of the container reaches the simulated processes as flag files that they act on themselves: the request to stop
 	# (mode ask) is sig-term, and `docker kill` is sig-end and the state `killed` that `docker inspect` then reports (n_scan_quiet checks that the count signals nothing).
-	local nroot=$tmp/nrepo fake=$tmp/fake bin=$tmp/stubbin n_want_removed=1
+	local nroot=$tmp/nrepo fake=$tmp/fake bin=$tmp/stubbin n_want_removed=1 n_wrap n_tail
 	mkdir -p "$nroot/scripts" "$nroot/deploy/digitalocean" "$bin"
 	cp "$me" "$nroot/scripts/reason-review-scale.sh"
 	cp "$root/$nested_tool" "$nroot/$nested_tool"
@@ -615,6 +619,7 @@ STUB
 # One line per call with every argument kept apart: a newline inside an argument (the supervisor script is one) is written as \n, so that the line a call makes starts with its
 # subcommand and a multi-line argument cannot be read as calls of its own.
 line=; sep=; for a in "$@"; do line+="$sep${a//$'\n'/\\n}"; sep=" "; done; printf '%s\n' "$line" >>"$STUB_LOG"
+[[ $1 != run ]] || : >"$STUB_LOG.argv"; { sep=; for a in "$@"; do printf '%s%q' "$sep" "$a"; sep=" "; done; printf '\n'; } >>"$STUB_LOG.argv"   # the same call with every argument %q-quoted, so that where one ends and the next begins survives (a launch starts with `run`, which starts the file anew)
 # The container is a directory, and the processes in it are simulated by ones that watch it (stub-workload, stub-desc): removal is the flag `removed`, which ends
 # every one of them by itself; the freeze is the flag `paused`, which stops them writing; the request to stop is the flag `sig-term` (the workload shell runs its TERM
 # handling) and `docker kill` is the flag `sig-end` (every process ends) with the state `killed`; and what they write is the beat of the workload and the late.txt of the
@@ -835,6 +840,13 @@ DESC
 		a=$(grep -n -- "$1" "$tmp/nlog" | head -n 1 | cut -d: -f1)
 		b=$(grep -n -- "$2" "$tmp/nlog" | head -n 1 | cut -d: -f1)
 		[[ -n $a && -n $b ]] && ((a < b))
+	}
+	# n_ends ARGV_FILE TAIL: a line of the argv file (one call per line, every argument %q-quoted) ends with the arguments TAIL, whole: a %q-quoted argument has no unescaped blank, so
+	# two arguments cannot read as one.
+	n_ends() {
+		local l
+		while IFS= read -r l; do [[ $l == *" $2" ]] && return 0; done <"$1"
+		return 1
 	}
 	# The log lines of the container-side calls: the request to stop is a lookup in mode ask, and the kill of the whole container is `docker kill`.
 	local scan_term=' fold-owned-scan FOLD_NESTED_RUN=[0-9a-f]* ask$' kill_call='^kill c\{64\}$'
@@ -1217,15 +1229,17 @@ OUTER
 	}
 	# n_wrap_interrupt MODE: the self-test is interrupted (TERM) while the real WRAP is running a workload, and its exit removes the directory the case lives in. The shell that plays
 	# the self-test has a run directory of its own and the same functions (bounded_exec, bg_runner, bg_done, drop_selftest, copied from this script) as the real one, and starts WRAP
-	# the way n_wrap_case does. MODE request: the signal comes after the workload has started and before any request to stop is written, with the runner registered, so the exit
-	# asks it to stop (a TERM to `timeout`, which passes it to the supervisor alone, and the supervisor has no handler: its leader and the workload are in groups of their own and
-	# are not reached). MODE registration: the signal comes after the fork and before the registration (the workload has started, so that nothing is being created while the exit removes the directory), so the exit does not know of the runner at all. Either way nothing may
-	# be left: the workload and the leader end by themselves because the directory they live in (the lease) is gone, and so does the supervisor. What is left is looked for by the
-	# marker of the case, which every process of it carries.
+	# the way n_wrap_case does. The workload (gate.sh) is paused at a gate outside the run directory immediately before its first write into it, and goes on writing there until the
+	# directory is gone, so the exit really does race the creation of files in the tree it removes. MODE registration: the signal comes while the workload is paused and before
+	# bg_runner, so the exit does not know of the runner at all; the exit then lets the workload go and removes the directory. MODE request: the workload is let go and has written
+	# its first file, and the signal comes before any request to stop is written, with the runner registered, so the exit asks it to stop (a TERM to `timeout`, which passes it to the
+	# supervisor alone, and the supervisor has no handler: its leader and the workload are in groups of their own and are not reached). Either way the directory must be gone
+	# (renamed away first, so that nothing can be created in it by name) and nothing may be left: the workload and the leader end by themselves because the directory they live in
+	# (the lease) is gone, and so does the supervisor. What is left is looked for by the marker of the case, which every process of it carries.
 	n_wrap_interrupt() {
 		local mode=$1 d="$dir/interrupt $1" outer orc=0 i
-		mkdir -p "$d/run/work"
-		cp "$dir/term.sh" "$d/run/workload.sh"
+		mkdir -p "$d/run/work" "$d/gate"
+		cp "$dir/gate.sh" "$d/run/workload.sh"
 		printf '%s\n' "$wrap_src" >"$d/wrap.sh"
 		{
 			declare -f bounded_exec bg_runner bg_done drop_selftest
@@ -1233,15 +1247,25 @@ OUTER
 set -u
 RUNNERS=()
 export REASON_SCALE_SELFTEST="$1/run"
-trap drop_selftest EXIT
+# The exit lets the paused workload go and then removes the directory: the workload's first write and the removal run together.
+trap ': >"$1/gate/go"; drop_selftest' EXIT
 trap 'exit 143' TERM
-(bounded_exec 40 env "FOLD_WRAP_ROOT=$1/run/work" bash -c "$(cat "$1/wrap.sh")" _ bash "$1/run/workload.sh" "$1/run/work") >"$1/wrap.out" 2>&1 &
+(bounded_exec 40 env "FOLD_WRAP_ROOT=$1/run/work" "WRAP_GATE=$1/gate" bash -c "$(cat "$1/wrap.sh")" _ bash "$1/run/workload.sh" "$1/run/work") >"$1/wrap.out" 2>&1 &
 p=$!
 if [[ $2 == request ]]; then bg_runner "$p"; fi
 for ((i = 0; i < 200; i++)); do
-	[[ -s $1/run/work/wl.pid ]] && break
+	[[ -e $1/gate/at ]] && break
 	sleep 0.05
 done
+[[ -e $1/gate/at ]] || exit 99
+if [[ $2 == request ]]; then
+	: >"$1/gate/go"
+	for ((i = 0; i < 200; i++)); do
+		[[ -s $1/run/work/wl.pid ]] && break
+		sleep 0.05
+	done
+	[[ -s $1/run/work/wl.pid ]] || exit 98
+fi
 kill -TERM "$$"
 wait "$p"
 INTERRUPT
@@ -1251,8 +1275,9 @@ INTERRUPT
 		bg_runner "$outer"
 		wait "$outer" || orc=$?
 		bg_done "$outer"
-		[[ $orc == 143 ]] || t_fail "wrap interrupt $mode: the interrupted shell exited $orc, want 143"
+		[[ $orc == 143 ]] || t_fail "wrap interrupt $mode: the interrupted shell exited $orc, want 143 (99: the workload never reached the gate, 98: it never wrote)"
 		[[ ! -e $d/run ]] || t_fail "wrap interrupt $mode: the run directory was not removed at the end"
+		! compgen -G "$d/run.gone.*" >/dev/null || t_fail "wrap interrupt $mode: the renamed run directory was not deleted"
 		for ((i = 0; i < 100; i++)); do
 			find_marked "WRAP_INTERRUPT=$d"
 			((${#FOUND[@]})) || break
@@ -1311,6 +1336,15 @@ WLREL
 echo $$ >"$1/wl.pid"
 exit 7
 WLQUICK
+		# gate.sh (n_wrap_interrupt): says it is at the gate, waits for the gate to open, and only then makes its first write into the directory; it then keeps creating files there
+		# until the directory is gone. The gate is outside the directory, so the pause costs the directory nothing.
+		cat >"$dir/gate.sh" <<'WLGATE'
+trap 'exit 143' TERM
+: >"$WRAP_GATE/at"
+while [ ! -e "$WRAP_GATE/go" ]; do sleep 0.02; done
+echo $$ >"$1/wl.pid"
+while [ -d "$1" ]; do : >"$1/busy.$RANDOM" 2>/dev/null; sleep 0.01; done
+WLGATE
 		n_wrap_case ask ask term.sh
 		[[ $WRAP_RC == 143 ]] || t_fail "wrap ask: the status was $WRAP_RC, want 143 (the workload's own, after the TERM)"
 		[[ -e $dir/ask/work/term ]] || t_fail "wrap ask: the workload never got the TERM"
@@ -1556,6 +1590,14 @@ RECORDER
 	if grep -q ' ask$\|^kill ' "$tmp/nlog"; then t_fail "nest-done: a run that ended by itself was asked to stop"; fi
 	grep -q ' fold-owned-scan FOLD_NESTED_RUN=[0-9a-f]* count$' "$tmp/nlog" || t_fail "nest-done: the stop was not looked up before the copy"
 	n_before ' fold-owned-scan FOLD_NESTED_RUN=[0-9a-f]* count$' "$first_cp" || t_fail "nest-done: the stop was looked up only after the copy"
+	# The argument boundaries of the exec lines survive in the stub's argv file (each argument %q-quoted): the preparation is WRAP as the one argument after bash -c, then `_`, bash and its
+	# own words as arguments of their own. The same call with WRAP and the words joined into one argument is not accepted by the same check.
+	n_wrap=$(sed -n "/^WRAP=\$(cat <<'WRAP'\$/,/^WRAP\$/p" "$nroot/$nested_tool" | sed '1d;$d')
+	n_tail=$(printf 'bash -c %q _ bash deploy/digitalocean/qc1/browser-prepare.sh /work/prep' "$n_wrap")
+	printf 'exec -w /work/fold c bash -c %q\n' "$n_wrap _ bash deploy/digitalocean/qc1/browser-prepare.sh /work/prep" >"$tmp/joined.argv"
+	[[ -n $n_wrap ]] || t_fail "nest-done: the supervisor could not be extracted"
+	n_ends "$tmp/nlog.argv" "$n_tail" || t_fail "nest-done: the preparation is not WRAP as one argument followed by its own words"
+	! n_ends "$tmp/joined.argv" "$n_tail" || t_fail "nest-done: WRAP joined with the workload's words is accepted as the exact call"
 
 	# A tool that left a writer behind after exiting 0: it is ended and verified before the copy, and the run says so.
 	n_run nest-leftover STUB_QUICK=1 STUB_DESC=1 FOLD_NESTED_STOP_GRACE=2 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-leftover" --qc1
