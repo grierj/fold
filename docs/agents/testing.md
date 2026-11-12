@@ -218,9 +218,9 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
 
 - **The record** (`evidence.json`, schema `fold/reason-review-scale/v1`): revision, tree,
   whether the tree was clean, the tool files' sha256, the host, the arguments, and per step the
-  command, start and end, seconds, exit status, verdict (`pass`, `partial` or `fail`), log and
-  the tool's own artifact directory (`qc1/`, `drill/`). `requested` says what the invocation
-  asked for; `coverage` says what was reached.
+  command, start and end, seconds, exit status, verdict (`pass`, `partial`, `fail` or, for a
+  step a signal cut short, `interrupted`), log and the tool's own artifact directory (`qc1/`,
+  `drill/`). `requested` says what the invocation asked for; `coverage` says what was reached.
 - **Coverage is `full` only when** both steps ran, the drill was the full drill, nothing was
   passed through to either tool, QC-1's own `evidence-status.json` says complete, coverage
   `full` and `releaseEvidence` true, and the drill exited 0 with a `restore-drill.json` for the
@@ -230,7 +230,22 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
 - **Exit status**: 0 only for `pass`, 10 for `partial`, 1 for `fail`, 2 for a refusal before any
   step ran, 129, 130 or 143 after a signal (the record is left `incomplete`).
 - **QC-1 is a measurement.** Its budget failures are counted in the step's summary for the
-  reviewed engineering disposition its header describes; they do not fail the step.
+  reviewed engineering disposition its header describes; they do not fail the step. A QC-1 run
+  that finished normally is `partial` when it is incomplete only because cases are explicitly
+  pending (the legacy discovery and legacy PUT cases, at the time of writing) or its coverage is
+  a pilot; the record then carries those cases, their reasons and the tool's coverage reasons.
+  It is `fail` when the tool exits non-zero, aborted, holds an invalid finding, lacks a
+  measurement it should have, or says it is incomplete without saying why. So a real full-size
+  run is `partial`, never `pass`, until the pending cases are built.
+- **Cancelling** (TERM, HUP or INT to the script) ends the step's whole process group, including
+  a descendant that ignores TERM after its parent has gone, and nothing outside the group. The
+  command gets `FOLD_SCALE_STOP_GRACE` seconds (default 180) to finish its own cleanup, then the
+  group is killed; the step stays in the record as `interrupted`, saying which happened. For the
+  default nested run that cleanup is the point: `restore-drill-nested.sh` asks the run inside
+  the container to stop, copies `/work/prep` and `/work/out` into the step's artifact directory
+  (`INTERRUPTED.txt` there says how the run stopped; `COLLECTION-FAILED.txt` names any copy that
+  failed) and only then removes the container, so the measurements and failure evidence of an
+  hours-long run are not lost to the cancel. A KILL sent to either script cannot do this.
 - **When the full drill is owed** is decided only in `docs/agents/deploy.md` ("Full restore drill
   frequency"). The script makes you state the reason (`--drill-reason`) and records it with the
   run date; it does not repeat the rule.
@@ -238,10 +253,17 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   `scripts/reason-review-scale.sh --self-test`, which copies the script into a scratch git
   repository whose `deploy/digitalocean` tools are stubs and checks, with no Docker: the record
   shape; that a partial, pilot, crossings-only, one-step or pass-through run is never `full`;
-  that a failed step, an unreadable QC-1 record or another revision fails; the dry run; the
-  refusals (dirty tree, used or in-checkout evidence directory, missing drill reason); that the
-  record a running step sees is `incomplete`; and that TERM and HUP end the step and leave an
-  `incomplete` record. Real runs on a droplet-class host are a hand check, not covered by this.
+  that a failed step, an unreadable QC-1 record or another revision fails; the QC-1 outcomes for
+  the shapes `qc1/lib.sh` really writes (pending only is `partial`; missing, invalid and aborted
+  are `fail`); the dry run; the refusals (dirty tree, used or in-checkout evidence directory,
+  missing drill reason); that the record a running step sees is `incomplete`; that TERM and HUP
+  end the step, keep it in the record as `interrupted` and leave an `incomplete` record, with
+  a TERM-ignoring descendant of a tool that already exited, a leftover after a tool that ended
+  by itself and a tool that ignores TERM all ended, and a bystander process untouched; and, with
+  the real `restore-drill-nested.sh` against a stub docker that holds the artifacts only inside
+  its "container", that a cancel stops the run inside, copies the artifacts out and only then
+  removes the container, also when the run has to be killed or a copy fails. Real runs on a
+  droplet-class host are a hand check, not covered by this.
 
 ### Source guards
 
