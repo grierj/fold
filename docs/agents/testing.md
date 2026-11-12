@@ -608,12 +608,18 @@ least 30 times and as often as it was asked, was not profiled, carries its load 
 a directory whose environment is a complete record of the revision asked for, and is clean under the
 existing QC judge recomputed from the recorded rows (`qc1_judge` over the directory's
 `measurements.jsonl`): an invalid finding for the row excludes it while a budget finding is kept
-beside the row and never excludes it. A directory whose artifacts could not be collected, whose run
-aborted, whose environment is incomplete, or whose outer runner record marks its QC-1 step failed or
-interrupted contributes runs that are listed but never counted; expected sampling-only omissions
+beside the row and never excludes it, and the directory's own `duplicate-row` findings are honored
+beside the recompute. A directory whose artifacts could not be collected, whose run
+aborted, whose environment is incomplete, whose `evidence-status.json` is missing, unreadable or
+malformed, or whose outer runner record is present but unreadable or malformed, or marks its QC-1
+step interrupted, failed with a nonzero exit, or failed with exit 0 for any reason beyond intentional
+omissions, contributes runs that are listed but never counted; the one accepted outer shape is an
+exit-0 failure explained entirely by the sampling design omitting the full matrix, proven by the
+step's own summary agreeing with the directory's validated status. Expected sampling-only omissions
 (other missing rows, legacy pending cases, pilot coverage) are recorded, not failures. A repeated
-`--evidence` directory is refused, and a repeated run identity (the same stack, case and background)
-is counted once. The record is `COMPLETE` (exit 0) only with at least 3 counted runs in both
+`--evidence` directory is refused; an identical record copied across directories of one stack is
+counted once, while a repeated or conflicting identity within one measurements file, or conflicting
+records of one identity across directories of one stack, excludes every occurrence. The record is `COMPLETE` (exit 0) only with at least 3 counted runs in both
 configurations; otherwise `INCOMPLETE` (exit 10) and each gap is named, and a configuration with no
 counted run has no figures at all.
 
