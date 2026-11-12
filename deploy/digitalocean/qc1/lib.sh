@@ -1293,24 +1293,30 @@ qc1_contact_request_referrers() {
 }
 qc1_reset_contact_requests() {
   local names t n list="" left left_full
-  names="$(qc1_contact_request_referrers)" || { echo 'qc1: cannot list the tables that reference contact_requests' >&2; return 1; }
+  # Every SQL-only call below takes stdin from /dev/null, and the closure loop
+  # reads the names on fd 3, never fd 0: docker exec -i forwards the caller's
+  # stdin to the container, so a psql_db call inside this loop would otherwise
+  # drain the remaining table names (the first count ate contact_requests and
+  # registrations, the TRUNCATE listed only contact_grants, and the next size
+  # measured over retained filler).
+  names="$(qc1_contact_request_referrers </dev/null)" || { echo 'qc1: cannot list the tables that reference contact_requests' >&2; return 1; }
   grep -qx 'contact_requests' <<<"$names" || { echo 'qc1: contact_requests is not in the foreign-key closure the catalog returned' >&2; return 1; }
-  while IFS= read -r t; do
+  while IFS= read -r t <&3; do
     [[ -n "$t" ]] || continue
     [[ "$t" =~ ^[a-z_][a-z0-9_]*$ ]] || { echo "qc1: refusing the unexpected table name '$t' (another schema or a quoted name)" >&2; return 1; }
     if [[ "$t" != contact_requests ]]; then
-      n="$(psql_db -c "SELECT count(*) FROM $t")" || { echo "qc1: cannot count the rows of $t" >&2; return 1; }
+      n="$(psql_db -c "SELECT count(*) FROM $t" </dev/null)" || { echo "qc1: cannot count the rows of $t" >&2; return 1; }
       [[ "$n" =~ ^[0-9]+$ ]] || { echo "qc1: unreadable row count for $t: '$n'" >&2; return 1; }
       (( n == 0 )) || { echo "qc1: $t holds $n rows that depend on contact_requests; the loader will not delete them. This is not the QC-1 fixture database." >&2; return 1; }
     fi
     list+="${list:+, }$t"
-  done <<<"$names"
+  done 3<<<"$names"
   # One psql session truncates and then proves the table empty, so a writer landing
   # between two docker exec calls cannot hide behind the caller's bare "not empty":
   # a non-zero count fails here, naming the count. TRUNCATE prints its own
   # "TRUNCATE TABLE" line, so only the last line is the count (taken without a
   # pipe, so a TRUNCATE failure still fails here under any pipefail setting).
-  left_full="$(psql_db -c "TRUNCATE $list; SELECT count(*) FROM contact_requests")" || { echo "qc1: TRUNCATE $list failed" >&2; return 1; }
+  left_full="$(psql_db -c "TRUNCATE $list; SELECT count(*) FROM contact_requests" </dev/null)" || { echo "qc1: TRUNCATE $list failed" >&2; return 1; }
   left="$(tail -n 1 <<<"$left_full")"
   [[ "$left" =~ ^[0-9]+$ ]] || { echo "qc1: unreadable row count for contact_requests after TRUNCATE: '$left'" >&2; return 1; }
   if (( left != 0 )); then
@@ -1321,21 +1327,28 @@ qc1_reset_contact_requests() {
 }
 
 # Read-only diagnosis for a TRUNCATE that did not leave the table empty: the
-# referrer counts plus the open backends that could have written between the
-# statement and the count. Never writes. Production writers of contact_requests
-# are only the request-creation API paths (api_contact.go); the scheduler's
-# sweeps only expire or blank rows and only enqueue rows in jobs, so a
-# repopulation here is retained harness state (an earlier size's rows, a hook
-# still in flight) or a concurrent backend, and this names it.
+# referrer counts plus the other backends on this database. Never writes. This
+# names facts for the log; it does not attribute the rows to any writer. With
+# the complete table list truncated and counted in one session, no writer can
+# land between the statement and the count, so a non-zero count means the
+# TRUNCATE list was incomplete or the database is not the fixture's. (Writers
+# of contact_requests are only the request-creation API paths in api_contact.go;
+# the scheduler's sweeps only expire or blank rows and only enqueue rows in
+# jobs: none of that is claimed here as the cause.)
 qc1_reset_repopulated() { # left list
   local left="$1" list="$2" t n acts jobs
-  for t in contact_grants registrations; do
-    n="$(psql_db -c "SELECT count(*) FROM $t" 2>/dev/null || echo '?')"
+  local rest="$list, "
+  # $list is the validated comma-separated closure ("a, b, c"); walk it so a
+  # future transitive referrer is named here too, not just the two known today.
+  while [[ -n "$rest" ]]; do
+    t="${rest%%, *}"; rest="${rest#*, }"
+    [[ "$t" != contact_requests ]] || continue
+    n="$(psql_db -c "SELECT count(*) FROM $t" </dev/null 2>/dev/null || echo '?')"
     echo "qc1: after TRUNCATE ($list): $t holds $n rows" >&2
   done
-  acts="$(psql_db -c "SELECT coalesce(string_agg(left(pid::text || ' ' || coalesce(application_name,'?') || ' ' || state || ' ' || left(query, 120), 160), ' | '), '(none)')" 2>/dev/null || echo '?')"
+  acts="$(psql_db -c "SELECT coalesce(string_agg(left(pid::text || ' ' || coalesce(application_name,'?') || ' ' || state || ' ' || left(query, 120), 160), ' | '), '(none)') FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND datname = current_database()" </dev/null 2>/dev/null || echo '?')"
   echo "qc1: after TRUNCATE ($list): open backends: $acts" >&2
-  jobs="$(psql_db -c "SELECT count(*) FROM jobs WHERE created_at > now() - interval '10 minutes'" 2>/dev/null || echo '?')"
+  jobs="$(psql_db -c "SELECT count(*) FROM jobs WHERE created_at > now() - interval '10 minutes'" </dev/null 2>/dev/null || echo '?')"
   echo "qc1: after TRUNCATE ($list): jobs enqueued in the last 10 minutes: $jobs" >&2
 }
 

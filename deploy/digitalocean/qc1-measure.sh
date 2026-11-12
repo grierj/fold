@@ -240,11 +240,15 @@ write_environment() { # incomplete(true|false) reason
   local -a adl=()
   if declare -p ALL_DELETE_LIST >/dev/null 2>&1; then adl=("${ALL_DELETE_LIST[@]}"); fi
   local -a ALL_DELETE_LIST=("${adl[@]}")
-  pg="$(fin_psql 'SHOW server_version' || true)"
-  dbImage="$(timeout 15 docker inspect --format '{{.Image}}' "${DB_CID:-none}" 2>/dev/null || true)"
-  dbMem="$(jnum "$(timeout 15 docker inspect --format '{{.HostConfig.Memory}}' "${DB_CID:-none}" 2>/dev/null || true)")"; [[ "$dbMem" != null ]] || dbMem=0
+  pg=""; dbImage=""; dbMem=0; database=null
+  # An early abort may happen before a database container exists.
+  if [[ -n "$DB_CID" ]]; then
+    pg="$(fin_psql 'SHOW server_version' || true)"
+    dbImage="$(timeout 15 docker inspect --format '{{.Image}}' "$DB_CID" 2>/dev/null || true)"
+    dbMem="$(jnum "$(timeout 15 docker inspect --format '{{.HostConfig.Memory}}' "$DB_CID" 2>/dev/null || true)")"; [[ "$dbMem" != null ]] || dbMem=0
+    database="$(db_settings_json)"
+  fi
   calib="$(jraw "$(cat "$WORK/calibration.json" 2>/dev/null || true)")"
-  database="$(db_settings_json)"
 jq -n --argjson database "$database" --argjson incomplete "$incomplete" --arg ireason "$ireason" --arg image "$IMAGE" --arg imageId "$IMAGE_ID" --arg revision "$REVISION" --argjson level "$env_LEVEL" --arg droplet "$DROPLET" --arg dbMemory "$DB_MEMORY" --arg appMemory "$APP_MEMORY" \
   --arg cpuset "$CPUSET" --arg layout "$LAYOUT" --arg charset "$CHARSET" --argjson reasonLen "$env_REASON_LEN" --argjson maxRequestBytes "$env_MAX_REQUEST_BYTES" \
   --arg pg "$pg" --arg pgImage "$PG_IMAGE" --arg pgImageId "$PG_IMAGE_ID" --argjson pgDigests "$env_PG_REPO_DIGESTS" --argjson appDigests "$env_APP_REPO_DIGESTS" \
@@ -1378,9 +1382,11 @@ measure_size() { # n
   note "size $n: loading background rows"
   # TRUNCATE of the whole referencing set (contact_grants, registrations), each proved empty first: see qc1_reset_contact_requests. The seeded admin, the
   # counterparts and the group are in other tables and must survive it; the scenarios below are built on them.
-  # Quiesce first: a hook or backend held over from the previous size must be
-  # idle before the clear, or its write lands between TRUNCATE and the count
-  # and the next size measures over retained rows.
+  # Quiesce first, best effort only: a backend held over from the previous size
+  # at work while the clear runs adds noise to the size being set up. This warns
+  # and continues past its timeout; it does not repair anything. What proves the
+  # table empty is the reset's own single-session TRUNCATE and count over the
+  # complete table list, which no writer can land between.
   quiesce
   qc1_reset_contact_requests || exit 1
   [[ "$(psql_db -c "SELECT count(*) FROM users WHERE email = 'admin@example.invalid'")" == 1 && "$(psql_db -c "SELECT count(*) FROM groups WHERE id = $GROUP")" == 1 \
