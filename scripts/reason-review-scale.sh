@@ -174,52 +174,34 @@ self_test_main() {
 	local tmp repo stubs me out rc pid i
 	tmp=$(mktemp -d)
 	tmp=$(cd "$tmp" && pwd -P)
-	# Everything this test starts carries one marker in its environment, so a case that fails or is cut short cannot leave a process behind: the exit below ends
-	# whatever still has it. find_marked ENTRY... puts in FOUND the pids (not this shell's) whose environment holds every ENTRY exactly; a gone process or a zombie has
-	# none. A caller that ends processes always names the run's marker and the case's label together, so another run's process, or one that only borrows a label,
-	# is never selected. The exit trap reads the marker from the exported variable, not from a local of this function: the trap runs after the function has returned.
+	# Everything this test starts that lasts carries one marker in its environment, so that a case that leaves a process behind can be seen. The test never signals
+	# a process it found by looking at the host, and never one by a number it recorded: a number can be handed to an unrelated process between the look and the
+	# signal, whatever is checked in between. find_marked ENTRY... only reads: it puts in FOUND the pids (not this shell's) whose environment holds every ENTRY exactly,
+	# and a failed case says what was found. What a failed case leaves running ends by itself: every long-lived process of the simulated container watches the case's
+	# directory and ends when it, or the container's `removed` flag, is gone, and the exit below removes the run's directory; a probe ends when its channel closes (see
+	# n_life_fork); the rest are sleeps with a bound. The exit trap reads the marker from the exported variable, not from a local of this function: the trap runs after
+	# the function has returned.
 	export REASON_SCALE_SELFTEST="$tmp"
-	# carries PID ENTRY...: the process still exists and its environment holds every ENTRY exactly.
-	carries() {
-		local p=$1 e
-		shift
-		for e in "$@"; do
-			grep -zqxF -- "$e" "/proc/$p/environ" 2>/dev/null || return 1
-		done
-	}
 	find_marked() {
-		local d p
+		local d p e
 		FOUND=()
 		for d in /proc/[0-9]*; do
 			p=${d#/proc/}
 			[[ $p != "$$" && $p != "$BASHPID" ]] || continue
-			if carries "$p" "$@"; then FOUND+=("$p"); fi
+			for e in "$@"; do
+				grep -zqxF -- "$e" "/proc/$p/environ" 2>/dev/null || continue 2
+			done
+			FOUND+=("$p")
 		done
 	}
-	# A scan of the whole host takes a while, and a number it selected can be gone (and handed to an unrelated process) before the signal goes out. So the signal
-	# step looks again, right before each KILL, and signals only a process that still carries every ENTRY. after_scan is a hook for a test to act in that gap.
-	# SIGNAL_LOG, when set, names a file that gets one "-KILL PID" line per signal sent.
-	after_scan() { :; }
-	end_found() {
-		local p
-		for p in "${FOUND[@]}"; do
-			carries "$p" "$@" || continue
-			[[ -z ${SIGNAL_LOG:-} ]] || echo "-KILL $p" >>"$SIGNAL_LOG"
-			builtin kill -KILL "$p" 2>/dev/null || true
-		done
-	}
-	# reap_selftest [DIR]: ends whatever carries the marker DIR (default: this run's) and removes DIR. The exit trap calls it with no argument.
+	# drop_selftest: removes the run's directory. It is the lease of the simulated container's processes, which end when it is gone.
 	# shellcheck disable=SC2329 # reached through the EXIT trap.
-	reap_selftest() {
-		local dir=${1:-${REASON_SCALE_SELFTEST:-}} entry
+	drop_selftest() {
+		local dir=${REASON_SCALE_SELFTEST:-}
 		[[ -n $dir && $dir != / ]] || return 0
-		entry=REASON_SCALE_SELFTEST=$dir
-		find_marked "$entry"
-		after_scan
-		end_found "$entry"
 		rm -rf -- "$dir" || true
 	}
-	trap reap_selftest EXIT
+	trap drop_selftest EXIT
 	trap 'exit 130' INT
 	trap 'exit 143' TERM
 	trap 'exit 129' HUP
@@ -486,8 +468,8 @@ STUB
 		fi
 		kill -0 "$1" 2>/dev/null
 	}
-	local leftovers=()
-	# t_gone WHAT PIDFILE: the process named in PIDFILE has ended (and is ended for good if a check failed).
+	# t_gone WHAT PIDFILE: the process named in PIDFILE has ended. A survivor is reported and never signalled: it is not this shell's child, so nothing here can tell that its
+	# number is still its own. What it leaves ends by its own bound (a sleep) when the run ends.
 	t_gone() {
 		local p
 		p=$(cat "$2" 2>/dev/null || true)
@@ -495,7 +477,6 @@ STUB
 			t_fail "$1: no pid was recorded"
 		elif t_alive "$p"; then
 			t_fail "$1: the process $p survived"
-			kill -KILL "$p" 2>/dev/null || true
 		fi
 	}
 	# t_signal NAME SIGNAL ENV... -- ARGS...: starts the copy with the stub holding its step (STUB_SLEEP; ENV adds
@@ -531,9 +512,9 @@ STUB
 
 	# A signal ends the step, keeps the step in the record as interrupted, and leaves nothing running.
 	local sig want bystander
-	sleep 300 &
+	# The bystander stands for a process that is not the step's. It is this shell's child, held until the end, and it ends by itself when the run's directory goes.
+	bash -c 'while [[ -d $1 ]]; do sleep 0.2; done' _ "$tmp" &
 	bystander=$!
-	leftovers+=("$bystander")
 	for sig in TERM HUP; do
 		t_signal "sig-$sig" "$sig" -- --drill-reason x
 		want=143
@@ -590,21 +571,27 @@ STUB
 	cat >"$bin/docker" <<'DOCKER'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$STUB_LOG"
-# pids FILE...: the processes the container is holding, as recorded by the workload.
-holders() { local f; for f in workload.pid desc.pid; do [[ -s $STUB_FAKE/$f ]] && cat "$STUB_FAKE/$f"; done; return 0; }
-# writing PID: the process exists and is neither a zombie nor frozen.
+# The container is a directory, and the processes in it are simulated by ones that watch it (stub-workload, stub-desc): removal is the flag `removed`, which ends
+# every one of them by itself; the freeze is the flag `paused`, which stops them writing; and what they write is the beat of the workload and the late.txt of the
+# writer. No process is signalled by a number here: the numbers they record are for the test to compare with what a scan finds, nothing more.
+# written: what the processes in the container have written so far.
+written() { stat -c %s "$STUB_FAKE/work/out/late.txt" "$STUB_FAKE/beat.wl" 2>/dev/null | tr '\n' ' '; return 0; }
+# writing: something in the container wrote in the last half second, so it was running when this was asked.
 writing() {
-	local st
-	[[ -r /proc/$1/stat ]] || return 1
-	st=$(sed -E 's/^[0-9]+ \(.*\) (.) .*/\1/' "/proc/$1/stat" 2>/dev/null || true)
-	[[ -n $st && $st != Z && $st != T ]]
+	local f m now
+	now=$(date +%s.%N)
+	for f in "$STUB_FAKE/work/out/late.txt" "$STUB_FAKE/beat.wl"; do
+		m=$(stat -c %.9Y "$f" 2>/dev/null) || continue
+		LC_ALL=C awk -v a="$m" -v b="$now" 'BEGIN { exit !(b - a < 0.5) }' && return 0
+	done
+	return 1
 }
 # hang: a stalled docker client (the daemon does not answer). It has a child of its own, so ending only its pid would leave that behind, it ignores TERM
 # when STUB_HANG_STUBBORN is set, and it records its pids so that the test can see that both are gone. With a FLAG name it also claims the stall by creating that
 # file, and only after its pids are recorded: a client ended before then claims nothing, so the next one stalls instead and no stall goes unrecorded.
 hang() {
 	[[ -z ${STUB_HANG_STUBBORN:-} ]] || trap '' TERM INT HUP
-	sleep 600 &
+	sleep 90 &
 	printf '%s\n%s\n' "$$" "$!" >>"$STUB_FAKE/hung.pids"
 	printf 'case=%s run=%s\n' "${STUB_CASE:-}" "${REASON_SCALE_SELFTEST:-}" >>"$STUB_FAKE/hung.marks"
 	[[ -z ${1:-} ]] || : >"$STUB_FAKE/$1"
@@ -624,25 +611,30 @@ rm)
 		: >"$STUB_FAKE/rm-tried"
 		hang
 	fi
-	# Removing the container ends every process in it.
-	for p in $(holders); do kill -KILL "$p" 2>/dev/null || true; done
+	# Removing the container ends every process in it: they see the flag and end by themselves.
 	: >"$STUB_FAKE/removed"
 	;;
 pause)
 	[[ -z ${STUB_PAUSE_HANG:-} ]] || hang
 	[[ -z ${STUB_PAUSE_FAIL:-} ]] || exit 1
-	for p in $(holders); do kill -STOP "$p" 2>/dev/null || true; done
+	# Frozen: the processes notice the flag within a tenth of a second and stop writing; what they had written by then is the state the copy is compared with.
 	: >"$STUB_FAKE/paused"
+	sleep 0.3
+	written >"$STUB_FAKE/paused"
 	;;
 unpause)
 	[[ -z ${STUB_UNPAUSE_HANG:-} ]] || hang
-	for p in $(holders); do kill -CONT "$p" 2>/dev/null || true; done
+	rm -f "$STUB_FAKE/paused"
 	;;
 cp)
 	case $2 in
 	c*:*)
 		# A copy taken while something in the container could still write is the failure this test is for.
-		for p in $(holders); do ! writing "$p" || : >"$STUB_FAKE/cp-saw-writer"; done
+		if [[ -e $STUB_FAKE/paused ]]; then
+			[[ $(written) == "$(<"$STUB_FAKE/paused")" ]] || : >"$STUB_FAKE/cp-saw-writer"
+		elif writing; then
+			: >"$STUB_FAKE/cp-saw-writer"
+		fi
 		src=${2#*:}
 		which=$(basename "$(dirname "$src")")
 		[[ ${STUB_CP_HANG:-} != "$which" ]] || hang
@@ -671,7 +663,7 @@ exec)
 		[[ -z ${STUB_SCAN_FAIL:-} ]] || exit 1
 		# A client that answers and exits while a child of its own, one that ignores TERM, stays behind in its process group.
 		if [[ -n ${STUB_SCAN_LEAVE:-} ]]; then
-			(trap '' TERM INT HUP; exec sleep 600) </dev/null >/dev/null 2>&1 &
+			(trap '' TERM INT HUP; exec sleep 90) </dev/null >/dev/null 2>&1 &
 			echo $! >>"$STUB_FAKE/left.pids"
 			"$@"
 			exit
@@ -730,21 +722,28 @@ fi
 [[ -z ${STUB_DESC:-} ]] || "$STUB_BIN/stub-desc"
 exec 3<>"$STUB_FAKE/idle"
 : >"$STUB_FAKE/wl-ready"
-while :; do read -r -t 0.1 -u 3 _ || true; done
+# It runs while the container's directory exists and the container has not been removed, and writes its beat (one line a tenth of a second) except while it is frozen.
+while [[ -d $STUB_FAKE && ! -e $STUB_FAKE/removed ]]; do
+	read -r -t 0.1 -u 3 _ || true
+	[[ -e $STUB_FAKE/paused ]] || echo >>"$STUB_FAKE/beat.wl" 2>/dev/null
+done
 WORKLOAD
 	# A non-bash writer in a session of its own that ignores TERM (the Node process of the browser panel). It inherits the marker, is left
 	# behind when its parent ends and keeps writing into the container's output directory.
 	cat >"$bin/stub-desc" <<'DESC'
 #!/usr/bin/env bash
 (
-	setsid sh -c "trap '' TERM; echo \$\$ >\"\$1\"; while :; do sleep 0.1; echo late >>\"\$2\"; done" _ "$STUB_FAKE/desc.pid" "$STUB_FAKE/work/out/late.txt" </dev/null >/dev/null 2>&1 &
+	setsid sh -c "trap '' TERM; echo \$\$ >\"\$1\"; while [ -d \"\$3\" ] && [ ! -e \"\$3/removed\" ]; do sleep 0.1; [ -e \"\$3/paused\" ] || echo late >>\"\$2\"; done" _ "$STUB_FAKE/desc.pid" "$STUB_FAKE/work/out/late.txt" "$STUB_FAKE" </dev/null >/dev/null 2>&1 &
 )
 until [[ -s $STUB_FAKE/desc.pid ]]; do sleep 0.02; done
 DESC
 	chmod +x "$bin/docker" "$bin/stub-workload" "$bin/stub-desc"
 	# n_reset: a fresh container. n_wait: the workload is running in it.
+	# Each case gets a directory of its own, and the previous one is removed: what the previous container still ran sees that and ends, so no case inherits a process.
+	local n_cases=0
 	n_reset() {
 		rm -rf "$fake"
+		fake=$tmp/fake.$((++n_cases))
 		mkdir -p "$fake"
 		: >"$tmp/nlog"
 	}
@@ -848,19 +847,19 @@ DESC
 	n_took() {
 		(($3 >= SECONDS - $2)) || t_fail "$1: took $((SECONDS - $2))s, more than the $3s its cleanup window allows"
 	}
+	# A stalled client that is still running is reported, never signalled: it is not this shell's child, and its number is only a record. It carries a bound (a sleep of 90 seconds).
 	n_hung_gone() {
 		local p n=0
 		for p in $(cat "$fake/hung.pids" 2>/dev/null || true); do
 			n=$((n + 1))
 			if t_alive "$p"; then
 				t_fail "$1: the stalled docker client process $p was not ended"
-				kill -KILL "$p" 2>/dev/null || true
 			fi
 		done
 		((n >= 2)) || t_fail "$1: no stalled docker client was started (the case did not exercise a hang)"
 	}
 	# n_no_stragglers NAME: nothing the case started (its environment carries this run's marker and STUB_CASE=NAME) is left running once the runner has returned: not a supervisor holding a
-	# client's group (it sleeps 3600 seconds), not a stalled client. Whatever is found is ended, so a failed case leaves nothing behind.
+	# client's group (it sleeps 3600 seconds), not a stalled client. A failure names what was found and does not signal it (see find_marked).
 	n_no_stragglers() {
 		local i
 		for ((i = 0; i < 20; i++)); do
@@ -869,7 +868,6 @@ DESC
 			sleep 0.1
 		done
 		t_fail "$1: the run left processes behind (pids ${FOUND[*]}): a client's group was not ended"
-		end_found "REASON_SCALE_SELFTEST=$tmp" "STUB_CASE=$1"
 	}
 	# n_case_marked NAME: a stalled client of the case was seen by the stub with the case's label and this run's marker in its environment, so the scan in
 	# n_no_stragglers looks for what the case really carries and an empty result means something.
@@ -877,10 +875,10 @@ DESC
 		grep -qxF -- "case=$1 run=$tmp" "$fake/hung.marks" 2>/dev/null || t_fail "$1: no stalled client carried the case label and the run marker (the straggler scan would find nothing either way)"
 	}
 	# The probe processes below are owned through pipes, never through their numbers. Each reads a FIFO whose only writer is a descriptor of this shell, and ends by
-	# itself when that descriptor closes: when a test ends it, or when this shell exits for any reason, a signal included. A probe has no timer of its own, so it
-	# cannot end between a scan that selected it and the signal that follows, and its number is not free for reuse before it is waited on. Nothing signals a probe by
-	# a number recorded earlier. The read end is opened here, before the fork, and inherited: a probe never opens the FIFO by name, so this shell being interrupted
-	# at any point cannot leave one blocked in an open that no writer will answer.
+	# itself when that descriptor closes: when a test ends it, or when this shell exits for any reason, a signal included. A probe has no timer of its own (LIFE_TIMEOUT
+	# gives one to a case that must not be able to hold one for long), so it cannot end between a scan that selected it and the check that follows, and nothing signals
+	# a probe. The read end is opened here, before the fork, and inherited: a probe never opens the FIFO by name, so this shell being interrupted at any point cannot
+	# leave one blocked in an open that no writer will answer.
 	# n_life_fork READYFILE ENV...: starts a probe (`env ENV... bash`) and leaves its pid in SPAWNED; READYFILE appears once it is the final program, so its environment
 	# is the one a scan reads. n_life_spawn does the same and waits for that file. n_life_end PID...: closes each probe's channel and waits for it to end.
 	# LIFE_HOLD, when it names an existing file, makes a new probe wait for that file to go before it takes any other step (n_probe_interrupt uses it).
@@ -898,8 +896,8 @@ DESC
 			while [[ -n ${LIFE_HOLD:-} && -e $LIFE_HOLD ]]; do sleep 0.05; done
 			for fd in "${LIFE_FD[@]}" "$w"; do exec {fd}>&-; done
 			exec <&"$r" {r}<&-
-			# shellcheck disable=SC2016 # the probe expands its own $1
-			exec env "$@" bash -c ': >"$1"; read -r _' _ "$ready" >/dev/null 2>&1
+			# shellcheck disable=SC2016 # the probe expands its own $1 and $2
+			exec env "$@" bash -c ': >"$1"; read -r -t "$2" _' _ "$ready" "${LIFE_TIMEOUT:-31536000}" >/dev/null 2>&1
 		) &
 		SPAWNED=$!
 		LIFE_FD[$SPAWNED]=$w
@@ -931,14 +929,9 @@ DESC
 	# n_probe_markers: find_marked selects a process only when it carries the run's marker and the case's label together. Four idle processes stand for the cases:
 	# the case's own (both entries), a same-user process that borrows the label with no run marker, one with another run's marker, and one of this run under
 	# another label. Only the first is found; it is ended through its channel, n_no_stragglers then has nothing to find, and the others survive. The positive result
-	# comes first, so an empty scan cannot pass for a working one.
-	# The signals sent are recorded (SIGNAL_LOG): none goes out before the reaper is tried, and the exit reaper, run for a scratch marker, then signals nothing when no
-	# process carries it and, when one does, only that one. A process of this run with no marker, standing for an unrelated one that has been given a finished
-	# probe's number, and the foreign probes all survive.
+	# comes first, so an empty scan cannot pass for a working one. Nothing is signalled: the scan is a way to see what a case left, not a way to end it.
 	n_probe_markers() {
-		local label=probe-case ours others=() p i scratch=$tmp/reap-scratch marked
-		local log=$tmp/probe-signals
-		: >"$log"
+		local label=probe-case ours others=() p
 		n_life_spawn "$tmp/probe-ready.1" "STUB_CASE=$label"
 		ours=$SPAWNED
 		n_life_spawn "$tmp/probe-ready.2" -u REASON_SCALE_SELFTEST "STUB_CASE=$label"
@@ -952,66 +945,13 @@ DESC
 		n_life_end "$ours"
 		n_no_stragglers "$label"
 		for p in "${others[@]}"; do
-			t_alive "$p" || t_fail "markers: the process $p, which is not this run's under this label, was ended"
+			t_alive "$p" || t_fail "markers: the process $p, which is not this run's under this label, is gone"
 		done
-		# The reaper for a run of its own, with nothing carrying that run's marker: no signal at all, and the directory is removed.
-		mkdir -p "$scratch"
-		SIGNAL_LOG=$log reap_selftest "$scratch"
-		[[ ! -e $scratch ]] || t_fail "markers: the reaper left the run's directory"
-		[[ ! -s $log ]] || t_fail "markers: the reaper signalled [$(tr '\n' ';' <"$log")] with nothing carrying its marker"
-		# Now one process carries that run's marker, beside the unmarked stand-in and the foreign probes.
-		mkdir -p "$scratch"
-		n_life_spawn "$tmp/probe-ready.5" "REASON_SCALE_SELFTEST=$scratch"
-		marked=$SPAWNED
-		n_life_spawn "$tmp/probe-ready.6" -u REASON_SCALE_SELFTEST
-		others+=("$SPAWNED")
-		SIGNAL_LOG=$log reap_selftest "$scratch"
-		for ((i = 0; i < 100; i++)); do
-			t_alive "$marked" || break
-			sleep 0.05
-		done
-		if t_alive "$marked"; then t_fail "markers: the reaper left the process that carries its run's marker"; fi
-		n_life_end "$marked"
-		for p in "${others[@]}"; do
-			t_alive "$p" || t_fail "markers: the reaper ended the process $p, which does not carry its run's marker"
-		done
-		[[ $(<"$log") == "-KILL $marked" ]] || t_fail "markers: the signals sent were [$(tr '\n' ';' <"$log")], want only -KILL $marked"
 		n_life_end "${others[@]}"
-	}
-	# n_probe_stale: a scan selects a process, and before the signal goes out (after_scan, the gap a slow host-wide scan leaves) it ends and its number is taken by an
-	# unrelated process, here the unmarked stand-in put in the list in its place. The signal step must look again and signal neither.
-	STALE_DOOMED=
-	STALE_STANDIN=
-	stale_gap() {
-		[[ -n $STALE_DOOMED && ${FOUND[*]:-} == "$STALE_DOOMED" ]] || return 0
-		n_life_end "$STALE_DOOMED"
-		FOUND=("$STALE_DOOMED" "$STALE_STANDIN")
-		STALE_DOOMED=
-	}
-	n_probe_stale() {
-		local scratch=$tmp/stale-scratch doomed standin log=$tmp/stale-signals
-		mkdir -p "$scratch"
-		: >"$log"
-		n_life_spawn "$tmp/stale-ready.1" "REASON_SCALE_SELFTEST=$scratch"
-		doomed=$SPAWNED
-		n_life_spawn "$tmp/stale-ready.2" -u REASON_SCALE_SELFTEST
-		standin=$SPAWNED
-		STALE_DOOMED=$doomed
-		STALE_STANDIN=$standin
-		after_scan() { stale_gap; }
-		SIGNAL_LOG=$log reap_selftest "$scratch"
-		# shellcheck disable=SC2329 # restores the hook that does nothing.
-		after_scan() { :; }
-		[[ -z $STALE_DOOMED ]] || t_fail "stale: the scan did not select the process that carries the marker"
-		STALE_DOOMED=
-		if t_alive "$doomed"; then t_fail "stale: the probe $doomed was still running after its channel closed"; fi
-		t_alive "$standin" || t_fail "stale: the unrelated process $standin was ended through a stale selection"
-		[[ ! -s $log ]] || t_fail "stale: the signals sent were [$(tr '\n' ';' <"$log")], want none: a process that was gone or no longer carried the marker was signalled"
-		n_life_end "$standin"
 	}
 	# n_probe_interrupt: a shell is killed while a probe it has just forked has not taken its first step (the hold file keeps it there, before it has closed or
 	# opened anything). Once released the probe must end by itself, from the descriptor it inherited: a probe that opened the FIFO by name after its parent was
-	# gone would block there for good. One probe carries the run's marker (the exit reaper would end it if the case failed) and one does not.
+	# gone would block there for good. These two probes also carry a bound (LIFE_TIMEOUT) on their final wait, so a descriptor that stayed open somewhere cannot keep them for long.
 	n_probe_interrupt() {
 		local hold=$tmp/interrupt-hold pids=$tmp/interrupt-pids body p i brc=0
 		: >"$hold"
@@ -1025,7 +965,7 @@ echo "$SPAWNED" >"$3"
 n_life_fork "$4" -u REASON_SCALE_SELFTEST STUB_CASE=interrupt
 echo "$SPAWNED" >>"$3"
 kill -KILL $$'
-		{ LIFE_HOLD=$hold bash -c "$body" _ "$tmp" "$tmp/interrupt-ready.1" "$pids" "$tmp/interrupt-ready.2" >/dev/null 2>&1 || brc=$?; } 2>/dev/null
+		{ LIFE_HOLD=$hold LIFE_TIMEOUT=60 bash -c "$body" _ "$tmp" "$tmp/interrupt-ready.1" "$pids" "$tmp/interrupt-ready.2" >/dev/null 2>&1 || brc=$?; } 2>/dev/null
 		if [[ $brc != 137 || $(wc -l 2>/dev/null <"$pids" || echo 0) != 2 ]]; then
 			t_fail "interrupt: the forking shell exited $brc, want 137 after starting two probes"
 			rm -f "$hold"
@@ -1045,14 +985,14 @@ kill -KILL $$'
 		done
 		[[ -e $tmp/interrupt-ready.1 && -e $tmp/interrupt-ready.2 ]] || t_fail "interrupt: a probe never reached its final program once released"
 	}
-	# n_left_gone NAME: the children that docker clients answered and exited with, leaving them behind (and ignoring TERM), are gone; at least one was left.
+	# n_left_gone NAME: the children that docker clients answered and exited with, leaving them behind (and ignoring TERM), are gone; at least one was left. A survivor is
+	# reported, not signalled: its number is a record, and it carries a bound (a sleep of 90 seconds).
 	n_left_gone() {
 		local p n=0
 		for p in $(cat "$fake/left.pids" 2>/dev/null || true); do
 			n=$((n + 1))
 			if t_alive "$p"; then
 				t_fail "$1: the child $p of a docker client that had already exited was not ended"
-				kill -KILL "$p" 2>/dev/null || true
 			fi
 		done
 		((n >= 1)) || t_fail "$1: the stub left no child behind (the case did not exercise the lifecycle)"
@@ -1061,10 +1001,41 @@ kill -KILL $$'
 		if grep -E '^(rm|ps|pause|unpause|cp c|exec) ' "$tmp/nlog" | grep -v 'c\{64\}' | grep -vq 'work.bundle\|^exec -e'; then t_fail "$1: a docker call named something but the run's own container"; fi
 		t_alive "$bystander" || t_fail "$1: a process that does not belong to the run was ended"
 	}
-	# n_clear_holders: end what a case that cannot remove the container leaves in it (the stub's removal is what normally ends them).
+	# n_clear_holders: remove by hand a container whose removal the case made stall: what it was running sees the flag and ends by itself, as it does when the stub's
+	# removal works. Nothing is signalled.
 	n_clear_holders() {
-		local p
-		for p in $(cat "$fake/workload.pid" "$fake/desc.pid" 2>/dev/null || true); do kill -KILL "$p" 2>/dev/null || true; done
+		: >"$fake/removed"
+	}
+	# Signals the nested runner sends are recorded by a function loaded through BASH_ENV (kill_recorder, below): one line per call, naming the function and the file that
+	# made it, whether the target was a live process at that moment, and the arguments. n_signals_owned NAME checks the record of a case: the recorder saw the runner
+	# (otherwise the checks below would pass on an empty file), every KILL the runner sent hit a live process, which is a held one (a client's group, ended through its
+	# job; a number that had been released, such as a docker client that had answered long before, would be gone by then), and the simulated container sent no
+	# signal at all: its removal, freeze and writers work through flags, so nothing a finished workload left behind can be signalled by an old number.
+	cat >"$tmp/kill-recorder.sh" <<'RECORDER'
+[[ ${0##*/} != sh ]] || return 0
+kill() {
+	local last=${*: -1} t st alive=0 src=${BASH_SOURCE[1]:-}
+	t=${last#-}
+	if [[ $t =~ ^[0-9]+$ && -r /proc/$t/stat ]]; then
+		st=$(sed -E 's/^[0-9]+ \(.*\) (.) .*/\1/' "/proc/$t/stat" 2>/dev/null || true)
+		[[ -n $st && $st != Z ]] && alive=1
+	fi
+	printf '%s %s alive=%s %s\n' "${FUNCNAME[1]:-main}" "${src##*/}" "$alive" "$*" >>"${KILL_LOG:-/dev/null}" 2>/dev/null || true
+	builtin kill "$@"
+}
+RECORDER
+	n_signals_owned() {
+		local log=$tmp/kills.$1
+		grep -q ' restore-drill-nested.sh alive=' "$log" 2>/dev/null || t_fail "$1: the recorder saw no signal from the runner (the check would pass on nothing)"
+		! grep -q ' restore-drill-nested.sh alive=0 -KILL' "$log" 2>/dev/null || t_fail "$1: the runner sent KILL to a process that was already gone: $(grep ' restore-drill-nested.sh alive=0 -KILL' "$log" | tr '\n' ';')"
+		! grep -qE ' (docker|stub-workload|stub-desc) alive=' "$log" 2>/dev/null || t_fail "$1: the simulated container signalled a process: $(grep -E ' (docker|stub-workload|stub-desc) alive=' "$log" | tr '\n' ';')"
+	}
+	# n_no_host_signals: nothing in this script sends a signal to what the self-test found by looking at the host (FOUND, /proc), to a pid a stub recorded in a file, or to the
+	# simulated container's holders. This reads the script itself; the word is spelled in two pieces so that this line does not match its own pattern.
+	n_no_host_signals() {
+		local word='ki'"ll" hits
+		hits=$(grep -nE "(^|[^[:alnum:]_])${word}[^#]*(FOUND|/proc/|[.]pid|holders)" "$me" || true)
+		[[ -z $hits ]] || t_fail "host signals: a signal is aimed at a number found by looking or recorded earlier: $hits"
 	}
 	# n_collected NAME DIR: what existed only in the container is in DIR, it was copied before the container was removed, and nothing
 	# in the container could still write when it was.
@@ -1076,7 +1047,7 @@ kill -KILL $$'
 		[[ ! -e $fake/cp-saw-writer ]] || t_fail "$1: something in the container could still write when the copy was taken"
 	}
 
-	# Through the wrapper: TERM reaches the whole group, so the docker client dies with it, and the workload inside
+	# Through the wrapper: TERM reaches the runner (the docker client of the workload is a held job in a group of its own and is ended by the runner), and the workload inside
 	# is stopped by the runner (its own TERM trap writes the aborted status) before anything is copied or removed.
 	n_signal nest-term TERM -- bash scripts/reason-review-scale.sh --evidence-dir "$tmp/nest-term" --only qc1
 	t_rc nest-term 143
@@ -1217,8 +1188,8 @@ signal_in_launch() {
 }
 trap signal_in_launch DEBUG
 HOOK
+	n_no_host_signals
 	n_probe_markers
-	n_probe_stale
 	n_probe_interrupt
 	rm -f "$tmp/launch-signal-sent"
 	t0=$SECONDS
@@ -1236,11 +1207,14 @@ HOOK
 	n_before '^cp c\{64\}:/work/out/\. ' '^rm -fv ' || t_fail "nest-launch-signal: the container was removed before the evidence was copied"
 	n_before '^cp c\{64\}:/work/prep/\. ' '^rm -fv ' || t_fail "nest-launch-signal: the container was removed before the preparation was copied"
 	# A copy that stalls and ignores TERM: it is ended at the start of the removal reserve, recorded as stalled and partial, the other copy and the removal still happen.
+	# The workload ends on the TERM (the runner stopped it) and the docker client of its exec answers at once, so the client is long finished while the copy stalls: every KILL
+	# the runner sends in the meantime and after must hit a client group it still holds (n_signals_owned), none a number it was given earlier.
 	t0=$SECONDS
 	# shellcheck disable=SC2086
-	n_signal nest-hang-cp TERM STUB_CP_HANG=out STUB_HANG_STUBBORN=1 $timing FOLD_NESTED_CLEANUP_BUDGET=16 FOLD_NESTED_RM_RESERVE=6 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-cp" --qc1
+	n_signal nest-hang-cp TERM "BASH_ENV=$tmp/kill-recorder.sh" "KILL_LOG=$tmp/kills.nest-hang-cp" STUB_CP_HANG=out STUB_HANG_STUBBORN=1 $timing FOLD_NESTED_CLEANUP_BUDGET=16 FOLD_NESTED_RM_RESERVE=6 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-cp" --qc1
 	t_rc nest-hang-cp 143
 	n_took nest-hang-cp "$t0" 24
+	n_signals_owned nest-hang-cp
 	n_hung_gone nest-hang-cp
 	n_only_ours nest-hang-cp
 	grep -q 'work/out.*stalled past its deadline' "$tmp/nest-hang-cp/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-hang-cp: the stalled copy was not recorded as stalled"
@@ -1355,11 +1329,13 @@ HOOK
 	# Removal that stalls and ignores TERM, every time: the run returns within its budget, names the container (its name and id, and the command to end it) on stderr
 	# and in COLLECTION-FAILED.txt, and a normal end does not stay a pass. What the run left in the container is ended by hand here, not by the runner.
 	n_want_removed=0
+	# The workload has ended on the TERM long before the removal that stalls, and the simulated container sends no signal: nothing signals what has finished (n_signals_owned).
 	t0=$SECONDS
 	# shellcheck disable=SC2086
-	n_signal nest-hang-rm TERM STUB_RM_HANG=1 STUB_HANG_STUBBORN=1 $timing FOLD_NESTED_CLEANUP_BUDGET=12 FOLD_NESTED_RM_RESERVE=4 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-rm" --qc1
+	n_signal nest-hang-rm TERM "BASH_ENV=$tmp/kill-recorder.sh" "KILL_LOG=$tmp/kills.nest-hang-rm" STUB_RM_HANG=1 STUB_HANG_STUBBORN=1 $timing FOLD_NESTED_CLEANUP_BUDGET=12 FOLD_NESTED_RM_RESERVE=4 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-rm" --qc1
 	t_rc nest-hang-rm 143
 	n_took nest-hang-rm "$t0" 20
+	n_signals_owned nest-hang-rm
 	n_hung_gone nest-hang-rm
 	n_only_ours nest-hang-rm
 	grep -q 'fold-drill-[0-9a-f]* (c\{64\}) could not be removed.*docker rm -fv c\{64\}' "$tmp/nest-hang-rm.out" || t_fail "nest-hang-rm: stderr does not name the container and the command to remove it"
@@ -1401,8 +1377,6 @@ HOOK
 	n_run wrap-cpfail STUB_QUICK=1 STUB_QUICK_QC1=1 STUB_CP_FAIL=prep -- bash scripts/reason-review-scale.sh --evidence-dir "$tmp/wrap-cpfail" --only qc1
 	[[ $rc == 1 ]] || t_fail "wrap-cpfail: exit $rc, want 1"
 	t_check wrap-cpfail "a failed copy fails the step and is in the record" '.result == "fail" and .steps[0].verdict == "fail" and .steps[0].summary.collectionFailed == true and ([.coverage.reasons[] | test("could not be collected completely.*work/prep")] | any)'
-
-	kill "${leftovers[@]}" 2>/dev/null || true
 
 	if ((failures)); then
 		echo "reason-review-scale self-test: $failures failure(s)" >&2

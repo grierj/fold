@@ -69,7 +69,7 @@
 #
 # Every Docker call the cleanup makes (ownership lookups, pause, unpause, the two copies, removal) is a client of its own with an absolute deadline, and its process
 # group is held until it has been ended: one that has not answered by then, and any descendant it leaves behind after it exits, is KILLed with the group (a client
-# that ignores TERM included) and counted as a failure, never waited for. The cleanup as a whole has FOLD_NESTED_CLEANUP_BUDGET seconds (a whole number, at least 3,
+# that ignores TERM included) and counted as a failure, never waited for. The workload's own docker client is held the same way, in a group of its own (inner_exec), and ended through that hold last in the cleanup. The cleanup as a whole has FOLD_NESTED_CLEANUP_BUDGET seconds (a whole number, at least 3,
 # else the run is refused; default 170, from the moment the stop begins, restarted by a signal); a signal-driven run under scripts/reason-review-scale.sh gets its
 # budget from that wrapper's grace, which refuses a budget that does not fit in it. The last FOLD_NESTED_RM_RESERVE seconds (default 30, at most a third of the
 # budget) belong to removal alone, and the window is laid out from its end so that no step can take what a later one needs (open_window): the evidence copy
@@ -126,11 +126,12 @@ TMP="$(mktemp -d)"
 # -e FOLD_NESTED_RUN=<this run's id>, so every process the workload starts (bash, node, chromium, npm, anything) carries it in its environment, also after it
 # was orphaned, put in a session or process group of its own, or reparented to init. A process the daemon starts (the drill's containers) and the runner's own
 # lookup calls do not carry it. A tool that replaces its whole environment would hide from this; none of the drill's tools does.
-ARMED=0 COLLECTED=0 INTERRUPTED="" STOPPED_HOW="none" INNER_CLIENT=""
+ARMED=0 COLLECTED=0 INTERRUPTED="" STOPPED_HOW="none" INNER_JOB=""
 STOP_VERIFIED=0 STOP_LOOKUP_ERRORS=0 FROZEN=0 OWNED_N=""
 COLLECT_FAILED=()
 TO_LOOKUP=0 TO_PAUSE=0 TO_UNPAUSE=0 TO_RM=0 LIMITED_JOB="" LIMITED_TIMED_OUT=0
-# While limited launches its client's group, a signal is only recorded here (on_signal), so it cannot reach cleanup before the group is named in LIMITED_JOB.
+# While limited or inner_exec launches a client's group, or releases it, a signal is only recorded here (on_signal): it cannot reach cleanup before the group is named
+# (LIMITED_JOB, INNER_JOB), nor after the name has been cleared and before the group is ended.
 LIMITED_DEFER=0 SIG_PENDING="" SIG_PENDING_RC=""
 CLEAN_END="" RM_AT="" MAIN_AT="" STOP_LIMIT="" STOP_END="" PHASE_END="" UNPAUSE_SKIPPED=0
 # The least a call that must be able to start is given: whole-second deadlines may fall up to a second early, so two seconds is the shortest interval that is sure to
@@ -185,6 +186,15 @@ set_phase() {
   (( e <= STOP_END )) || e=$STOP_END
   PHASE_END=$e
 }
+# end_group JOB: ends a held job (limited, inner_exec): its whole process group is KILLed through the job's pid and the job is waited for. The pid is safe to signal
+# because the job's leader only ever waits (exec sleep) until this runs, so it is alive and unreaped, and its number cannot have been given to another process. The
+# caller has already cleared the variable that named JOB, with signals deferred (LIMITED_DEFER): a signal can then neither find a pid that is being released nor miss
+# a group that was not yet ended.
+end_group() {
+  local job=$1
+  [[ -n "$job" ]] || return 0
+  { kill -KILL -- "-$job" 2>/dev/null || true; wait "$job" 2>/dev/null || true; } 2>/dev/null
+}
 # limited DEADLINE OUTFILE COMMAND...: a Docker client of the cleanup (stdout to the file, stderr dropped, no stdin) as a job in a process group of its own (the way
 # scripts/pg-client.sh bounds its calls). The job is a subshell that runs the client, records its status and then only waits, so the group stays held, and its pid
 # cannot be reused, until this function has ended it: the whole group is KILLed when the client has answered (a descendant it left behind, one that ignores TERM
@@ -194,7 +204,7 @@ set_phase() {
 # interval is only recorded (LIMITED_DEFER, as scripts/reason-review-scale.sh does for its step) and taken the moment the group is named. The job is started with the
 # default dispositions of INT, TERM and HUP, also when cleanup, which ignores them, launched it.
 limited() {
-  local deadline=$1 out=$2 rc=0
+  local deadline=$1 out=$2 rc=0 job
   shift 2
   LIMITED_TIMED_OUT=0
   if (( SECONDS >= deadline )); then LIMITED_TIMED_OUT=1; return 137; fi
@@ -216,13 +226,16 @@ limited() {
   { # bash's own "Killed" notice for a job we killed goes to stderr when the job is reaped
     while [[ ! -e "$TMP/limited.rc" ]]; do
       if (( SECONDS >= deadline )); then LIMITED_TIMED_OUT=1; break; fi
-      kill -0 "$LIMITED_JOB" 2>/dev/null || break
+      [[ " $(jobs -rp | tr '\n' ' ') " == *" $LIMITED_JOB "* ]] || break
       sleep 0.1 2>/dev/null || sleep 1
     done
-    kill -KILL -- "-$LIMITED_JOB" 2>/dev/null || kill -KILL "$LIMITED_JOB" 2>/dev/null || true
-    wait "$LIMITED_JOB" 2>/dev/null || true
+    LIMITED_DEFER=1
+    job=$LIMITED_JOB
     LIMITED_JOB=""
+    end_group "$job"
+    LIMITED_DEFER=0
   } 2>/dev/null
+  if [[ -n "$SIG_PENDING" ]]; then on_signal "$SIG_PENDING" "$SIG_PENDING_RC"; fi
   if (( LIMITED_TIMED_OUT )); then return 137; fi
   [[ -s "$TMP/limited.rc" ]] && rc="$(<"$TMP/limited.rc")" || rc=137
   [[ "$rc" =~ ^[0-9]+$ ]] || rc=137
@@ -276,17 +289,46 @@ stopped_confirmed() {
   sleep 1
   owned count && [[ "$OWNED_N" == 0 ]]
 }
-# inner_exec DOCKER_EXEC_ARGS...: the workload, started in the background and waited for, so that a signal runs the trap at once and not after a many-hour run.
-# A signal sent to the whole process group can end the docker client a moment before this script's own trap runs, so a status of 128 or more is given a short,
-# bounded time (FOLD_NESTED_SIGNAL_WAIT seconds, default 5) in which that trap can fire and take over. It is not proof of anything: the same status comes from a
-# docker client killed by someone else, or from a workload that died of a signal or the OOM killer while a marked writer lives on. When no signal arrives the status
+# inner_exec DOCKER_EXEC_ARGS...: the workload's docker client, a held job like limited's (a subshell in a process group of its own that runs the client, records its
+# status and then only waits), polled for its status rather than waited for, so that a signal runs the trap within a tenth of a second and not after a many-hour run.
+# The client is therefore owned for as long as the runner needs it: it is ended through the held job, once, by whoever gets there first (the end of this function, or
+# cleanup), after INNER_JOB has been cleared with signals deferred; nothing ever signals a number that was released, however long the cleanup that follows takes. The
+# client is not in the runner's own group, so a signal sent to that group reaches the runner's trap alone; a status of 128 or more is still given a short, bounded time
+# (FOLD_NESTED_SIGNAL_WAIT seconds, default 5) in which a signal can reach that trap and take over. It is not proof of anything: the same status comes from a docker
+# client killed by someone else, or from a workload that died of a signal or the OOM killer while a marked writer lives on. When no signal arrives the status
 # is returned as it is, and the caller goes on into the ordinary stop, verify, collect, remove sequence, which is bounded by its own grace times.
 inner_exec() {
-  local rc=0 wait_end
-  docker exec -e "$OWN_MARK" "$@" &
-  INNER_CLIENT=$!
-  wait "$INNER_CLIENT" || rc=$?
-  INNER_CLIENT=""
+  local rc=0 wait_end job
+  rm -f "$TMP/inner.rc"
+  LIMITED_DEFER=1
+  set -m
+  (
+    trap - INT TERM HUP
+    local crc=0
+    docker exec -e "$OWN_MARK" "$@" </dev/null || crc=$?
+    printf '%s\n' "$crc" >"$TMP/inner.tmp" && mv "$TMP/inner.tmp" "$TMP/inner.rc"
+    exec sleep 3600 >/dev/null 2>&1
+  ) &
+  INNER_JOB=$!
+  set +m
+  LIMITED_DEFER=0
+  # The recorded signal is taken here, once, as in limited.
+  if [[ -n "$SIG_PENDING" ]]; then on_signal "$SIG_PENDING" "$SIG_PENDING_RC"; fi
+  { # bash's own notice for a job that was killed goes to stderr when the job is reaped
+    while [[ ! -e "$TMP/inner.rc" ]]; do
+      # The job is still in bash's table as running; a client group that something else ended is not waited for.
+      [[ " $(jobs -rp | tr '\n' ' ') " == *" $INNER_JOB "* ]] || break
+      sleep 0.1 2>/dev/null || sleep 1
+    done
+    [[ -s "$TMP/inner.rc" ]] && rc="$(<"$TMP/inner.rc")" || rc=137
+    [[ "$rc" =~ ^[0-9]+$ ]] || rc=137
+    LIMITED_DEFER=1
+    job=$INNER_JOB
+    INNER_JOB=""
+    end_group "$job"
+    LIMITED_DEFER=0
+  } 2>/dev/null
+  if [[ -n "$SIG_PENDING" ]]; then on_signal "$SIG_PENDING" "$SIG_PENDING_RC"; fi
   if (( rc >= 128 )); then
     wait_end=$((SECONDS + $(secs FOLD_NESTED_SIGNAL_WAIT 5 0)))
     PHASE_END=$wait_end
@@ -429,7 +471,7 @@ stop_text() {
 }
 # shellcheck disable=SC2329 # EXIT trap.
 cleanup() {
-  local rc=$? note
+  local rc=$? note job
   trap - EXIT
   trap '' INT TERM HUP   # a second signal must not cut the collection short
   # A signal recorded while a group was being launched, when the run ends some other way before limited could take it, is this run's reason and status, not a
@@ -441,8 +483,9 @@ cleanup() {
   LIMITED_DEFER=0
   # A call a signal cut short is ended, not waited for; the cleanup's own calls are all bounded (limited).
   if [[ -n "$LIMITED_JOB" ]]; then
-    kill -KILL -- "-$LIMITED_JOB" 2>/dev/null || kill -KILL "$LIMITED_JOB" 2>/dev/null || true
+    job=$LIMITED_JOB
     LIMITED_JOB=""
+    end_group "$job"
   fi
   PHASE_END=""
   if [[ -n "$CID" ]] && (( ARMED && ! COLLECTED )); then
@@ -484,7 +527,12 @@ cleanup() {
       if (( rc == 0 )) || (( CROSS && rc == 10 )); then rc=1; fi
     fi
   fi
-  [[ -z "$INNER_CLIENT" ]] || kill -KILL "$INNER_CLIENT" >/dev/null 2>&1 || true
+  # The workload's docker client, when a signal cut the run short, is ended last, through its held job: it was never a bare number, however long the cleanup took.
+  if [[ -n "$INNER_JOB" ]]; then
+    job=$INNER_JOB
+    INNER_JOB=""
+    end_group "$job"
+  fi
   rm -rf -- "$TMP"
   exit "$rc"
 }

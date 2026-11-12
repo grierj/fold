@@ -259,7 +259,12 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   A workload that ends 137 or 143 while no signal reached the runner (a killed docker client, an
   OOM kill) gets `FOLD_NESTED_SIGNAL_WAIT` seconds (default 5) for a pending signal, never an open-ended
   wait, then goes through the same bounded stop and collection and keeps its own status.
-  Every Docker call the cleanup makes (lookups, pause, unpause, both copies, removal) is a client
+  The workload's own docker client is held the same way: a job in a process group of its own that
+  records its status and only waits, which the runner polls for its status. It is ended through
+  that job, once, after its name has been cleared with signals held, at the end of the run or last
+  in a cleanup, so a client that answered long before a stalled copy is over is never signalled by
+  a number it no longer has. Every Docker call the cleanup makes (lookups, pause, unpause, both
+  copies, removal) is a client
   with an absolute deadline, in a process group the runner holds until it has ended it: one that
   has not answered is killed with its whole group, also when it ignores TERM, and so is a
   descendant a client leaves behind after it exits. A signal between the launch of a client's
@@ -325,21 +330,33 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   before the container is removed), ends every stalled client and its child, leaves nothing the case
   started running (every process of the case carries `STUB_CASE=<name>` and the run's
   `REASON_SCALE_SELFTEST` marker, the stub records that it saw both, and only a process with both is
-  ever selected: a probe shows that one borrowing the label with no or another run's marker
-  survives; the exit trap reads the marker from the exported variable, so a temporary directory
-  with spaces is handled, and ends whatever still carries the run's marker, also when a case
-  fails). The probes are owned through pipes, one FIFO each, whose only writer is a descriptor of
-  the test shell, and end by themselves when it closes (also when the shell is interrupted). A probe
-  has no timer, so it cannot end between a scan and the signal that follows, and no process is ever
-  signalled by a number recorded earlier: before each KILL the signal step looks again and signals
-  only a process that still carries the marker. The read end is opened before the fork and
-  inherited, so a probe never opens the FIFO by name. A signal log shows that the exit reaper
-  signals nothing when nothing carries its marker and otherwise only that process, that an
-  unmarked stand-in for a reused number and the foreign probes survive, and, in a delayed-scan case
-  (a hook between the scan and the signal ends the selected probe and puts the stand-in in its
-  place), that neither is signalled. An interruption case kills a shell holding two freshly forked
-  probes (one marked, one not) before they take a step and checks that they end by themselves once
-  released. A
+  found: a probe shows that one borrowing the label with no or another run's marker is not).
+  The self-test never signals a process it found by looking at the host, and never one by a number
+  recorded earlier, because a number can be handed to an unrelated process between the look and the
+  signal whatever is checked in between. Looking is read-only (`find_marked`, which names what a
+  failed case left). What a failed case leaves ends by itself: the simulated container is a
+  directory, removal and the freeze are flag files (`removed`, `paused`) that the stub's processes
+  (the workload shell, the writer that ignores TERM) watch, and each case has a directory of its own,
+  deleted by the next, which they also watch, as they do the run's directory that the exit trap
+  deletes (the trap reads the marker from the exported variable, so a temporary directory with
+  spaces is handled); the stalled clients and children the stubs leave carry a bound of 90 seconds.
+  The probes are owned through pipes, one FIFO each, whose only writer is a descriptor of the test
+  shell, and end by themselves when it closes (also when the shell is interrupted). A probe has no
+  timer of its own and nothing signals it. The read end is opened before the fork and inherited, so
+  a probe never opens the FIFO by name; an interruption case kills a shell holding two freshly
+  forked probes (one marked, one not) before they take a step and checks that they end by
+  themselves once released. A guard reads the script itself and fails if a signal is aimed at what
+  a look at the host found, at a pid read from a file, or at the container's holders. For the
+  signals that remain, a function loaded through `BASH_ENV` records every `kill` of the runner and
+  the stubs (the function, the file, whether the target was a live process, the arguments) in two
+  cases: a cancel whose evidence copy stalls after the workload has ended and its docker client has
+  long answered, and a cancel whose removal stalls after the workload has ended. Every KILL the
+  runner sends must hit a live process, which is a client group it still holds (the recorder must
+  have seen the runner, so an empty record cannot pass), and the simulated container sends none.
+  The one signal that still reaches host processes by number is the runner's own container-side
+  lookup script, which the stub runs unchanged on this host's /proc: it can only signal a process
+  that carries the run's random `FOLD_NESTED_RUN` marker, and signalling those is what the case
+  tests. A
   bystander survives, a budget the
   runner cannot use or one that does not fit the wrapper's grace is refused, a
   removal that stalls once is retried, one that never works names the container and fails the
