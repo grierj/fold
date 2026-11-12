@@ -698,16 +698,25 @@ idle() {
 	i=0
 	while [ $i -lt 600 ]; do sleep 0.2; i=$((i + 1)); done
 }
+# await_release holds a scenario until the test has recorded the identities it
+# needs from the live processes (it writes the release file), or about 10s.
+await_release() {
+	i=0
+	while [ ! -e "$STUB_DIR/release" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+}
 stubborn() {
-	sh -c 'trap "" TERM; echo $ >"$1"; i=0; while [ $i -lt 600 ]; do sleep 0.2; i=$((i+1)); done' sh "$STUB_DIR/grandchild.pid" &
+	sh -c 'trap "" TERM; echo $$ >"$1"; i=0; while [ $i -lt 600 ]; do sleep 0.2; i=$((i+1)); done' sh "$STUB_DIR/grandchild.pid" &
+	# Not on until the child has written its PID, so "started" means it is there.
+	i=0
+	while [ ! -s "$STUB_DIR/grandchild.pid" ] && [ $i -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
 }
 if [ "$step" = "$STUB_STEP" ]; then
 	echo $$ >"$STUB_DIR/root.pid"
 	case "$STUB_SCENARIO" in
-	stray) stubborn; passes "$@"; : >"$STUB_DIR/started"; exit 0 ;;
+	stray) stubborn; passes "$@"; : >"$STUB_DIR/started"; await_release; exit 0 ;;
 	termroot) stubborn; trap 'exit 0' TERM; : >"$STUB_DIR/started"; idle ;;
 	deaf) trap '' TERM; stubborn; : >"$STUB_DIR/started"; idle ;;
-	lostsup) stubborn; : >"$STUB_DIR/started"; kill -KILL $PPID; idle ;;
+	lostsup) stubborn; : >"$STUB_DIR/started"; await_release; kill -KILL $PPID; idle ;;
 	killgroup) : >"$STUB_DIR/started"; kill -KILL 0 ;;
 	esac
 fi
@@ -947,18 +956,38 @@ func (r *hardeningRig) waitFor(name string, within time.Duration) {
 func (r *hardeningRig) proc(name string) procID {
 	r.t.Helper()
 	r.waitFor(name, 10*time.Second)
+	why := "never read"
 	for i := 0; i < 100; i++ { // the file may be created before the number is written
-		if b, err := os.ReadFile(filepath.Join(r.state, name)); err == nil {
-			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 1 {
+		b, err := os.ReadFile(filepath.Join(r.state, name))
+		switch {
+		case err != nil:
+			why = err.Error()
+		default:
+			text := strings.TrimSpace(string(b))
+			pid, err := strconv.Atoi(text)
+			switch {
+			case err != nil || pid <= 1:
+				why = fmt.Sprintf("it holds %q, not a PID", text)
+			default:
 				if id, ok := captureProc(pid); ok {
 					return id
 				}
+				why = fmt.Sprintf("PID %d has no /proc entry (already gone)", pid)
 			}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	r.t.Fatalf("%s holds no running process", name)
+	r.t.Fatalf("%s: no live process to record: %s", name, why)
 	return procID{}
+}
+
+// release lets a held scenario go on, once the test has recorded identities
+// from the processes while they are alive.
+func (r *hardeningRig) release() {
+	r.t.Helper()
+	if err := os.WriteFile(filepath.Join(r.state, "release"), nil, 0o644); err != nil {
+		r.t.Fatal(err)
+	}
 }
 
 func (r *hardeningRig) expectEnded(what string, p procID) {
@@ -1025,10 +1054,16 @@ func TestReasonHardeningStepLeftoversDoNotOutliveTheStep(t *testing.T) {
 	r := newHardeningRig(t, true)
 	bystander := bystanderInTestGroup(t)
 	run := r.start([]string{"STUB_STEP=normal", "STUB_SCENARIO=stray"}, true)
+	// The child's identity is recorded while it is alive; only then may its
+	// parent exit and leave it behind.
+	r.waitFor("started", 10*time.Second)
+	child := r.proc("grandchild.pid")
+	r.expectAlive("the TERM-ignoring child, before its parent exits", child)
+	r.release()
 	if code := run.exitCode(t, 60*time.Second); code != 0 {
 		t.Fatalf("the script exited %d:\n%s", code, run.out)
 	}
-	r.expectEnded("the TERM-ignoring child the first step left behind", r.proc("grandchild.pid"))
+	r.expectEnded("the TERM-ignoring child the first step left behind", child)
 	r.expectAlive("a bystander in the test's process group", bystander)
 	r.expectAlive("a bystander in the script's own process group", run.groupID)
 	ev := r.record()
@@ -1137,8 +1172,11 @@ func TestReasonHardeningLostSupervisorAloneLeavesNoSurvivors(t *testing.T) {
 	r := newHardeningRig(t, true)
 	bystander := bystanderInTestGroup(t)
 	run := r.start([]string{"STUB_STEP=normal", "STUB_SCENARIO=lostsup"}, true)
-	root, child := r.proc("root.pid"), r.proc("grandchild.pid")
 	r.waitFor("started", 10*time.Second)
+	root, child := r.proc("root.pid"), r.proc("grandchild.pid")
+	r.expectAlive("the command, before its supervisor is killed", root)
+	r.expectAlive("the TERM-ignoring descendant, before its supervisor is killed", child)
+	r.release() // only now does the stub kill its own supervisor
 	if code := run.exitCode(t, 60*time.Second); code != 1 {
 		t.Fatalf("exit %d, want 1:\n%s", code, run.out)
 	}
