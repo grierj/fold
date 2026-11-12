@@ -398,15 +398,19 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   holds the workload at that boundary and lets it go) keeps its own status, and the one signal
   goes to the held group, never to the number of the process that ended; a workload with no
   request gets no signal. Its files are gone and no process carrying the case's marker remains.
-  The case directory has a blank in its name, so a path is proved to be data. `n_wrap_interrupt` interrupts a self-test shell (TERM) with the real `WRAP` running a workload (`gate.sh`).
+  The case directory has a blank in its name, so a path is proved to be data. `n_wrap_interrupt` interrupts a self-test shell (TERM) with the real `WRAP` running a workload (`gate.sh`, or `term.sh` / `release.sh`, the workloads of the cases above).
   The workload is held at a gate outside the directory immediately before its first write into it, and keeps creating files there; the exit opens the gate and removes the directory,
   so the removal runs against the creation. The exit revokes the lease first, by renaming the directory away (one atomic step), and only then deletes it. That is the quick path, not
   the bound: the workload also holds the read end of a lifeline (a FIFO whose write end only the interrupted shell holds), so it ends when that shell does, whether or not the rename
-  or the removal worked, and it ends if its gate disappears. The modes: `request` (after the workload started, before any request to stop, runner registered), `registration`
+  or the removal worked, and it ends if its gate disappears. Every `WRAP` a fixture starts goes through `n_wrap_start` (the cases above and the interrupted shell alike), which gives the
+  supervisor's tree the lifeline's read end on fd 8 and no write end, and every waiting workload (`term.sh`, `release.sh`, `gate.sh`) reads it as its wait and its check; once the workload
+  ends, the leader and the supervisor end through the lease and parent checks `WRAP` already has. The modes: `request` (after the workload started, before any request to stop, runner registered), `registration`
   (before the runner is registered, so the exit knows nothing of it), `norename` (the rename is impossible and the removal runs in the order that lost the race: the directory is
-  emptied, the workload writes its first file, then the `rmdir` fails; the case checks that the directory and its lease stayed, and the workload still ends) and `launch` (the
+  emptied, the workload writes its first file, then the `rmdir` fails; the case checks that the directory and its lease stayed, and the workload still ends), `lost` (run with `term.sh`
+  and with `release.sh`: the rename is impossible and the removal fails outright, so the directory stays for good; the case checks that it stayed with the workload's `wl.pid` in it and that
+  the workload, its leader and the supervisor all end anyway) and `launch` (the
   interrupted shell plays the self-test and has forked, without registering it, the shell that runs the workload; the whole case directory, gate included, is removed). In every mode
-  the directories are gone (except `norename`'s, by design) and nothing carrying the case's marker remains.
+  the directories are gone (except those of `norename` and `lost`, by design) and nothing carrying the case's marker remains.
   Every wait of
   the simulated container (the docker client's wait for the workload's readiness, the writer's
   wait to record itself) ends when the container's directory, the lease its processes hold, is
