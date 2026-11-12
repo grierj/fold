@@ -2,11 +2,12 @@
 
 **Design revision r3.** Design only. This file changes no production code, migration, sweep
 version, test, audit row or owner decision. It is the input to the independent review that
-issue #303 requires (DG-9 item 3), and to the implementation in #305, which stays deferred
-until that review approves this exact revision. **No review verdict is recorded in this
-revision** (section 12), so nothing here is approved. Revision r1 received combined
-independent findings R303-01, R303-02, F-COUNT, F-GAP, F-RESIDUE and F-LOCK. A review of
-r2 left R303-02, F-COUNT and F-RESIDUE open; r3 addresses them and needs a fresh review.
+issue #303 requires (DG-9 item 3), and to the implementation in #305. An independent
+reviewer approved r3 at `ead7e7bc9e1b135ceabc6fd34adfaebabde6bc81` (section 12); the
+subsequent record and status corrections change no design. #305 stays deferred until the
+#300 verification it depends on is satisfied. Revision r1 received combined independent
+findings R303-01, R303-02, F-COUNT, F-GAP, F-RESIDUE and F-LOCK. A review of r2 left
+R303-02, F-COUNT and F-RESIDUE open; the r3 review closed them.
 
 Sources: `docs/plan/M7.4-ERASURE-INVENTORY.md` (sections 1, 3, 6.5.1, 6.5.2, 6.9, 12.1),
 `docs/agents/erasure.md`, `account_erasure_audit.go`, `account_erasure_tombstones.go`,
@@ -617,8 +618,8 @@ record. The approval does not decide the open matters below.
 
 What an approval would not do: approve #305's code, change a sweep version or a migration,
 close G-9, establish G-8, authorize P1, P3, P4 or P5, widen decision 5, or answer Q3. #305 stays
-deferred until this design is approved **and** the #300 verification it depends on is satisfied
-(this document asserts neither). #304 puts Q3 to Grier only after the residue statement
+deferred until this design is approved **and** the #300 verification it depends on is satisfied.
+This document records the design approval, but not the #300 verification. #304 puts Q3 to Grier only after the residue statement
 exists in an approved design. After approval, the inventory (6.5.2, DG-9 items 2 and 3) and
 `STATUS.md` are updated by #305's PR, "for the reached residue only", with G-9 still OPEN.
 
