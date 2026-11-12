@@ -244,14 +244,20 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   default nested run that cleanup is the point, and `restore-drill-nested.sh` does it in three
   ordered steps on every end, not only a signal: stop, then collect, then remove. Every process
   the workload starts carries `FOLD_NESTED_RUN=<run id>` in its environment (each `docker exec`
-  passes it), so the runner finds Node, Chromium, npm and orphans as well as the bash scripts,
-  by that marker, with a lookup run inside the container (a process is signalled only after it is held with STOP and its start time and marker are checked again). After a signal it TERMs the owned
-  top-level processes (`FOLD_NESTED_STOP_GRACE` seconds, default 90), then KILLs every owned
-  process (`FOLD_NESTED_KILL_WAIT`, default 15). A stop is established only by two successful
-  lookups, a second apart, that both count zero; a lookup that fails is never read as "none".
-  If the stop cannot be established the container is frozen (`docker pause`) before the copy. It
-  then copies `/work/prep` and `/work/out` into the step's artifact directory and only then
-  removes the container. `INTERRUPTED.txt` there says how the run stopped, `LEFTOVERS-STOPPED.txt`
+  passes it), so the runner counts Node, Chromium, npm and orphans as well as the bash scripts,
+  by that marker, with a lookup run inside the container that signals nothing: no process is
+  ever stopped, resumed or ended by its number, because a number alone is not a process (it can
+  be handed to another between a look and a signal) and a shell holds only its own children.
+  Two things end anything. Each `docker exec` runs the workload as the child of a small
+  supervisor (`WRAP`) that polls for `/work/stop-request` and sends TERM to its own child, whose
+  number comes from having started it, not from looking; after a signal the runner writes that file
+  (`FOLD_NESTED_STOP_GRACE` seconds, default 90). Then the container is killed (`docker kill`:
+  every process in it, at once, by no number) and the daemon is asked whether it has stopped
+  (`FOLD_NESTED_KILL_WAIT`, default 15). A stop is established only by that answer or by two
+  successful lookups, a second apart, that both count zero; a lookup or a kill that fails is
+  never read as "none". If the stop cannot be established the container is frozen (`docker
+  pause`) before the copy. It then copies `/work/prep` and `/work/out` into the step's artifact
+  directory (`docker cp` reads a stopped container too) and only then removes the container. `INTERRUPTED.txt` there says how the run stopped, `LEFTOVERS-STOPPED.txt`
   notes a leftover ended after a normal finish, and `COLLECTION-FAILED.txt` names any copy that
   failed or a stop that could not be established. Such a failure is a failure of the run: the
   runner exits 1 instead of 0 (or 10 for `--crossings-only`), and the wrapper fails the step and
@@ -263,7 +269,10 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   records its status and only waits, which the runner polls for its status. It is ended through
   that job, once, after its name has been cleared with signals held, at the end of the run or last
   in a cleanup, so a client that answered long before a stalled copy is over is never signalled by
-  a number it no longer has. Every Docker call the cleanup makes (lookups, pause, unpause, both
+  a number it no longer has. A held group also ends itself when the runner is gone, however it
+  went (`life_hold`: a watcher in the group reads a FIFO whose only writer is the runner's
+  descriptor 8, and ends the group at end-of-file), so a KILL of the runner leaves no client
+  behind. Every Docker call the cleanup makes (lookups, kill, state, pause, unpause, both
   copies, removal) is a client
   with an absolute deadline, in a process group the runner holds until it has ended it: one that
   has not answered is killed with its whole group, also when it ignores TERM, and so is a
@@ -290,7 +299,8 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   cannot be shown to be gone (a
   listing by its id that ran and came back empty) is named, with its id and
   `docker rm -fv <id>`, on stderr and in `COLLECTION-FAILED.txt`, and the run exits 1 instead of 0.
-  Limits: a KILL sent to either script cannot do any of this; a tool that replaces its whole
+  Limits: a KILL sent to either script cannot run the cleanup (it does end the held client
+  groups); a tool that replaces its whole
   environment would hide from the marker; the drill's own nested containers belong to the
   daemon and go with the container.
 - **When the full drill is owed** is decided only in `docs/agents/deploy.md` ("Full restore drill
@@ -309,14 +319,15 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   by itself and a tool that ignores TERM all ended, and a bystander process untouched; and, with
   the real `restore-drill-nested.sh` against a stub docker that holds the artifacts only inside
   its "container" (the workload shell is started with the run's marker already in its initial
-  environment, as `docker exec -e` does; before the cancel, the ownership lookup the runner
-  sends is run for real, on this host's /proc, with `kill` replaced by a recorder, and must name
-  that shell and any stubborn writer, and nothing without the marker), that a cancel stops the run inside, copies the
-  artifacts out and only then removes the container, also when the run has to be killed; that a
-  non-bash descendant in a session of its own that ignores TERM and keeps writing is found and
-  killed before the copy, while a process without the marker is not touched; that a failing
-  lookup is never read as "nothing running" (the container is frozen, and the copy recorded as
-  incomplete, also when the freeze fails); that a docker exec ending 137 or 143 with no signal to
+  environment, as `docker exec -e` does; before the cancel, the ownership count the runner
+  sends is run for real, on this host's /proc, and must count at least that shell and any
+  stubborn writer, and not the process without the marker), that a cancel stops the run inside,
+  copies the artifacts out and only then removes the container, also when the container has to
+  be killed; that a non-bash descendant in a session of its own that ignores TERM and keeps
+  writing is gone before the copy (the container was killed), while a process without the marker
+  is not touched; that a failing lookup is never read as "nothing running", and neither is a kill
+  that does not take effect (the container is frozen, and the copy recorded as incomplete, also
+  when the freeze fails); that a docker exec ending 137 or 143 with no signal to
   the runner and a TERM-ignoring writer left behind finishes in bounded time, kills the writer
   before the copy and keeps the workload's status; that a leftover after a normal end is ended and
   noted; that a lookup, a pause, a copy and a removal that stall (the stub's client has a child of
@@ -365,21 +376,29 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   runner sends must hit a live process, which is a client group it still holds (the recorder must
   have seen the runner, so an empty record cannot pass), and the simulated container sends none.
   No signal reaches a host process by number. The runner's container-side lookup script is
-  run by the stub on this host's /proc in its read-only mode (`count`) only; the TERM and KILL
-  it would send arrive at the simulated processes as flag files (`sig-term`, `sig-end`) that
-  they act on themselves. The lookup's own signalling is proved on a copy of the process table
-  (`OWN_PROC`) with a recorder for its signals (`n_scan_identity`): a process is selected with
-  its start time and signalled only after it has been held with STOP and checked again (the
-  marker still in its environment, the same start time), so a process that ended between
-  selection and dispatch, or whose number was given to another process (one with no marker, or
-  one of the same run with another start time), receives only STOP and CONT and never TERM or
-  KILL; B, an owned child, and an unmarked process get nothing wrong; and the read-only mode
-  sends nothing. Every wait of the simulated container (the docker client's wait for the
-  workload's readiness, the writer's wait to record itself) ends when the container's
-  directory, the lease its processes hold, is gone; `n_startup_interrupt` removes it at the
-  boundary between the workload's launch and its readiness (the workload is held from ever
-  becoming ready) and checks that the client exits by itself (status 1, not the limit's KILL)
-  and that nothing carrying the case's marker remains. A
+  run by the stub on this host's /proc in its read-only mode (`count`) whichever mode is
+  asked for; a request to stop arrives at the simulated processes as a flag file (`sig-term`),
+  and `docker kill` as another (`sig-end`) with the state `docker inspect` then reports, that
+  they act on themselves. The lookup signals nothing at all, which is the answer to a number
+  that has changed hands (`n_scan_quiet`): the script, read as it stands, holds no signal, and
+  the count, run on this host's /proc beside two processes that stopped themselves (one with
+  the run's marker, one without, which stands for an unrelated process that came to hold a
+  number, already stopped), counts only the marked one and leaves both stopped. Every wait of
+  the simulated container (the docker client's wait for the workload's readiness, the writer's
+  wait to record itself) ends when the container's directory, the lease its processes hold, is
+  gone; `n_startup_interrupt` removes it at the boundary between the workload's launch and its
+  readiness (the workload is held from ever becoming ready) and checks that the client exits by
+  itself (status 1, not the limit's KILL) and that nothing carrying the case's marker remains.
+  The self-test's own exit does not leave a runner behind either: a runner it has started and
+  not waited for is asked to stop and waited for before the run's directory (the stub docker,
+  the nested repository, the simulated container) is removed (`drop_selftest`), and the limit
+  of `bounded_exec` (240 seconds) leaves a signalled runner the whole of its cleanup budget.
+  `n_outer_interrupt` plays this with the real runner and a run directory of its own: the
+  shell is sent TERM mid-run, the evidence is copied and the container removed before the
+  directory goes, and no runner, client group, holder or simulated process carrying the case's
+  marker remains. `n_orphan_holders` ends the runner with a KILL (the limit of `bounded_exec`)
+  while its workload's client is held, and checks that the group ends by itself
+  (`life_hold`). A
   bystander survives, a budget the
   runner cannot use or one that does not fit the wrapper's grace is refused, a
   removal that stalls once is retried, one that never works names the container and fails the

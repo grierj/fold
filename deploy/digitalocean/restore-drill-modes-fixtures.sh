@@ -228,7 +228,7 @@ launch() { STUB_LOG="$WORK/stub.log" PATH="$WORK/stubbin:$PATH" bash "$LAUNCH/de
 # the default: unchanged lines, Firefox prepared, no marker, no mode text
 : >"$WORK/stub.log"; rc=0; launch --out "$WORK/L1" -- --keep >"$WORK/l1.out" 2>&1 || rc=$?
 [[ "$rc" == 0 ]] && grep -q 'drill exit=0' "$WORK/l1.out"
-grep -q '^exec -e FOLD_NESTED_RUN=[0-9a-f]\{12\} -e QC1_WEB_DIR=/work/fold/web -e QC1_PREPARE_FIREFOX=1 -w /work/fold c\{64\} bash deploy/digitalocean/qc1/browser-prepare.sh /work/prep$' "$WORK/stub.log"
+grep -q '^exec -e FOLD_NESTED_RUN=[0-9a-f]\{12\} -e QC1_WEB_DIR=/work/fold/web -e QC1_PREPARE_FIREFOX=1 -w /work/fold c\{64\} bash -c .* _ bash deploy/digitalocean/qc1/browser-prepare.sh /work/prep$' "$WORK/stub.log"
 grep -q -- ' bash deploy/digitalocean/restore-drill.sh --dir /work/out --keep$' "$WORK/stub.log"
 if grep -q 'crossings-only' "$WORK/stub.log" "$WORK/l1.out"; then echo 'the default launcher run mentions crossings-only' >&2; exit 1; fi
 [[ ! -e "$WORK/L1/PARTIAL-NOT-FULL-ACCEPTANCE.txt" ]]
@@ -236,7 +236,7 @@ cp "$WORK/stub.log" "$WORK/stub.default"
 # the diagnostic: no Firefox runtime, the flag first on the drill's line, the marker, the code kept, the same container and the same isolation lines
 : >"$WORK/stub.log"; rc=0; STUB_DRILL_RC=10 launch --out "$WORK/L2" --crossings-only -- --keep >"$WORK/l2.out" 2>&1 || rc=$?
 [[ "$rc" == 10 ]]; grep -q 'crossings-only exit=10 evidence=' "$WORK/l2.out"; grep -q 'PARTIAL diagnostic: NOT the full drill, NOT acceptance' "$WORK/l2.out"
-grep -q '^exec -e FOLD_NESTED_RUN=[0-9a-f]\{12\} -e QC1_WEB_DIR=/work/fold/web -w /work/fold c\{64\} bash deploy/digitalocean/qc1/browser-prepare.sh /work/prep$' "$WORK/stub.log"
+grep -q '^exec -e FOLD_NESTED_RUN=[0-9a-f]\{12\} -e QC1_WEB_DIR=/work/fold/web -w /work/fold c\{64\} bash -c .* _ bash deploy/digitalocean/qc1/browser-prepare.sh /work/prep$' "$WORK/stub.log"
 if grep -q 'QC1_PREPARE_FIREFOX' "$WORK/stub.log"; then echo 'the diagnostic builds the Firefox runtime' >&2; exit 1; fi
 grep -q -- ' bash deploy/digitalocean/restore-drill.sh --dir /work/out --crossings-only --keep$' "$WORK/stub.log"
 grep -q 'browser-prepare.sh' "$WORK/stub.log"   # the Chromium preparation and its preflight still run

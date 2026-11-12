@@ -309,10 +309,10 @@ check_mode() { # mode-name run-script label prepare-env-words
   run_l="$(grep -n -- "$2" "$WORK/stub.log" | head -n 1 | cut -d: -f1)"
   [[ -n "$clone_l" && -n "$prep_l" && -n "$run_l" && "$clone_l" -lt "$prep_l" && "$prep_l" -lt "$run_l" ]] || { echo "$1: the browser is not prepared between the clone and the run" >&2; cat "$WORK/stub.log" >&2; exit 1; }
   [[ "$(grep -c 'browser-prepare.sh' "$WORK/stub.log")" == 1 ]] || { echo "$1: the browser is prepared more or less than once" >&2; exit 1; }
-  grep -q "^exec -e FOLD_NESTED_RUN=[0-9a-f]\{12\} $4-w /work/fold c\{64\} bash deploy/digitalocean/qc1/browser-prepare.sh /work/prep\$" "$WORK/stub.log" || { echo "$1: the preparation does not run with the environment $4" >&2; cat "$WORK/stub.log" >&2; exit 1; }
+  grep -q "^exec -e FOLD_NESTED_RUN=[0-9a-f]\{12\} $4-w /work/fold c\{64\} bash -c .* _ bash deploy/digitalocean/qc1/browser-prepare.sh /work/prep\$" "$WORK/stub.log" || { echo "$1: the preparation does not run with the environment $4" >&2; cat "$WORK/stub.log" >&2; exit 1; }
   run_line="$(sed -n "${run_l}p" "$WORK/stub.log")"
   grep -q -- '-e FOLD_DRILL_ISOLATED_DAEMON=1 -e QC1_NO_SANDBOX=1 -e QC1_WEB_DIR=/work/fold/web -w /work/fold' <<<"$run_line" || { echo "$1: the run does not get the runner switches" >&2; exit 1; }
-  grep -q 'set -a; . /work/prep/browser.env; set +a; fi; exec "$@"' <<<"$run_line" || { echo "$1: the run does not load the prepared Chromium" >&2; exit 1; }
+  grep -q 'set -a; . /work/prep/browser.env; set +a; fi;' <<<"$run_line" || { echo "$1: the run does not load the prepared Chromium" >&2; exit 1; }
   grep -q "^cp c\{64\}:/work/prep/. $WORK/$3/prep/" "$WORK/stub.log"; grep -q "^cp c\{64\}:/work/out/. $WORK/$3/" "$WORK/stub.log"; grep -qE '^rm -fv c{64}$' "$WORK/stub.log"
 }
 : >"$WORK/stub.log"; launch --out "$WORK/m-drill" -- --keep >"$WORK/l.out" 2>&1; grep -q 'drill exit=0' "$WORK/l.out"
@@ -350,7 +350,7 @@ LA="$HERE/restore-drill-nested.sh"
 [[ "$(grep -c 'qc1/browser-prepare.sh' <(grep -v '^#' "$LA"))" == 1 ]]
 prep_s="$(grep -n 'bash deploy/digitalocean/qc1/browser-prepare.sh /work/prep' "$LA" | cut -d: -f1)"; branch_s="$(grep -n '^if (( QC1 )); then$' "$LA" | tail -n 1 | cut -d: -f1)"
 [[ -n "$prep_s" && -n "$branch_s" && "$prep_s" -lt "$branch_s" ]]
-grep -q '^wrap=' "$LA"
+grep -q '^WRAP=' "$LA"
 
 # --- Firefox: a glibc binary cannot start on the Alpine runner, so the drill runs it in a Debian container built and launched BEFORE the drill ------------
 # (drill3: `playwright install firefox` downloaded a glibc Firefox into the musl runner; spawn failed with ENOENT, the missing /lib64/ld-linux-x86-64.so.2.)

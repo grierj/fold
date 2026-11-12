@@ -52,24 +52,32 @@
 # measurements, the progress files and the failure evidence of a long run exist
 # only inside the container, so it is never removed first. Every process the
 # workload starts carries FOLD_NESTED_RUN=<run id> in its environment (each
-# docker exec passes it), so the runner finds all of them by that marker, not
+# docker exec passes it), so the runner COUNTS all of them by that marker, not
 # just the bash scripts: node, chromium, npm, orphans, processes in sessions of
-# their own. After INT, TERM or HUP it TERMs the owned top-level processes (their
-# traps turn that into a clean finish), waits up to FOLD_NESTED_STOP_GRACE
-# seconds (default 90), KILLs every owned process and keeps looking for up to
-# FOLD_NESTED_KILL_WAIT seconds (default 15). A stop counts as established only
-# when lookups that ran inside the container counted zero twice, a second apart;
-# a failed lookup is never read as "nothing running". If it cannot be
-# established the container is frozen (docker pause) before the copy. Only then
-# are /work/prep and /work/out copied into --out, and the container is removed.
-# After a normal end the same check runs and ends any leftover (noted in
-# LEFTOVERS-STOPPED.txt). The exit status after a signal is 130, 143 or 129. A workload that ends with 137 or 143 while no signal reached this runner (a
+# their own. It never signals a process by its number: a number alone is not a
+# process, and a shell holds only its own children. So there are two ways to end
+# anything. The graceful one: every docker exec runs the workload as the child of
+# a small supervisor (WRAP) that polls for the file /work/stop-request and then
+# sends TERM to its own child, a process it started and is waiting for, not a number
+# found by looking (the workload's traps turn that into a clean finish). The other is the container:
+# `docker kill` ends every process in it at once, by no number. After INT, TERM or
+# HUP the runner writes the file, waits up to FOLD_NESTED_STOP_GRACE seconds
+# (default 90) for the count to reach zero, then kills the container and checks for
+# up to FOLD_NESTED_KILL_WAIT seconds (default 15) that the daemon says it is no
+# longer running. A stop counts as established only by that answer, or by lookups
+# that ran inside the container and counted zero twice, a second apart; a failed
+# lookup or kill is never read as "nothing running". If it cannot be established
+# the container is frozen (docker pause) before the copy. Only then are /work/prep
+# and /work/out copied into --out (docker cp reads a stopped container too), and
+# the container is removed. After a normal end the same check runs and ends any
+# leftover (noted in LEFTOVERS-STOPPED.txt). The exit status after a signal is 130,
+# 143 or 129. A workload that ends with 137 or 143 while no signal reached this runner (a
 # killed docker client, an OOM kill) is given FOLD_NESTED_SIGNAL_WAIT seconds (default 5) for a pending signal, then goes through the same bounded stop and
 # collection, and its own status is kept.
 #
-# Every Docker call the cleanup makes (ownership lookups, pause, unpause, the two copies, removal) is a client of its own with an absolute deadline, and its process
+# Every Docker call the cleanup makes (counts, kill, state, pause, unpause, the two copies, removal) is a client of its own with an absolute deadline, and its process
 # group is held until it has been ended: one that has not answered by then, and any descendant it leaves behind after it exits, is KILLed with the group (a client
-# that ignores TERM included) and counted as a failure, never waited for. The workload's own docker client is held the same way, in a group of its own (inner_exec), and ended through that hold last in the cleanup. The cleanup as a whole has FOLD_NESTED_CLEANUP_BUDGET seconds (a whole number, at least 3,
+# that ignores TERM included) and counted as a failure, never waited for. The workload's own docker client is held the same way, in a group of its own (inner_exec), and ended through that hold last in the cleanup. Each held group also ends itself when this runner is gone, however that came about (life_hold), so a KILL of the runner leaves no client behind. The cleanup as a whole has FOLD_NESTED_CLEANUP_BUDGET seconds (a whole number, at least 3,
 # else the run is refused; default 170, from the moment the stop begins, restarted by a signal); a signal-driven run under scripts/reason-review-scale.sh gets its
 # budget from that wrapper's grace, which refuses a budget that does not fit in it. The last FOLD_NESTED_RM_RESERVE seconds (default 30, at most a third of the
 # budget) belong to removal alone, and the window is laid out from its end so that no step can take what a later one needs (open_window): the evidence copy
@@ -127,7 +135,7 @@ TMP="$(mktemp -d)"
 # was orphaned, put in a session or process group of its own, or reparented to init. A process the daemon starts (the drill's containers) and the runner's own
 # lookup calls do not carry it. A tool that replaces its whole environment would hide from this; none of the drill's tools does.
 ARMED=0 COLLECTED=0 INTERRUPTED="" STOPPED_HOW="none" INNER_JOB=""
-STOP_VERIFIED=0 STOP_LOOKUP_ERRORS=0 FROZEN=0 OWNED_N=""
+STOP_VERIFIED=0 STOP_LOOKUP_ERRORS=0 FROZEN=0 OWNED_N="" KILL_FAILED=0
 COLLECT_FAILED=()
 TO_LOOKUP=0 TO_PAUSE=0 TO_UNPAUSE=0 TO_RM=0 LIMITED_JOB="" LIMITED_TIMED_OUT=0
 # While limited or inner_exec launches a client's group, or releases it, a signal is only recorded here (on_signal): it cannot reach cleanup before the group is named
@@ -195,6 +203,15 @@ end_group() {
   [[ -n "$job" ]] || return 0
   { kill -KILL -- "-$job" 2>/dev/null || true; wait "$job" 2>/dev/null || true; } 2>/dev/null
 }
+# life_hold: the first step of a held job (limited, inner_exec), which runs in a process group of its own. The runner keeps descriptor 8 open on a FIFO that nobody writes
+# to, so that its jobs can tell when it is gone however it went (a KILL included, which no trap sees): a watcher in the job's group reads the FIFO through a read-only
+# descriptor of its own (9; 8 is closed here, or the job would itself keep the FIFO open), gets end-of-file when the last descriptor 8 closes, and ends the group with a group
+# signal (0 is the caller's own group, never a number that could have changed hands). A job that was ended through end_group takes its watcher with it.
+life_hold() {
+  exec 9<"$TMP/life" 8>&-
+  set +m
+  { builtin read -r _ <&9 || true; builtin kill -KILL 0; } &
+}
 # limited DEADLINE OUTFILE COMMAND...: a Docker client of the cleanup (stdout to the file, stderr dropped, no stdin) as a job in a process group of its own (the way
 # scripts/pg-client.sh bounds its calls). The job is a subshell that runs the client, records its status and then only waits, so the group stays held, and its pid
 # cannot be reused, until this function has ended it: the whole group is KILLed when the client has answered (a descendant it left behind, one that ignores TERM
@@ -214,6 +231,7 @@ limited() {
   (
     trap - INT TERM HUP
     exec 7>&-
+    life_hold
     local crc=0
     "$@" >"$out" 2>/dev/null </dev/null || crc=$?
     printf '%s\n' "$crc" >"$TMP/limited.tmp" && mv "$TMP/limited.tmp" "$TMP/limited.rc"
@@ -243,48 +261,24 @@ limited() {
   return "$rc"
 }
 OWN_MARK="FOLD_NESTED_RUN=$RUN_ID"
-# The lookup runs inside the container (busybox sh): it lists the processes whose environment holds the marker and, by mode, signals them. Modes: count (signal
-# nothing), termroots (TERM the owned processes whose parent is not owned, so a script's own trap can clean up its children), killall (KILL every owned
-# process). It prints how many it found; nothing else. A number alone is not a process: the selection can be minutes old by the time a signal is sent, and the
-# number may be someone else's by then. So a process is selected with its start time, and is signalled only after it has been held: SIGSTOP stops it from exiting
-# (a stopped process cannot end by itself, so its number cannot be given away), it is checked again (the marker still in its environment, the same start time),
-# and only that held, verified process gets TERM (and is then resumed) or KILL. What the STOP reached when the check fails is resumed unharmed. OWN_PROC names the
-# process table, /proc unless a test points it at a copy.
+# The lookup runs inside the container (busybox sh): it counts the processes whose environment holds the marker and prints the number, nothing else. It signals nothing, in
+# any mode: a number alone is not a process (it can be handed to another one between a look and a signal, and no shell holds a process that is not its own child), so no
+# process is ever ended by a number. Modes: count (read-only) and ask, which first writes /work/stop-request, the request WRAP turns into a TERM to its own child.
 OWN_SCAN=$(cat <<'SCAN'
-m=$1; mode=$2; self=$$; root=${OWN_PROC:-/proc}; list=" "; info=
-mine() { tr '\000' '\n' 2>/dev/null <"$root/$1/environ" | grep -qxF "$m"; }
-ident() { sed -n 's/^[0-9]* (.*) //p' "$root/$1/stat" 2>/dev/null | { read -r _ pp _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ st _ && echo "$pp $st"; }; }
-send() {
-  kill -STOP "$1" 2>/dev/null || return 0
-  if mine "$1" && id=$(ident "$1") && [ "${id#* }" = "$2" ]; then
-    kill -"$3" "$1" 2>/dev/null
-    [ "$3" = KILL ] && return 0
-  fi
-  kill -CONT "$1" 2>/dev/null
-  return 0
-}
-for d in "$root"/[0-9]*; do
-  p=${d##*/}
-  [ "$p" = "$self" ] && continue
-  mine "$p" || continue
-  id=$(ident "$p")
-  [ -n "$id" ] || continue
-  list="$list$p "
-  info="$info$p:${id% *}:${id#* } "
-done
-n=0
-for e in $info; do
-  p=${e%%:*}; r=${e#*:}; pp=${r%%:*}; start=${r#*:}
-  n=$((n+1)); sig=
-  case $mode in
-    killall) sig=KILL ;;
-    termroots) case "$list" in *" $pp "*) ;; *) sig=TERM ;; esac ;;
-  esac
-  [ -z "$sig" ] || send "$p" "$start" "$sig"
+m=$1; mode=$2; self=$$; n=0
+[ "$mode" != ask ] || : >/work/stop-request || exit 1
+for d in /proc/[0-9]*; do
+  [ "${d##*/}" = "$self" ] && continue
+  tr '\000' '\n' 2>/dev/null <"$d/environ" | grep -qxF "$m" && n=$((n+1))
 done
 echo "$n"
 SCAN
 )
+# WRAP is what each docker exec runs the workload under (bash -c "$WRAP" _ COMMAND...): it loads the Chromium the preparation found, starts the command as its own child and
+# polls for /work/stop-request. The request becomes TERM to that child, a process the supervisor started and is waiting for (it is looked at and signalled in consecutive statements,
+# never carried over from an earlier look, and a number is not handed out again before the whole range has been used), and the supervisor then waits for it and returns its status. Job control (set -m) is on so that the child starts with the signal dispositions it would have had as the exec's own process (a plain background child ignores INT). Nothing else is signalled, and nothing from outside holds a number inside the container.
+# shellcheck disable=SC2016 # the script runs inside the container
+WRAP='if [ -f /work/prep/browser.env ]; then set -a; . /work/prep/browser.env; set +a; fi; set -m; "$@" & c=$!; while kill -0 "$c" 2>/dev/null; do if [ -e /work/stop-request ]; then kill -TERM "$c" 2>/dev/null; break; fi; sleep 0.2; done; wait "$c"'
 # owned MODE sets OWNED_N to the number of owned processes and succeeds only when the lookup itself worked. A failed docker exec, a lookup that printed nothing or
 # something else is a failure, never "none": an absence is only ever established by a lookup that ran and counted zero. Call it directly, not in $(...), so the
 # error count survives. The call is bounded (limited): CALL_T seconds, or the end of the stop phase (PHASE_END) if that comes first; one that stalls is killed and
@@ -324,6 +318,7 @@ inner_exec() {
   (
     trap - INT TERM HUP
     exec 7>&-
+    life_hold
     local crc=0
     docker exec -e "$OWN_MARK" "$@" </dev/null || crc=$?
     printf '%s\n' "$crc" >"$TMP/inner.tmp" && mv "$TMP/inner.tmp" "$TMP/inner.rc"
@@ -360,11 +355,28 @@ inner_exec() {
   fi
   return "$rc"
 }
-# stop_inner ends everything the workload left running, and says whether that is established. Nothing is copied before it returns. After an interruption the
-# owned top-level processes get TERM first (their traps finish the run's own cleanup); after a normal end only leftovers are asked. What is still there after
-# FOLD_NESTED_STOP_GRACE seconds (default 90) is killed, every owned process, and the stop is verified again, for up to FOLD_NESTED_KILL_WAIT seconds (default 15).
-# Both are absolute deadlines from the start of the stop, and together they get at most three quarters of the time before the removal reserve and end by STOP_LIMIT (open_window), so the
-# pause and the copies keep the rest. If a stop cannot be established (the lookup keeps failing or stalling, or a process will not die) the container is frozen, so what is copied
+# kill_container END: ends every process in the container at once with `docker kill`, by no number, and succeeds only when the daemon itself says the container is no
+# longer running (State.Running is false: a kill that was sent is not yet a stop). Each call has a deadline, one call's time and never past END; a kill that failed or
+# stalled is asked again until END, and a state that could not be read is not "stopped". It sets KILL_FAILED when it gives up.
+kill_container() {
+  local end=$1 d
+  KILL_FAILED=0
+  while :; do
+    d=$((SECONDS + CALL_T))
+    (( d <= end )) || d=$end
+    limited "$d" "$TMP/kill.out" docker kill "$CID" || true
+    d=$((SECONDS + CALL_T))
+    (( d <= end )) || d=$end
+    if limited "$d" "$TMP/state.out" docker inspect --format '{{.State.Running}}' "$CID" && [[ "$(<"$TMP/state.out")" == false ]]; then return 0; fi
+    if (( SECONDS >= end )); then KILL_FAILED=1; return 1; fi
+    sleep 1
+  done
+}
+# stop_inner ends everything the workload left running, and says whether that is established. Nothing is copied before it returns. The owned processes are asked to
+# stop first (the request file, which WRAP turns into a TERM to its own child, whose traps finish the run's own cleanup; after a normal end only leftovers remain to be
+# asked). If the count is not zero after FOLD_NESTED_STOP_GRACE seconds (default 90) the container is killed, and the daemon is asked for up to FOLD_NESTED_KILL_WAIT seconds
+# (default 15) whether it has stopped. Both are absolute deadlines from the start of the stop, and together they get at most three quarters of the time before the removal reserve and end by STOP_LIMIT (open_window), so the
+# pause and the copies keep the rest. If a stop cannot be established (the kill does not take effect, or the daemon does not answer) the container is frozen, so what is copied
 # is at least one moment's state, and the caller records the copy as incomplete. The container's own daemon calls go through docker, so a TERM that reached only the
 # docker client on this host would stop nothing inside.
 # shellcheck disable=SC2329 # reached through the EXIT trap (cleanup).
@@ -389,23 +401,17 @@ stop_inner() {
   if [[ -z "$INTERRUPTED" ]] && stopped_confirmed; then STOP_VERIFIED=1; PHASE_END=""; return 0; fi
   STOPPED_HOW=term
   set_phase "$term_end"
-  if owned termroots && [[ "$OWNED_N" == 0 ]]; then STOPPED_HOW=none; fi
+  if owned ask && [[ "$OWNED_N" == 0 ]]; then STOPPED_HOW=none; fi
   while (( SECONDS < term_end )); do
     if stopped_confirmed; then STOP_VERIFIED=1; PHASE_END=""; return 0; fi
     sleep 1
   done
   STOPPED_HOW="kill"
-  echo "restore-drill-nested: the run inside did not stop within ${grace}s of TERM, or its stop could not be looked up; killing it" >&2
+  PHASE_END=""
+  echo "restore-drill-nested: the run inside did not stop within ${grace}s of the request, or its stop could not be looked up; killing the container" >&2
   (( kill_end > SECONDS )) || kill_end=$((SECONDS + CALL_T))
   (( kill_end <= STOP_END )) || kill_end=$STOP_END
-  set_phase "$kill_end"
-  while :; do
-    owned killall || true
-    if stopped_confirmed; then STOP_VERIFIED=1; PHASE_END=""; return 0; fi
-    (( SECONDS < kill_end )) || break
-    sleep 1
-  done
-  PHASE_END=""
+  if kill_container "$kill_end"; then STOP_VERIFIED=1; return 0; fi
   d="$(share_deadline "$MAIN_AT" 3)"
   if limited "$d" "$TMP/pause.out" docker pause "$CID"; then
     FROZEN=1
@@ -419,6 +425,7 @@ stop_inner() {
 lookup_text() {
   printf 'lookup failures: %s' "$STOP_LOOKUP_ERRORS"
   if (( TO_LOOKUP )); then printf ', %s of them stalled past their deadline or had no time left and were killed' "$TO_LOOKUP"; fi
+  if (( KILL_FAILED )); then printf ', and the container kill could not be shown to have taken effect'; fi
 }
 frozen_text() {
   if (( FROZEN )); then printf 'the container was frozen'
@@ -486,7 +493,7 @@ stop_text() {
   case "$STOPPED_HOW" in
     none) echo 'Nothing of the run was still running inside.' ;;
     term) echo 'The run inside was asked to stop (TERM) and finished its own cleanup.' ;;
-    kill) echo 'The run inside was asked to stop (TERM) and did not (or the lookup failed); it was killed, so its own cleanup and final records may be missing.' ;;
+    kill) echo 'The run inside was asked to stop (TERM) and did not (or the lookup failed); the container was killed, so its own cleanup and final records may be missing.' ;;
   esac
 }
 # shellcheck disable=SC2329 # EXIT trap.
@@ -572,6 +579,8 @@ on_signal() {
   trap '' INT TERM HUP; INTERRUPTED="$1"; CLEAN_END=""; exit "$2"
 }
 exec 7>&2   # the stderr the run started with, for cleanup (see there); the held client jobs close it
+mkfifo "$TMP/life"
+exec 8<>"$TMP/life"   # the lifeline of the held client jobs (life_hold): open for as long as this runner is
 trap cleanup EXIT
 trap 'on_signal INT 130' INT
 trap 'on_signal TERM 143' TERM
@@ -616,7 +625,7 @@ if (( ! skip_browser )); then
   # The drill also needs Firefox (glibc, cannot run on this Alpine runner): the preparation builds a Debian container for it and proves it launches.
   prep_env=(-e QC1_WEB_DIR=/work/fold/web)
   if (( ! QC1 && ! CROSS )); then prep_env+=(-e QC1_PREPARE_FIREFOX=1); fi
-  inner_exec "${prep_env[@]}" -w /work/fold "$CID" bash deploy/digitalocean/qc1/browser-prepare.sh /work/prep || rc=$?
+  inner_exec "${prep_env[@]}" -w /work/fold "$CID" bash -c "$WRAP" _ bash deploy/digitalocean/qc1/browser-prepare.sh /work/prep || rc=$?
   if (( rc != 0 )); then
     stop_inner
     collect_artifacts prep
@@ -625,19 +634,17 @@ if (( ! skip_browser )); then
     exit "$rc"
   fi
 fi
-# The chromium the preparation found is exported to the run, with the sandbox switches only this disposable container may use; browser.env is
-# read inside the container, so the run launches the very executable the preflight launched.
-# shellcheck disable=SC2016 # the script runs inside the container
-wrap='if [ -f /work/prep/browser.env ]; then set -a; . /work/prep/browser.env; set +a; fi; exec "$@"'
+# The chromium the preparation found is exported to the run, with the sandbox switches only this disposable container may use; WRAP reads browser.env
+# inside the container, so the run launches the very executable the preflight launched.
 if (( QC1 )); then
   inner_exec -e FOLD_DRILL_ISOLATED_DAEMON=1 -e QC1_NO_SANDBOX=1 -e QC1_WEB_DIR=/work/fold/web -w /work/fold "$CID" \
-    bash -c "$wrap" _ bash deploy/digitalocean/qc1-measure.sh --dir /work/out "${drill_args[@]}" || rc=$?
+    bash -c "$WRAP" _ bash deploy/digitalocean/qc1-measure.sh --dir /work/out "${drill_args[@]}" || rc=$?
 elif (( CROSS )); then
   inner_exec -e FOLD_DRILL_ISOLATED_DAEMON=1 -e QC1_NO_SANDBOX=1 -e QC1_WEB_DIR=/work/fold/web -w /work/fold "$CID" \
-    bash -c "$wrap" _ bash deploy/digitalocean/restore-drill.sh --dir /work/out --crossings-only "${drill_args[@]}" || rc=$?
+    bash -c "$WRAP" _ bash deploy/digitalocean/restore-drill.sh --dir /work/out --crossings-only "${drill_args[@]}" || rc=$?
 else
   inner_exec -e FOLD_DRILL_ISOLATED_DAEMON=1 -e QC1_NO_SANDBOX=1 -e QC1_WEB_DIR=/work/fold/web -w /work/fold "$CID" \
-    bash -c "$wrap" _ bash deploy/digitalocean/restore-drill.sh --dir /work/out "${drill_args[@]}" || rc=$?
+    bash -c "$WRAP" _ bash deploy/digitalocean/restore-drill.sh --dir /work/out "${drill_args[@]}" || rc=$?
 fi
 stop_inner
 collect_artifacts

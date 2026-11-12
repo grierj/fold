@@ -205,10 +205,35 @@ self_test_main() {
 			FOUND+=("$p")
 		done
 	}
-	# drop_selftest: removes the run's directory. It is the lease of the simulated container's processes, which end when it is gone.
+	# RUNNERS: the background children of this self-test that nobody has waited for yet (bg_runner PID adds one, bg_done PID removes it): each runner is `timeout`, the parent
+	# of the runner (bounded_exec), and a fixture process that stops itself is one too. Each was started by this shell and has not been waited for, so it is this shell's own child. The run's directory holds the tools those runners use (the stub
+	# docker, the nested repository, the simulated container), so it is not removed before they have finished; see drop_selftest.
+	# RUNNER_LIMIT: the longest a runner started in the background may take, KILLed by `timeout` after that. It is a backstop for a runner that hangs, not a part of any case, so it
+	# has to leave a signalled runner the whole of its cleanup: the nested runner's default budget is 170 seconds, and the start and the signal come before it.
+	RUNNER_LIMIT=240
+	RUNNERS=()
+	bg_runner() { RUNNERS+=("$1"); }
+	bg_done() {
+		local r kept=()
+		for r in ${RUNNERS[@]+"${RUNNERS[@]}"}; do [[ $r == "$1" ]] || kept+=("$r"); done
+		RUNNERS=()
+		for r in ${kept[@]+"${kept[@]}"}; do RUNNERS+=("$r"); done
+	}
+	# drop_selftest: the exit of the self-test, whatever ended it (a signal included). A runner it started and has not waited for is still using the tools in the run's
+	# directory; removing them first would leave its cleanup with nothing to call, and its client groups running. So each running one is asked to stop (a TERM to `timeout`,
+	# which passes it to the runner alone; the resume after it is for a fixture process that stopped itself, whose TERM waits until it runs) and waited for, and only then is
+	# the directory removed. It is the lease of the simulated container's processes, which end when it is gone. A further signal is ignored meanwhile: the wait is bounded by
+	# the runners' own cleanup budget and the limit of bounded_exec.
 	# shellcheck disable=SC2329 # reached through the EXIT trap.
 	drop_selftest() {
-		local dir=${REASON_SCALE_SELFTEST:-}
+		local dir=${REASON_SCALE_SELFTEST:-} r
+		trap '' INT TERM HUP
+		for r in ${RUNNERS[@]+"${RUNNERS[@]}"}; do
+			[[ " $(jobs -p | tr '\n' ' ') " == *" $r "* ]] || continue
+			builtin kill -TERM "$r" 2>/dev/null || true
+			builtin kill -CONT "$r" 2>/dev/null || true
+		done
+		for r in ${RUNNERS[@]+"${RUNNERS[@]}"}; do wait "$r" 2>/dev/null || true; done
 		[[ -n $dir && $dir != / ]] || return 0
 		rm -rf -- "$dir" || true
 	}
@@ -479,6 +504,8 @@ STUB
 		fi
 		kill -0 "$1" 2>/dev/null
 	}
+	# t_state PID: the state letter of the process (T is stopped), nothing if it is gone.
+	t_state() { sed -E 's/^[0-9]+ \(.*\) (.) .*/\1/' "/proc/$1/stat" 2>/dev/null || true; }
 	# t_gone WHAT PIDFILE: the process named in PIDFILE has ended. A survivor is reported and never signalled: it is not this shell's child, so nothing here can tell that its
 	# number is still its own. What it leaves ends by its own bound (a sleep) when the run ends.
 	t_gone() {
@@ -505,9 +532,10 @@ STUB
 		# p is `timeout`, the parent of the tool (bounded_exec): it, and so p, lives as long as the tool does, and the tool is held by the stub until this signal
 		# (the stub is ready), so the signal goes to a live process that is this shell's child. A tool that never gets that far ends by itself, at the latest at
 		# the limit, which `timeout` enforces; nothing here signals it.
-		(cd "$repo" && bounded_exec 150 env STUB_LOG="$tmp/log" STUB_RECORD="$tmp/$name/evidence.json" STUB_SLEEP=120 STUB_READY="$tmp/ready" STUB_PID="$tmp/pid" "${envs[@]}" \
+		(cd "$repo" && bounded_exec "$RUNNER_LIMIT" env STUB_LOG="$tmp/log" STUB_RECORD="$tmp/$name/evidence.json" STUB_SLEEP=120 STUB_READY="$tmp/ready" STUB_PID="$tmp/pid" "${envs[@]}" \
 			bash scripts/reason-review-scale.sh --evidence-dir "$tmp/$name" "$@") >"$tmp/$name.out" 2>&1 &
 		p=$!
+		bg_runner "$p"
 		for ((i = 0; i < 300; i++)); do
 			[[ -e $tmp/ready ]] && break
 			sleep 0.1
@@ -520,6 +548,7 @@ STUB
 			t_fail "$name: the stub never became ready"
 			wait "$p" || rc=$?
 		fi
+		bg_done "$p"
 	}
 
 	# A signal ends the step, keeps the step in the record as interrupted, and leaves nothing running.
@@ -570,10 +599,10 @@ STUB
 	# --- the default nested run: stop everything the workload owns, then keep what only the container holds ----
 	# The real restore-drill-nested.sh, against a docker that models one container: its files are tmp/fake. The workload runs in a process
 	# group of its own with the run's marker in its environment (the stub turns `docker exec -e` into the workload's environment, as the
-	# daemon does), so a signal that reaches the docker client on this host does not reach it. The ownership scan the runner sends through
-	# `docker exec sh -c` is executed for real, on this host's /proc, but only in its read-only mode (count): this host's numbers are never signalled by it. What the
-	# runner asks of the container in the other two modes reaches the simulated processes as flag files (sig-term, sig-end) that they act on themselves, and the scan's
-	# own signalling is checked on a copy of the process table (n_scan_identity) and with its signal replaced by a recorder (n_scan_sees).
+	# daemon does), so a signal that reaches the docker client on this host does not reach it. The ownership count the runner sends through
+	# `docker exec sh -c` is executed for real, on this host's /proc, in its read-only mode (count) whichever mode is asked: it signals nothing in any, and this host's
+	# numbers are never signalled. What the runner asks of the container reaches the simulated processes as flag files that they act on themselves: the request to stop
+	# (mode ask) is sig-term, and `docker kill` is sig-end and the state `killed` that `docker inspect` then reports (n_scan_quiet checks that the count signals nothing).
 	local nroot=$tmp/nrepo fake=$tmp/fake bin=$tmp/stubbin n_want_removed=1
 	mkdir -p "$nroot/scripts" "$nroot/deploy/digitalocean" "$bin"
 	cp "$me" "$nroot/scripts/reason-review-scale.sh"
@@ -586,9 +615,9 @@ STUB
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$STUB_LOG"
 # The container is a directory, and the processes in it are simulated by ones that watch it (stub-workload, stub-desc): removal is the flag `removed`, which ends
-# every one of them by itself; the freeze is the flag `paused`, which stops them writing; the ownership lookup's TERM and KILL are the flags `sig-term` (the workload
-# shell runs its TERM handling) and `sig-end` (every process ends); and what they write is the beat of the workload and the late.txt of the writer. No process is
-# signalled by a number here: the numbers they record are for the test to compare with what a scan finds, nothing more.
+# every one of them by itself; the freeze is the flag `paused`, which stops them writing; the request to stop is the flag `sig-term` (the workload shell runs its TERM
+# handling) and `docker kill` is the flag `sig-end` (every process ends) with the state `killed`; and what they write is the beat of the workload and the late.txt of the
+# writer. No process is signalled by a number here: the numbers they record are for the test to compare with what a count finds, nothing more.
 # written: what the processes in the container have written so far.
 written() { stat -c %s "$STUB_FAKE/work/out/late.txt" "$STUB_FAKE/beat.wl" 2>/dev/null | tr '\n' ' '; return 0; }
 # writing: something in the container wrote in the last half second, so it was running when this was asked.
@@ -615,7 +644,15 @@ hang() {
 }
 case "$1" in
 run) printf 'c%.0s' {1..64}; echo ;;
-inspect) case "$*" in *NetworkMode*) echo bridge ;; *Mounts*) echo '/var/lib/docker /v' ;; esac ;;
+inspect) case "$*" in *NetworkMode*) echo bridge ;; *Mounts*) echo '/var/lib/docker /v' ;; *State.Running*) if [[ -e $STUB_FAKE/killed ]]; then echo false; else echo true; fi ;; esac ;;
+kill)
+	[[ -z ${STUB_KILL_HANG:-} ]] || hang
+	[[ -z ${STUB_KILL_FAIL:-} ]] || exit 1
+	# Every process in the container ends by itself within a tenth of a second of the flag; what they had written by then is the state the copy is compared with.
+	: >"$STUB_FAKE/sig-end"
+	sleep 0.3
+	written >"$STUB_FAKE/killed"
+	;;
 ps)
 	# The listing by id that removal uses to tell a gone container from one it could not remove.
 	[[ -e $STUB_FAKE/removed ]] || { printf 'c%.0s' {1..64}; echo; }
@@ -647,6 +684,8 @@ cp)
 		# A copy taken while something in the container could still write is the failure this test is for.
 		if [[ -e $STUB_FAKE/paused ]]; then
 			[[ $(written) == "$(<"$STUB_FAKE/paused")" ]] || : >"$STUB_FAKE/cp-saw-writer"
+		elif [[ -e $STUB_FAKE/killed ]]; then
+			[[ $(written) == "$(<"$STUB_FAKE/killed")" ]] || : >"$STUB_FAKE/cp-saw-writer"
 		elif writing; then
 			: >"$STUB_FAKE/cp-saw-writer"
 		fi
@@ -676,8 +715,8 @@ exec)
 			hang scan-hung
 		fi
 		[[ -z ${STUB_SCAN_FAIL:-} ]] || exit 1
-		# The lookup is run for real in its read-only mode: the mode asked for (the last argument) becomes a flag that the simulated processes act on, after the count is
-		# taken, as the real lookup counts before it signals. Nothing on this host is signalled by it.
+		# The lookup is run for real in its read-only mode, whichever mode is asked for (the last argument): a request to stop (ask) becomes the flag that the simulated
+		# processes act on, after the count is taken. Nothing on this host is signalled or written by it.
 		mode=${*: -1}
 		set -- "${@:1:$#-1}" count
 		# A client that answers and exits while a child of its own, one that ignores TERM, stays behind in its process group.
@@ -687,10 +726,7 @@ exec)
 		fi
 		scan_rc=0
 		"$@" || scan_rc=$?
-		case $mode in
-		termroots) : >"$STUB_FAKE/sig-term" ;;
-		killall) : >"$STUB_FAKE/sig-end" ;;
-		esac
+		[[ $mode != ask ]] || : >"$STUB_FAKE/sig-term"
 		exit "$scan_rc"
 		;;
 	*browser-prepare.sh*)
@@ -739,7 +775,7 @@ exec)
 esac
 exit 0
 DOCKER
-	# The simulated workload shell: it takes TERM and KILL from the runner's lookup as the flags sig-term (its TERM handling, unless it is stubborn) and sig-end, optionally
+	# The simulated workload shell: it takes the request to stop and the kill of the container as the flags sig-term (its TERM handling, unless it is stubborn) and sig-end, optionally
 	# leaves a TERM-ignoring non-bash writer behind, and idles without creating child processes (read on a fifo), so the processes carrying the marker are exactly
 	# the ones the test names. STUB_WL_NEVER holds it from ever becoming ready (n_startup_interrupt).
 	cat >"$bin/stub-workload" <<'WORKLOAD'
@@ -799,31 +835,30 @@ DESC
 		b=$(grep -n -- "$2" "$tmp/nlog" | head -n 1 | cut -d: -f1)
 		[[ -n $a && -n $b ]] && ((a < b))
 	}
-	# The log lines of the ownership scan: its arguments are the last thing on the line.
-	local scan_term=' fold-owned-scan FOLD_NESTED_RUN=[0-9a-f]* termroots$' scan_kill=' fold-owned-scan FOLD_NESTED_RUN=[0-9a-f]* killall$'
+	# The log lines of the container-side calls: the request to stop is a lookup in mode ask, and the kill of the whole container is `docker kill`.
+	local scan_term=' fold-owned-scan FOLD_NESTED_RUN=[0-9a-f]* ask$' kill_call='^kill c\{64\}$'
 	local first_cp='^cp c\{64\}:/work/[a-z]*/\. ' sigrc
-	# n_scan_sees NAME: the ownership scan of the nested runner, extracted from the tool as it stands, with kill replaced by a function that only
-	# records the pid, finds the workload shell recorded by the stub (found only if the marker is in the initial environment of that very
-	# process, as with a real docker exec -e) among the processes it would TERM, and the stubborn descendant too when there is one. A process
-	# without the marker (the bystander) is never among them.
+	# n_scan_sees NAME: the ownership count of the nested runner, extracted from the tool as it stands and run for real on this host's /proc in its read-only mode, counts the
+	# processes that carry the run's marker in their environment: at least the workload shell recorded by the stub (found only if the marker is in the initial environment
+	# of that very process, as with a real docker exec -e) and the stubborn descendant when there is one. A process without the marker (the bystander) carries none, and the
+	# count ends nothing.
 	n_scan_sees() {
-		local name=$1 mark scan rec=$tmp/$1.scan wl desc
+		local name=$1 mark scan wl out want=1
 		mark=$(grep -o 'FOLD_NESTED_RUN=[0-9a-f]*' "$tmp/nlog" | head -n 1)
 		scan=$(sed -n "/^OWN_SCAN=\$(cat <<'SCAN'\$/,/^SCAN\$/p" "$nroot/$nested_tool" | sed '1d;$d')
 		wl=$(cat "$fake/workload.pid" 2>/dev/null || true)
 		if [[ -z $mark || -z $scan || -z $wl ]]; then
-			t_fail "$name: could not set up the ownership scan check (marker '$mark', workload '$wl')"
+			t_fail "$name: could not set up the ownership count check (marker '$mark', workload '$wl')"
 			return 0
 		fi
-		: >"$rec"
-		REC=$rec sh -c 'kill() { printf "%s\n" "$2" >>"$REC"; }
-'"$scan" fold-owned-scan "$mark" termroots >/dev/null 2>&1 || true
-		grep -qx "$wl" "$rec" || t_fail "$name: the ownership scan does not find the workload shell $wl before the cancellation (found: $(tr '\n' ' ' <"$rec"))"
-		if [[ -s $fake/desc.pid ]]; then
-			desc=$(cat "$fake/desc.pid")
-			grep -qx "$desc" "$rec" || t_fail "$name: the ownership scan does not find the stubborn descendant '$desc' (found: $(tr '\n' ' ' <"$rec"))"
+		[[ ! -s $fake/desc.pid ]] || want=2
+		out=$(sh -c "$scan" fold-owned-scan "$mark" count 2>/dev/null) || out=
+		if [[ ! $out =~ ^[0-9]+$ ]] || ((out < want)); then
+			t_fail "$name: the ownership count printed '$out', want a number of at least $want (the workload shell $wl, and the stubborn descendant if there is one)"
 		fi
-		! grep -qx "$bystander" "$rec" || t_fail "$name: the ownership scan named a process without the marker"
+		find_marked "$mark"
+		[[ " ${FOUND[*]:-} " == *" $wl "* ]] || t_fail "$name: the workload shell $wl does not carry the marker in its environment (found: ${FOUND[*]:-})"
+		[[ " ${FOUND[*]:-} " != *" $bystander "* ]] || t_fail "$name: the bystander, which has no marker, carries it"
 		t_alive "$wl" || t_fail "$name: the workload was ended by the check itself"
 	}
 	# n_signal NAME SIGNAL ENV... -- COMMAND...: runs COMMAND in the nested repository with the stub docker first on the
@@ -838,16 +873,17 @@ DESC
 		done
 		shift
 		n_reset
-		# A runner that never returns must fail this test, not hang it: bounded_exec has `timeout` KILL it after 150s (it then exits 137). There is no watchdog process:
+		# A runner that never returns must fail this test, not hang it: bounded_exec has `timeout` KILL it after RUNNER_LIMIT seconds (it then exits 137). There is no watchdog process:
 		# p is `timeout`, the runner's parent, and it lives exactly as long as the runner does (see bounded_exec). The signal below goes to it, and it passes it on to
 		# the runner alone (--foreground): it is sent only once the workload is running, which the runner can only leave by that signal, so p is alive and is this
 		# shell's child. A run that never got that far is not signalled by anything here; it ends by itself or at the limit.
-		(cd "$nroot" && bounded_exec 150 env "PATH=$bin:$PATH" "STUB_FAKE=$fake" "STUB_BIN=$bin" "STUB_LOG=$tmp/nlog" FOLD_SCALE_STOP_GRACE=60 FOLD_NESTED_STOP_GRACE=5 FOLD_NESTED_KILL_WAIT=5 "${envs[@]}" "$@") >"$tmp/$name.out" 2>&1 &
+		(cd "$nroot" && bounded_exec "$RUNNER_LIMIT" env "PATH=$bin:$PATH" "STUB_FAKE=$fake" "STUB_BIN=$bin" "STUB_LOG=$tmp/nlog" FOLD_SCALE_STOP_GRACE=60 FOLD_NESTED_STOP_GRACE=5 FOLD_NESTED_KILL_WAIT=5 "${envs[@]}" "$@") >"$tmp/$name.out" 2>&1 &
 		p=$!
+		bg_runner "$p"
 		rc=0
 		if n_wait; then
-			# Before anything is cancelled: the runner's own ownership scan (the script it sends, run unchanged, with kill replaced by a recorder)
-			# must name the recorded workload shell, and a stubborn writer if there is one, as processes to stop. This is what the copy-time
+			# Before anything is cancelled: the runner's own ownership count (the script it sends, run unchanged in its read-only mode)
+			# must count the recorded workload shell, and a stubborn writer if there is one, as processes still running. This is what the copy-time
 			# checks below rest on, independent of the stub's removal of the container.
 			n_scan_sees "$name"
 			kill -s "$sig" "$p"
@@ -856,6 +892,7 @@ DESC
 			t_fail "$name: the workload never started in the container"
 			wait "$p" || rc=$?
 		fi
+		bg_done "$p"
 		[[ $n_want_removed == 0 || -e $fake/removed ]] || t_fail "$name: the container was not removed"
 	}
 	# n_run NAME ENV... -- COMMAND...: the same, without a signal (the run ends by itself).
@@ -1081,6 +1118,7 @@ OUTER
 		(cd "$nroot" && bounded_exec 40 env "PATH=$bin:$PATH" "STUB_FAKE=$dir/fake" "STUB_BIN=$bin" "STUB_LOG=$dir/log" "STARTUP_FIXTURE=$dir" STUB_WL_NEVER=1 \
 			"$bin/docker" exec -e FOLD_NESTED_RUN=startup "$cid" bash qc1-measure.sh) >"$dir/out" 2>&1 &
 		client=$!
+		bg_runner "$client"
 		for ((i = 0; i < 100; i++)); do
 			[[ -s $dir/fake/workload.pid ]] && break
 			sleep 0.05
@@ -1097,6 +1135,7 @@ OUTER
 			t_fail "startup: the docker client was still waiting for the workload 10 seconds after its container's directory was gone"
 		fi
 		wait "$client" || crc=$?
+		bg_done "$client"
 		[[ $crc == 1 ]] || t_fail "startup: the docker client exited $crc, want 1 (it gave up the wait itself; 137 is the limit's KILL)"
 		for ((i = 0; i < 100; i++)); do
 			find_marked "STARTUP_FIXTURE=$dir"
@@ -1105,77 +1144,133 @@ OUTER
 		done
 		((${#FOUND[@]} == 0)) || t_fail "startup: processes of the interrupted case remain (pids ${FOUND[*]}): a client or a workload outlived its container's directory"
 	}
-	# n_scan_identity: the ownership scan's own signalling, on a copy of the process table (OWN_PROC) with a recorder for its signals, so that no process and no number of
-	# this host is involved and the race is deterministic. Three processes: A (a root, start 111), B (A's child, start 222) and C (carries no marker). The recorder
-	# plays the world at the moment a signal arrives: the first signal sent to A (the STOP that holds it) finds A already gone (expire), or finds a different process
-	# under the same number, one with no marker (other) or one with the run's own marker but another start time (rerun). In every one of them nothing but STOP and
-	# CONT may be sent to A's number (a signal that stops nothing is a signal to nobody), B and C are never touched wrongly, and an undisturbed A or B gets its TERM or
-	# KILL only between a STOP and, for TERM, the CONT that resumes it.
-	n_scan_identity() {
-		local fp=$tmp/fakeproc scan rec=$tmp/scan-identity.rec mode race out
+	# n_scan_quiet: the ownership count signals nothing, in any mode, so it can never change the state of a process that is not its to change (stopping a process by its
+	# number to hold it, and resuming it when a check failed, would also resume an unrelated process that was already stopped). Two things are checked:
+	# the script, read as it stands, holds no signal at all (the word is spelled in two pieces so that this line does not match itself); and the count, run for real on
+	# this host's /proc in its read-only mode, leaves two processes that stopped themselves as they were: one that carries the run's marker, and one that does not, which
+	# stands for an unrelated process that came to hold a number, already stopped. Only the count of the marked one is expected. Both are this shell's own children,
+	# registered with the runners so that an interrupted self-test still ends them (drop_selftest), and resumed only at the end, when the case is over.
+	n_scan_quiet() {
+		local scan word='ki'"ll" mark="FOLD_NESTED_RUN=quiet.$$" bare held out i
 		scan=$(sed -n "/^OWN_SCAN=\$(cat <<'SCAN'\$/,/^SCAN\$/p" "$nroot/$nested_tool" | sed '1d;$d')
 		if [[ -z $scan ]]; then
-			t_fail "identity: the ownership scan could not be extracted"
+			t_fail "quiet: the ownership count could not be extracted"
 			return 0
 		fi
-		# n_fake_proc PID PPID START MARKED: one entry of the copy.
-		n_fake_proc() {
-			mkdir -p "$fp/$1"
-			printf '%s (stub) S %s %s %s 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 %s 0 0\n' "$1" "$2" "$1" "$1" "$3" >"$fp/$1/stat"
-			if [[ $4 == yes ]]; then printf 'HOME=/x\0FOLD_NESTED_RUN=fake\0' >"$fp/$1/environ"; else printf 'HOME=/x\0' >"$fp/$1/environ"; fi
-		}
-		# shellcheck disable=SC2016 # the recorder is run by sh, which expands it
-		local recorder='kill() {
-	printf "%s %s\n" "$1" "$2" >>"$REC"
-	if [ "$1 $2" = "-STOP 4000001" ]; then
-		case $RACE in
-		expire) rm -rf "$OWN_PROC/4000001"; return 1 ;;
-		other) printf "HOME=/x\0" >"$OWN_PROC/4000001/environ"; sed -i "s/ 111 0 0\$/ 999 0 0/" "$OWN_PROC/4000001/stat" ;;
-		rerun) sed -i "s/ 111 0 0\$/ 999 0 0/" "$OWN_PROC/4000001/stat" ;;
-		esac
-	fi
-	return 0
-}
-'
-		for mode in count termroots killall; do
-			for race in none expire other rerun; do
-				[[ $mode != count || $race == none ]] || continue
-				rm -rf "$fp"
-				mkdir -p "$fp"
-				n_fake_proc 4000001 1 111 yes
-				n_fake_proc 4000002 4000001 222 yes
-				n_fake_proc 4000003 1 333 no
-				: >"$rec"
-				out=$(REC=$rec RACE=$race OWN_PROC=$fp sh -c "$recorder$scan" fold-owned-scan FOLD_NESTED_RUN=fake "$mode" 2>&1) || true
-				if [[ $out != 2 ]]; then t_fail "identity ($mode/$race): the scan printed '$out', want 2 (A and B; C has no marker)"; fi
-				if grep -q -- ' 4000003$' "$rec"; then t_fail "identity ($mode/$race): the process without the marker was signalled"; fi
-				case $mode in
-				count)
-					[[ ! -s $rec ]] || t_fail "identity (count): the read-only mode signalled: $(tr '\n' ' ' <"$rec")"
-					;;
-				termroots)
-					! grep -q -- '^-[A-Z]* 4000002$' "$rec" || t_fail "identity ($mode/$race): B, which is owned and not a root, was signalled: $(tr '\n' ' ' <"$rec")"
-					if [[ $race == none ]]; then
-						[[ $(tr '\n' ' ' <"$rec") == '-STOP 4000001 -TERM 4000001 -CONT 4000001 ' ]] || t_fail "identity (termroots/none): A did not get STOP, TERM, CONT in that order: $(tr '\n' ' ' <"$rec")"
-					else
-						! grep -q -- '^-TERM 4000001$' "$rec" || t_fail "identity ($mode/$race): TERM was sent to a number that was no longer the process selected: $(tr '\n' ' ' <"$rec")"
-					fi
-					;;
-				killall)
-					if [[ $race == none ]]; then
-						[[ $(tr '\n' ' ' <"$rec") == '-STOP 4000001 -KILL 4000001 -STOP 4000002 -KILL 4000002 ' ]] || t_fail "identity (killall/none): A and B did not each get STOP then KILL: $(tr '\n' ' ' <"$rec")"
-					else
-						! grep -q -- '^-KILL 4000001$' "$rec" || t_fail "identity ($mode/$race): KILL was sent to a number that was no longer the process selected: $(tr '\n' ' ' <"$rec")"
-						grep -q -- '^-KILL 4000002$' "$rec" || t_fail "identity ($mode/$race): the undisturbed B was not killed: $(tr '\n' ' ' <"$rec")"
-					fi
-					;;
-				esac
-				case $race in
-				other | rerun) grep -q -- '^-CONT 4000001$' "$rec" || t_fail "identity ($mode/$race): the process that was stopped by mistake was not resumed: $(tr '\n' ' ' <"$rec")" ;;
-				esac
-			done
+		if grep -qE "(^|[^[:alnum:]_])${word}" <<<"$scan"; then
+			t_fail "quiet: the ownership count holds a signal; a process is never stopped, resumed or ended by its number"
+		fi
+		bash -c 'kill -STOP $$' &
+		bare=$!
+		bg_runner "$bare"
+		env "$mark" bash -c 'kill -STOP $$' &
+		held=$!
+		bg_runner "$held"
+		for ((i = 0; i < 100; i++)); do
+			[[ $(t_state "$bare") == T && $(t_state "$held") == T ]] && break
+			sleep 0.05
 		done
-		rm -rf "$fp" "$rec"
+		if [[ $(t_state "$bare") != T || $(t_state "$held") != T ]]; then
+			t_fail "quiet: the two fixture processes did not stop themselves ($(t_state "$bare"), $(t_state "$held"))"
+		else
+			out=$(sh -c "$scan" fold-owned-scan "$mark" count 2>/dev/null) || out=
+			[[ $out == 1 ]] || t_fail "quiet: the count printed '$out', want 1 (the marked process; the one without the marker is not counted)"
+			[[ $(t_state "$bare") == T ]] || t_fail "quiet: the already-stopped process without the marker was resumed or ended by the count"
+			[[ $(t_state "$held") == T ]] || t_fail "quiet: the stopped marked process was resumed or ended by the count"
+		fi
+		kill -CONT "$bare" "$held" 2>/dev/null || true
+		wait "$bare" 2>/dev/null || true
+		wait "$held" 2>/dev/null || true
+		bg_done "$bare"
+		bg_done "$held"
+	}
+	# n_outer_interrupt: the self-test itself is interrupted (TERM) while the real nested runner is mid-run, and its exit removes the directory that holds the tools the runner
+	# calls. Here the shell that plays the self-test has its own run directory with copies of the stub docker, the simulated container and the nested repository in it, and the
+	# same functions (bounded_exec, bg_runner, bg_done, drop_selftest, copied from this script) as the real one. The runner has to be asked to stop and waited for before the
+	# directory goes, so that its cleanup can still call the stub docker: the evidence is copied out and the container removed (the docker log is kept outside the directory,
+	# to show the order), the directory is gone at the end, and nothing carrying OUTER_FIXTURE remains: no runner, no client of its, no holder, no simulated process.
+	n_outer_interrupt() {
+		local dir=$tmp/outer outer orc=0 i cp_l rm_l
+		mkdir -p "$dir/run/fake" "$dir/tmp"
+		cp -a "$bin" "$dir/run/bin"
+		cp -a "$nroot" "$dir/run/nrepo"
+		{
+			declare -f bounded_exec bg_runner bg_done drop_selftest
+			cat <<'OUTER'
+set -u
+RUNNERS=()
+export REASON_SCALE_SELFTEST=$1/run
+trap drop_selftest EXIT
+trap 'exit 143' TERM
+(cd "$1/run/nrepo" && bounded_exec 120 env "PATH=$1/run/bin:$PATH" "STUB_FAKE=$1/run/fake" "STUB_BIN=$1/run/bin" "STUB_LOG=$1/log" "TMPDIR=$1/tmp" \
+	FOLD_NESTED_STOP_GRACE=5 FOLD_NESTED_KILL_WAIT=5 FOLD_NESTED_CLEANUP_BUDGET=40 \
+	bash deploy/digitalocean/restore-drill-nested.sh --out "$1/out" --qc1) >"$1/runner.out" 2>&1 &
+bg_runner "$!"
+wait "$!"
+OUTER
+		} >"$dir/outer.sh"
+		env "OUTER_FIXTURE=$dir" bash "$dir/outer.sh" "$dir" >"$dir/outer.out" 2>&1 &
+		outer=$!
+		bg_runner "$outer"
+		for ((i = 0; i < 300; i++)); do
+			[[ -e $dir/run/fake/running ]] && break
+			sleep 0.1
+		done
+		[[ -e $dir/run/fake/running ]] || t_fail "outer: the workload never started in the container"
+		kill -TERM "$outer"
+		wait "$outer" || orc=$?
+		bg_done "$outer"
+		[[ $orc == 143 ]] || t_fail "outer: the interrupted shell exited $orc, want 143"
+		[[ ! -e $dir/run ]] || t_fail "outer: the run directory was not removed at the end"
+		cp_l=$(grep -n -- '^cp c\{64\}:/work/out/\. ' "$dir/log" | head -n 1 | cut -d: -f1)
+		rm_l=$(grep -n -- '^rm -fv ' "$dir/log" | head -n 1 | cut -d: -f1)
+		if [[ -z $cp_l || -z $rm_l ]] || ((cp_l > rm_l)); then t_fail "outer: the runner's cleanup did not copy the evidence and then remove the container before the tools were deleted (copy line '$cp_l', removal line '$rm_l')"; fi
+		[[ -s $dir/out/measurements.jsonl ]] || t_fail "outer: the measurements that existed only in the container were not copied out"
+		jq -e '.aborted.signal == "TERM"' "$dir/out/evidence-status.json" >/dev/null 2>&1 || t_fail "outer: the run inside did not finish its own cleanup before the copy"
+		grep -q 'interrupted by TERM' "$dir/out/INTERRUPTED.txt" 2>/dev/null || t_fail "outer: INTERRUPTED.txt is missing or does not say the runner was interrupted"
+		[[ ! -e $dir/out/COLLECTION-FAILED.txt ]] || t_fail "outer: a collection failure was recorded: $(tr '\n' ' ' <"$dir/out/COLLECTION-FAILED.txt")"
+		for ((i = 0; i < 100; i++)); do
+			find_marked "OUTER_FIXTURE=$dir"
+			((${#FOUND[@]})) || break
+			sleep 0.1
+		done
+		((${#FOUND[@]} == 0)) || t_fail "outer: processes of the interrupted self-test remain (pids ${FOUND[*]}): a runner, a client group, a holder or a simulated process"
+	}
+	# n_orphan_holders: a runner that is itself ended by a KILL, which no trap sees (here the limit of bounded_exec, the only thing that sends one), while its workload's docker
+	# client is held in a group of its own: the group must end by itself (life_hold), where it used to outlive the runner by as long as its client ran. What is left is looked
+	# for by the case's marker, and the simulated container's own processes (the workload, which the removal flag ends) are the one thing allowed to remain until it is removed.
+	n_orphan_holders() {
+		local dir=$tmp/orphan runner i p rc2=0 left=()
+		mkdir -p "$dir/fake" "$dir/tmp"
+		(cd "$nroot" && bounded_exec 8 env "PATH=$bin:$PATH" "STUB_FAKE=$dir/fake" "STUB_BIN=$bin" "STUB_LOG=$dir/log" "ORPHAN_FIXTURE=$dir" "TMPDIR=$dir/tmp" \
+			bash deploy/digitalocean/restore-drill-nested.sh --out "$dir/out" --qc1) >"$dir/runner.out" 2>&1 &
+		runner=$!
+		bg_runner "$runner"
+		for ((i = 0; i < 60; i++)); do
+			[[ -e $dir/fake/running ]] && break
+			sleep 0.1
+		done
+		[[ -e $dir/fake/running ]] || t_fail "orphans: the workload never started in the container (the case is not at the boundary)"
+		wait "$runner" || rc2=$?
+		bg_done "$runner"
+		[[ $rc2 != 0 ]] || t_fail "orphans: the runner ended by itself before its limit"
+		for ((i = 0; i < 60; i++)); do
+			find_marked "ORPHAN_FIXTURE=$dir"
+			left=()
+			for p in ${FOUND[@]+"${FOUND[@]}"}; do
+				grep -qa 'stub-workload' "/proc/$p/cmdline" 2>/dev/null || left+=("$p")
+			done
+			((${#left[@]})) || break
+			sleep 0.1
+		done
+		((${#left[@]} == 0)) || t_fail "orphans: after the runner was ended by a KILL its client group remains (pids ${left[*]}): it outlived its supervisor"
+		: >"$dir/fake/removed"
+		for ((i = 0; i < 60; i++)); do
+			find_marked "ORPHAN_FIXTURE=$dir"
+			((${#FOUND[@]})) || break
+			sleep 0.1
+		done
+		((${#FOUND[@]} == 0)) || t_fail "orphans: the simulated container's processes did not end when it was removed (pids ${FOUND[*]})"
 	}
 	# n_left_gone NAME: the children that docker clients answered and exited with, leaving them behind (and ignoring TERM), are gone; at least one was left. A survivor is
 	# reported, not signalled: its number is a record, and it carries a bound (a sleep of 90 seconds).
@@ -1263,7 +1358,7 @@ RECORDER
 	n_signal nest-kill TERM STUB_INNER_STUBBORN=1 FOLD_NESTED_STOP_GRACE=2 -- bash scripts/reason-review-scale.sh --evidence-dir "$tmp/nest-kill" --only qc1
 	t_rc nest-kill 143
 	n_collected nest-kill "$tmp/nest-kill/qc1"
-	n_before "$scan_kill" "$first_cp" || t_fail "nest-kill: the stubborn run inside was not killed before the copy"
+	n_before "$kill_call" "$first_cp" || t_fail "nest-kill: the stubborn run inside was not killed before the copy"
 	grep -q 'was killed' "$tmp/nest-kill/qc1/INTERRUPTED.txt" 2>/dev/null || t_fail "nest-kill: INTERRUPTED.txt does not say the run had to be killed"
 	[[ ! -e $tmp/nest-kill/qc1/COLLECTION-FAILED.txt ]] || t_fail "nest-kill: a verified kill was recorded as a collection failure"
 
@@ -1274,14 +1369,14 @@ RECORDER
 	t_rc nest-desc 143
 	[[ -s $fake/desc.pid ]] || t_fail "nest-desc: the stub left no descendant"
 	n_collected nest-desc "$tmp/nest-desc"
-	n_before "$scan_kill" "$first_cp" || t_fail "nest-desc: the surviving descendant was not killed before the copy"
+	n_before "$kill_call" "$first_cp" || t_fail "nest-desc: the surviving descendant was not killed before the copy"
 	grep -q 'was killed' "$tmp/nest-desc/INTERRUPTED.txt" 2>/dev/null || t_fail "nest-desc: INTERRUPTED.txt does not say a kill was needed"
 	[[ ! -e $tmp/nest-desc/COLLECTION-FAILED.txt ]] || t_fail "nest-desc: a verified kill was recorded as a collection failure"
 	t_alive "$bystander" || t_fail "nest-desc: a process that does not carry the run's marker was ended"
 
 	# The lookup itself fails (the daemon does not answer): that is not "nothing is running". The stop is reported as not established,
 	# the container is frozen before the copy, and the copy is recorded as incomplete.
-	n_signal nest-lookup TERM STUB_SCAN_FAIL=1 STUB_DESC=1 FOLD_NESTED_STOP_GRACE=2 FOLD_NESTED_KILL_WAIT=2 -- bash scripts/reason-review-scale.sh --evidence-dir "$tmp/nest-lookup" --only qc1
+	n_signal nest-lookup TERM STUB_SCAN_FAIL=1 STUB_KILL_FAIL=1 STUB_DESC=1 FOLD_NESTED_STOP_GRACE=2 FOLD_NESTED_KILL_WAIT=2 -- bash scripts/reason-review-scale.sh --evidence-dir "$tmp/nest-lookup" --only qc1
 	t_rc nest-lookup 143
 	n_collected nest-lookup "$tmp/nest-lookup/qc1"
 	n_before '^pause c\{64\}$' "$first_cp" || t_fail "nest-lookup: the container was not frozen before the copy"
@@ -1289,7 +1384,7 @@ RECORDER
 	grep -q 'was frozen\|were frozen' "$tmp/nest-lookup/qc1/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-lookup: the record does not say the container was frozen"
 	t_check nest-lookup "the wrapper's record says the collection failed" '.steps[0].summary.nestedCollectionFailed == true and .steps[0].verdict == "interrupted"'
 	# ... and when it cannot even be frozen, the record says so and a writer is known to have been left.
-	n_signal nest-nofreeze TERM STUB_SCAN_FAIL=1 STUB_PAUSE_FAIL=1 STUB_DESC=1 FOLD_NESTED_STOP_GRACE=2 FOLD_NESTED_KILL_WAIT=2 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-nofreeze" --qc1
+	n_signal nest-nofreeze TERM STUB_SCAN_FAIL=1 STUB_KILL_FAIL=1 STUB_PAUSE_FAIL=1 STUB_DESC=1 FOLD_NESTED_STOP_GRACE=2 FOLD_NESTED_KILL_WAIT=2 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-nofreeze" --qc1
 	t_rc nest-nofreeze 143
 	grep -q 'NOT frozen' "$tmp/nest-nofreeze/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-nofreeze: the record does not say the container could not be frozen"
 	[[ -s $tmp/nest-nofreeze/measurements.jsonl ]] || t_fail "nest-nofreeze: what could be copied was not"
@@ -1308,7 +1403,7 @@ RECORDER
 	[[ $rc == 3 ]] || t_fail "nest-done: exit $rc, want the run's own 3"
 	[[ -s $tmp/nest-done/done && ! -e $tmp/nest-done/INTERRUPTED.txt && ! -e $tmp/nest-done/COLLECTION-FAILED.txt && ! -e $tmp/nest-done/LEFTOVERS-STOPPED.txt ]] || t_fail "nest-done: the normal end copied the wrong things"
 	n_before '^cp c\{64\}:/work/out/\. ' '^rm -fv ' || t_fail "nest-done: the container was removed before the copy"
-	if grep -q 'termroots$\|killall$' "$tmp/nlog"; then t_fail "nest-done: a run that ended by itself was asked to stop"; fi
+	if grep -q ' ask$\|^kill ' "$tmp/nlog"; then t_fail "nest-done: a run that ended by itself was asked to stop"; fi
 	grep -q ' fold-owned-scan FOLD_NESTED_RUN=[0-9a-f]* count$' "$tmp/nlog" || t_fail "nest-done: the stop was not looked up before the copy"
 	n_before ' fold-owned-scan FOLD_NESTED_RUN=[0-9a-f]* count$' "$first_cp" || t_fail "nest-done: the stop was looked up only after the copy"
 
@@ -1317,7 +1412,7 @@ RECORDER
 	[[ $rc == 0 ]] || t_fail "nest-leftover: exit $rc, want 0 (a stopped leftover is noted, not a failure)"
 	[[ -s $fake/desc.pid ]] || t_fail "nest-leftover: the stub left no descendant"
 	[[ ! -e $fake/cp-saw-writer ]] || t_fail "nest-leftover: a writer was still running when the copy was taken"
-	n_before "$scan_kill" "$first_cp" || t_fail "nest-leftover: the leftover was not killed before the copy"
+	n_before "$kill_call" "$first_cp" || t_fail "nest-leftover: the leftover was not killed before the copy"
 	grep -q 'was killed' "$tmp/nest-leftover/LEFTOVERS-STOPPED.txt" 2>/dev/null || t_fail "nest-leftover: LEFTOVERS-STOPPED.txt does not say a leftover had to be killed"
 	[[ ! -e $tmp/nest-leftover/COLLECTION-FAILED.txt && ! -e $tmp/nest-leftover/INTERRUPTED.txt ]] || t_fail "nest-leftover: a verified stop of a leftover was recorded as a failure or an interruption"
 
@@ -1328,7 +1423,7 @@ RECORDER
 		n_run "nest-sigexit-$sigrc" STUB_QUICK=1 STUB_QUICK_RC=$sigrc STUB_DESC=1 FOLD_NESTED_SIGNAL_WAIT=1 FOLD_NESTED_STOP_GRACE=2 FOLD_NESTED_KILL_WAIT=5 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-sigexit-$sigrc" --qc1
 		[[ $rc == "$sigrc" ]] || t_fail "nest-sigexit-$sigrc: exit $rc, want the workload's own $sigrc (124 means the runner never returned)"
 		[[ -s $fake/desc.pid ]] || t_fail "nest-sigexit-$sigrc: the stub left no descendant"
-		n_before "$scan_kill" "$first_cp" || t_fail "nest-sigexit-$sigrc: the surviving writer was not killed before the copy"
+		n_before "$kill_call" "$first_cp" || t_fail "nest-sigexit-$sigrc: the surviving writer was not killed before the copy"
 		n_before '^cp c\{64\}:/work/out/\. ' '^rm -fv ' || t_fail "nest-sigexit-$sigrc: the container was removed before the copy"
 		[[ ! -e $fake/cp-saw-writer ]] || t_fail "nest-sigexit-$sigrc: a writer was still running when the copy was taken"
 		[[ -s $tmp/nest-sigexit-$sigrc/done && ! -e $tmp/nest-sigexit-$sigrc/INTERRUPTED.txt && ! -e $tmp/nest-sigexit-$sigrc/COLLECTION-FAILED.txt ]] || t_fail "nest-sigexit-$sigrc: collected the wrong things for a verified stop"
@@ -1343,7 +1438,7 @@ RECORDER
 	# before the copy, the copy is recorded as incomplete with the stalled lookups said, and the container is still removed within the budget.
 	t0=$SECONDS
 	# shellcheck disable=SC2086 # $timing is several NAME=value words
-	n_signal nest-hang-lookup TERM STUB_SCAN_HANG=1 STUB_HANG_STUBBORN=1 STUB_DESC=1 $timing FOLD_NESTED_CLEANUP_BUDGET=20 FOLD_NESTED_RM_RESERVE=6 -- bash scripts/reason-review-scale.sh --evidence-dir "$tmp/nest-hang-lookup" --only qc1
+	n_signal nest-hang-lookup TERM STUB_SCAN_HANG=1 STUB_KILL_FAIL=1 STUB_HANG_STUBBORN=1 STUB_DESC=1 $timing FOLD_NESTED_CLEANUP_BUDGET=20 FOLD_NESTED_RM_RESERVE=6 -- bash scripts/reason-review-scale.sh --evidence-dir "$tmp/nest-hang-lookup" --only qc1
 	t_rc nest-hang-lookup 143
 	n_took nest-hang-lookup "$t0" 28
 	n_hung_gone nest-hang-lookup
@@ -1357,7 +1452,7 @@ RECORDER
 	# The same stall after a run that ended by itself, the client not ignoring TERM: the exit is a failure, not the run's 0, and the stalled client is gone.
 	t0=$SECONDS
 	# shellcheck disable=SC2086
-	n_run nest-hang-lookup-end STUB_QUICK=1 STUB_DESC=1 STUB_SCAN_HANG=1 $timing FOLD_NESTED_CLEANUP_BUDGET=20 FOLD_NESTED_RM_RESERVE=6 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-lookup-end" --qc1
+	n_run nest-hang-lookup-end STUB_QUICK=1 STUB_DESC=1 STUB_SCAN_HANG=1 STUB_KILL_FAIL=1 $timing FOLD_NESTED_CLEANUP_BUDGET=20 FOLD_NESTED_RM_RESERVE=6 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-lookup-end" --qc1
 	[[ $rc == 1 ]] || t_fail "nest-hang-lookup-end: exit $rc, want 1 (124 means the runner never returned)"
 	n_took nest-hang-lookup-end "$t0" 28
 	n_hung_gone nest-hang-lookup-end
@@ -1385,7 +1480,9 @@ HOOK
 	n_probe_markers
 	n_probe_interrupt
 	n_bounded_interrupt
-	n_scan_identity
+	n_scan_quiet
+	n_outer_interrupt
+	n_orphan_holders
 	n_startup_interrupt
 	rm -f "$tmp/launch-signal-sent"
 	t0=$SECONDS
@@ -1439,7 +1536,7 @@ HOOK
 	# before the removal reserve, so a stalled preparation copy that finds only that much left is not started. Budget 9 (reserve 3, the stop at most 2 seconds of the 6
 	# before it): the lookup stalls and ignores TERM so the stop uses all it has, the pause answers, the preparation copy stalls, and the evidence is still copied.
 	t0=$SECONDS
-	n_run nest-hang-cp-prep-slow STUB_QUICK=1 STUB_SCAN_HANG=1 STUB_CP_HANG=prep STUB_HANG_STUBBORN=1 FOLD_NESTED_CLEANUP_BUDGET=9 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-cp-prep-slow" --qc1
+	n_run nest-hang-cp-prep-slow STUB_QUICK=1 STUB_SCAN_HANG=1 STUB_KILL_FAIL=1 STUB_CP_HANG=prep STUB_HANG_STUBBORN=1 FOLD_NESTED_CLEANUP_BUDGET=9 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-cp-prep-slow" --qc1
 	[[ $rc == 1 ]] || t_fail "nest-hang-cp-prep-slow: exit $rc, want 1 (124 means the runner never returned)"
 	n_took nest-hang-cp-prep-slow "$t0" 16
 	n_hung_gone nest-hang-cp-prep-slow
@@ -1451,7 +1548,7 @@ HOOK
 	# A pause that stalls: it is ended and the record says the freeze is unknown, not that it worked.
 	t0=$SECONDS
 	# shellcheck disable=SC2086
-	n_run nest-hang-pause STUB_QUICK=1 STUB_DESC=1 STUB_SCAN_FAIL=1 STUB_PAUSE_HANG=1 STUB_HANG_STUBBORN=1 $timing FOLD_NESTED_CLEANUP_BUDGET=20 FOLD_NESTED_RM_RESERVE=6 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-pause" --qc1
+	n_run nest-hang-pause STUB_QUICK=1 STUB_DESC=1 STUB_SCAN_FAIL=1 STUB_KILL_FAIL=1 STUB_PAUSE_HANG=1 STUB_HANG_STUBBORN=1 $timing FOLD_NESTED_CLEANUP_BUDGET=20 FOLD_NESTED_RM_RESERVE=6 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-pause" --qc1
 	[[ $rc == 1 ]] || t_fail "nest-hang-pause: exit $rc, want 1"
 	n_took nest-hang-pause "$t0" 28
 	n_hung_gone nest-hang-pause
@@ -1460,7 +1557,7 @@ HOOK
 	# fail, the container is frozen, and the unpause may only use half of the time left, so removal is still attempted (after the unpause, inside the window) and works.
 	t0=$SECONDS
 	# shellcheck disable=SC2086
-	n_run nest-hang-unpause STUB_QUICK=1 STUB_DESC=1 STUB_SCAN_FAIL=1 STUB_UNPAUSE_HANG=1 STUB_HANG_STUBBORN=1 FOLD_NESTED_CLEANUP_BUDGET=20 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-unpause" --qc1
+	n_run nest-hang-unpause STUB_QUICK=1 STUB_DESC=1 STUB_SCAN_FAIL=1 STUB_KILL_FAIL=1 STUB_UNPAUSE_HANG=1 STUB_HANG_STUBBORN=1 FOLD_NESTED_CLEANUP_BUDGET=20 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-unpause" --qc1
 	[[ $rc == 1 ]] || t_fail "nest-hang-unpause: exit $rc, want 1 (the stop could not be established; 124 means the runner never returned)"
 	n_took nest-hang-unpause "$t0" 26
 	n_hung_gone nest-hang-unpause
@@ -1472,7 +1569,7 @@ HOOK
 	# The removal reserve is shorter than the unpause and the removal need together (budget 6: reserve 2; the evidence copy stalls up to the reserve, so exactly the
 	# reserve is left): the unpause is skipped, not given the removal's seconds, and removal is called and works although an unpause would have stalled.
 	t0=$SECONDS
-	n_run nest-hang-unpause-tight STUB_QUICK=1 STUB_SCAN_FAIL=1 STUB_CP_HANG=out STUB_UNPAUSE_HANG=1 STUB_HANG_STUBBORN=1 FOLD_NESTED_CALL_TIMEOUT=2 FOLD_NESTED_CLEANUP_BUDGET=6 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-unpause-tight" --qc1
+	n_run nest-hang-unpause-tight STUB_QUICK=1 STUB_SCAN_FAIL=1 STUB_KILL_FAIL=1 STUB_CP_HANG=out STUB_UNPAUSE_HANG=1 STUB_HANG_STUBBORN=1 FOLD_NESTED_CALL_TIMEOUT=2 FOLD_NESTED_CLEANUP_BUDGET=6 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-unpause-tight" --qc1
 	[[ $rc == 1 ]] || t_fail "nest-hang-unpause-tight: exit $rc, want 1 (124 means the runner never returned)"
 	n_took nest-hang-unpause-tight "$t0" 12
 	n_hung_gone nest-hang-unpause-tight
@@ -1482,7 +1579,7 @@ HOOK
 	grep -q 'could not be confirmed stopped' "$tmp/nest-hang-unpause-tight/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-hang-unpause-tight: the unestablished stop was not recorded"
 	# One more second than that (budget 15, reserve 5: the unpause may use 2 seconds): it is tried, stalls, is killed by its own deadline, and removal is still called and works.
 	t0=$SECONDS
-	n_run nest-hang-unpause-fit STUB_QUICK=1 STUB_SCAN_FAIL=1 STUB_CP_HANG=out STUB_UNPAUSE_HANG=1 STUB_HANG_STUBBORN=1 FOLD_NESTED_CALL_TIMEOUT=2 FOLD_NESTED_STOP_GRACE=2 FOLD_NESTED_KILL_WAIT=2 FOLD_NESTED_CLEANUP_BUDGET=15 FOLD_NESTED_RM_RESERVE=5 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-unpause-fit" --qc1
+	n_run nest-hang-unpause-fit STUB_QUICK=1 STUB_SCAN_FAIL=1 STUB_KILL_FAIL=1 STUB_CP_HANG=out STUB_UNPAUSE_HANG=1 STUB_HANG_STUBBORN=1 FOLD_NESTED_CALL_TIMEOUT=2 FOLD_NESTED_STOP_GRACE=2 FOLD_NESTED_KILL_WAIT=2 FOLD_NESTED_CLEANUP_BUDGET=15 FOLD_NESTED_RM_RESERVE=5 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-unpause-fit" --qc1
 	[[ $rc == 1 ]] || t_fail "nest-hang-unpause-fit: exit $rc, want 1 (124 means the runner never returned)"
 	n_took nest-hang-unpause-fit "$t0" 22
 	n_hung_gone nest-hang-unpause-fit
@@ -1493,7 +1590,7 @@ HOOK
 	n_want_removed=0
 	t0=$SECONDS
 	# shellcheck disable=SC2086
-	n_run nest-hang-unpause-rm STUB_QUICK=1 STUB_SCAN_FAIL=1 STUB_UNPAUSE_HANG=1 STUB_RM_HANG=1 STUB_HANG_STUBBORN=1 $timing FOLD_NESTED_CLEANUP_BUDGET=12 FOLD_NESTED_RM_RESERVE=4 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-unpause-rm" --qc1
+	n_run nest-hang-unpause-rm STUB_QUICK=1 STUB_SCAN_FAIL=1 STUB_KILL_FAIL=1 STUB_UNPAUSE_HANG=1 STUB_RM_HANG=1 STUB_HANG_STUBBORN=1 $timing FOLD_NESTED_CLEANUP_BUDGET=12 FOLD_NESTED_RM_RESERVE=4 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-unpause-rm" --qc1
 	[[ $rc == 1 ]] || t_fail "nest-hang-unpause-rm: exit $rc, want 1 (124 means the runner never returned)"
 	n_took nest-hang-unpause-rm "$t0" 20
 	n_hung_gone nest-hang-unpause-rm
@@ -1563,7 +1660,7 @@ HOOK
 	[[ -s $tmp/nest-normal-cpfail/done ]] || t_fail "nest-normal-cpfail: what could be copied was not"
 	n_run nest-normal-cpfail-x STUB_DRILL_RC=10 STUB_CP_FAIL=prep -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-normal-cpfail-x" --crossings-only
 	[[ $rc == 1 ]] || t_fail "nest-normal-cpfail-x: exit $rc, want 1 for a crossings-only pass (10) that could not be collected"
-	n_run nest-normal-lookup STUB_QUICK=1 STUB_SCAN_FAIL=1 FOLD_NESTED_STOP_GRACE=1 FOLD_NESTED_KILL_WAIT=1 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-normal-lookup" --qc1
+	n_run nest-normal-lookup STUB_QUICK=1 STUB_SCAN_FAIL=1 STUB_KILL_FAIL=1 FOLD_NESTED_STOP_GRACE=1 FOLD_NESTED_KILL_WAIT=1 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-normal-lookup" --qc1
 	[[ $rc == 1 ]] || t_fail "nest-normal-lookup: exit $rc, want 1 when the stop could not be established after a normal end"
 	grep -q 'could not be confirmed stopped' "$tmp/nest-normal-lookup/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-normal-lookup: the unestablished stop was not recorded"
 	# Through the wrapper: the control passes, and the same run with a failed copy fails the step and says why.
