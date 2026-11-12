@@ -196,6 +196,8 @@ done
 [[ -z ${STUB_SNAPSHOT:-} ]] || cp "$STUB_RECORD" "$STUB_SNAPSHOT.$kind"
 mkdir -p "$out"
 rev=$(git rev-parse HEAD)
+# What the nested runner writes when it could not bring something out of the container (the tool itself still exits 0).
+[[ -z ${STUB_COLLECTION_FAILED:-} ]] || printf '%s\n' '/work/prep (the browser runtime preparation) could not be copied out' 'the run inside could not be confirmed stopped before the copy' >"$out/COLLECTION-FAILED.txt"
 # hold KIND: leave a descendant that ignores TERM (STUB_ORPHAN_PID) and/or stay running (STUB_SLEEP), for the kind named by STUB_HOLD_KIND (default drill).
 hold() {
 	[[ $1 == "${STUB_HOLD_KIND:-drill}" ]] || return 0
@@ -356,6 +358,13 @@ STUB
 	t_rc crossings0 1
 	t_check crossings0 "crossings-only reporting 0 fails" '.result == "fail"'
 
+	# Artifacts the nested runner could not bring out of the container fail the step, though the tool exited 0 and what it did bring
+	# looks complete: a pass needs its evidence, and the record carries what was lost.
+	t_run collfail STUB_COLLECTION_FAILED=1 -- --drill-reason x
+	t_rc collfail 1
+	t_check collfail "a collection failure fails both steps with the reasons kept" '.result == "fail" and ([.steps[] | .verdict] == ["fail","fail"]) and ([.steps[] | .exit] == [0,0]) and ([.steps[] | .summary.collectionFailed] | all) and ([.steps[] | (.summary.collectionFailures | length)] == [2,2]) and ([.coverage.reasons[] | test("could not be collected completely.*work/prep.*could not be confirmed stopped")] | any)'
+	t_check collfail "the summary of a good QC-1 record is kept beside it" '.steps[0].summary | (.complete == true and .coverage == "full")'
+
 	# Refusals happen before anything is created.
 	t_run noreason --
 	t_rc noreason 2
@@ -492,10 +501,11 @@ STUB
 	t_gone "its descendant" "$tmp/orphan-s"
 	t_alive "$bystander" || t_fail "stubborn: a process that is not the step's was ended"
 
-	# --- cancelling the default nested run keeps what only the container holds ----------------
-	# The real restore-drill-nested.sh, against a docker that models one container: its files are tmp/fake, and the
-	# workload runs in a process group of its own, as it would inside the container, so a signal that reaches the
-	# docker client on this host does not reach it. Only the runner's `pkill` through the daemon does.
+	# --- the default nested run: stop everything the workload owns, then keep what only the container holds ----
+	# The real restore-drill-nested.sh, against a docker that models one container: its files are tmp/fake. The workload runs in a process
+	# group of its own with the run's marker in its environment (the stub turns `docker exec -e` into the workload's environment, as the
+	# daemon does), so a signal that reaches the docker client on this host does not reach it. The ownership scan the runner sends through
+	# `docker exec sh -c` is executed for real, on this host's /proc: it can only find, and signal, processes carrying the marker.
 	local nroot=$tmp/nrepo fake=$tmp/fake bin=$tmp/stubbin
 	mkdir -p "$nroot/scripts" "$nroot/deploy/digitalocean" "$bin"
 	cp "$me" "$nroot/scripts/reason-review-scale.sh"
@@ -507,13 +517,43 @@ STUB
 	cat >"$bin/docker" <<'DOCKER'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$STUB_LOG"
+# pids FILE...: the processes the container is holding, as recorded by the workload.
+holders() { local f; for f in workload.pid desc.pid; do [[ -s $STUB_FAKE/$f ]] && cat "$STUB_FAKE/$f"; done; return 0; }
+# writing PID: the process exists and is neither a zombie nor frozen.
+writing() {
+	local st
+	[[ -r /proc/$1/stat ]] || return 1
+	st=$(sed -E 's/^[0-9]+ \(.*\) (.) .*/\1/' "/proc/$1/stat" 2>/dev/null || true)
+	[[ -n $st && $st != Z && $st != T ]]
+}
+# spawn_desc: a non-bash writer in a session of its own that ignores TERM (the Node process of the browser panel). It carries the run's marker,
+# like everything the daemon starts for a docker exec, and is left behind when its parent ends.
+spawn_desc() {
+	(
+		export "${envs[@]}"
+		setsid sh -c "trap '' TERM; echo \$\$ >\"\$1\"; while :; do sleep 0.1; echo late >>\"\$2\"; done" _ "$STUB_FAKE/desc.pid" "$STUB_FAKE/work/out/late.txt" </dev/null >/dev/null 2>&1 &
+	)
+	until [[ -s $STUB_FAKE/desc.pid ]]; do sleep 0.02; done
+}
 case "$1" in
 run) printf 'c%.0s' {1..64}; echo ;;
 inspect) case "$*" in *NetworkMode*) echo bridge ;; *Mounts*) echo '/var/lib/docker /v' ;; esac ;;
-rm) : >"$STUB_FAKE/removed" ;;
+rm)
+	# Removing the container ends every process in it.
+	for p in $(holders); do kill -KILL "$p" 2>/dev/null || true; done
+	: >"$STUB_FAKE/removed"
+	;;
+pause)
+	[[ -z ${STUB_PAUSE_FAIL:-} ]] || exit 1
+	for p in $(holders); do kill -STOP "$p" 2>/dev/null || true; done
+	: >"$STUB_FAKE/paused"
+	;;
+unpause) for p in $(holders); do kill -CONT "$p" 2>/dev/null || true; done ;;
 cp)
 	case $2 in
 	c*:*)
+		# A copy taken while something in the container could still write is the failure this test is for.
+		for p in $(holders); do ! writing "$p" || : >"$STUB_FAKE/cp-saw-writer"; done
 		src=${2#*:}
 		which=$(basename "$(dirname "$src")")
 		[[ ${STUB_CP_FAIL:-} != "$which" ]] || exit 1
@@ -524,31 +564,48 @@ cp)
 	esac
 	;;
 exec)
+	shift
+	envs=()
+	while [[ ${1:-} == -e || ${1:-} == -w ]]; do
+		[[ $1 != -e ]] || envs+=("$2")
+		shift 2
+	done
+	shift # the container id
 	case "$*" in
-	*" pkill -TERM "*) [[ ! -s $STUB_FAKE/workload.pid ]] || kill -TERM "$(cat "$STUB_FAKE/workload.pid")" 2>/dev/null || true ;;
-	*" pkill -KILL "*)
-		[[ ! -s $STUB_FAKE/workload.pid ]] || kill -KILL "$(cat "$STUB_FAKE/workload.pid")" 2>/dev/null || true
-		rm -f "$STUB_FAKE/running"
+	*fold-owned-scan*)
+		[[ -z ${STUB_SCAN_FAIL:-} ]] || exit 1
+		exec "$@"
 		;;
-	*" pgrep "*) [[ -e $STUB_FAKE/running ]] || exit 1 ;;
 	*browser-prepare.sh*)
 		mkdir -p "$STUB_FAKE/work/prep"
 		echo '{"chromium":"stub"}' >"$STUB_FAKE/work/prep/browser-runtime.json"
+		;;
+	*restore-drill.sh*)
+		mkdir -p "$STUB_FAKE/work/out"
+		echo done >"$STUB_FAKE/work/out/done"
+		exit "${STUB_DRILL_RC:-0}"
 		;;
 	*qc1-measure.sh*)
 		mkdir -p "$STUB_FAKE/work/out"
 		echo '{"item":3,"status":"measured"}' >"$STUB_FAKE/work/out/measurements.jsonl"
 		if [[ -n ${STUB_QUICK:-} ]]; then
 			echo done >"$STUB_FAKE/work/out/done"
+			if [[ -n ${STUB_QUICK_QC1:-} ]]; then
+				jq -n --arg rev "$(git rev-parse HEAD)" '{revision:$rev}' >"$STUB_FAKE/work/out/environment.json"
+				echo '{"missing":[],"pending":[],"invalid":[],"budgetFailures":[],"coverage":{"kind":"full","reasons":[]},"complete":true,"releaseEvidence":true}' >"$STUB_FAKE/work/out/evidence-status.json"
+			fi
+			[[ -z ${STUB_DESC:-} ]] || spawn_desc
 			exit "${STUB_QUICK_RC:-0}"
 		fi
 		set -m
 		(
+			export "${envs[@]}"
 			if [[ -n ${STUB_INNER_STUBBORN:-} ]]; then
 				trap '' TERM
 			else
 				trap 'echo "{\"aborted\":{\"signal\":\"TERM\"}}" >"$STUB_FAKE/work/out/evidence-status.json"; rm -f "$STUB_FAKE/running"; exit 143' TERM
 			fi
+			[[ -z ${STUB_DESC:-} ]] || spawn_desc
 			: >"$STUB_FAKE/wl-ready"
 			while :; do sleep 0.1; done
 		) &
@@ -586,6 +643,9 @@ DOCKER
 		b=$(grep -n -- "$2" "$tmp/nlog" | head -n 1 | cut -d: -f1)
 		[[ -n $a && -n $b ]] && ((a < b))
 	}
+	# The log lines of the ownership scan: its arguments are the last thing on the line.
+	local scan_term=' fold-owned-scan FOLD_NESTED_RUN=[0-9a-f]* termroots$' scan_kill=' fold-owned-scan FOLD_NESTED_RUN=[0-9a-f]* killall$'
+	local first_cp='^cp c\{64\}:/work/[a-z]*/\. '
 	# n_signal NAME SIGNAL ENV... -- COMMAND...: runs COMMAND in the nested repository with the stub docker first on the
 	# path, sends SIGNAL to it once the workload is running in the container, and leaves rc.
 	n_signal() {
@@ -598,7 +658,7 @@ DOCKER
 		done
 		shift
 		n_reset
-		(cd "$nroot" && exec env "PATH=$bin:$PATH" "STUB_FAKE=$fake" "STUB_LOG=$tmp/nlog" FOLD_SCALE_STOP_GRACE=60 FOLD_NESTED_STOP_GRACE=5 "${envs[@]}" "$@") >"$tmp/$name.out" 2>&1 &
+		(cd "$nroot" && exec env "PATH=$bin:$PATH" "STUB_FAKE=$fake" "STUB_LOG=$tmp/nlog" FOLD_SCALE_STOP_GRACE=60 FOLD_NESTED_STOP_GRACE=5 FOLD_NESTED_KILL_WAIT=5 "${envs[@]}" "$@") >"$tmp/$name.out" 2>&1 &
 		p=$!
 		rc=0
 		if n_wait; then
@@ -610,15 +670,31 @@ DOCKER
 			wait "$p" 2>/dev/null || true
 			rc=-1
 		fi
-		[[ ! -s $fake/workload.pid ]] || t_gone "$name: the workload in the container" "$fake/workload.pid"
 		[[ -e $fake/removed ]] || t_fail "$name: the container was not removed"
 	}
-	# n_collected NAME DIR: what existed only in the container is in DIR, and it was copied before the container was removed.
+	# n_run NAME ENV... -- COMMAND...: the same, without a signal (the run ends by itself).
+	n_run() {
+		local name=$1
+		shift
+		local envs=()
+		while (($#)) && [[ $1 != -- ]]; do
+			envs+=("$1")
+			shift
+		done
+		shift
+		n_reset
+		rc=0
+		(cd "$nroot" && env "PATH=$bin:$PATH" "STUB_FAKE=$fake" "STUB_LOG=$tmp/nlog" "${envs[@]}" "$@") >"$tmp/$name.out" 2>&1 || rc=$?
+		[[ -e $fake/removed ]] || t_fail "$name: the container was not removed"
+	}
+	# n_collected NAME DIR: what existed only in the container is in DIR, it was copied before the container was removed, and nothing
+	# in the container could still write when it was.
 	n_collected() {
 		[[ -s $2/measurements.jsonl ]] || t_fail "$1: the measurements that existed only in the container were not copied out"
 		[[ -s $2/prep/browser-runtime.json ]] || t_fail "$1: the preparation record was not copied out"
 		n_before '^cp c\{64\}:/work/out/\. ' '^rm -fv ' || t_fail "$1: the container was removed before the run's artifacts were copied"
 		n_before '^cp c\{64\}:/work/prep/\. ' '^rm -fv ' || t_fail "$1: the container was removed before the preparation was copied"
+		[[ ! -e $fake/cp-saw-writer ]] || t_fail "$1: something in the container could still write when the copy was taken"
 	}
 
 	# Through the wrapper: TERM reaches the whole group, so the docker client dies with it, and the workload inside
@@ -626,7 +702,7 @@ DOCKER
 	n_signal nest-term TERM -- bash scripts/reason-review-scale.sh --evidence-dir "$tmp/nest-term" --only qc1
 	t_rc nest-term 143
 	n_collected nest-term "$tmp/nest-term/qc1"
-	n_before ' pkill -TERM ' '^cp c\{64\}:/work/out/\. ' || t_fail "nest-term: the run inside was not asked to stop before its artifacts were copied"
+	n_before "$scan_term" "$first_cp" || t_fail "nest-term: the run inside was not asked to stop before its artifacts were copied"
 	jq -e '.aborted.signal == "TERM"' "$tmp/nest-term/qc1/evidence-status.json" >/dev/null 2>&1 || t_fail "nest-term: the run inside did not get to finish its own cleanup before the copy"
 	grep -q 'finished its own cleanup' "$tmp/nest-term/qc1/INTERRUPTED.txt" 2>/dev/null || t_fail "nest-term: INTERRUPTED.txt is missing or does not say how the run stopped"
 	[[ ! -e $tmp/nest-term/qc1/COLLECTION-FAILED.txt ]] || t_fail "nest-term: a collection failure was recorded for a clean copy"
@@ -637,15 +713,43 @@ DOCKER
 	n_signal nest-direct TERM -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-direct" --qc1
 	t_rc nest-direct 143
 	n_collected nest-direct "$tmp/nest-direct"
-	n_before ' pkill -TERM ' '^cp c\{64\}:/work/out/\. ' || t_fail "nest-direct: the run inside was not asked to stop before its artifacts were copied"
+	n_before "$scan_term" "$first_cp" || t_fail "nest-direct: the run inside was not asked to stop before its artifacts were copied"
 	jq -e '.aborted.signal == "TERM"' "$tmp/nest-direct/evidence-status.json" >/dev/null 2>&1 || t_fail "nest-direct: the run inside did not finish its own cleanup before the copy"
 
 	# A run inside that will not stop is killed after the grace, and its partial artifacts are still copied out.
 	n_signal nest-kill TERM STUB_INNER_STUBBORN=1 FOLD_NESTED_STOP_GRACE=2 -- bash scripts/reason-review-scale.sh --evidence-dir "$tmp/nest-kill" --only qc1
 	t_rc nest-kill 143
 	n_collected nest-kill "$tmp/nest-kill/qc1"
-	n_before ' pkill -KILL ' '^cp c\{64\}:/work/out/\. ' || t_fail "nest-kill: the stubborn run inside was not killed before the copy"
+	n_before "$scan_kill" "$first_cp" || t_fail "nest-kill: the stubborn run inside was not killed before the copy"
 	grep -q 'was killed' "$tmp/nest-kill/qc1/INTERRUPTED.txt" 2>/dev/null || t_fail "nest-kill: INTERRUPTED.txt does not say the run had to be killed"
+	[[ ! -e $tmp/nest-kill/qc1/COLLECTION-FAILED.txt ]] || t_fail "nest-kill: a verified kill was recorded as a collection failure"
+
+	# A descendant that is not bash and not in the workload's process group (a Node process in a session of its own that ignores TERM and
+	# keeps writing) outlives the root that started it. It is found by the marker, killed, and gone before the copy; a process that does not
+	# carry the marker is left alone.
+	n_signal nest-desc TERM STUB_DESC=1 FOLD_NESTED_STOP_GRACE=2 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-desc" --qc1
+	t_rc nest-desc 143
+	[[ -s $fake/desc.pid ]] || t_fail "nest-desc: the stub left no descendant"
+	n_collected nest-desc "$tmp/nest-desc"
+	n_before "$scan_kill" "$first_cp" || t_fail "nest-desc: the surviving descendant was not killed before the copy"
+	grep -q 'was killed' "$tmp/nest-desc/INTERRUPTED.txt" 2>/dev/null || t_fail "nest-desc: INTERRUPTED.txt does not say a kill was needed"
+	[[ ! -e $tmp/nest-desc/COLLECTION-FAILED.txt ]] || t_fail "nest-desc: a verified kill was recorded as a collection failure"
+	t_alive "$bystander" || t_fail "nest-desc: a process that does not carry the run's marker was ended"
+
+	# The lookup itself fails (the daemon does not answer): that is not "nothing is running". The stop is reported as not established,
+	# the container is frozen before the copy, and the copy is recorded as incomplete.
+	n_signal nest-lookup TERM STUB_SCAN_FAIL=1 STUB_DESC=1 FOLD_NESTED_STOP_GRACE=2 FOLD_NESTED_KILL_WAIT=2 -- bash scripts/reason-review-scale.sh --evidence-dir "$tmp/nest-lookup" --only qc1
+	t_rc nest-lookup 143
+	n_collected nest-lookup "$tmp/nest-lookup/qc1"
+	n_before '^pause c\{64\}$' "$first_cp" || t_fail "nest-lookup: the container was not frozen before the copy"
+	grep -q 'could not be confirmed stopped' "$tmp/nest-lookup/qc1/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-lookup: the unestablished stop was not recorded"
+	grep -q 'was frozen\|were frozen' "$tmp/nest-lookup/qc1/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-lookup: the record does not say the container was frozen"
+	t_check nest-lookup "the wrapper's record says the collection failed" '.steps[0].summary.nestedCollectionFailed == true and .steps[0].verdict == "interrupted"'
+	# ... and when it cannot even be frozen, the record says so and a writer is known to have been left.
+	n_signal nest-nofreeze TERM STUB_SCAN_FAIL=1 STUB_PAUSE_FAIL=1 STUB_DESC=1 FOLD_NESTED_STOP_GRACE=2 FOLD_NESTED_KILL_WAIT=2 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-nofreeze" --qc1
+	t_rc nest-nofreeze 143
+	grep -q 'NOT frozen' "$tmp/nest-nofreeze/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-nofreeze: the record does not say the container could not be frozen"
+	[[ -s $tmp/nest-nofreeze/measurements.jsonl ]] || t_fail "nest-nofreeze: what could be copied was not"
 
 	# A copy that fails is recorded, never silent, and the container is still removed afterwards.
 	n_signal nest-cpfail TERM STUB_CP_FAIL=out -- bash scripts/reason-review-scale.sh --evidence-dir "$tmp/nest-cpfail" --only qc1
@@ -655,15 +759,42 @@ DOCKER
 	n_before '^cp c\{64\}:/work/out/\. ' '^rm -fv ' || t_fail "nest-cpfail: the container was removed before the copy was tried"
 	t_check nest-cpfail "the wrapper's record says the collection failed" '.steps[0].summary.nestedCollectionFailed == true and .steps[0].verdict == "interrupted"'
 
-	# The runner's normal end is unchanged: the artifacts are copied, then the container goes, and it leaves no interruption note.
-	n_reset
-	rc=0
-	(cd "$nroot" && env "PATH=$bin:$PATH" "STUB_FAKE=$fake" "STUB_LOG=$tmp/nlog" STUB_QUICK=1 STUB_QUICK_RC=3 \
-		bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-done" --qc1) >"$tmp/nest-done.out" 2>&1 || rc=$?
+	# The runner's normal end is unchanged: the artifacts are copied, then the container goes, and it leaves no interruption note
+	# and no leftover note. The run's own exit code is kept, and nothing was told to stop.
+	n_run nest-done STUB_QUICK=1 STUB_QUICK_RC=3 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-done" --qc1
 	[[ $rc == 3 ]] || t_fail "nest-done: exit $rc, want the run's own 3"
-	[[ -s $tmp/nest-done/done && ! -e $tmp/nest-done/INTERRUPTED.txt && ! -e $tmp/nest-done/COLLECTION-FAILED.txt ]] || t_fail "nest-done: the normal end copied the wrong things"
+	[[ -s $tmp/nest-done/done && ! -e $tmp/nest-done/INTERRUPTED.txt && ! -e $tmp/nest-done/COLLECTION-FAILED.txt && ! -e $tmp/nest-done/LEFTOVERS-STOPPED.txt ]] || t_fail "nest-done: the normal end copied the wrong things"
 	n_before '^cp c\{64\}:/work/out/\. ' '^rm -fv ' || t_fail "nest-done: the container was removed before the copy"
-	if grep -q ' pkill \| pgrep ' "$tmp/nlog"; then t_fail "nest-done: a run that ended by itself was asked to stop"; fi
+	if grep -q 'termroots$\|killall$' "$tmp/nlog"; then t_fail "nest-done: a run that ended by itself was asked to stop"; fi
+	grep -q ' fold-owned-scan FOLD_NESTED_RUN=[0-9a-f]* count$' "$tmp/nlog" || t_fail "nest-done: the stop was not looked up before the copy"
+	n_before ' fold-owned-scan FOLD_NESTED_RUN=[0-9a-f]* count$' "$first_cp" || t_fail "nest-done: the stop was looked up only after the copy"
+
+	# A tool that left a writer behind after exiting 0: it is ended and verified before the copy, and the run says so.
+	n_run nest-leftover STUB_QUICK=1 STUB_DESC=1 FOLD_NESTED_STOP_GRACE=2 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-leftover" --qc1
+	[[ $rc == 0 ]] || t_fail "nest-leftover: exit $rc, want 0 (a stopped leftover is noted, not a failure)"
+	[[ -s $fake/desc.pid ]] || t_fail "nest-leftover: the stub left no descendant"
+	[[ ! -e $fake/cp-saw-writer ]] || t_fail "nest-leftover: a writer was still running when the copy was taken"
+	n_before "$scan_kill" "$first_cp" || t_fail "nest-leftover: the leftover was not killed before the copy"
+	grep -q 'was killed' "$tmp/nest-leftover/LEFTOVERS-STOPPED.txt" 2>/dev/null || t_fail "nest-leftover: LEFTOVERS-STOPPED.txt does not say a leftover had to be killed"
+	[[ ! -e $tmp/nest-leftover/COLLECTION-FAILED.txt && ! -e $tmp/nest-leftover/INTERRUPTED.txt ]] || t_fail "nest-leftover: a verified stop of a leftover was recorded as a failure or an interruption"
+
+	# The normal end with a copy that fails: a run that exited 0 and wrote its status must not stay a pass, through the launcher and the wrapper.
+	n_run nest-normal-cpfail STUB_QUICK=1 STUB_CP_FAIL=prep -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-normal-cpfail" --qc1
+	[[ $rc == 1 ]] || t_fail "nest-normal-cpfail: exit $rc, want 1 for a run that exited 0 but could not be collected"
+	grep -q '/work/prep' "$tmp/nest-normal-cpfail/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-normal-cpfail: the failed copy was not recorded"
+	[[ -s $tmp/nest-normal-cpfail/done ]] || t_fail "nest-normal-cpfail: what could be copied was not"
+	n_run nest-normal-cpfail-x STUB_DRILL_RC=10 STUB_CP_FAIL=prep -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-normal-cpfail-x" --crossings-only
+	[[ $rc == 1 ]] || t_fail "nest-normal-cpfail-x: exit $rc, want 1 for a crossings-only pass (10) that could not be collected"
+	n_run nest-normal-lookup STUB_QUICK=1 STUB_SCAN_FAIL=1 FOLD_NESTED_STOP_GRACE=1 FOLD_NESTED_KILL_WAIT=1 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-normal-lookup" --qc1
+	[[ $rc == 1 ]] || t_fail "nest-normal-lookup: exit $rc, want 1 when the stop could not be established after a normal end"
+	grep -q 'could not be confirmed stopped' "$tmp/nest-normal-lookup/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-normal-lookup: the unestablished stop was not recorded"
+	# Through the wrapper: the control passes, and the same run with a failed copy fails the step and says why.
+	n_run wrap-ok STUB_QUICK=1 STUB_QUICK_QC1=1 -- bash scripts/reason-review-scale.sh --evidence-dir "$tmp/wrap-ok" --only qc1
+	[[ $rc == 10 ]] || t_fail "wrap-ok: exit $rc, want 10 (one step only, otherwise a clean pass)"
+	t_check wrap-ok "the control: a collected run is a pass" '.steps[0].verdict == "pass" and .steps[0].exit == 0 and (.steps[0].summary | has("collectionFailed") | not)'
+	n_run wrap-cpfail STUB_QUICK=1 STUB_QUICK_QC1=1 STUB_CP_FAIL=prep -- bash scripts/reason-review-scale.sh --evidence-dir "$tmp/wrap-cpfail" --only qc1
+	[[ $rc == 1 ]] || t_fail "wrap-cpfail: exit $rc, want 1"
+	t_check wrap-cpfail "a failed copy fails the step and is in the record" '.result == "fail" and .steps[0].verdict == "fail" and .steps[0].summary.collectionFailed == true and ([.coverage.reasons[] | test("could not be collected completely.*work/prep")] | any)'
 
 	kill "${leftovers[@]}" 2>/dev/null || true
 
@@ -1177,6 +1308,18 @@ classify_qc1() {
 	fi
 }
 
+# check_collection DIR: the nested runner records what it could not bring out of the container (a copy that failed, a stop it could
+# not establish) in COLLECTION-FAILED.txt. Those artifacts are what a pass stands on, so any such record fails the step, and the
+# summary and the reasons carry what it says. It runs after the exit status is read, so it is a failure even when the tool exited 0.
+check_collection() {
+	local f=$1/COLLECTION-FAILED.txt lines
+	[[ -e $f ]] || return 0
+	lines=$(head -c 4000 "$f" 2>/dev/null | jq -Rsc 'split("\n") | map(select(. != ""))' 2>/dev/null || echo '[]')
+	verdict=fail
+	why "artifacts could not be collected completely from the nested run: $(jq -r 'join("; ")' <<<"$lines" 2>/dev/null || echo "see $f")"
+	summary=$(jq -c --argjson l "$lines" '. + {collectionFailed:true, collectionFailures:$l}' <<<"$summary" 2>/dev/null || echo "$summary")
+}
+
 if ((run_qc1)); then
 	dir=$evidence/qc1
 	run_step qc1 qc1.log "$dir" "${qc1_cmd[@]}"
@@ -1204,6 +1347,7 @@ if ((run_qc1)); then
 			why "QC-1 environment.json does not name revision $revision"
 		fi
 	fi
+	check_collection "$dir"
 	record_step "$verdict" "$dir" "$summary"
 fi
 
@@ -1232,6 +1376,7 @@ if ((run_drill)); then
 			why "the drill left no restore-drill.json naming revision $revision"
 		fi
 	fi
+	check_collection "$dir"
 	record_step "$verdict" "$dir" "$summary"
 fi
 

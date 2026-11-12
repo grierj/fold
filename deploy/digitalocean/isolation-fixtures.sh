@@ -113,6 +113,7 @@ case "$1" in
       *NetworkMode*) echo "${STUB_NET:-bridge}" ;;
       *Mounts*) printf '%b' "${STUB_MOUNTS:-/var/lib/docker /var/lib/docker/volumes/x/_data\n}" ;;
     esac ;;
+  exec) case "$*" in *fold-owned-scan*) echo 0 ;; esac ;;
 esac
 exit 0
 STUB
@@ -157,7 +158,7 @@ grep -qE -- '--name fold-drill-[0-9a-f]{12} --hostname fold-drill-[0-9a-f]{12} -
 if grep -qE -- ' -v |--volume|--mount|--network|--net |docker\.sock|--pid|--ipc|--userns|--cap-add' <<<"$run_line"; then echo "isolation: the nested container is given more than it needs: $run_line" >&2; exit 1; fi
 # The repository goes in as a bundle by cp, the drill runs inside with the flag, the evidence comes out by cp, and the container is removed by id.
 grep -q '^cp .*fold.bundle ccc' "$WORK/stub.log"; grep -q "^cp ccc[c]*:/work/out/. $WORK/ev1/" "$WORK/stub.log"
-grep -q '^exec -e FOLD_DRILL_ISOLATED_DAEMON=1 -e QC1_NO_SANDBOX=1 -e QC1_WEB_DIR=/work/fold/web -w /work/fold c\{64\} bash -c .* _ bash deploy/digitalocean/restore-drill.sh --dir /work/out --keep$' "$WORK/stub.log"
+grep -q '^exec -e FOLD_NESTED_RUN=[0-9a-f]\{12\} -e FOLD_DRILL_ISOLATED_DAEMON=1 -e QC1_NO_SANDBOX=1 -e QC1_WEB_DIR=/work/fold/web -w /work/fold c\{64\} bash -c .* _ bash deploy/digitalocean/restore-drill.sh --dir /work/out --keep$' "$WORK/stub.log"
 # The drill's browser is prepared first, in the same container, and the Chromium it found is the one the run is given.
 prep_l="$(grep -n 'browser-prepare.sh /work/prep$' "$WORK/stub.log" | head -n 1 | cut -d: -f1)"; run_l="$(grep -n 'restore-drill.sh --dir /work/out' "$WORK/stub.log" | head -n 1 | cut -d: -f1)"
 [[ -n "$prep_l" && -n "$run_l" && "$prep_l" -lt "$run_l" ]]
@@ -185,7 +186,7 @@ case "$1" in
   info) echo '{"Name":"x","ContainersRunning":0}' ;;
   run) printf 'c%.0s' {1..64}; echo ;;
   inspect) case "$*" in *NetworkMode*) echo bridge ;; *Mounts*) echo '/var/lib/docker /v' ;; esac ;;
-  exec) case "$*" in *restore-drill.sh*) exit 7 ;; esac ;;
+  exec) case "$*" in *fold-owned-scan*) echo 0 ;; *restore-drill.sh*) exit 7 ;; esac ;;
 esac
 exit 0
 STUB

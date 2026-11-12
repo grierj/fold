@@ -48,15 +48,30 @@
 #   - the drill inside refuses to start unless it finds itself in such a
 #     container (isolation.sh).
 #
-# Interruption (INT, TERM or HUP). The measurements, the progress files and the
-# failure evidence of a long run exist only inside the container, so the
-# container is never removed first: the runner asks the workload inside to stop
-# (TERM, which its own traps turn into a clean finish), waits for it up to
-# FOLD_NESTED_STOP_GRACE seconds (default 90), kills what is left, copies
-# /work/prep and /work/out into --out, and only then removes the container. The
-# exit status is 130, 143 or 129. --out then holds INTERRUPTED.txt, and
-# COLLECTION-FAILED.txt when a copy failed; a copy that fails is never silent. A
-# KILL sent to the runner itself cannot do any of this.
+# Stop, then collect, then remove (on every end, not only a signal). The
+# measurements, the progress files and the failure evidence of a long run exist
+# only inside the container, so it is never removed first. Every process the
+# workload starts carries FOLD_NESTED_RUN=<run id> in its environment (each
+# docker exec passes it), so the runner finds all of them by that marker, not
+# just the bash scripts: node, chromium, npm, orphans, processes in sessions of
+# their own. After INT, TERM or HUP it TERMs the owned top-level processes (their
+# traps turn that into a clean finish), waits up to FOLD_NESTED_STOP_GRACE
+# seconds (default 90), KILLs every owned process and keeps looking for up to
+# FOLD_NESTED_KILL_WAIT seconds (default 15). A stop counts as established only
+# when lookups that ran inside the container counted zero twice, a second apart;
+# a failed lookup is never read as "nothing running". If it cannot be
+# established the container is frozen (docker pause) before the copy. Only then
+# are /work/prep and /work/out copied into --out, and the container is removed.
+# After a normal end the same check runs and ends any leftover (noted in
+# LEFTOVERS-STOPPED.txt). The exit status after a signal is 130, 143 or 129.
+#
+# Records in --out: INTERRUPTED.txt (how the run stopped), COLLECTION-FAILED.txt
+# (a copy that failed, or a stop that could not be established). A collection
+# failure is a failure of the run: a run that would have exited 0 (or, for
+# --crossings-only, 10) exits 1. A KILL sent to the runner itself cannot do any
+# of this. What it cannot see: a tool that replaces its whole environment, and
+# the processes of the drill's own nested containers (the daemon owns them; they
+# go with the container).
 set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 OUT="" DIND=docker:29-dind QC1=0 CROSS=0
@@ -86,57 +101,130 @@ NAME="fold-drill-$RUN_ID"
 CID=""
 TMP="$(mktemp -d)"
 # What is in the container is the evidence. ARMED means the container holds a clone and the workload may have written to /work/prep or /work/out; COLLECTED means
-# those were copied out already. The processes the workload is made of are found by their command lines (each starts with `bash deploy/digitalocean/...`; the
-# processes of this runner's own docker exec calls do not), because the preparation step's docker exec line is fixed and carries no pid.
-ARMED=0 COLLECTED=0 INTERRUPTED="" STOPPED_HOW="" INNER_CLIENT=""
+# those were copied out already.
+#
+# Which processes are the workload's is decided by one marker, not by names or by a process tree: every docker exec this runner makes passes
+# -e FOLD_NESTED_RUN=<this run's id>, so every process the workload starts (bash, node, chromium, npm, anything) carries it in its environment, also after it
+# was orphaned, put in a session or process group of its own, or reparented to init. A process the daemon starts (the drill's containers) and the runner's own
+# lookup calls do not carry it. A tool that replaces its whole environment would hide from this; none of the drill's tools does.
+ARMED=0 COLLECTED=0 INTERRUPTED="" STOPPED_HOW="none" INNER_CLIENT=""
+STOP_VERIFIED=0 STOP_LOOKUP_ERRORS=0 FROZEN=0 OWNED_N=""
 COLLECT_FAILED=()
-INNER_RE='^bash deploy/digitalocean/(restore-drill|qc1-measure|qc1/browser-prepare)\.sh'
+OWN_MARK="FOLD_NESTED_RUN=$RUN_ID"
+# The lookup runs inside the container (busybox sh): it lists the processes whose environment holds the marker and, by mode, signals them. Modes: count (signal
+# nothing), termroots (TERM the owned processes whose parent is not owned, so a script's own trap can clean up its children), killall (KILL every owned
+# process). It prints how many it found; nothing else.
+OWN_SCAN=$(cat <<'SCAN'
+m=$1; mode=$2; self=$$; list=" "
+for d in /proc/[0-9]*; do
+  p=${d#/proc/}
+  [ "$p" = "$self" ] && continue
+  tr '\000' '\n' <"$d/environ" 2>/dev/null | grep -qxF "$m" && list="$list$p "
+done
+n=0
+for p in $list; do
+  n=$((n+1)); sig=
+  case $mode in
+    killall) sig=KILL ;;
+    termroots)
+      pp=$(sed -n 's/^[0-9]* (.*) [A-Za-z] \([0-9]*\) .*/\1/p' "/proc/$p/stat" 2>/dev/null)
+      case "$list" in *" $pp "*) ;; *) sig=TERM ;; esac ;;
+  esac
+  [ -z "$sig" ] || kill -"$sig" "$p" 2>/dev/null
+done
+echo "$n"
+SCAN
+)
+# owned MODE sets OWNED_N to the number of owned processes and succeeds only when the lookup itself worked. A failed docker exec, a lookup that printed nothing or
+# something else is a failure, never "none": an absence is only ever established by a lookup that ran and counted zero. Call it directly, not in $(...), so the
+# error count survives.
+owned() {
+  local out
+  OWNED_N=""
+  if out="$(docker exec "$CID" sh -c "$OWN_SCAN" fold-owned-scan "$OWN_MARK" "$1" 2>/dev/null)" && [[ "$out" =~ ^[0-9]+$ ]]; then
+    OWNED_N="$out"
+    return 0
+  fi
+  STOP_LOOKUP_ERRORS=$((STOP_LOOKUP_ERRORS + 1))
+  return 1
+}
+# stopped_confirmed: two successful lookups, a second apart, both counting zero (the second catches an exec the daemon was still starting).
+stopped_confirmed() {
+  owned count && [[ "$OWNED_N" == 0 ]] || return 1
+  sleep 1
+  owned count && [[ "$OWNED_N" == 0 ]]
+}
 # inner_exec DOCKER_EXEC_ARGS...: the workload, started in the background and waited for, so that a signal runs the trap at once and not after a many-hour run.
 # A signal sent to the whole process group can end the docker client a moment before this script's own trap runs; a client that ended like a killed process
 # while the workload is still there is not the workload's end, so it is waited for here, and the trap, which is already on its way, stops it.
 inner_exec() {
   local rc=0
-  docker exec "$@" &
+  docker exec -e "$OWN_MARK" "$@" &
   INNER_CLIENT=$!
   wait "$INNER_CLIENT" || rc=$?
   INNER_CLIENT=""
   if (( rc >= 128 )); then
-    while docker exec "$CID" pgrep -f "$INNER_RE" >/dev/null 2>&1; do sleep 1; done
+    while owned count && [[ "$OWNED_N" != 0 ]]; do sleep 1; done
   fi
   return "$rc"
 }
-# stop_inner asks the workload to stop and waits for it; what survives the grace is killed. The container's own docker exec calls go through a daemon, so a TERM
-# that only reached the docker client on this host would have stopped nothing inside.
+# stop_inner ends everything the workload left running, and says whether that is established. Nothing is copied before it returns. After an interruption the
+# owned top-level processes get TERM first (their traps finish the run's own cleanup); after a normal end only leftovers are asked. What is still there after
+# FOLD_NESTED_STOP_GRACE seconds (default 90) is killed, every owned process, and the stop is verified again, for up to FOLD_NESTED_KILL_WAIT seconds (default 15).
+# If a stop cannot be established (the lookup keeps failing, or a process will not die) the container is frozen, so what is copied is at least one moment's
+# state, and the caller records the copy as incomplete. The container's own daemon calls go through docker, so a TERM that reached only the docker client on
+# this host would stop nothing inside.
 # shellcheck disable=SC2329 # reached through the EXIT trap (cleanup).
 stop_inner() {
-  local grace="${FOLD_NESTED_STOP_GRACE:-90}" i
+  local grace="${FOLD_NESTED_STOP_GRACE:-90}" killwait="${FOLD_NESTED_KILL_WAIT:-15}" i
   [[ "$grace" =~ ^[0-9]+$ ]] || grace=90
+  [[ "$killwait" =~ ^[0-9]+$ ]] || killwait=15
+  STOP_VERIFIED=0 STOPPED_HOW=none
+  if [[ -z "$INTERRUPTED" ]] && stopped_confirmed; then STOP_VERIFIED=1; return 0; fi
   STOPPED_HOW=term
-  docker exec "$CID" pkill -TERM -o -f "$INNER_RE" >/dev/null 2>&1 || true
+  if owned termroots && [[ "$OWNED_N" == 0 ]]; then STOPPED_HOW=none; fi
   for ((i=0;i<grace;i++)); do
-    docker exec "$CID" pgrep -f "$INNER_RE" >/dev/null 2>&1 || return 0
+    if stopped_confirmed; then STOP_VERIFIED=1; return 0; fi
     sleep 1
   done
   STOPPED_HOW="kill"
-  echo "restore-drill-nested: the run inside did not stop within ${grace}s of TERM; killing it" >&2
-  docker exec "$CID" pkill -KILL -f "$INNER_RE" >/dev/null 2>&1 || true
-  sleep 1
+  echo "restore-drill-nested: the run inside did not stop within ${grace}s of TERM, or its stop could not be looked up; killing it" >&2
+  for ((i=0;i<killwait;i++)); do
+    owned killall || true
+    if stopped_confirmed; then STOP_VERIFIED=1; return 0; fi
+    sleep 1
+  done
+  if docker pause "$CID" >/dev/null 2>&1; then FROZEN=1; fi
+  echo "restore-drill-nested: could not confirm that the run inside has stopped (lookup failures: $STOP_LOOKUP_ERRORS); the container is$([[ $FROZEN == 1 ]] || echo ' NOT') frozen" >&2
+  return 0
 }
-# collect_artifacts copies the preparation and run directories out. A copy that fails is said on stderr and recorded in COLLECTION-FAILED.txt.
+# collect_artifacts [prep] copies the preparation and run directories out (only the preparation with `prep`: a run that never started has no /work/out). A copy that
+# fails, and a stop that was not established, are said on stderr and recorded in COLLECTION-FAILED.txt; the caller must treat the run as failed.
 collect_artifacts() {
   COLLECT_FAILED=()
   # With --no-browser there is no preparation directory, and its absence is not a failure.
   if ! docker cp "$CID:/work/prep/." "$OUT/prep/" >/dev/null 2>&1 && (( ! skip_browser )); then
     COLLECT_FAILED+=("/work/prep (the browser runtime preparation) could not be copied out")
   fi
-  if ! docker cp "$CID:/work/out/." "$OUT/" >/dev/null 2>&1; then
+  if [[ "${1:-}" != prep ]] && ! docker cp "$CID:/work/out/." "$OUT/" >/dev/null 2>&1; then
     echo 'restore-drill-nested: no evidence directory to copy out' >&2
     COLLECT_FAILED+=("/work/out (the run's evidence) could not be copied out")
+  fi
+  if (( ! STOP_VERIFIED )); then
+    COLLECT_FAILED+=("the run inside could not be confirmed stopped before the copy (lookup failures: $STOP_LOOKUP_ERRORS; the container was$([[ $FROZEN == 1 ]] || echo ' NOT') frozen); the copy may be incomplete or inconsistent")
   fi
   COLLECTED=1
   if (( ${#COLLECT_FAILED[@]} )); then
     printf '%s\n' "${COLLECT_FAILED[@]}" >"$OUT/COLLECTION-FAILED.txt" || true
   fi
+}
+# stop_text prints, for the note in the evidence directory, how the workload was stopped.
+stop_text() {
+  case "$STOPPED_HOW" in
+    none) echo 'Nothing of the run was still running inside.' ;;
+    term) echo 'The run inside was asked to stop (TERM) and finished its own cleanup.' ;;
+    kill) echo 'The run inside was asked to stop (TERM) and did not (or the lookup failed); it was killed, so its own cleanup and final records may be missing.' ;;
+  esac
 }
 # shellcheck disable=SC2329 # EXIT trap.
 cleanup() {
@@ -144,21 +232,25 @@ cleanup() {
   trap - EXIT
   trap '' INT TERM HUP   # a second signal must not cut the collection short
   if [[ -n "$CID" ]] && (( ARMED && ! COLLECTED )); then
-    [[ -z "$INTERRUPTED" ]] || stop_inner
+    stop_inner
     collect_artifacts
     partial_marker || true
     if [[ -n "$INTERRUPTED" ]]; then
       {
         printf 'restore-drill-nested: interrupted by %s.\n' "$INTERRUPTED"
-        if [[ "$STOPPED_HOW" == kill ]]; then echo 'The run inside was asked to stop (TERM) and did not; it was killed, so its own cleanup and final records may be missing.'
-        else echo 'The run inside was asked to stop (TERM) and finished its own cleanup.'; fi
+        stop_text
         echo 'What the container held was copied here before it was removed; see COLLECTION-FAILED.txt, if present, for anything that was not.'
         echo 'This directory is NOT acceptance evidence.'
       } >"$OUT/INTERRUPTED.txt" || true
       echo "restore-drill-nested: interrupted by $INTERRUPTED; artifacts copied to $OUT$([[ ${#COLLECT_FAILED[@]} -eq 0 ]] || echo ' (some could not be: COLLECTION-FAILED.txt)')" >&2
+    elif [[ "$STOPPED_HOW" != none ]]; then
+      stop_text >"$OUT/LEFTOVERS-STOPPED.txt" || true
     fi
   fi
-  [[ -z "$CID" ]] || docker rm -fv "$CID" >/dev/null 2>&1 || true
+  if [[ -n "$CID" ]]; then
+    (( ! FROZEN )) || docker unpause "$CID" >/dev/null 2>&1 || true
+    docker rm -fv "$CID" >/dev/null 2>&1 || true
+  fi
   [[ -z "$INNER_CLIENT" ]] || kill "$INNER_CLIENT" >/dev/null 2>&1 || true
   rm -rf -- "$TMP"
   exit "$rc"
@@ -211,11 +303,8 @@ if (( ! skip_browser )); then
   if (( ! QC1 && ! CROSS )); then prep_env+=(-e QC1_PREPARE_FIREFOX=1); fi
   inner_exec "${prep_env[@]}" -w /work/fold "$CID" bash deploy/digitalocean/qc1/browser-prepare.sh /work/prep || rc=$?
   if (( rc != 0 )); then
-    if ! docker cp "$CID:/work/prep/." "$OUT/prep/" >/dev/null 2>&1; then
-      echo 'restore-drill-nested: the preparation directory could not be copied out' >&2
-      echo '/work/prep (the browser runtime preparation) could not be copied out' >"$OUT/COLLECTION-FAILED.txt"
-    fi
-    COLLECTED=1
+    stop_inner
+    collect_artifacts prep
     partial_marker
     echo "restore-drill-nested: the browser runtime could not be prepared (exit $rc); nothing was run ($what)" >&2
     exit "$rc"
@@ -235,7 +324,14 @@ else
   inner_exec -e FOLD_DRILL_ISOLATED_DAEMON=1 -e QC1_NO_SANDBOX=1 -e QC1_WEB_DIR=/work/fold/web -w /work/fold "$CID" \
     bash -c "$wrap" _ bash deploy/digitalocean/restore-drill.sh --dir /work/out "${drill_args[@]}" || rc=$?
 fi
+stop_inner
 collect_artifacts
+[[ "$STOPPED_HOW" == none ]] || stop_text >"$OUT/LEFTOVERS-STOPPED.txt"
+# What could not be collected is a failure of the run, whatever the workload itself said: a missing copy leaves a pass nothing to stand on.
+if (( ${#COLLECT_FAILED[@]} )); then
+  echo "restore-drill-nested: the evidence could not be collected completely (see $OUT/COLLECTION-FAILED.txt); the run is treated as failed" >&2
+  if (( rc == 0 )) || (( CROSS && rc == 10 )); then rc=1; fi
+fi
 if (( CROSS )); then
   partial_marker
   if (( rc == 0 )); then echo 'restore-drill-nested: a crossings-only run reported 0, which only a full run may; treating it as failed' >&2; rc=1; fi
