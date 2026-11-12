@@ -211,6 +211,7 @@ limited() {
   LIMITED_JOB=$!
   set +m
   LIMITED_DEFER=0
+  # The recorded signal is taken here, once: on_signal clears it before it exits into cleanup, whose own calls must not find it.
   if [[ -n "$SIG_PENDING" ]]; then on_signal "$SIG_PENDING" "$SIG_PENDING_RC"; fi
   { # bash's own "Killed" notice for a job we killed goes to stderr when the job is reaped
     while [[ ! -e "$TMP/limited.rc" ]]; do
@@ -431,6 +432,13 @@ cleanup() {
   local rc=$? note
   trap - EXIT
   trap '' INT TERM HUP   # a second signal must not cut the collection short
+  # A signal recorded while a group was being launched, when the run ends some other way before limited could take it, is this run's reason and status, not a
+  # signal for the cleanup's own calls: it is taken here, once, and never replayed.
+  if [[ -n "$SIG_PENDING" ]]; then
+    [[ -n "$INTERRUPTED" ]] || { INTERRUPTED="$SIG_PENDING"; rc="$SIG_PENDING_RC"; }
+    SIG_PENDING="" SIG_PENDING_RC=""
+  fi
+  LIMITED_DEFER=0
   # A call a signal cut short is ended, not waited for; the cleanup's own calls are all bounded (limited).
   if [[ -n "$LIMITED_JOB" ]]; then
     kill -KILL -- "-$LIMITED_JOB" 2>/dev/null || kill -KILL "$LIMITED_JOB" 2>/dev/null || true
@@ -486,6 +494,9 @@ on_signal() {
     [[ -n "$SIG_PENDING" ]] || { SIG_PENDING="$1"; SIG_PENDING_RC="$2"; }
     return 0
   fi
+  # SIG_PENDING is consumed and cleared before the exit: cleanup makes limited calls of its own, and each would otherwise find the signal again, exit with the EXIT
+  # trap already disabled and leave the run's group, evidence and container behind.
+  SIG_PENDING="" SIG_PENDING_RC=""
   trap '' INT TERM HUP; INTERRUPTED="$1"; CLEAN_END=""; exit "$2"
 }
 trap cleanup EXIT

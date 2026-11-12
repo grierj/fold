@@ -264,7 +264,8 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   has not answered is killed with its whole group, also when it ignores TERM, and so is a
   descendant a client leaves behind after it exits. A signal between the launch of a client's
   group and the moment the runner has named it (where cleanup could not yet find it) is held and
-  taken as soon as the group is named, and the client starts with default INT, TERM and HUP,
+  taken as soon as the group is named, once (it is cleared before the exit into cleanup, whose own
+  calls must not find it again), and the client starts with default INT, TERM and HUP,
   also when cleanup, which ignores them, launched it. A stall is counted (a stalled lookup, pause or
   copy is said in `COLLECTION-FAILED.txt`). The whole cleanup has `FOLD_NESTED_CLEANUP_BUDGET`
   seconds (default 170; a whole number of at least 3, otherwise the runner refuses to start), a
@@ -319,8 +320,12 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   with the default call timeout and a short budget), a stalled unpause still leaves a removal
   attempt, a client that exits and leaves a TERM-ignoring child has that child ended, a TERM sent
   to the runner exactly while a lookup's group is being launched (a DEBUG trap loaded through
-  `BASH_ENV` fires it just before `LIMITED_JOB` is assigned) ends the run with 143 and ends the
-  stalled client and its child while a bystander survives, a budget the
+  `BASH_ENV` fires it just before `LIMITED_JOB` is assigned) ends the run with 143 having finished
+  its cleanup (`INTERRUPTED.txt` says TERM, no collection failure, evidence and preparation copied
+  before the container is removed), ends every stalled client and its child, leaves nothing the case
+  started running (every process of the case carries `STUB_CASE=<name>`, and the self-test ends
+  whatever still carries its own marker when it exits, also when a case fails) while a bystander
+  survives, a budget the
   runner cannot use or one that does not fit the wrapper's grace is refused, a
   removal that stalls once is retried, one that never works names the container and fails the
   run, and a process or container that is not the run's is untouched; and that a failed copy or an

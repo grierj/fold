@@ -174,8 +174,28 @@ self_test_main() {
 	local tmp repo stubs me out rc pid i
 	tmp=$(mktemp -d)
 	tmp=$(cd "$tmp" && pwd -P)
+	# Everything this test starts carries one marker in its environment, so a case that fails or is cut short cannot leave a process behind: the exit below ends
+	# whatever still has it. find_marked ENTRY puts in FOUND the pids (not this shell's) whose environment holds exactly ENTRY; a gone process or a zombie has none.
+	export REASON_SCALE_SELFTEST="$tmp"
+	find_marked() {
+		local d p
+		FOUND=()
+		for d in /proc/[0-9]*; do
+			p=${d#/proc/}
+			[[ $p != "$$" && $p != "$BASHPID" ]] || continue
+			if grep -zqxF -- "$1" "$d/environ" 2>/dev/null; then FOUND+=("$p"); fi
+		done
+	}
+	# shellcheck disable=SC2329 # reached through the EXIT trap.
+	reap_selftest() {
+		find_marked "REASON_SCALE_SELFTEST=$tmp"
+		((${#FOUND[@]} == 0)) || kill -KILL "${FOUND[@]}" 2>/dev/null || true
+	}
 	# shellcheck disable=SC2064 # expand now: $tmp is fixed
-	trap "rm -rf '$tmp'" EXIT
+	trap "reap_selftest; rm -rf '$tmp'" EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+	trap 'exit 129' HUP
 	repo=$tmp/repo
 	stubs=$repo/deploy/digitalocean
 	me=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/$(basename "${BASH_SOURCE[0]}")
@@ -553,11 +573,13 @@ writing() {
 	[[ -n $st && $st != Z && $st != T ]]
 }
 # hang: a stalled docker client (the daemon does not answer). It has a child of its own, so ending only its pid would leave that behind, it ignores TERM
-# when STUB_HANG_STUBBORN is set, and it records its pids so that the test can see that both are gone.
+# when STUB_HANG_STUBBORN is set, and it records its pids so that the test can see that both are gone. With a FLAG name it also claims the stall by creating that
+# file, and only after its pids are recorded: a client ended before then claims nothing, so the next one stalls instead and no stall goes unrecorded.
 hang() {
 	[[ -z ${STUB_HANG_STUBBORN:-} ]] || trap '' TERM INT HUP
 	sleep 600 &
 	printf '%s\n%s\n' "$$" "$!" >>"$STUB_FAKE/hung.pids"
+	[[ -z ${1:-} ]] || : >"$STUB_FAKE/$1"
 	wait
 	exit 1
 }
@@ -614,10 +636,9 @@ exec)
 	case "$*" in
 	*fold-owned-scan*)
 		[[ -z ${STUB_SCAN_HANG:-} ]] || hang
-		# Only the first lookup stalls: whatever else is left running afterwards is what the case is about.
+		# Only the first lookup that gets this far stalls: whatever else is left running afterwards is what the case is about.
 		if [[ -n ${STUB_SCAN_HANG_FIRST:-} && ! -e $STUB_FAKE/scan-hung ]]; then
-			: >"$STUB_FAKE/scan-hung"
-			hang
+			hang scan-hung
 		fi
 		[[ -z ${STUB_SCAN_FAIL:-} ]] || exit 1
 		# A client that answers and exits while a child of its own, one that ignores TERM, stays behind in its process group.
@@ -810,6 +831,18 @@ DESC
 		done
 		((n >= 2)) || t_fail "$1: no stalled docker client was started (the case did not exercise a hang)"
 	}
+	# n_no_stragglers NAME: nothing the case started (its environment carries STUB_CASE=NAME) is left running once the runner has returned: not a supervisor holding a
+	# client's group (it sleeps 3600 seconds), not a stalled client. Whatever is found is ended, so a failed case leaves nothing behind.
+	n_no_stragglers() {
+		local i
+		for ((i = 0; i < 20; i++)); do
+			find_marked "STUB_CASE=$1"
+			((${#FOUND[@]})) || return 0
+			sleep 0.1
+		done
+		t_fail "$1: the run left processes behind (pids ${FOUND[*]}): a client's group was not ended"
+		kill -KILL "${FOUND[@]}" 2>/dev/null || true
+	}
 	# n_left_gone NAME: the children that docker clients answered and exited with, leaving them behind (and ignoring TERM), are gone; at least one was left.
 	n_left_gone() {
 		local p n=0
@@ -966,9 +999,12 @@ DESC
 	grep -q 'stalled past their deadline' "$tmp/nest-hang-lookup-end/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-hang-lookup-end: the stalled lookups were not recorded"
 	# A signal in the one interval a cleanup client cannot be found: after limited has started the client's group and before it has named it. BASH_ENV loads a
 	# DEBUG trap into the runner alone (functrace on, only the main shell of restore-drill-nested.sh) that sends TERM to the runner as the command that names the
-	# group, LIMITED_JOB=$!, is about to run: exactly that interval, every time. The first lookup is the client that stalls (it ignores TERM and has a child of its
-	# own). The signal must be taken as soon as the group is named: the run ends 143, the stalled client and its child are gone, the later lookups still work, and a
-	# process that is not the run's is left alone. Without the deferral the cleanup does not know the group and the stalled client outlives the run.
+	# group, LIMITED_JOB=$!, is about to run: exactly that interval, every time. The signal is held and taken once the group is named, and it must not be found again:
+	# the cleanup that follows makes lookups of its own, and a replayed signal would end it at the first of them, before the evidence is copied or the container
+	# removed, and leave that client's supervisor sleeping. So the run ends 143 having finished the cleanup: INTERRUPTED.txt says TERM, no collection failure is
+	# recorded, the evidence is copied and then the container removed, every client that stalled (it ignores TERM and has a child of its own, and is whichever
+	# lookup first reaches the daemon) and its child are gone, nothing the case started is left running, and a process that is not the run's is left alone.
+	# The stop and kill waits are long enough that the stop is established, so a collection failure here is a cleanup that did not finish.
 	cat >"$tmp/signal-in-launch.sh" <<'HOOK'
 [[ ${0##*/} == restore-drill-nested.sh ]] || return 0
 set -T
@@ -981,16 +1017,18 @@ trap signal_in_launch DEBUG
 HOOK
 	rm -f "$tmp/launch-signal-sent"
 	t0=$SECONDS
-	# shellcheck disable=SC2086
-	n_run nest-launch-signal STUB_QUICK=1 STUB_SCAN_HANG_FIRST=1 STUB_HANG_STUBBORN=1 "BASH_ENV=$tmp/signal-in-launch.sh" "LAUNCH_SIGNAL_MARK=$tmp/launch-signal-sent" $timing FOLD_NESTED_CLEANUP_BUDGET=20 FOLD_NESTED_RM_RESERVE=6 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-launch-signal" --qc1
+	n_run nest-launch-signalSTUB_CASE=nest-launch-signal STUB_QUICK=1 STUB_SCAN_HANG_FIRST=1 STUB_HANG_STUBBORN=1 "BASH_ENV=$tmp/signal-in-launch.sh" "LAUNCH_SIGNAL_MARK=$tmp/launch-signal-sent" FOLD_NESTED_CALL_TIMEOUT=2 FOLD_NESTED_STOP_GRACE=8 FOLD_NESTED_KILL_WAIT=4 FOLD_NESTED_CLEANUP_BUDGET=30 FOLD_NESTED_RM_RESERVE=6 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-launch-signal" --qc1
 	[[ -e $tmp/launch-signal-sent ]] || t_fail "nest-launch-signal: the signal was never sent while the client was being launched (the case did not exercise the interval)"
 	[[ $rc == 143 ]] || t_fail "nest-launch-signal: exit $rc, want 143 for a signal taken during the launch (124 means the runner never returned)"
-	n_took nest-launch-signal "$t0" 14
+	n_took nest-launch-signal "$t0" 20
 	n_hung_gone nest-launch-signal
+	n_no_stragglers nest-launch-signal
 	n_only_ours nest-launch-signal
-	grep -q 'interrupted by TERM' "$tmp/nest-launch-signal/INTERRUPTED.txt" 2>/dev/null || t_fail "nest-launch-signal: the signal was not recorded as the reason the run stopped"
-	[[ -s $tmp/nest-launch-signal/done ]] || t_fail "nest-launch-signal: the evidence was not copied after the signal"
+	grep -q 'interrupted by TERM' "$tmp/nest-launch-signal/INTERRUPTED.txt" 2>/dev/null || t_fail "nest-launch-signal: the signal was not recorded as the reason the run stopped (the cleanup was cut short)"
+	[[ ! -e $tmp/nest-launch-signal/COLLECTION-FAILED.txt ]] || t_fail "nest-launch-signal: a collection failure was recorded: $(tr '\n' ' ' <"$tmp/nest-launch-signal/COLLECTION-FAILED.txt")"
+	[[ -s $tmp/nest-launch-signal/done && -s $tmp/nest-launch-signal/prep/browser-runtime.json ]] || t_fail "nest-launch-signal: the evidence and the preparation record were not both copied after the signal"
 	n_before '^cp c\{64\}:/work/out/\. ' '^rm -fv ' || t_fail "nest-launch-signal: the container was removed before the evidence was copied"
+	n_before '^cp c\{64\}:/work/prep/\. ' '^rm -fv ' || t_fail "nest-launch-signal: the container was removed before the preparation was copied"
 	# A copy that stalls and ignores TERM: it is ended at the start of the removal reserve, recorded as stalled and partial, the other copy and the removal still happen.
 	t0=$SECONDS
 	# shellcheck disable=SC2086
