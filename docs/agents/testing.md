@@ -441,6 +441,85 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   arguments; a call whose `WRAP` and words are joined into one argument is refused (each fixture checks that on a made-up line). They also require that it loads the prepared Chromium,
   polls for the stop request and TERMs the group, and does not exec the command in its place. The scale self-test's stub docker does the same, and `nest-done` checks the preparation's call.
 
+### Reason-review scale matrix (#293, #294)
+
+One QC-1 run covers the table sizes (10k, 100k, 1M `contact_requests` rows), the reason counts, both
+party directions, keep, blank and mixed decisions, the dense 100,000-reason account, the
+request-size comparison with the old envelope and the browser panel, for **one layout** of the
+scenario reasons and **one charset**. The matrix is the runs that together cover what the issues
+ask for. Each is a **cell**, named `<charset>-<layout>`:
+
+| Cell | What it adds |
+|---|---|
+| `ascii-spread` | The baseline: ASCII reasons spread through the table. Includes the one old-envelope comparison (the synthetic old `items` body at the id width actually seen, against `maxRequestBytes`). |
+| `ascii-tail` | The reasons after every other row, the worst case for a scan from the start. |
+| `ascii-head` | The reasons before every other row. |
+| `multibyte-spread` | `--charset multibyte`: 1,000-rune reasons, background and target alike (#293). |
+
+```bash
+E=~/.local/state/fold/reason-review-matrix/$(git rev-parse --short=12 HEAD)   # outside the checkout
+scripts/reason-review-scale.sh --only qc1 --evidence-dir $E/ascii-spread
+scripts/reason-review-scale.sh --only qc1 --evidence-dir $E/ascii-tail --qc1-arg --layout --qc1-arg tail
+scripts/reason-review-scale.sh --only qc1 --evidence-dir $E/ascii-head --qc1-arg --layout --qc1-arg head
+scripts/reason-review-scale.sh --only qc1 --evidence-dir $E/multibyte-spread \
+  --qc1-arg --charset --qc1-arg multibyte --qc1-arg --browser-fallback-digest
+scripts/reason-review-matrix.sh --out $E/matrix.json \
+  --cell ascii-spread=$E/ascii-spread/qc1 --cell ascii-tail=$E/ascii-tail/qc1 \
+  --cell ascii-head=$E/ascii-head/qc1 --cell multibyte-spread=$E/multibyte-spread/qc1
+```
+
+Each run takes hours, needs a **dedicated** Docker daemon (the nested runner makes one; a shared
+daemon makes the run a pilot) and starts from a clean commit. All four cells must be measured on
+one revision: the report refuses to call a matrix `FULL` when they differ. A pass-through argument
+makes the wrapper record that step `partial`; the cell's own `evidence-status.json` is what the
+matrix reads. `scripts/reason-review-matrix.sh --dry-run` lists the cells.
+
+- **`--charset multibyte`** replaces the reason text with a 21-rune unit of 1- to 4-byte UTF-8 runes
+  (accented letters and Omega, the euro sign, CJK, a zero-width joiner, emoji and combining marks),
+  repeated and cut to the requested **rune** length, with the row's ASCII ordinal at the end so
+  every reason is unique. That is 61 bytes per 21 runes, about 2.9 bytes a rune: it is not the
+  4,000-byte worst case of a 1,000-rune reason, and repeated text compresses and TOASTs better than
+  prose. The record says so (`notMeasured`). The DELETE body does not grow: set-v1 carries a digest,
+  not the text. What grows is the page responses, the browser's heap and DOM, and the server's
+  read and hash of each reason.
+- **Per row**, a multibyte run records the shape of the reasons as loaded (`textShape`: every one
+  exactly the requested runes, bytes taken, and a sample of the rune widths and combining marks), the
+  bytes of the page responses (`traversal.responseBytes`, `maxPageBytes`), and, for a deletion,
+  `outcome.textExact`: the SHA-256 of every kept reason's UTF-8 bytes before and after is equal and
+  every removed reason is blank. Counting blank and non-blank rows alone cannot tell a kept reason
+  that was mangled.
+- **Digest agreement.** The harness reads the items the server issues before the browser opens the
+  panel, then holds the `reasonReview` the browser sent against `set-v1.mjs agree`: the independent
+  builder, given the browser's own choices, must reproduce its count, digest and choice vector byte
+  for byte, and every choice must be keep or blank. The digest covers ids and review hashes, not text,
+  so it does not depend on the charset; it is checked in every browser case, and a multibyte cell
+  without it is invalid. The server's acceptance of the independent builder is the deletions'
+  exact-outcome check. The browser's digest path (`crypto.subtle` or the bundled fallback) and its
+  cost are recorded as before; `--browser-fallback-digest` adds the fallback case.
+- **On-screen text.** At the end of the browser run the harness compares each reason row still on
+  screen with the database's text, rune for rune (the one reason it changed behind the page is
+  skipped), and records how many rows it covered. A multibyte cell that covered none is invalid.
+- **Calculated capacity and a history actually submitted are different things** and are recorded
+  apart. `request.capacity` is computed from the format and never sent; `request.largest` is the
+  biggest history the harness really submitted and deleted, and `request.overCap` is a body one
+  reason over capacity that was really refused. A table holds at most the reasons it holds; the
+  capacity is not claimed for a history nobody has.
+- **Status.** `FULL` only when every cell is present, on one revision, complete, coverage full and
+  with nothing missing, invalid or aborted. Anything else is `PILOT`, and `matrix.json` lists each
+  gap by name: an absent cell, a cell of another revision, a cell whose coverage is not full, and
+  the cases a cell reports as pending (the legacy discovery and legacy PUT cases are not built at
+  the time of writing, so a real matrix is a `PILOT` until they are). If a 1M-row table cannot run on
+  the available host, run the sizes that can and report the gap: a pilot, never `FULL`. A budget
+  failure is a finding for engineering disposition (R4-C06), never a gap and never a waiver.
+- The result goes in `docs/plan/M7.4-ERASURE-INVENTORY.md`, section 12.3, "#294/#293 scale matrix":
+  the revision, environment, fixtures, timings, audits, WAL, memory, gaps and budget failures from
+  `matrix.json`, with the sha256 of each artifact. The artifacts stay outside the checkout.
+- **Checks that run without Docker**: `qc1-fixtures.sh` (the judge's charset, shape, exactness and
+  agreement rules, the snapshot comparison and `set-v1.mjs agree`), `qc1-panel-fixtures.mjs` (the
+  on-screen comparison and the rune accounting) and `make reason-review-scale-test` (the matrix
+  report against stub evidence). `UPDATE_QC1_FACTS=1 go test -run TestQC1AppFacts .` is the only way
+  `qc1/app-facts.json` changes.
+
 ### Source guards
 
 - Source guards are the parse-only tests in `guards_<concern>_test.go`, `throttle_keys_test.go`,

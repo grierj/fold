@@ -10,7 +10,11 @@
 --                'head' (before every filler row)
 --   counterparts comma list of real user ids, cycled as the other party
 --   group_id     a real group id, the request's context
---   reason_len   length of each reason (1..1000)
+--   reason_len   length of each reason in RUNES (1..1000, the product's ContactReasonLimit)
+--   charset      'ascii' (the original pattern) or 'multibyte': a 21-rune unit repeated and cut to reason_len runes, mixing
+--                2-byte (e-acute, n-tilde, Omega), 3-byte (euro sign, three CJK characters, a zero-width joiner), 4-byte (six emoji,
+--                a woman and a laptop joined by the ZWJ) and combining marks (U+0301, U+0323), 61 bytes per 21 runes. Either way the
+--                last characters are the row's ASCII ordinal, so every reason is unique and a kept one can be recognised byte for byte.
 -- Scenario ids are odd, so they never collide with filler ids and a later
 --   DELETE FROM contact_requests WHERE id % 2 = 1
 -- removes exactly the scenario rows. Same row shape and trigger handling as
@@ -24,7 +28,11 @@ SELECT s.id,
        CASE WHEN s.as_requester THEN :target ELSE s.cp END,
        CASE WHEN s.as_requester THEN s.cp ELSE :target END,
        'group', :group_id, '',
-       left(repeat('Scenario reason text. ', 60), :reason_len - length(s.j::text)) || s.j::text,
+       CASE WHEN :'charset' = 'multibyte'
+            THEN left(repeat(chr(128512) || chr(128515) || chr(128516) || chr(128513) || chr(127881) || chr(128591) || chr(128105) || chr(8205) || chr(128187)
+                             || chr(233) || chr(241) || chr(937) || chr(8364) || chr(26085) || chr(26412) || chr(35486)
+                             || 'e' || chr(769) || 'a' || chr(803) || chr(769), 80), :reason_len - length(s.j::text)) || s.j::text
+            ELSE left(repeat('Scenario reason text. ', 60), :reason_len - length(s.j::text)) || s.j::text END,
        true, 'denied',
        CASE WHEN s.as_requester THEN s.cp ELSE :target END,
        s.t0 + interval '1 minute', 'pending', 'denied',

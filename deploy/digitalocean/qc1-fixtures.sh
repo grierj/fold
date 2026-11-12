@@ -208,6 +208,71 @@ refused '64 lowercase hex' body keep "$WORK/bad-items.json" 3 "$ID80"
 # The shape is the product's: the envelope and the 80-hex id are held by web/src/api/adminUsers.test.ts, and the panel's call by DeleteUserPanel.test.tsx.
 # The helper agrees with the product's shared vectors, which are also run by the web and Go tests.
 [[ "$(qc1_setv1 selftest --vectors "$ROOT/web/src/lib/reasonSetVectors.json")" == 'ok 4' ]]
+# The browser's review against the independent builder (set-v1.mjs agree): the digest, count and choice vector the builder makes from the items and the browser's OWN
+# choices must be the ones the browser sent. A body the builder made is, trivially, in agreement; a changed digest, a changed vector, a short count, no review and a count
+# above the items issued are each told apart, and none of them is reported as agreeing.
+body mixed "$WORK/real-items.json" 40 "$ID80" | jq -c '.reasonReview' >"$WORK/rv40.json"
+[[ "$(qc1_digest_agreement "$WORK/real-items.json" "$WORK/rv40.json" | jq -c '[.checked, .equal, .digestEqual, .choicesEqual, .count, .issued]')" == '[true,true,true,true,40,40]' ]]
+jq -c '.digest = ((.digest[0:1] | if . == "0" then "1" else "0" end) + .digest[1:])' "$WORK/rv40.json" >"$WORK/rv40d.json"
+[[ "$(qc1_digest_agreement "$WORK/real-items.json" "$WORK/rv40d.json" | jq -c '[.checked, .equal, .digestEqual, .choicesEqual]')" == '[true,false,false,true]' ]]
+body keep "$WORK/real-items.json" 40 "$ID80" | jq -c '.reasonReview' >"$WORK/rv40k.json"
+[[ "$(qc1_digest_agreement "$WORK/real-items.json" "$WORK/rv40k.json" | jq -c '[.checked, .equal, .invalidChoices]')" == '[true,true,0]' ]]   # any valid vector is the browser's own answer, and is reproduced
+jq -c '.choices = "AAAAAAAAAAAAAA=="' "$WORK/rv40.json" >"$WORK/rv40z.json"
+[[ "$(qc1_digest_agreement "$WORK/real-items.json" "$WORK/rv40z.json" | jq -c '[.checked, .equal, .choicesEqual, .invalidChoices]')" == '[true,false,true,40]' ]]   # 40 reasons with no choice (code 0) are not an answer
+body mixed "$WORK/real-items.json" 30 "$ID80" | jq -c '.reasonReview' >"$WORK/rv30.json"
+[[ "$(qc1_digest_agreement "$WORK/real-items.json" "$WORK/rv30.json" | jq -c '[.checked, .equal, .countEqual, .browserCount, .issued]')" == '[true,false,false,30,40]' ]]   # a short set is not the server's
+jq -c '.count = "41"' "$WORK/rv40.json" >"$WORK/rv41.json"
+[[ "$(qc1_digest_agreement "$WORK/real-items.json" "$WORK/rv41.json" | jq -c '[.checked, .equal]')" == '[false,null]' ]]
+echo null >"$WORK/rvnull.json"
+[[ "$(qc1_digest_agreement "$WORK/real-items.json" "$WORK/rvnull.json" | jq -c '[.checked, .equal]')" == '[false,null]' ]]
+jq -c '.format = "items-v0"' "$WORK/rv40.json" >"$WORK/rvfmt.json"
+[[ "$(qc1_digest_agreement "$WORK/real-items.json" "$WORK/rvfmt.json" | jq -c '[.checked, .equal]')" == '[false,null]' ]]
+jq -c '.count = "forty"' "$WORK/rv40.json" >"$WORK/rvtxt.json"
+[[ "$(qc1_digest_agreement "$WORK/real-items.json" "$WORK/rvtxt.json" | jq -c '[.checked, .equal]')" == '[false,null]' ]]
+jq -c '.choices = "AAAA"' "$WORK/rv40.json" >"$WORK/rvshort.json"
+[[ "$(qc1_digest_agreement "$WORK/real-items.json" "$WORK/rvshort.json" | jq -c '[.checked, .equal]')" == '[false,null]' ]]   # a vector that does not decode is unchecked, never equal
+
+# --- the text of the reasons, byte for byte (#293) -----------------------------------------------------------------------------------------------------
+# A before snapshot is one line per reason, "id|sha256|runes|bytes", in ascending id order; the first `removed` lines must be blank afterwards and every other line unchanged.
+HB=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+printf '1|aa|1000|2900\n3|bb|1000|2900\n5|cc|1000|2900\n7|dd|1000|2900\n' >"$WORK/tx.pre"
+printf '1|%s|0|0\n3|%s|0|0\n5|cc|1000|2900\n7|dd|1000|2900\n' "$HB" "$HB" >"$WORK/tx.ok"
+[[ "$(qc1_text_exact "$WORK/tx.pre" "$WORK/tx.ok" 2)" == 'true|2|2|0|0' ]]
+[[ "$(qc1_text_exact "$WORK/tx.pre" "$WORK/tx.pre" 0)" == 'true|4|0|0|0' ]]   # keep: nothing may change
+printf '1|%s|0|0\n3|%s|0|0\n5|%s|0|0\n7|%s|0|0\n' "$HB" "$HB" "$HB" "$HB" >"$WORK/tx.all"
+[[ "$(qc1_text_exact "$WORK/tx.pre" "$WORK/tx.all" 4)" == 'true|0|4|0|0' ]]   # remove: every one blank
+printf '1|%s|0|0\n3|%s|0|0\n5|cX|1000|2900\n7|dd|1000|2900\n' "$HB" "$HB" >"$WORK/tx.mangled"
+[[ "$(qc1_text_exact "$WORK/tx.pre" "$WORK/tx.mangled" 2)" == 'false|1|2|1|0' ]]   # a kept reason whose bytes changed
+printf '1|%s|0|0\n3|bb|1000|2900\n5|cc|1000|2900\n7|dd|1000|2900\n' "$HB" >"$WORK/tx.notblank"
+[[ "$(qc1_text_exact "$WORK/tx.pre" "$WORK/tx.notblank" 2)" == 'false|2|1|1|0' ]]   # a reason that should have been removed still has its text
+printf '1|%s|0|0\n3|%s|3|9\n5|cc|1000|2900\n7|dd|1000|2900\n' "$HB" "$HB" >"$WORK/tx.partial"
+[[ "$(qc1_text_exact "$WORK/tx.pre" "$WORK/tx.partial" 2 | cut -d'|' -f1)" == false ]]   # blanked to something that is not blank
+head -n 3 "$WORK/tx.ok" >"$WORK/tx.short"
+[[ "$(qc1_text_exact "$WORK/tx.pre" "$WORK/tx.short" 2 | cut -d'|' -f1,5)" == 'false|1' ]]   # a reason that vanished
+{ cat "$WORK/tx.ok"; printf '9|ee|1|1\n'; } >"$WORK/tx.extra"
+[[ "$(qc1_text_exact "$WORK/tx.pre" "$WORK/tx.extra" 2 | cut -d'|' -f1,5)" == 'false|1' ]]   # a reason that was not there before
+printf '1|%s|0|0\n4|%s|0|0\n5|cc|1000|2900\n7|dd|1000|2900\n' "$HB" "$HB" >"$WORK/tx.otherid"
+[[ "$(qc1_text_exact "$WORK/tx.pre" "$WORK/tx.otherid" 2 | cut -d'|' -f1)" == false ]]   # not the same ids
+: >"$WORK/tx.none"
+[[ "$(qc1_text_exact "$WORK/tx.none" "$WORK/tx.none" 0)" == 'true|0|0|0|0' ]]
+[[ "$(qc1_text_exact "$WORK/tx.pre" "$WORK/tx.ok" 5 | cut -d'|' -f1)" == false ]]   # more removed than there were
+refused '' qc1_text_exact "$WORK/tx.pre" "$WORK/tx.ok" two
+# The shape of the text as loaded.
+[[ "$(qc1_text_shape "$WORK/tx.pre")" == '{"rows":4,"runesMin":1000,"runesMax":1000,"bytesMin":2900,"bytesMax":2900,"bytesPerRune":2.900}' ]]
+printf '1|aa|999|999\n3|bb|1000|1000\n' >"$WORK/tx.ascii"
+[[ "$(qc1_text_shape "$WORK/tx.ascii")" == '{"rows":2,"runesMin":999,"runesMax":1000,"bytesMin":999,"bytesMax":1000,"bytesPerRune":1.000}' ]]
+[[ "$(qc1_text_shape "$WORK/tx.none")" == null ]]
+# The SQL these send: the account's non-blank reasons by id, and the same ids afterwards; numbers only, nothing interpolated that is not a number.
+qc1_text_snapshot_sql 42 | grep -qF "WHERE reason <> '' AND (requester_id = 42 OR subject_user_id = 42) ORDER BY id"
+qc1_text_snapshot_sql 42 | grep -qF "encode(sha256(convert_to(reason, 'UTF8')), 'hex')"
+qc1_text_snapshot_ids_sql 1,3,5 | grep -qF 'WHERE id IN (1,3,5) ORDER BY id'
+qc1_text_snapshot_ids_sql -1 | grep -qF 'WHERE id IN (-1)'
+refused '' qc1_text_snapshot_sql '1; DROP TABLE users'
+refused '' qc1_text_snapshot_ids_sql '1,2; DROP TABLE users'
+refused '' qc1_text_snapshot_ids_sql ''
+[[ "$(qc1_text_classes_sql 42 | grep -c 'regexp_replace')" == 4 ]] || [[ "$(qc1_text_classes_sql 42 | grep -o 'regexp_replace' | wc -l)" == 4 ]]
+qc1_text_classes_sql 42 | grep -qF 'ORDER BY id LIMIT 20'
+refused '' qc1_text_classes_sql 'x'
 # Mutations: the last choice code replaced (same length), one digest digit changed, the count one higher; nothing else moves.
 body mixed "$WORK/real-items.json" 6 "$ID80" >"$WORK/b6.json"
 qc1_final_choice_body "$WORK/b6.json" maybe >"$WORK/b6m.json"
@@ -1522,7 +1587,7 @@ grep -q 'RECORD_STATUS=failed' "$HERE/qc1-measure.sh"
 # --- the runner ---------------------------------------------------------------------------------
 RUNNER="$HERE/qc1-measure.sh"
 help="$(bash "$RUNNER" --help)"
-for flag in --dir --image --sizes --counts --layout --reason-len --droplet --seconds-per-reason --sitting-minutes --shared-daemon --no-browser --keep; do grep -q -- "$flag" <<<"$help"; done
+for flag in --dir --image --sizes --counts --layout --charset --reason-len --droplet --seconds-per-reason --sitting-minutes --shared-daemon --no-browser --keep; do grep -q -- "$flag" <<<"$help"; done
 refused 'unknown option' bash "$RUNNER" --nope
 refused 'whole numbers above 0' bash "$RUNNER" --dir "$WORK/never" --sitting-minutes 0
 # It needs no root (a rootless or nested daemon is the place to run it) and reads no host paths.
@@ -1823,6 +1888,63 @@ if grep -n 'FROM audit_logs' "$RUNNER_SRC" | grep -v 'max(id)' | grep -v "count(
 grep -qF 'AUDIT_ROWS0 AUDIT_BYTES0' "$RUNNER_SRC"; grep -qF 'AUDIT_ROWS1 AUDIT_BYTES1' "$RUNNER_SRC"
 # the judge still requires the database outcome: the pilot2 rows (accumulated audits) are invalid, bound rows are not
 mut dbbad "$DEL then .outcome = {dbOk:false, accountDeleted:\"true\", reasonsBlank:50, reasonsWithText:50, decisionAudits:1260} else . end"; expect_invalid dbbad outcome-db
+
+# --- the charset of the reasons (#293): what the judge asks of a multibyte row, and what it still asks of an ASCII one --------------------------------------------------------------
+# A multibyte run carries, on every row with reasons, the shape of the text as loaded (every target reason exactly targetReasonLen runes, more bytes than runes and at most four a
+# rune, and in a sample 2-, 3- and 4-byte runes and combining marks), a deletion that left every kept reason byte for byte as it was, page responses as heavy as multibyte text
+# makes them, and a browser whose digest equals the independent builder's and whose screen shows the database's text.
+MB='(.charset = "multibyte")
+ | (if (.item == 3 or .item == 6 or .item == 10) and ((.reasons // 0) > 0) and (.targetReasonLen != null) then .textShape = {rows: .reasons, runesMin: .targetReasonLen, runesMax: .targetReasonLen, bytesMin: (.targetReasonLen * 2), bytesMax: (.targetReasonLen * 3), bytesPerRune: 2.9, sample: {rows: 20, width2: 4, width3: 4, width4: 4, combining: 2}} else . end)
+ | (if .item == 6 and ((.reasons // 0) > 0) and ((.outcome | type) == "object") then .outcome.textExact = true else . end)
+ | (if .item == 5 and .case == "request-size" and ((.request.fitOutcome | type) == "object") then .request.fitOutcome.textExact = true else . end)
+ | (if .item == 3 and ((.reasons // 0) > 0) then .traversal.responseBytes = (.reasons * 3000) else . end)
+ | (if .item == 10 then .agreement = {digest: {checked: true, equal: true}, domText: {checked: true, rowsChecked: 50, mismatched: 0}} else . end)'
+jq -c "$MB" "$WORK/e2.jsonl" >"$WORK/e2.mb"
+jq -c '.settings.charset = "multibyte"' "$WORK/env.json" >"$WORK/env.mb"
+mb_status() { qc1_evidence_status "$1" 10,100 0,10,100,1000,10000 "$WORK/env.mb" "$HEAD_FAKE" 6291456 ""; }
+mbmut() { jq -c "$MB | $2" "$WORK/e2.jsonl" >"$WORK/e2.$1"; }   # name jq-filter (the good multibyte rows, then the filter on every row)
+mb_invalid() { # name failure
+  local st; st="$(mb_status "$WORK/e2.$1")"
+  [[ "$(jq -r .complete <<<"$st")" == false && "$(jq -r --arg f "$2" '[.invalid[] | select(.failure == $f)] | length > 0' <<<"$st")" == true ]] || { echo "multibyte mutation $1 not invalid ($2): $(jq -c '[.invalid[] | .failure]' <<<"$st")" >&2; exit 1; }
+}
+st="$(mb_status "$WORK/e2.mb")"
+[[ "$(jq -c '[.invalid[] | .failure]' <<<"$st")" == '[]' && "$(jq -r .complete <<<"$st")" == true ]] || { echo "the good multibyte rows are not clean: $(jq -c '.invalid' <<<"$st")" >&2; exit 1; }
+[[ "$(jq -c '.coverage.cell' <<<"$st")" == '{"layout":"spread","charset":"multibyte"}' || "$(jq -c '.coverage.cell.charset' <<<"$st")" == '"multibyte"' ]]
+jq -e '.notMeasured | map(select(startswith("multi-byte reasons"))) | length == 1 and (.[0] | contains("fixed 21-rune pattern"))' <<<"$st" >/dev/null   # a multibyte run says what a multibyte run still does not measure
+jq -e '.notMeasured | map(select(startswith("multi-byte reasons"))) | length == 1 and (.[0] | contains("ASCII"))' <<<"$(status_of "$WORK/e2.jsonl")" >/dev/null   # an ASCII run says it is ASCII
+[[ "$(jq -c '.coverage.cell.charset' <<<"$(status_of "$WORK/e2.jsonl")")" == '"ascii"' ]]   # no charset in the settings means ascii
+SH1='if .item == 3 and .case == "discovery-requester-10"'
+mbmut mb-noshape "$SH1 then del(.textShape) else . end"; mb_invalid mb-noshape text-shape-missing
+mbmut mb-short "$SH1 then .textShape.runesMin = 999 else . end"; mb_invalid mb-short text-shape
+mbmut mb-rows "$SH1 then .textShape.rows = 9 else . end"; mb_invalid mb-rows text-shape
+mbmut mb-asciibytes "$SH1 then .textShape.bytesMax = .textShape.runesMax else . end"; mb_invalid mb-asciibytes text-shape
+mbmut mb-over4 "$SH1 then .textShape.bytesMax = 4001 else . end"; mb_invalid mb-over4 text-shape
+mbmut mb-nowide "$SH1 then .textShape.sample.width4 = 0 else . end"; mb_invalid mb-nowide text-shape
+mbmut mb-nocombining "$SH1 then .textShape.sample.combining = 0 else . end"; mb_invalid mb-nocombining text-shape
+mbmut mb-nosample "$SH1 then del(.textShape.sample) else . end"; mb_invalid mb-nosample text-shape
+mbmut mb-notexact "$DEL then .outcome.textExact = false else . end"; mb_invalid mb-notexact text-not-exact
+mbmut mb-exactgone "$DEL then del(.outcome.textExact) else . end"; mb_invalid mb-exactgone text-not-exact
+mbmut mb-exactnull "$DEL then .outcome.textExact = null else . end"; mb_invalid mb-exactnull text-not-exact
+mbmut mb-fit-notexact 'if .item == 5 and .case == "request-size" then .request.fitOutcome.textExact = false else . end'; mb_invalid mb-fit-notexact text-not-exact
+mbmut mb-fit-exactgone 'if .item == 5 and .case == "request-size" then del(.request.fitOutcome.textExact) else . end'; mb_invalid mb-fit-exactgone text-not-exact
+mbmut mb-resp-small "$SH1 then .traversal.responseBytes = 10 else . end"; mb_invalid mb-resp-small response-not-multibyte
+mbmut mb-resp-gone "$SH1 then del(.traversal.responseBytes) else . end"; mb_invalid mb-resp-gone response-not-multibyte
+mbmut mb-noagree "$BP then del(.agreement) else . end"; mb_invalid mb-noagree browser-agreement-missing
+mbmut mb-dig-differs "$BP then .agreement.digest.equal = false else . end"; mb_invalid mb-dig-differs browser-digest-disagrees
+mbmut mb-dig-unchecked "$BP then .agreement.digest = {checked: false, equal: null} else . end"; mb_invalid mb-dig-unchecked browser-agreement-missing
+mbmut mb-dom-none "$BP then .agreement.domText.rowsChecked = 0 else . end"; mb_invalid mb-dom-none browser-agreement-missing
+mbmut mb-dom-unchecked "$BP then .agreement.domText = {checked: false} else . end"; mb_invalid mb-dom-unchecked browser-agreement-missing
+mbmut mb-dom-bad "$BP then .agreement.domText.mismatched = 1 else . end"; mb_invalid mb-dom-bad browser-text-disagrees
+# A row of one charset in a run of another is a disagreement between the rows and the settings.
+mut cs-disagree 'if .item == 3 and .case == "discovery-requester-10" then .charset = "multibyte" else . end'; expect_invalid cs-disagree settings-disagreement
+# ASCII rows keep the checks that do not depend on the charset: a deletion that was not exact, a browser digest that differs, a shape that is not one byte a rune.
+mut asc-notexact "$DEL then .outcome.textExact = false else . end"; expect_invalid asc-notexact text-not-exact
+mut asc-dig "$BP then .agreement = {digest: {checked: true, equal: false}} else . end"; expect_invalid asc-dig browser-digest-disagrees
+mut asc-shape "$SH1 then .textShape = {rows: 10, runesMin: 1000, runesMax: 1000, bytesMin: 2000, bytesMax: 2000} else . end"; expect_invalid asc-shape text-shape
+mut asc-shape-ok "$SH1 then .textShape = {rows: 10, runesMin: 1000, runesMax: 1000, bytesMin: 1000, bytesMax: 1000} else . end"
+st="$(status_of "$WORK/e2.asc-shape-ok")"; [[ "$(jq -r .complete <<<"$st")" == true && "$(jq -r '.invalid | length' <<<"$st")" == 0 ]]
+mut asc-noagree-ok "$BP then .agreement = {digest: {checked: false, equal: null}} else . end"   # an ASCII run need not have compared; it must not have found a difference
+st="$(status_of "$WORK/e2.asc-noagree-ok")"; [[ "$(jq -r .complete <<<"$st")" == true ]]
 
 # (2) The app's peak over an operation.
 printf '100 5000\n120 5000\n' >"$WORK/app.a"

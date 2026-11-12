@@ -81,6 +81,8 @@ compose-smoke:
 	bash scripts/compose-smoke.sh
 
 # The reason-review scale wrapper's own checks, against stub tools in a scratch
-# repository: no Docker, a few seconds. Also a prerequisite of make test.
+# repository, and the matrix report's against stub evidence: no Docker, a few seconds.
+# Also a prerequisite of make test.
 reason-review-scale-test:
 	bash scripts/reason-review-scale.sh --self-test
+	bash scripts/reason-review-matrix.sh --self-test

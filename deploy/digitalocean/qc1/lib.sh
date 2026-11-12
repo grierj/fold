@@ -510,7 +510,8 @@ qc1_judge_defs() { cat <<'JQ'
                 then inv("audit-caveats-missing"; {why:"the row must say the statement takes no row locks, that log_lock_waits was on with the count it logged, and carry the scan, lock and cluster caveats"}) else empty end )
           end );
     def norm_row:
-      (reduce ("traversal","delete","request","expect","outcome","assessment","browser","plans","generic","window","put","executions","failed","scannerProbe","scannerProbeClean","tables","loggedShapes","probe","legacy","explained","auditRetention","autoExplain","batchSchedule") as $k (.; if (.[$k] | type) == "object" then . else .[$k] = null end)
+      (reduce ("traversal","delete","request","expect","outcome","assessment","browser","plans","generic","window","put","executions","failed","scannerProbe","scannerProbeClean","tables","loggedShapes","probe","legacy","explained","auditRetention","autoExplain","batchSchedule","textShape","agreement") as $k (.; if (.[$k] | type) == "object" then . else .[$k] = null end)
+       | (.agreement |= (if type == "object" then reduce ("digest","domText") as $b (.; if (.[$b] | type) == "object" then . else .[$b] = null end) else . end))
        | (if .traversal != null then .traversal |= (.totalMs |= numz | .slowestUnitMs |= numz | .requestMs |= numz | .clientMs |= numz | .units |= numz | .items |= numz) else . end)
        | (if .delete != null then .delete |= (.ms |= numz | .reasonsKept |= numz | .reasonsRemoved |= numz) else . end)
        | (.loggedShapes |= (if type == "object" then reduce ("initial","continuation") as $b (.; if (.[$b] | type) == "object" then . else .[$b] = null end) else . end))
@@ -741,6 +742,37 @@ qc1_judge_rules() { cat <<'JQ'
             elif ($m.browser.pages.incomplete // 1) != 0 or ([ $m.browser.pages.walks[] | select((.incomplete // 1) != 0 or (.completed // -1) != (.started // -2)) ] | length) > 0 then inv("browser-pages-incomplete"; {incomplete:$m.browser.pages.incomplete, walks:$m.browser.pages.walks})
             else empty end
         else empty end ),
+      # The text of the reasons (#293). A row says which charset its reasons are in; the shape of the account's reasons as loaded must be what that charset promises (every target
+      # reason exactly targetReasonLen runes; one byte a rune for ASCII; for multibyte more bytes than runes, at most four a rune, and in a sample the 2-, 3- and 4-byte widths
+      # and combining marks all present), the deletion must have left every kept reason byte for byte as it was and every removed one blank, the page responses must be as large
+      # as multibyte text makes them, and the browser must have sent the digest and choices the independent builder makes and shown the text the database holds.
+      ( ($m.charset // "ascii") as $cs
+        | lblk($m) as $k
+        | if ($m.item == 3 or $m.item == 6 or $m.item == 10) and $k != null and $k > 0 and ($m.targetReasonLen | numz) != null then
+            ($m.textShape) as $t
+            | if $t == null then (if $cs == "multibyte" then inv("text-shape-missing"; {charset:$cs, reasons:$k}) else empty end)
+              elif $t.rows != $k or $t.runesMin != $m.targetReasonLen or $t.runesMax != $m.targetReasonLen then inv("text-shape"; {what:"every target reason is exactly targetReasonLen runes", shape:$t, reasons:$k, targetReasonLen:$m.targetReasonLen})
+              elif $cs == "ascii" and $t.bytesMax != $t.runesMax then inv("text-shape"; {what:"ASCII reasons take one byte a rune", shape:$t})
+              elif $cs == "multibyte" and ($t.bytesMax <= $t.runesMax or $t.bytesMax > 4 * $t.runesMax) then inv("text-shape"; {what:"multibyte reasons take more than one and at most four bytes a rune", shape:$t})
+              elif $cs == "multibyte" and $m.targetReasonLen >= 21 and (($t.sample | type) != "object" or ([$t.sample.width2, $t.sample.width3, $t.sample.width4, $t.sample.combining] | any(. == null or . <= 0))) then inv("text-shape"; {what:"a sample of the reasons shows 2-, 3- and 4-byte runes and combining marks", shape:$t})
+              else empty end
+          else empty end ),
+      ( ($m.charset // "ascii") as $cs
+        | if $m.item == 6 and ($m.case | type) == "string" and ($m.case | startswith("delete-")) and ($m.reasons // 0) > 0 and ($m.outcome | type) == "object" and ($m.outcome.textExact == false or ($cs == "multibyte" and $m.outcome.textExact != true)) then inv("text-not-exact"; {charset:$cs, outcome:$m.outcome})
+          elif $m.item == 5 and $m.case == "request-size" and ($m.request.fitOutcome | type) == "object" and ($m.request.fitOutcome.textExact == false or ($cs == "multibyte" and $m.request.fitOutcome.textExact != true)) then inv("text-not-exact"; {charset:$cs, outcome:$m.request.fitOutcome})
+          else empty end ),
+      ( if ($m.charset // "ascii") == "multibyte" and $m.item == 3 and ($m.reasons // 0) > 0 and ($m.targetReasonLen | numz) != null
+             and (($m.traversal.responseBytes | type) != "number" or $m.traversal.responseBytes < $m.reasons * $m.targetReasonLen * 2)
+        then inv("response-not-multibyte"; {responseBytes:$m.traversal.responseBytes, reasons:$m.reasons, targetReasonLen:$m.targetReasonLen, why:"the pages of N multibyte reasons of L runes carry more than 2 * N * L bytes; fewer means the text was not multibyte on the wire"}) else empty end ),
+      ( if $m.item == 10 and ($m.agreement != null or ($m.charset // "ascii") == "multibyte") then
+          ($m.agreement) as $a | (($m.charset // "ascii") == "multibyte") as $mb
+          | if $a == null then inv("browser-agreement-missing"; {why:"a multibyte browser case compares the browser's digest and the DOM text with the server's"})
+            elif $a.digest == null or $a.digest.checked != true then (if $mb then inv("browser-agreement-missing"; {digest:$a.digest}) else empty end)
+            elif $a.digest.equal != true then inv("browser-digest-disagrees"; {digest:$a.digest})
+            elif $mb and ($a.domText == null or $a.domText.checked != true or ($a.domText.rowsChecked // 0) < 1) then inv("browser-agreement-missing"; {domText:$a.domText})
+            elif $a.domText != null and $a.domText.checked == true and ($a.domText.mismatched // 0) > 0 then inv("browser-text-disagrees"; {domText:$a.domText})
+            else empty end
+        else empty end ),
       ( if $m.item == 10 then browser_budgets($m) else empty end )
     | . + {item:$m.item, size:$m.size, case:$m.case}
 JQ
@@ -798,12 +830,14 @@ QC1_NOT_MEASURED_JSON="$(cat <<'JSON'
 ["gate hold time: the gate figures are SAMPLED (the span from the first to the last sample that saw it, with the sampler cadence), never an exact hold time",
  "digest-only time on the bundled fallback path: only press-to-request (an upper bound that includes minting the attempt id and serialising the body) is available; crypto.subtle time is measured by wrapping the call, on the webcrypto path only",
  "isolated server-side parse and encode time: only whole request times, and the page's own text() read and JSON.parse, are measured; the server's share of a request is not separated",
- "multi-byte reasons: the dense targets are ASCII 1,000-rune reasons, so pages of 1,000 four-byte runes are not measured",
+ "multi-byte reasons: this run's reasons are ASCII; a run with --charset multibyte measures 1,000-rune reasons of mixed 1- to 4-byte runes (and says what it still does not)",
  "cluster attribution: WAL, commit, audit and memory figures are cluster-wide counters read around an operation (and around each browser phase), not attributed to one statement",
  "a real droplet: the figures come from a nested or local Docker approximation unless the environment record says otherwise",
  "an exact table size: each operation records the rows contact_requests held just before and after it (background plus the scenario rows, n + k); the background target is not the total"]
 JSON
 )"
+# What a --charset multibyte run still does not measure, in place of the ASCII run's multi-byte line.
+QC1_NOT_MEASURED_MULTIBYTE="multi-byte reasons: the text is a fixed 21-rune pattern of 1- to 4-byte runes (61 bytes, about 2.9 bytes a rune), never the 4-byte worst case of 4,000 bytes a reason, and it repeats, so compression, TOAST and index behaviour are those of repetitive text, not prose; the pages, the browser and the digest see real multi-byte text"
 
 # Which measurements a complete QC-1 run holds. Prints {complete, missing, pending, invalid, budgetFailures, coverage, releaseEvidence, notMeasured, confounding}.
 # sizes, counts and dense are the comma lists the run was asked for; env is the environment record, head HEAD's SHA, max the maxRequestBytes.
@@ -834,7 +868,7 @@ qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head 
   if [[ -n "${8:-}" && -s "${8:-}" ]]; then abortjson="$(jq -c . "$8" 2>/dev/null || printf null)"; fi   # an aborted run: how it ended, carried into the status
   jq -s -c --argjson want "$want" --argjson fullWant "$fullwant" --argjson legacyWant "$legacy" --arg pending4 "$QC1_PENDING_4" --arg pending5 "$QC1_PENDING_5" --argjson judgeOk "$judge_ok" \
     --argjson aborted "$abortjson" --argjson argSizes "[$sizes]" --argjson argCounts "[$counts]" --argjson argDense "[${dense}]" --argjson dc "[$QC1_DELETE_COUNTS]" --argjson env "$envjson" \
-    --argjson envProblems "$env_problems" --argjson notMeasured "$QC1_NOT_MEASURED_JSON" --argjson judged "$(jq -sc . <<<"$judged")" '
+    --argjson envProblems "$env_problems" --argjson notMeasured "$QC1_NOT_MEASURED_JSON" --arg notMeasuredMultibyte "$QC1_NOT_MEASURED_MULTIBYTE" --argjson judged "$(jq -sc . <<<"$judged")" '
     def nums($x): if $x == null then null else ($x | tostring | split(",") | map(tonumber? // empty) | unique) end;
     def same($a; $b): ($a | unique) == ($b | unique);
     . as $rows
@@ -851,7 +885,10 @@ qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head 
          if $s.deleteCounts != null and (same(nums($s.deleteCounts); ($dc + $argDense)) | not) then {what:"deletion counts", settings:$s.deleteCounts, argument:($dc + $argDense)} else empty end,
          # a row that says its target reasons are not what the settings say they are
          ($rows[] | select((type == "object") and (.item == 3 or .item == 6 or .item == 10) and (.status == "measured" or .status == "observation") and $s.targetReasonLen != null and .targetReasonLen != $s.targetReasonLen)
-            | {what:"target reason length", settings:$s.targetReasonLen, row:{item, size, case, targetReasonLen}}) ]) as $disagree
+            | {what:"target reason length", settings:$s.targetReasonLen, row:{item, size, case, targetReasonLen}}),
+         # a row of another charset than the settings name (a pre-charset record means ascii)
+         ($rows[] | select((type == "object") and (.status == "measured" or .status == "observation") and .item != null and ((.charset // "ascii") != ($s.charset // "ascii")))
+            | {what:"charset", settings:($s.charset // "ascii"), row:{item, size, case, charset}}) ]) as $disagree
     | ([ $fullWant[] | select(clean(.) | not) ]) as $fullGaps
     | ([ $rows[] | select((type == "object") and (.item == 3 or .item == 6 or .item == 10) and (.status == "measured" or .status == "observation") and .targetReasonLen != 1000) ] | length) as $shortTargets
     | ([ (if ($env == null) then "environment record unreadable" else empty end),
@@ -907,9 +944,9 @@ qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head 
                      jit: (if $j == null then null else {functions: $j.functions, totalMs: $j.totalMs, optimizationMs: $j.optimizationMs, emissionMs: $j.emissionMs,
                                                          shareOfStatement: (if ($a.durationMs | type) == "number" and $a.durationMs > 0 and ($j.totalMs | type) == "number" then ((($j.totalMs / $a.durationMs) * 1000 | round) / 1000) else null end)} end),
                      lockWaitsLogged: $a.lockWaits.count} ]) } ),
-        coverage: {kind: (if ($covReasons | length) == 0 then "full" else "pilot" end), reasons: $covReasons, derivedFrom: "the measurement rows, the arguments and the environment settings, which must agree"} }
+        coverage: {kind: (if ($covReasons | length) == 0 then "full" else "pilot" end), reasons: $covReasons, cell: {layout: ($s.layout // null), charset: ($s.charset // "ascii")}, derivedFrom: "the measurement rows, the arguments and the environment settings, which must agree"} }
     | . + {complete: ((.missing | length) == 0 and (.pending | length) == 0 and (.invalid | length) == 0)}
-    | . + {releaseEvidence: (.complete and .coverage.kind == "full"), notMeasured: $notMeasured}
+    | . + {releaseEvidence: (.complete and .coverage.kind == "full"), notMeasured: ($notMeasured | map(if startswith("multi-byte reasons") and (($env.settings.charset // "ascii") == "multibyte") then $notMeasuredMultibyte else . end))}
     | if $aborted != null then . + {aborted: $aborted, complete: false, releaseEvidence: false} else . end' "$1"
 }
 
@@ -1280,6 +1317,58 @@ qc1_outcome_sql() { # target ids mark  -> one row: deleted|blank|withText|audits
 qc1_outcome_ok() { # deleted blank withText audits kept removed
   [[ "$1" == true && "$2" =~ ^[0-9]+$ && "$3" =~ ^[0-9]+$ && "$4" =~ ^[0-9]+$ ]] || return 1
   [[ "$2" == "$6" && "$3" == "$5" && "$4" == "$(( $5 + $6 ))" ]]
+}
+
+# --- the text of the reasons, byte for byte (#293) -------------------------------------------------------------------------------------
+# A snapshot is one line per reason, in ascending id order, "id|sha256 of the UTF-8 bytes|runes|bytes". It is taken before a deletion (the account's
+# non-blank reasons, by who the parties are) and again after it (the same ids, whatever the reason is now). Counting blank and non-blank rows, which
+# qc1_outcome_ok does, cannot tell a reason that was kept intact from one that was kept mangled; comparing the lines can. The ids the server issues
+# are ascending, and `mixed` removes the first ceil(n/2) of them (set-v1.mjs codesFor), so the first `removed` lines must now be blank and every
+# other line must be unchanged.
+qc1_text_snapshot_sql() { # target  -> the SQL of the before snapshot
+  [[ "${1:-}" =~ ^[0-9]+$ ]] || return 1
+  printf "SELECT id || '|' || encode(sha256(convert_to(reason, 'UTF8')), 'hex') || '|' || char_length(reason) || '|' || octet_length(reason) FROM contact_requests WHERE reason <> '' AND (requester_id = %s OR subject_user_id = %s) ORDER BY id;\n" "$1" "$1"
+}
+qc1_text_snapshot_ids_sql() { # ids  -> the SQL of the after snapshot (the same ids)
+  [[ "${1:-}" =~ ^(-1|[0-9]+(,[0-9]+)*)$ ]] || return 1
+  printf "SELECT id || '|' || encode(sha256(convert_to(reason, 'UTF8')), 'hex') || '|' || char_length(reason) || '|' || octet_length(reason) FROM contact_requests WHERE id IN (%s) ORDER BY id;\n" "$1"
+}
+# "ok|keptIntact|removedBlank|mismatched|missingOrExtra": ok is true only when the after snapshot names exactly the before snapshot's ids, the first
+# `removed` of them are blank (no runes, no bytes) and every other line equals its before line.
+qc1_text_exact() { # before-file after-file removed
+  [[ "${3:-}" =~ ^[0-9]+$ ]] || return 1
+  awk -F'|' -v removed="$3" -v pre="$1" '
+    BEGIN { while ((getline line < pre) > 0) { n++; before[n] = line; split(line, f, "|"); id[n] = f[1] } close(pre) }
+    { m++
+      if (m > n || $1 != id[m]) { odd++; next }
+      if (m <= removed) { if ($3 == "0" && $4 == "0") rem++; else bad++ }
+      else if ($0 == before[m]) kept++
+      else bad++ }
+    END {
+      n += 0; m += 0; odd += (m < n ? n - m : 0)
+      ok = (bad + 0 == 0 && odd + 0 == 0 && removed + 0 <= n && rem + 0 == removed + 0 && kept + 0 == n - removed)
+      printf "%s|%d|%d|%d|%d\n", (ok ? "true" : "false"), kept + 0, rem + 0, bad + 0, odd + 0 }' "$2"
+}
+# What a before snapshot says about the text, as a JSON object: how many reasons, the shortest and longest in runes and bytes. The longest in bytes over
+# the longest in runes is the bytes a rune took (1 for ASCII); the maximum a UTF-8 rune can take is 4.
+qc1_text_shape() { # before-file
+  awk -F'|' '
+    { n++; if (n == 1 || $3 + 0 < rmin) rmin = $3 + 0; if ($3 + 0 > rmax) rmax = $3 + 0; if (n == 1 || $4 + 0 < bmin) bmin = $4 + 0; if ($4 + 0 > bmax) bmax = $4 + 0; rsum += $3; bsum += $4 }
+    END { if (n == 0) { print "null"; exit }
+          printf "{\"rows\":%d,\"runesMin\":%d,\"runesMax\":%d,\"bytesMin\":%d,\"bytesMax\":%d,\"bytesPerRune\":%.3f}\n", n, rmin, rmax, bmin, bmax, bsum / rsum }' "$1"
+}
+# Of the first 20 reasons by id, how many runes are 2-, 3- and 4-byte UTF-8 and how many are combining marks (U+0300 to U+036F), as "w2 w3 w4 combining".
+# A sample (20 reasons of up to 1,000 runes), not all of them: classifying 100,000 reasons with a regular expression each would take longer than the measurement.
+qc1_text_classes_sql() { # target
+  [[ "${1:-}" =~ ^[0-9]+$ ]] || return 1
+  local tpl="SELECT coalesce(sum(length(regexp_replace(reason, '[^\u0080-\u07ff]', '', 'g'))), 0) || ' ' || coalesce(sum(length(regexp_replace(reason, '[^\u0800-\uffff]', '', 'g'))), 0) || ' ' || coalesce(sum(length(regexp_replace(reason, '[^\U00010000-\U0010ffff]', '', 'g'))), 0) || ' ' || coalesce(sum(length(regexp_replace(reason, '[^\u0300-\u036f]', '', 'g'))), 0) FROM (SELECT reason FROM contact_requests WHERE reason <> '' AND (requester_id = __T__ OR subject_user_id = __T__) ORDER BY id LIMIT 20) s;"
+  printf '%s\n' "${tpl//__T__/$1}"
+}
+# The browser's DELETE body against the independent builder (set-v1.mjs `agree`) over the items the server issued before the browser opened the panel: the
+# builder is given the browser's own choices and must reproduce its count, digest and choice vector byte for byte. Prints one JSON object; checked is false,
+# and equal null, when there is nothing comparable (the browser sent no set-v1 review).
+qc1_digest_agreement() { # items-file review-json-file
+  qc1_setv1 agree --items "$1" --review "$2" || jq -nc '{checked:false, equal:null, why:"the comparison itself failed"}'
 }
 
 # --- the app's peak memory over one operation --------------------------------------------------------------------------------

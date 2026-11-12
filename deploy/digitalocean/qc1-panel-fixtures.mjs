@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { measurePanel, navLine, parseNavLine, parseUnchosen, percentile, summarize, summarizePages, DISPLAY_PAGE, FIRST_CLICK_MS } from "./qc1/panel-core.mjs";
 import { pageObserver } from "./qc1/page-observer.mjs";
+import { bodyRuneSummary, countRunes, domTextAgreement } from "./qc1/response-accounting.mjs";
 
 let clock = 0;
 const now = () => clock;
@@ -376,7 +377,7 @@ const parsed = (lines, event) => lines.map((l) => JSON.parse(l)).filter((x) => x
   await obs.onResponse(resp(PAGE));
   assert.deepEqual(lines.map((l) => JSON.parse(l).event), ["start", "done"], "arrival, then completion");
   assert.deepEqual(JSON.parse(lines[0]), { seq: 0, walk: 1, event: "start", status: 200, foreignOrigin: false });
-  assert.deepEqual(JSON.parse(lines[1]), { seq: 0, walk: 1, status: 200, foreignOrigin: false, bytes: 12, requestMs: 20, nodeParseMs: 0, event: "done" });
+  assert.deepEqual(JSON.parse(lines[1]), { seq: 0, walk: 1, status: 200, foreignOrigin: false, bytes: 12, runes: 12, requestMs: 20, nodeParseMs: 0, event: "done" });
   // A slow page is on the file the moment it ARRIVES, and not reported as done until its body has been read.
   let release;
   const gate = new Promise((r) => { release = r; });
@@ -569,6 +570,42 @@ clock = 0;
   assert.equal(r.firstPage.firstPageMs, null);
   assert.equal(r.renderReadyMs, null);
   assert.equal(r.reload.reloadAfterRefusalMs, null);
+}
+
+// --- multibyte text (#293): the accounting that shows a page really carried it, and the comparison of the text on screen with the database's ---------------------------------
+{
+  const cp = (...c) => String.fromCodePoint(...c);
+  // The unit qc1/scenario.sql repeats: six emoji, a woman and a laptop joined by a ZWJ, accented letters, three CJK characters, the euro sign, combining marks.
+  const unit = cp(0x1f600, 0x1f603, 0x1f604, 0x1f601, 0x1f389, 0x1f64f, 0x1f469, 0x200d, 0x1f4bb, 0xe9, 0xf1, 0x3a9, 0x20ac, 0x65e5, 0x672c, 0x8a9e) + "e" + cp(0x301) + "a" + cp(0x323, 0x301);
+  assert.equal(Array.from(unit).length, 21, "the unit is 21 runes");
+  assert.equal(Buffer.byteLength(unit), 61, "and 61 bytes");
+  assert.equal(countRunes(Buffer.from(unit)), 21);
+  assert.equal(countRunes(Buffer.from("abc")), 3);
+  assert.equal(countRunes(Buffer.alloc(0)), 0);
+  assert.deepEqual(bodyRuneSummary([{ bytes: 61, runes: 21 }, { bytes: 3, runes: 3 }, { bytes: null, runes: null }, { bytes: 5 }]), { responses: 2, bytes: 64, runes: 24, bytesPerRune: Math.round((64 / 24) * 1000) / 1000 }, "a response without both figures is not counted");
+  assert.deepEqual(bodyRuneSummary([]), { responses: 0, bytes: 0, runes: 0, bytesPerRune: null });
+  assert.deepEqual(bodyRuneSummary(undefined), { responses: 0, bytes: 0, runes: 0, bytesPerRune: null });
+
+  const lines = [];
+  const obs = pageObserver({ origin: "http://127.0.0.1:8080", append: (l) => lines.push(l), sleep: async () => {}, clock: () => 0 });
+  const body = JSON.stringify({ items: [{ requestId: "1", reason: unit }] });
+  await obs.onResponse(resp(PAGE, { body }));
+  const done = parsed(lines, "done")[0];
+  assert.equal(done.bytes, Buffer.byteLength(body));
+  assert.equal(done.runes, Array.from(body).length);
+  assert.ok(done.bytes > done.runes, "multibyte text takes more bytes than runes");
+  assert.deepEqual(bodyRuneSummary(obs.observations()), { responses: 1, bytes: done.bytes, runes: done.runes, bytesPerRune: Math.round((done.bytes / done.runes) * 1000) / 1000 });
+
+  // The text on screen against the database's: contained rune for rune; the reason changed behind the page is skipped; ids that were not asked about are not judged.
+  const rows = [{ id: "1", text: `Keep text ${unit} 1` }, { id: "3", text: "changed behind the page" }, { id: "5", text: "does not hold it" }, { id: "9", text: "not asked about" }];
+  const expected = { 1: `${unit} 1`, 3: "the old text", 5: unit };
+  assert.deepEqual(domTextAgreement(rows, expected, "3"), { checked: true, rowsOnScreen: 4, rowsChecked: 2, mismatched: 1, skipped: 1, runesChecked: 23 + 21, firstMismatchId: "5", expectedIds: 3 });
+  assert.equal(domTextAgreement(rows.filter((r) => r.id !== "5"), expected, "3").mismatched, 0);
+  assert.equal(domTextAgreement([{ id: "1", text: `Keep text ${unit.replaceAll(cp(0x301), "")} 1` }], { 1: `${unit} 1` }).mismatched, 1, "a missing combining mark is a mismatch");
+  assert.equal(domTextAgreement([], expected).rowsChecked, 0, "nothing on screen from the expected set checks nothing, which the judge refuses for a multibyte run");
+  assert.deepEqual(domTextAgreement(rows, null), { checked: false, why: "no expected reason text was given" });
+  assert.deepEqual(domTextAgreement(null, expected), { checked: false, why: "the rows on screen could not be read" });
+  assert.equal(domTextAgreement([{ id: "1", text: undefined }], { 1: "x" }).mismatched, 1, "a row with no text is a mismatch, never skipped");
 }
 
 console.log("qc1 panel fixtures: ok");
