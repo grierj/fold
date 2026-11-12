@@ -1378,6 +1378,10 @@ measure_size() { # n
   note "size $n: loading background rows"
   # TRUNCATE of the whole referencing set (contact_grants, registrations), each proved empty first: see qc1_reset_contact_requests. The seeded admin, the
   # counterparts and the group are in other tables and must survive it; the scenarios below are built on them.
+  # Quiesce first: a hook or backend held over from the previous size must be
+  # idle before the clear, or its write lands between TRUNCATE and the count
+  # and the next size measures over retained rows.
+  quiesce
   qc1_reset_contact_requests || exit 1
   [[ "$(psql_db -c "SELECT count(*) FROM users WHERE email = 'admin@example.invalid'")" == 1 && "$(psql_db -c "SELECT count(*) FROM groups WHERE id = $GROUP")" == 1 \
     && "$(psql_db -c "SELECT count(*) FROM users WHERE email LIKE 'qc1-counterpart-%@example.invalid'")" == 10 ]] \

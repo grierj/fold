@@ -503,6 +503,7 @@ collection_problems() { # dir rev: prints {"coll":[...],"omit":[...]} for one ev
 # build_record DIR... prints the record (stdout) from the evidence directories; gaps are in the record, never errors.
 build_record() {
 	local rev=$1 d all='[]' dirjson='[]'
+	local runs_file='' all_file='' dirs_file='' rc=0
 	shift
 	# (Repeated canonical --evidence directories were already refused before anything was written; repeated or conflicting run identities are marked below.)
 	for d in "$@"; do
@@ -554,15 +555,27 @@ build_record() {
 			'. + [{dir:$dir, present:$present, why:(if $why == "" then null else $why end), revision:$revision, chromium:$chromium, environmentProblems:$problems, collectionProblems:$collectionProblems, omissions:$omissions, stack:$stack, projectionFailed:$projectionFailed}]' <<<"$dirjson")
 		if [[ $present == true ]]; then
 			# a directory of another revision, with an environment problem, or with a collection/execution failure contributes runs that are listed but not counted
-			all=$(jq -c --argjson runs "$runs" --argjson problems "$problems" --argjson revision "$envrev" --arg rev "$rev" --argjson coll "$coll" '
-				. + [ $runs[] | if ($revision != $rev) then (.problems += ["the evidence is for revision \($revision), not \($rev)"] | .counted = false)
+			# The runs travel through a file, never through a process argument: one
+			# pooled run is ~100 KB at real sizes, and a single argument above
+			# 128 KiB fails with "Argument list too long" (E2BIG).
+			runs_file=$(mktemp "${TMPDIR:-/tmp}/fold-next-changed-runs.XXXXXX")
+			printf '%s' "$runs" >"$runs_file"
+			all=$(jq -c --slurpfile runs "$runs_file" --argjson problems "$problems" --argjson revision "$envrev" --arg rev "$rev" --argjson coll "$coll" '
+				. + [ $runs[0][] | if ($revision != $rev) then (.problems += ["the evidence is for revision \($revision), not \($rev)"] | .counted = false)
 				      elif ($problems | length) > 0 then (.problems += ["the evidence directory has an environment problem"] | .counted = false)
 				      elif ($coll | length) > 0 then (.problems += $coll | .counted = false)
 				      else . end ]' <<<"$all")
+			rm -f -- "$runs_file"
 		fi
 	done
+	# The pooled runs and the directory records travel through files, never
+	# through process arguments (see above: E2BIG above 128 KiB).
+	all_file=$(mktemp "${TMPDIR:-/tmp}/fold-next-changed-all.XXXXXX")
+	dirs_file=$(mktemp "${TMPDIR:-/tmp}/fold-next-changed-dirs.XXXXXX")
+	printf '%s' "$all" >"$all_file"
+	printf '%s' "$dirjson" >"$dirs_file"
 	jq -n --arg generatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg revision "$rev" --argjson target "$TARGET_MS" --argjson need "$REQUIRED_PRESSES" --argjson runsNeeded "$REQUIRED_RUNS" \
-		--argjson reasons "$REVIEW_REASONS" --argjson backgrounds "$BACKGROUNDS" --argjson original "$ORIGINAL" --argjson dirs "$dirjson" --argjson runs "$all" "$JQ_DEFS"'
+		--argjson reasons "$REVIEW_REASONS" --argjson backgrounds "$BACKGROUNDS" --argjson original "$ORIGINAL" --slurpfile dirs "$dirs_file" --slurpfile runs "$all_file" "$JQ_DEFS"'
 		def pooled($counted):
 		  ([ $counted[] | .presses[] ]) as $all
 		  | ([ $counted[] | .presses[1:][] ]) as $rest
@@ -570,7 +583,7 @@ build_record() {
 		      afterFirstPress: ($rest | stats),
 		      firstPressOfEachRun: ([ $counted[] | .firstPressMs | select(type == "number") ] | stats),
 		      overTarget: ($all | map(select(. > $target)) | length) };
-		($runs | mark_duplicates) as $runs
+		($runs[0] | mark_duplicates) as $runs
 		| ( [ $backgrounds[] as $bg
 		    | ([ $runs[] | select(.background == $bg and .reasons == $reasons) ]) as $mine
 		    | ($mine | map(select(.counted))) as $counted
@@ -589,17 +602,20 @@ build_record() {
 		    target: {ms: $target, kind: "the proposed navigation budget of the scaling design (QC1_NAV_BUDGET_MS), an engineering proposal and not an owner decision"},
 		    required: {pressesPerRun: $need, runsPerConfiguration: $runsNeeded, reasons: $reasons, backgrounds: $backgrounds},
 		    originalObservations: $original,
-		    evidenceDirectories: $dirs,
+		    evidenceDirectories: $dirs[0],
 		    configurations: $configs,
-		    complete: (($configs | all(.complete)) and ([$dirs[] | select(.projectionFailed // false)] | length == 0)),
-		    gaps: [ $configs[] | .gaps[] ] + [ $dirs[] | select(.present | not) | "\(.dir): \(.why)" ]
-		          + [ $dirs[] | . as $dd | (.collectionProblems // [])[] | "\($dd.dir): \(.)" ]
-		          + [ $dirs[] | select(.projectionFailed // false) | "\(.dir): the sampling rows could not be projected without error; nothing from this directory can be trusted, so the record cannot be complete" ],
+		    complete: (($configs | all(.complete)) and ([$dirs[0][] | select(.projectionFailed // false)] | length == 0)),
+		    gaps: [ $configs[] | .gaps[] ] + [ $dirs[0][] | select(.present | not) | "\(.dir): \(.why)" ]
+		          + [ $dirs[0][] | . as $dd | (.collectionProblems // [])[] | "\($dd.dir): \(.)" ]
+		          + [ $dirs[0][] | select(.projectionFailed // false) | "\(.dir): the sampling rows could not be projected without error; nothing from this directory can be trusted, so the record cannot be complete" ],
 		    consequence: (if ($configs | any(.p95OverTarget == true))
 		                  then "a pooled p95 is over the target in " + ([ $configs[] | select(.p95OverTarget == true) | "\(.background)-row background" ] | join(", ")) + ": profile the control (repeat the sampling with --qc1-arg --profile-next-changed) before any change"
 		                  else null end),
 		    interpretation: "none. This record states the numbers and their load context. It does not call a delay noise, does not call the target met and does not choose a fix; a pooled p95 at or under the target on a COMPLETE record is evidence for the reviewer, not a verdict."
 		  }'
+	rc=$?
+	rm -f -- "$all_file" "$dirs_file"
+	return $rc
 }
 
 # This script's own checks, against stub evidence written here (never against a measurement): the figures are computed by hand from stub press times, so each assertion
@@ -1327,6 +1343,20 @@ next_changed_self_test() {
 	run --out "$work/missingouter.json" --evidence "$gq/qc1" --revision "$rev" >/dev/null 2>&1 || rc=$?
 	[[ $rc == 10 ]] || fail "an exit-0 outer failure over a missing sampling row must stay a failure (exit 10), exited $rc"
 	expect "the outer tie-out agrees that a sampling row is missing" '.complete == false and (.gaps | map(contains("outer runner") and contains("beyond intentional omissions")) | any)' "$work/missingouter.json"
+
+	# --- 19. real-size rows report through files, never through process arguments ------------------------------------------------------------------
+	# One pooled run is ~100 KB at real sizes; six runs carrying 40 KB of inert load each push the pooled runs well past the 128 KiB
+	# single-argument limit that failed reporting real evidence ("Argument list too long"). The padded record must stay complete with identical figures.
+	gb=$work/padded
+	cell "$gb" "$rev" \
+		"$(stub_row browser-panel-100000-nc1 100000 100000 "$(seq_ms 1 30)" '.browser.load.selftestPad = ([range(40000) | "y"] | join(""))')" "$(stub_row browser-panel-100000-nc2 100000 100000 "$(seq_ms 1 30)" '.browser.load.selftestPad = ([range(40000) | "y"] | join(""))')" "$(stub_row browser-panel-100000-nc3 100000 100000 "$(seq_ms 1 30)" '.browser.load.selftestPad = ([range(40000) | "y"] | join(""))')" \
+		"$(stub_row browser-panel-100000-nc1 1000000 100000 "$(seq_ms 1 30)" '.browser.load.selftestPad = ([range(40000) | "y"] | join(""))')" "$(stub_row browser-panel-100000-nc2 1000000 100000 "$(seq_ms 1 30)" '.browser.load.selftestPad = ([range(40000) | "y"] | join(""))')" "$(stub_row browser-panel-100000-nc3 1000000 100000 "$(seq_ms 1 29) 420" '.browser.load.selftestPad = ([range(40000) | "y"] | join(""))')"
+	rc=0
+	run --out "$work/padded.json" --evidence "$gb" --revision "$rev" >"$work/padded.out" 2>&1 || rc=$?
+	[[ $rc == 0 ]] || { cat "$work/padded.out" >&2; fail "a padded complete record must exit 0, exited $rc"; }
+	expect "padded rows report the same pooled figures" '.configurations[0].pooled.presses | [.p50Ms, .p95Ms, .maxMs] == [15, 29, 30]' "$work/padded.json"
+	expect "padded rows report the same second-configuration max" '.configurations[1].pooled.presses.maxMs == 420' "$work/padded.json"
+	expect "padding is not counted as evidence" '.configurations[0].runsCounted == 3 and ([.evidenceDirectories[].present] == [true])' "$work/padded.json"
 
 	echo "reason-review-next-changed self-test: ok ($n checks)"
 }

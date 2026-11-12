@@ -1860,19 +1860,19 @@ psql_db() { # -c SQL
   case "$sql" in
     "WITH RECURSIVE r(oid) AS"*) [[ -z "${QC1_MODEL_FAIL_CATALOG:-}" ]] || return 1; printf '%s\n' "$QC1_MODEL_REFERRERS" ;;
     "SELECT count(*) FROM "*) local t="${sql#SELECT count(*) FROM }"; local v="QC1_MODEL_ROWS_${t//[^a-z_0-9]/_}"; printf '%s\n' "${!v:-0}" ;;
-    "TRUNCATE "*) [[ -z "${QC1_MODEL_FAIL_TRUNCATE:-}" ]] || return 1 ;;
+    "TRUNCATE "*) [[ -z "${QC1_MODEL_FAIL_TRUNCATE:-}" ]] || return 1; printf 'TRUNCATE TABLE\n%s\n' "${QC1_MODEL_LEFT:-0}" ;;
     *) echo "unexpected sql: $sql" >&2; return 1 ;;
   esac
 }
-model() { : >"$QC1_MODEL_LOG"; unset QC1_MODEL_FAIL_CATALOG QC1_MODEL_FAIL_TRUNCATE QC1_MODEL_ROWS_contact_grants QC1_MODEL_ROWS_registrations QC1_MODEL_ROWS_grant_notes; }
+model() { : >"$QC1_MODEL_LOG"; unset QC1_MODEL_FAIL_CATALOG QC1_MODEL_FAIL_TRUNCATE QC1_MODEL_LEFT QC1_MODEL_ROWS_contact_grants QC1_MODEL_ROWS_registrations QC1_MODEL_ROWS_grant_notes; }
 truncates() { grep -c '^TRUNCATE ' "$QC1_MODEL_LOG" || true; }
 closure_text="$(fk_closure contact_requests)"
 # the SQL asks the catalog for the transitive foreign-key set of the real table
 grep -qF "WITH RECURSIVE r(oid) AS (SELECT 'public.contact_requests'::regclass::oid UNION SELECT c.conrelid FROM pg_constraint c JOIN r ON c.confrelid = r.oid WHERE c.contype = 'f')" "$HERE/qc1/lib.sh"
-# (1) empty referrers: one TRUNCATE naming the whole set, no CASCADE, no DELETE, nothing before the checks
+# (1) empty referrers: one TRUNCATE naming the whole set (proving the table empty in the same session), no CASCADE, no DELETE, nothing before the checks
 model; QC1_MODEL_REFERRERS="$closure_text"
 qc1_reset_contact_requests
-[[ "$(truncates)" == 1 ]]; [[ "$(grep '^TRUNCATE ' "$QC1_MODEL_LOG")" == 'TRUNCATE contact_grants, contact_requests, registrations' ]]
+[[ "$(truncates)" == 1 ]]; [[ "$(grep '^TRUNCATE ' "$QC1_MODEL_LOG")" == 'TRUNCATE contact_grants, contact_requests, registrations; SELECT count(*) FROM contact_requests' ]]
 if grep -qiE 'CASCADE|DELETE|RESTART IDENTITY' "$QC1_MODEL_LOG"; then echo 'the reset deletes, cascades or restarts identities' >&2; exit 1; fi
 [[ "$(grep -n '^SELECT count' "$QC1_MODEL_LOG" | tail -n 1 | cut -d: -f1)" -lt "$(grep -n '^TRUNCATE ' "$QC1_MODEL_LOG" | cut -d: -f1)" ]]    # every count before the statement
 [[ "$(grep -c '^SELECT count(\*) FROM ' "$QC1_MODEL_LOG")" == 2 ]]                                                                              # both referrers, not contact_requests itself
@@ -1885,7 +1885,7 @@ done
 # (3) a table reached only through another referrer is found and checked too
 model; QC1_MODEL_REFERRERS="$(printf '%s\n' "$closure_text" grant_notes | LC_ALL=C sort)"
 qc1_reset_contact_requests
-[[ "$(grep '^TRUNCATE ' "$QC1_MODEL_LOG")" == 'TRUNCATE contact_grants, contact_requests, grant_notes, registrations' ]]
+[[ "$(grep '^TRUNCATE ' "$QC1_MODEL_LOG")" == 'TRUNCATE contact_grants, contact_requests, grant_notes, registrations; SELECT count(*) FROM contact_requests' ]]
 model; QC1_MODEL_REFERRERS="$(printf '%s\n' "$closure_text" grant_notes | LC_ALL=C sort)"; export QC1_MODEL_ROWS_grant_notes=1
 refused 'grant_notes holds 1 rows' qc1_reset_contact_requests; [[ "$(truncates)" == 0 ]]
 # (4) the catalog cannot be read, lists a table in another schema or a quoted name, omits the table itself, or a count is unreadable: refused, nothing truncated
@@ -1898,7 +1898,15 @@ model; QC1_MODEL_REFERRERS=""; refused 'not in the foreign-key closure' qc1_rese
 model; QC1_MODEL_REFERRERS="$closure_text"; export QC1_MODEL_ROWS_contact_grants=many; refused 'unreadable row count for contact_grants' qc1_reset_contact_requests; [[ "$(truncates)" == 0 ]]
 # (5) TRUNCATE itself failing is reported
 model; QC1_MODEL_REFERRERS="$closure_text"; export QC1_MODEL_FAIL_TRUNCATE=1
-refused 'TRUNCATE contact_grants, contact_requests, registrations failed' qc1_reset_contact_requests
+refused 'TRUNCATE contact_grants, contact_requests, registrations' qc1_reset_contact_requests
+# (6) rows left after TRUNCATE (the 1M-size failure: a previous size's rows, a hook still in flight) are refused with the count, not measured over:
+# one TRUNCATE, then the read-only diagnosis naming referrer counts, open backends and recent jobs
+model; QC1_MODEL_REFERRERS="$closure_text"; export QC1_MODEL_LEFT=5
+refused 'contact_requests holds 5 rows after TRUNCATE' qc1_reset_contact_requests
+[[ "$(truncates)" == 1 ]]
+grep -qF 'after TRUNCATE (contact_grants, contact_requests, registrations): contact_grants holds' "$WORK/out"
+grep -qF 'open backends:' "$WORK/out"
+grep -qF 'jobs enqueued in the last 10 minutes:' "$WORK/out"
 unset -f psql_db model truncates
 # The runner uses it, once per size, before the filler loads, and checks what the clear must not touch; the bare table-only TRUNCATE is gone.
 RUNNER_BODY="$(sed -n '/^measure_size() {/,/^}$/p' "$HERE/qc1-measure.sh")"
@@ -1906,6 +1914,8 @@ if grep -n "TRUNCATE contact_requests" "$HERE/qc1-measure.sh"; then echo 'the ru
 r_l="$(grep -n 'qc1_reset_contact_requests || exit 1' <<<"$RUNNER_BODY" | head -n 1 | cut -d: -f1)"; f_l="$(grep -n 'load_filler "\$n" all' <<<"$RUNNER_BODY" | head -n 1 | cut -d: -f1)"
 s_l="$(grep -n "admin@example.invalid'\")\" == 1" <<<"$RUNNER_BODY" | head -n 1 | cut -d: -f1)"
 [[ -n "$r_l$f_l$s_l" && "$r_l" -lt "$s_l" && "$s_l" -lt "$f_l" ]]
+q_l="$(grep -n '^  quiesce$' <<<"$RUNNER_BODY" | head -n 1 | cut -d: -f1)"
+[[ -n "$q_l" && "$q_l" -lt "$r_l" ]] || { echo 'the runner no longer quiesces before clearing the background rows' >&2; exit 1; }
 for pat in "FROM groups WHERE id = \$GROUP" "qc1-counterpart-%@example.invalid'\")\" == 10" "SELECT count(*) FROM contact_requests')\" == 0"; do grep -qF -- "$pat" <<<"$RUNNER_BODY" || { echo "the runner no longer checks $pat" >&2; exit 1; }; done
 
 # --- pilot2: the outcome of ONE deletion, the app's peak, and the plan capture -------------------------------------------------------------------------------------------------------

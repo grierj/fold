@@ -1292,7 +1292,7 @@ qc1_contact_request_referrers() {
   psql_db -c "WITH RECURSIVE r(oid) AS (SELECT 'public.contact_requests'::regclass::oid UNION SELECT c.conrelid FROM pg_constraint c JOIN r ON c.confrelid = r.oid WHERE c.contype = 'f') SELECT oid::regclass::text FROM r ORDER BY 1"
 }
 qc1_reset_contact_requests() {
-  local names t n list=""
+  local names t n list="" left left_full
   names="$(qc1_contact_request_referrers)" || { echo 'qc1: cannot list the tables that reference contact_requests' >&2; return 1; }
   grep -qx 'contact_requests' <<<"$names" || { echo 'qc1: contact_requests is not in the foreign-key closure the catalog returned' >&2; return 1; }
   while IFS= read -r t; do
@@ -1305,7 +1305,38 @@ qc1_reset_contact_requests() {
     fi
     list+="${list:+, }$t"
   done <<<"$names"
-  psql_db -c "TRUNCATE $list" >/dev/null || { echo "qc1: TRUNCATE $list failed" >&2; return 1; }
+  # One psql session truncates and then proves the table empty, so a writer landing
+  # between two docker exec calls cannot hide behind the caller's bare "not empty":
+  # a non-zero count fails here, naming the count. TRUNCATE prints its own
+  # "TRUNCATE TABLE" line, so only the last line is the count (taken without a
+  # pipe, so a TRUNCATE failure still fails here under any pipefail setting).
+  left_full="$(psql_db -c "TRUNCATE $list; SELECT count(*) FROM contact_requests")" || { echo "qc1: TRUNCATE $list failed" >&2; return 1; }
+  left="$(tail -n 1 <<<"$left_full")"
+  [[ "$left" =~ ^[0-9]+$ ]] || { echo "qc1: unreadable row count for contact_requests after TRUNCATE: '$left'" >&2; return 1; }
+  if (( left != 0 )); then
+    qc1_reset_repopulated "$left" "$list" || true
+    echo "qc1: contact_requests holds $left rows after TRUNCATE $list; the loader stops instead of measuring over another size's rows" >&2
+    return 1
+  fi
+}
+
+# Read-only diagnosis for a TRUNCATE that did not leave the table empty: the
+# referrer counts plus the open backends that could have written between the
+# statement and the count. Never writes. Production writers of contact_requests
+# are only the request-creation API paths (api_contact.go); the scheduler's
+# sweeps only expire or blank rows and only enqueue rows in jobs, so a
+# repopulation here is retained harness state (an earlier size's rows, a hook
+# still in flight) or a concurrent backend, and this names it.
+qc1_reset_repopulated() { # left list
+  local left="$1" list="$2" t n acts jobs
+  for t in contact_grants registrations; do
+    n="$(psql_db -c "SELECT count(*) FROM $t" 2>/dev/null || echo '?')"
+    echo "qc1: after TRUNCATE ($list): $t holds $n rows" >&2
+  done
+  acts="$(psql_db -c "SELECT coalesce(string_agg(left(pid::text || ' ' || coalesce(application_name,'?') || ' ' || state || ' ' || left(query, 120), 160), ' | '), '(none)')" 2>/dev/null || echo '?')"
+  echo "qc1: after TRUNCATE ($list): open backends: $acts" >&2
+  jobs="$(psql_db -c "SELECT count(*) FROM jobs WHERE created_at > now() - interval '10 minutes'" 2>/dev/null || echo '?')"
+  echo "qc1: after TRUNCATE ($list): jobs enqueued in the last 10 minutes: $jobs" >&2
 }
 
 # --- what a deletion left behind, bound to THIS deletion -----------------------------------------------------------------
