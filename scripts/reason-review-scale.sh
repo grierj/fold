@@ -1401,8 +1401,11 @@ HOOK
 		# Every workload that waits (term.sh, release.sh, gate.sh) ends when the directory it works in is gone (the lease: quick, but only if the removal worked) or when the lifeline
 		# (fd 8, see n_wrap_start) reads end of file, which depends on neither the rename nor the removal. Each wait is a read with a timeout on the lifeline, so a wait is also the check;
 		# a missing fd 8 reads as the end, so a workload started without one ends at once.
+		# term.sh keeps its directory in w before the trap exists: bash runs a trap that interrupts `read` inside the function that called it (alive), where $1 is empty, so a trap that
+		# wrote "$1/term" would write to /term, fail, and still exit 143: the status is right and the proof that the workload was asked is lost.
 		cat >"$dir/term.sh" <<'WLTERM'
-trap 'echo got >"$1/term"; exit 143' TERM
+w=$1
+trap 'echo got >"$w/term"; exit 143' TERM
 alive() { read -t 0.1 -u 8 _; (($? > 128)); }
 echo $$ >"$1/wl.pid"
 while [ -d "$1" ] && alive; do :; done
