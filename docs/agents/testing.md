@@ -328,7 +328,13 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   ever selected: a probe shows that one borrowing the label with no or another run's marker
   survives; the exit trap reads the marker from the exported variable, so a temporary directory
   with spaces is handled, and ends whatever still carries the run's marker, also when a case
-  fails) while a bystander survives, a budget the
+  fails). The probes are owned through a FIFO whose write side only the test shell holds, and end
+  by themselves when it closes (also when the shell is interrupted), so no process is ever
+  signalled by a number recorded earlier: a recorder replacing `kill` shows that the lifecycle
+  sends exactly one signal, to the process the scan just found and before it is waited on, that
+  the exit reaper signals nothing when nothing carries its marker and otherwise only that
+  process, and that an unmarked stand-in for a reused number and the foreign probes survive. A
+  bystander survives, a budget the
   runner cannot use or one that does not fit the wrapper's grace is refused, a
   removal that stalls once is retried, one that never works names the container and fails the
   run, and a process or container that is not the run's is untouched; and that a failed copy or an

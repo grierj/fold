@@ -179,7 +179,6 @@ self_test_main() {
 	# none. A caller that ends processes always names the run's marker and the case's label together, so another run's process, or one that only borrows a label,
 	# is never selected. The exit trap reads the marker from the exported variable, not from a local of this function: the trap runs after the function has returned.
 	export REASON_SCALE_SELFTEST="$tmp"
-	PROBE_PIDS=()
 	find_marked() {
 		local d p e ok
 		FOUND=()
@@ -202,7 +201,6 @@ self_test_main() {
 		[[ -n $dir && $dir != / ]] || return 0
 		find_marked "REASON_SCALE_SELFTEST=$dir"
 		((${#FOUND[@]} == 0)) || kill -KILL "${FOUND[@]}" 2>/dev/null || true
-		((${#PROBE_PIDS[@]} == 0)) || kill -KILL "${PROBE_PIDS[@]}" 2>/dev/null || true
 		rm -rf -- "$dir" || true
 	}
 	trap reap_selftest EXIT
@@ -862,40 +860,105 @@ DESC
 	n_case_marked() {
 		grep -qxF -- "case=$1 run=$tmp" "$fake/hung.marks" 2>/dev/null || t_fail "$1: no stalled client carried the case label and the run marker (the straggler scan would find nothing either way)"
 	}
+	# The probe processes below are owned through a pipe, not through their numbers. Each one blocks reading a FIFO whose write side only this shell holds (the
+	# descriptor in LIFE_FD) and ends by itself when that side closes: at the end of the lifecycle, or when this shell exits for any reason, a signal included. Nothing
+	# signals a probe by a recorded number, so a probe that has finished, whose number the kernel may hand to an unrelated process, cannot be hit; the one signal
+	# in the lifecycle goes to a process a fresh scan has just shown to carry both markers. A probe also gives up after two minutes on its own.
+	# n_life_open, n_life_spawn READYFILE ENV..., n_life_close PID...: a probe is `env ENV... bash` with the FIFO as its input, and READYFILE appears once it is the
+	# final program, so its environment is the one the scan will read. The pid of the last one spawned is left in SPAWNED.
+	LIFE_FD=
+	n_life_open() {
+		mkfifo "$tmp/life"
+		exec {LIFE_FD}<>"$tmp/life"
+	}
+	n_life_spawn() {
+		local ready=$1 i
+		shift
+		(
+			exec {LIFE_FD}>&-
+			# shellcheck disable=SC2016 # the probe expands its own $1
+			exec env "$@" bash -c ': >"$1"; read -r -t 120 _' _ "$ready" <"$tmp/life" >/dev/null 2>&1
+		) &
+		SPAWNED=$!
+		for ((i = 0; i < 100; i++)); do
+			[[ -e $ready ]] && return 0
+			sleep 0.05
+		done
+		t_fail "markers: a probe never started ($ready)"
+	}
+	# Closing the channel ends the probes: each is gone within seconds, or a failure is recorded (it still ends on its own timeout).
+	n_life_close() {
+		local p i
+		exec {LIFE_FD}>&-
+		LIFE_FD=
+		for p in "$@"; do
+			for ((i = 0; i < 100; i++)); do
+				t_alive "$p" || break
+				sleep 0.05
+			done
+			if t_alive "$p"; then t_fail "markers: the probe $p did not end when its channel closed"; else wait "$p" 2>/dev/null || true; fi
+		done
+	}
 	# n_probe_markers: find_marked selects a process only when it carries the run's marker and the case's label together. Four idle processes stand for the cases:
 	# the case's own (both entries), a same-user process that borrows the label with no run marker, one with another run's marker, and one of this run under
 	# another label. Only the first is found; n_no_stragglers ends what it finds and the others survive it. The positive result comes first, so an empty scan
 	# cannot pass for a working one.
+	# The lifecycle is also held to what makes cleanup safe. While it runs, every signal sent is recorded (a kill -0 test of liveness is not one): exactly one
+	# goes out before the reaper is tried, to the process the scan found, and it is the last to anything that has finished. The exit reaper, run for a scratch
+	# marker, then signals nothing when no process carries it and, when one does, only that one: a process of this run with no marker, standing for an unrelated one
+	# that has been given a finished probe's number, and the foreign probes all survive.
 	n_probe_markers() {
-		local label=probe-case ours i p
-		(exec env "STUB_CASE=$label" sleep 60) </dev/null >/dev/null 2>&1 &
-		ours=$!
-		PROBE_PIDS=("$ours")
-		(exec env -u REASON_SCALE_SELFTEST "STUB_CASE=$label" sleep 60) </dev/null >/dev/null 2>&1 &
-		PROBE_PIDS+=("$!")
-		(exec env "REASON_SCALE_SELFTEST=$tmp.other" "STUB_CASE=$label" sleep 60) </dev/null >/dev/null 2>&1 &
-		PROBE_PIDS+=("$!")
-		(exec env "STUB_CASE=other-$label" sleep 60) </dev/null >/dev/null 2>&1 &
-		PROBE_PIDS+=("$!")
-		# A process has its final environment once it has become the sleep.
-		for p in "${PROBE_PIDS[@]}"; do
-			for ((i = 0; i < 100; i++)); do
-				[[ $(cat "/proc/$p/comm" 2>/dev/null || true) == sleep ]] && break
-				sleep 0.05
-			done
-		done
+		local label=probe-case ours others=() p i scratch=$tmp/reap-scratch marked
+		local log=$tmp/probe-signals
+		: >"$log"
+		# shellcheck disable=SC2329 # reached by name, in place of the kill builtin, until it is removed again below.
+		kill() {
+			[[ ${1:-} == -0 ]] || echo "$*" >>"${log:-/dev/null}" 2>/dev/null || true
+			builtin kill "$@"
+		}
+		n_life_open
+		n_life_spawn "$tmp/probe-ready.1" "STUB_CASE=$label"
+		ours=$SPAWNED
+		n_life_spawn "$tmp/probe-ready.2" -u REASON_SCALE_SELFTEST "STUB_CASE=$label"
+		others+=("$SPAWNED")
+		n_life_spawn "$tmp/probe-ready.3" "REASON_SCALE_SELFTEST=$tmp.other" "STUB_CASE=$label"
+		others+=("$SPAWNED")
+		n_life_spawn "$tmp/probe-ready.4" "STUB_CASE=other-$label"
+		others+=("$SPAWNED")
 		find_marked "REASON_SCALE_SELFTEST=$tmp" "STUB_CASE=$label"
 		if [[ ${FOUND[*]:-} != "$ours" ]]; then t_fail "markers: the scan found '${FOUND[*]:-}', want only the case's own process $ours"; fi
 		# What the scan found is ended, as n_no_stragglers does; it then has nothing left to find (it would wait and fail if it selected a process it must not).
 		kill -KILL "${FOUND[@]}" 2>/dev/null || true
 		wait "$ours" 2>/dev/null || true
 		n_no_stragglers "$label"
-		for p in "${PROBE_PIDS[@]:1}"; do
+		for p in "${others[@]}"; do
 			t_alive "$p" || t_fail "markers: the process $p, which is not this run's under this label, was ended"
 		done
-		kill -KILL "${PROBE_PIDS[@]}" 2>/dev/null || true
-		wait "${PROBE_PIDS[@]}" 2>/dev/null || true
-		PROBE_PIDS=()
+		[[ $(<"$log") == "-KILL $ours" ]] || t_fail "markers: the signals sent so far were [$(tr '\n' ';' <"$log")], want only -KILL $ours: something was signalled after the probe finished"
+		# The reaper for a run of its own, with nothing carrying that run's marker: no signal at all, and the directory is removed.
+		mkdir -p "$scratch"
+		REASON_SCALE_SELFTEST=$scratch reap_selftest
+		[[ ! -e $scratch ]] || t_fail "markers: the reaper left the run's directory"
+		[[ $(<"$log") == "-KILL $ours" ]] || t_fail "markers: the reaper signalled [$(tr '\n' ';' <"$log")] with nothing carrying its marker"
+		# Now one process carries that run's marker, beside the unmarked stand-in and the foreign probes.
+		mkdir -p "$scratch"
+		n_life_spawn "$tmp/probe-ready.5" "REASON_SCALE_SELFTEST=$scratch"
+		marked=$SPAWNED
+		n_life_spawn "$tmp/probe-ready.6" -u REASON_SCALE_SELFTEST
+		others+=("$SPAWNED")
+		REASON_SCALE_SELFTEST=$scratch reap_selftest
+		for ((i = 0; i < 100; i++)); do
+			t_alive "$marked" || break
+			sleep 0.05
+		done
+		if t_alive "$marked"; then t_fail "markers: the reaper left the process that carries its run's marker"; fi
+		wait "$marked" 2>/dev/null || true
+		for p in "${others[@]}"; do
+			t_alive "$p" || t_fail "markers: the reaper ended the process $p, which does not carry its run's marker"
+		done
+		[[ $(<"$log") == "-KILL $ours"$'\n'"-KILL $marked" ]] || t_fail "markers: the signals sent were [$(tr '\n' ';' <"$log")], want only -KILL $ours then -KILL $marked"
+		unset -f kill
+		n_life_close "${others[@]}"
 	}
 	# n_left_gone NAME: the children that docker clients answered and exited with, leaving them behind (and ignoring TERM), are gone; at least one was left.
 	n_left_gone() {
