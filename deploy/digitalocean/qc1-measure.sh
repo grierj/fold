@@ -26,6 +26,7 @@
 #        [--sizes 10000,100000,1000000] [--counts 0,10,100,1000,10000]
 #        [--layout spread|tail|head] [--charset ascii|multibyte] [--reason-len N] [--target-reason-len N] [--droplet 2gb|1gb]
 #        [--dense-counts 100000|none] [--seconds-per-reason N] [--sitting-minutes N] [--shared-daemon] [--no-browser] [--browser-fallback-digest] [--keep]
+#        [--next-changed-only] [--next-changed-presses N] [--next-changed-runs N] [--profile-next-changed]
 #
 # --charset: the text of the reasons, background and target alike (default ascii). multibyte is a 21-rune unit of 1- to 4-byte UTF-8 runes (2-byte accented letters and Omega,
 # 3-byte euro sign, CJK and a zero-width joiner, 4-byte emoji, combining marks) repeated and cut to the requested RUNE length with the row's ASCII ordinal at the end, 61 bytes per
@@ -38,6 +39,15 @@
 #
 # --dense-counts: reasons in ONE account at the tables that can hold them, additive to --counts (the scaling design's R5: 100,000 at the 100k and 1M
 # tables, judged against the same budgets). "none" leaves them out (a pilot); a run without them is complete only for the sizes it names.
+# --next-changed-presses N: how often the rendered-panel case presses "Next changed reason" (default 1, the original single observation, issue #298). Above 1 the panel
+# case presses it N times, from three origins in turn (the first page, the page after the changed reason's, the last page), and records each press, its origin and the
+# long-task time around it, with the host's load average, CPU steal and iowait before and after (qc1/panel-core.mjs, `nextChangedSampling` and `load` in the row).
+# --next-changed-only: measure nothing else. Per size it loads the background rows and runs ONLY the rendered panel for the dense counts, so a 100,000-reason review at a
+# 100,000 and a 1,000,000 row table is sampled without the discovery, deletion, request-size and plan matrices. The evidence is then incomplete by construction (every
+# other case is missing, and says so); it is not QC-1 evidence, only the rows scripts/reason-review-next-changed.sh reads. --next-changed-runs R repeats the panel case R
+# times per size (cases browser-panel-<count>-nc1 ... -ncR), each a fresh account, a fresh load of the page and a fresh walk; it needs --next-changed-only.
+# --profile-next-changed: a V8 CPU profile across the presses of each run, saved beside the result as browser-<size>-<count>-ncR.json.nextchanged.cpuprofile. It adds
+# sampling overhead, so a profiled run's timings are a diagnostic, never the figures to judge a budget with; it is for a run that has already shown a slow press.
 # --reason-len: the length of the BACKGROUND rows (default 200). --target-reason-len: the length of the dense TARGET histories (the account being discovered,
 # deleted or opened in the browser; default 1000, the contact-reason maximum), so page sizes are measured at the largest reason the product accepts.
 # A run is FULL only when its environment record names the whole matrix (sizes 10k/100k/1M, counts 0..10k, deletion counts 0..10k, the dense 100,000, the
@@ -60,6 +70,7 @@ source "$HERE/isolation.sh"
 
 WORK="" IMAGE="" SIZES="$QC1_SIZES_DEFAULT" COUNTS="$QC1_COUNTS_DEFAULT" LAYOUT=spread CHARSET=ascii REASON_LEN=200 TARGET_REASON_LEN=1000 DROPLET=2gb KEEP=0
 SECONDS_PER_REASON=10 SITTING_MINUTES=15 SHARED=0 BROWSER=1 DENSE="$QC1_DENSE_COUNTS_DEFAULT" BROWSER_NOSUBTLE=0
+NEXT_CHANGED_PRESSES=1 NEXT_CHANGED_RUNS=1 NEXT_CHANGED_ONLY=0 PROFILE_NEXT_CHANGED=0
 while (( $# )); do
   case "$1" in
     --dir) WORK="${2:?new scratch path required}"; shift 2 ;;
@@ -77,6 +88,10 @@ while (( $# )); do
     --no-browser) BROWSER=0; shift ;;
     --dense-counts) DENSE="${2:?comma list or none}"; shift 2 ;;
     --browser-fallback-digest) BROWSER_NOSUBTLE=1; shift ;;
+    --next-changed-presses) NEXT_CHANGED_PRESSES="${2:?whole number of presses required}"; shift 2 ;;
+    --next-changed-runs) NEXT_CHANGED_RUNS="${2:?whole number of runs required}"; shift 2 ;;
+    --next-changed-only) NEXT_CHANGED_ONLY=1; shift ;;
+    --profile-next-changed) PROFILE_NEXT_CHANGED=1; shift ;;
     --keep) KEEP=1; shift ;;
     --help) sed -n '2,/^set -Eeuo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option $1" >&2; exit 1 ;;
@@ -91,6 +106,10 @@ WORK="$(realpath -m "$WORK")"
 if [[ ! "$REASON_LEN" =~ ^[0-9]+$ ]] || (( REASON_LEN < 1 || REASON_LEN > 1000 )); then echo 'qc1: --reason-len is 1..1000' >&2; exit 1; fi
 if [[ ! "$TARGET_REASON_LEN" =~ ^[0-9]+$ ]] || (( TARGET_REASON_LEN < 1 || TARGET_REASON_LEN > 1000 )); then echo 'qc1: --target-reason-len is 1..1000' >&2; exit 1; fi
 [[ "$SECONDS_PER_REASON" =~ ^[1-9][0-9]*$ && "$SITTING_MINUTES" =~ ^[1-9][0-9]*$ ]] || { echo 'qc1: --seconds-per-reason and --sitting-minutes are whole numbers above 0' >&2; exit 1; }
+[[ "$NEXT_CHANGED_PRESSES" =~ ^[1-9][0-9]*$ && "$NEXT_CHANGED_RUNS" =~ ^[1-9][0-9]*$ ]] || { echo 'qc1: --next-changed-presses and --next-changed-runs are whole numbers above 0' >&2; exit 1; }
+if (( NEXT_CHANGED_RUNS > 1 && ! NEXT_CHANGED_ONLY )); then echo 'qc1: --next-changed-runs above 1 needs --next-changed-only (the full matrix runs the panel case once)' >&2; exit 1; fi
+if (( PROFILE_NEXT_CHANGED && NEXT_CHANGED_PRESSES < 2 )); then echo 'qc1: --profile-next-changed profiles the repeated presses: pass --next-changed-presses above 1' >&2; exit 1; fi
+if (( NEXT_CHANGED_ONLY )) && { (( ! BROWSER )) || [[ "$DENSE" == none ]]; }; then echo 'qc1: --next-changed-only measures the rendered panel at the dense counts: it needs the browser (no --no-browser) and --dense-counts' >&2; exit 1; fi
 case "$DROPLET" in
   2gb) DB_MEMORY=1200m; APP_MEMORY=600m ;;
   1gb) DB_MEMORY=600m; APP_MEMORY=300m ;;
@@ -232,13 +251,13 @@ jq -n --argjson database "$database" --argjson incomplete "$incomplete" --arg ir
   --arg dbCid "$DB_CID" --arg dbImage "$dbImage" --argjson dbMemLimit "$dbMem" \
   --arg appCid "$FIRST_APP_CID" --argjson appContainers "$env_APP_CONTAINERS" --argjson daemon "$env_DAEMON_JSON" --argjson sources "$env_SOURCES" \
   --argjson calibration "$calib" --arg sizes "$SIZES" --arg counts "$COUNTS" \
-  --argjson targetLen "$env_TARGET_REASON_LEN" --arg deleteCounts "$(IFS=,; printf "%s" "${ALL_DELETE_LIST[*]}")" --arg setv1Selftest "$SETV1_SELFTEST" --arg dense "$DENSE" --argjson clicks "$QC1_CLICKS_PER_CASE" --argjson spr "$env_SECONDS_PER_REASON" --argjson sit "$env_SITTING_MINUTES" --argjson browser "$([[ $BROWSER == 1 ]] && echo true || echo false)" --argjson browserRuntime "$env_BROWSER_RUNTIME" \
+  --argjson targetLen "$env_TARGET_REASON_LEN" --arg deleteCounts "$(IFS=,; printf "%s" "${ALL_DELETE_LIST[*]}")" --arg setv1Selftest "$SETV1_SELFTEST" --arg dense "$DENSE" --argjson clicks "$QC1_CLICKS_PER_CASE" --argjson ncPresses "$NEXT_CHANGED_PRESSES" --argjson ncRuns "$NEXT_CHANGED_RUNS" --argjson ncOnly "$([[ $NEXT_CHANGED_ONLY == 1 ]] && echo true || echo false)" --argjson ncProfile "$([[ $PROFILE_NEXT_CHANGED == 1 ]] && echo true || echo false)" --argjson spr "$env_SECONDS_PER_REASON" --argjson sit "$env_SITTING_MINUTES" --argjson browser "$([[ $BROWSER == 1 ]] && echo true || echo false)" --argjson browserRuntime "$env_BROWSER_RUNTIME" \
   '{image:$image, imageId:$imageId, revision:$revision, recoveryPolicy:$level, appRepoDigests:$appDigests,
     appContainerId:$appCid, appImageId:($appContainers[0].imageId), appContainers:$appContainers,
     postgresImage:$pgImage, postgresImageId:$pgImageId, postgresRepoDigests:$pgDigests, postgresVersion:$pg, dbContainerId:$dbCid, dbImageId:$dbImage,
     limits:{droplet:$droplet, dbMemory:$dbMemory, appMemory:$appMemory, cpuset:$cpuset, dbMemoryLimitBytes:$dbMemLimit, appMemoryLimitBytes:($appContainers[0].memoryLimitBytes)},
     daemon:$daemon, sources:$sources, calibration:$calibration, browserRuntime:$browserRuntime,
-    settings:{workers:0, schedulerAppRuns:true, browser:$browser, autovacuum:"off", checkpointTimeout:"1d", maxWalSize:"4GB", appEnv:"dev", layout:$layout, charset:$charset, reasonLen:$reasonLen, targetReasonLen:$targetLen, deleteCounts:$deleteCounts, secondsPerReason:$spr, sittingMinutes:$sit, sizes:$sizes, counts:$counts, denseCounts:$dense, clicksPerCase:$clicks, wire:"set-v1", setV1Selftest:$setv1Selftest},
+    settings:{workers:0, schedulerAppRuns:true, browser:$browser, autovacuum:"off", checkpointTimeout:"1d", maxWalSize:"4GB", appEnv:"dev", layout:$layout, charset:$charset, reasonLen:$reasonLen, targetReasonLen:$targetLen, deleteCounts:$deleteCounts, secondsPerReason:$spr, sittingMinutes:$sit, sizes:$sizes, counts:$counts, denseCounts:$dense, clicksPerCase:$clicks, nextChangedPresses:$ncPresses, nextChangedRuns:$ncRuns, nextChangedOnly:$ncOnly, profileNextChanged:$ncProfile, wire:"set-v1", setV1Selftest:$setv1Selftest},
     maxRequestBytes:$maxRequestBytes, database:$database, incomplete:$incomplete, incompleteReason:$ireason,
     labels:{
       competitors:"FOLD_WORKERS=0 turns the job workers off but not the scheduler of the app, which enqueues jobs at start, at each full UTC hour and at church midnight; the harness waits past those edges, records a scheduler-overlap flag from a model of them and counts scheduler-shaped rows in the jobs table, and a window that touches either is invalid. Autovacuum is off, timed checkpoints are deferred, the harness checkpoints itself and waits for other active backends before each operation. The workers-on observation (item 9) is not attributable",
@@ -1160,14 +1179,14 @@ observe_workers_on() { # n
 # carries its own WAL and audit-by-action figures. Needs Node, @playwright/test and its Chromium under web/ on the machine running this script,
 # reaching the stack's published loopback port. Without them the row is not written, the evidence says it is missing and the run is not complete;
 # --no-browser says so up front. A run that fails part-way (exit 6) leaves a PARTIAL row: the phases that finished keep their figures and their budget
-# findings; it is invalid as incomplete and never counts as the measured case. suffix: "" or "-nosubtle" (crypto.subtle removed, so the bundled SHA-256 runs).
+# findings; it is invalid as incomplete and never counts as the measured case. suffix: "" or "-nosubtle" (crypto.subtle removed, so the bundled SHA-256 runs) or "-ncR" (run R of --next-changed-only, #298).
 # change-reason.sh edits ONE seeded reason with the triggers off in a throwaway session, standing in for a second person editing it; the product
 # has no such path and the script is the harness's, not the application's. phase-mark.sh only reads.
 run_panel_measure() { # sets PANEL_RC
   PANEL_RC=0
   QC1_URL="$URL" QC1_WEB_DIR="$ROOT/web" QC1_ADMIN_EMAIL=admin@example.invalid QC1_ADMIN_PASSWORD=qc1-drill-password \
     QC1_TARGET_EMAIL="$USER_EMAIL" QC1_EXPECT="$PANEL_K" QC1_OUT="$PANEL_OUT" QC1_CHANGE_CMD="$PANEL_HOOK" QC1_PHASE_CMD="$PANEL_PHASE" \
-    QC1_NO_SUBTLE="${QC1_NO_SUBTLE:-0}" QC1_CLICKS="$QC1_CLICKS_PER_CASE" \
+    QC1_NO_SUBTLE="${QC1_NO_SUBTLE:-0}" QC1_CLICKS="$QC1_CLICKS_PER_CASE" QC1_NEXT_CHANGED_PRESSES="$NEXT_CHANGED_PRESSES" QC1_PROFILE_NEXT_CHANGED="$PROFILE_NEXT_CHANGED" \
     node "$HERE/qc1/panel-measure.mjs" || PANEL_RC=$?
 }
 # What the browser is held against (#293). Before it opens the panel and outside the instrument window: the items the server issues to this administrator for the account (the digest
@@ -1253,7 +1272,7 @@ SH
     if [[ -s "$PANEL_OUT.pages.jsonl" ]]; then
       note "the browser measurement for $k reasons at size $n$suffix wrote no result (exit $PANEL_RC); the review pages it saw are kept as a PARTIAL row"
       RECORD_STATUS=partial record 10 "browser-panel-$k$suffix" "$n" "$(jq -nc --argjson pages "$(qc1_pages_from_jsonl "$PANEL_OUT.pages.jsonl")" --argjson k "$k" --arg suffix "$suffix" --argjson window "$window" --argjson rc "$PANEL_RC" \
-        '{reasons:$k, variant:(if $suffix == "" then "standard" else "no-subtle" end), browser:{pages:$pages}, failed:{phase:"unknown", error:("the measurement process stopped before it wrote its result (exit " + ($rc | tostring) + ")")}, window:$window}')"
+        '{reasons:$k, variant:(if $suffix == "" then "standard" elif $suffix == "-nosubtle" then "no-subtle" else "next-changed-run" end), browser:{pages:$pages}, failed:{phase:"unknown", error:("the measurement process stopped before it wrote its result (exit " + ($rc | tostring) + ")")}, window:$window}')"
     else
       note "the browser measurement for $k reasons at size $n$suffix did not run (exit $PANEL_RC); the row is missing and the run is not complete"
     fi
@@ -1262,11 +1281,11 @@ SH
   if (( PANEL_RC == 0 )); then
     browser_agreement
     record 10 "browser-panel-$k$suffix" "$n" "$(jq -nc --slurpfile b "$PANEL_OUT" --argjson k "$k" --arg suffix "$suffix" --argjson window "$window" --argjson agreement "$AGREEMENT_JSON" --argjson shape "$TEXT_SHAPE_JSON" \
-      '{reasons:$k, variant:(if $suffix == "" then "standard" else "no-subtle" end), browser:$b[0], window:$window, agreement:$agreement, textShape:$shape}')"
+      '{reasons:$k, variant:(if $suffix == "" then "standard" elif $suffix == "-nosubtle" then "no-subtle" else "next-changed-run" end), browser:$b[0], window:$window, agreement:$agreement, textShape:$shape}')"
   elif (( PANEL_RC == 6 )); then
     note "the browser measurement for $k reasons at size $n$suffix stopped part-way; its finished phases are kept as a PARTIAL row"
     RECORD_STATUS=partial record 10 "browser-panel-$k$suffix" "$n" "$(jq -nc --slurpfile b "$PANEL_OUT" --argjson k "$k" --arg suffix "$suffix" --argjson window "$window" \
-      '{reasons:$k, variant:(if $suffix == "" then "standard" else "no-subtle" end), browser:$b[0], failed:$b[0].failed, window:$window}')"
+      '{reasons:$k, variant:(if $suffix == "" then "standard" elif $suffix == "-nosubtle" then "no-subtle" else "next-changed-run" end), browser:$b[0], failed:$b[0].failed, window:$window}')"
   else
     note "the browser measurement for $k reasons at size $n$suffix did not run (exit $PANEL_RC); the row is missing and the run is not complete"
   fi
@@ -1365,6 +1384,16 @@ measure_size() { # n
     || { echo 'qc1: clearing the background rows removed the seeded admin, counterparts or group' >&2; exit 1; }
   [[ "$(psql_db -c 'SELECT count(*) FROM contact_requests')" == 0 ]] || { echo 'qc1: contact_requests is not empty after clearing it' >&2; exit 1; }
   load_filler "$n" all
+  # #298: nothing but the rendered panel at the dense counts, R times, over the background rows just loaded. No control request, no deletion matrix, no plans.
+  if (( NEXT_CHANGED_ONLY )); then
+    note "size $n: sampling \"Next changed reason\" ($NEXT_CHANGED_PRESSES presses, $NEXT_CHANGED_RUNS runs) at the dense counts only"
+    local run
+    for bk in "${DENSE_LIST[@]}"; do
+      (( bk <= n )) || { note "no sampling at $bk reasons for a table of $n rows: it does not fit"; continue; }
+      for (( run = 1; run <= NEXT_CHANGED_RUNS; run++ )); do measure_browser_panel "$n" "$bk" "-nc$run"; done
+    done
+    return 0
+  fi
   # The cost of one request that changes nothing, for the WAL a deletion shares
   # with its own session bookkeeping.
   instrumented ctl_request

@@ -1656,6 +1656,15 @@ help="$(bash "$RUNNER" --help)"
 for flag in --dir --image --sizes --counts --layout --charset --reason-len --droplet --seconds-per-reason --sitting-minutes --shared-daemon --no-browser --keep; do grep -q -- "$flag" <<<"$help"; done
 refused 'unknown option' bash "$RUNNER" --nope
 refused 'whole numbers above 0' bash "$RUNNER" --dir "$WORK/never" --sitting-minutes 0
+# #298: the sampling flags are in the help, and are refused before anything is created when they could not work.
+for flag in --next-changed-only --next-changed-presses --next-changed-runs --profile-next-changed; do grep -q -- "$flag" <<<"$help"; done
+refused 'whole numbers above 0' bash "$RUNNER" --dir "$WORK/never" --next-changed-presses 0
+refused 'whole numbers above 0' bash "$RUNNER" --dir "$WORK/never" --next-changed-runs x
+refused 'needs --next-changed-only' bash "$RUNNER" --dir "$WORK/never" --next-changed-runs 3
+refused 'above 1' bash "$RUNNER" --dir "$WORK/never" --profile-next-changed
+refused 'needs the browser' bash "$RUNNER" --dir "$WORK/never" --next-changed-only --no-browser
+refused 'needs the browser' bash "$RUNNER" --dir "$WORK/never" --next-changed-only --dense-counts none
+[[ ! -e "$WORK/never" ]]
 # It needs no root (a rootless or nested daemon is the place to run it) and reads no host paths.
 if grep -nE 'id -u|EUID' "$RUNNER"; then echo 'qc1: the runner must not require root' >&2; exit 1; fi
 if grep -nE 'APP_PID|/proc/\$|"/sys/fs/cgroup/system.slice|cgroup_file\(\)' "$RUNNER"; then echo 'qc1: the runner reads host process or cgroup paths' >&2; exit 1; fi
@@ -1794,6 +1803,15 @@ sed -n '/^measure_browser_panel() {/,/^}/p' "$RUNNER" | grep 'the row is missing
 sed -n '/^measure_browser_panel() {/,/^}/p' "$RUNNER" | grep '(( BROWSER )) || return 0' >/dev/null
 mbp="$(sed -n '/^measure_browser_panel() {/,/^}/p' "$RUNNER")"; rpm="$(sed -n '/^run_panel_measure() {/,/^}/p' "$RUNNER")"
 grep -qF 'QC1_CHANGE_CMD="$PANEL_HOOK" QC1_PHASE_CMD="$PANEL_PHASE"' <<<"$rpm"
+# #298: the sampling settings reach the browser process, the row says which kind of run it is, and --next-changed-only runs the rendered panel at the dense counts R times
+# right after the background rows are loaded, before anything else of the size.
+grep -qF 'QC1_NEXT_CHANGED_PRESSES="$NEXT_CHANGED_PRESSES" QC1_PROFILE_NEXT_CHANGED="$PROFILE_NEXT_CHANGED"' <<<"$rpm"
+grep -qF 'else "next-changed-run"' <<<"$mbp"
+nc_body="$(sed -n '/^measure_size() {/,/^}/p' "$RUNNER")"
+nc_f="$(grep -n 'load_filler "\$n" all' <<<"$nc_body" | head -n 1 | cut -d: -f1)"; nc_o="$(grep -n 'if (( NEXT_CHANGED_ONLY )); then' <<<"$nc_body" | head -n 1 | cut -d: -f1)"; nc_c="$(grep -n 'instrumented ctl_request' <<<"$nc_body" | head -n 1 | cut -d: -f1)"
+[[ -n "$nc_f$nc_o$nc_c" && "$nc_f" -lt "$nc_o" && "$nc_o" -lt "$nc_c" ]]
+grep -qF 'measure_browser_panel "$n" "$bk" "-nc$run"' <<<"$nc_body"
+grep -qF 'for bk in "${DENSE_LIST[@]}"; do' <<<"$nc_body"
 # The changed-reason hook must alter even a maximum-length reason without
 # exceeding the database's 1,000-character constraint.
 grep -qF 'left(reason, 999) || CASE WHEN right(reason, 1) = chr(33) THEN chr(63) ELSE chr(33) END' "$RUNNER"

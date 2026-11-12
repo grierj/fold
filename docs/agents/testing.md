@@ -557,6 +557,76 @@ argument above 128 KiB. `qc1-fixtures.sh` runs the runner's real `record()` on s
   `UPDATE_QC1_FACTS=1 go test -run TestQC1AppFacts .`; its `web` section is held by
   `ReasonReviewSection.test.tsx`.
 
+### Sampling Next changed reason (#298)
+
+Issue #298 has one slow observation of "Next changed reason" (830.7 ms in a 100,000-reason browser
+pilot, against a proposed 300 ms) and two fast ones (65.1 ms with a 1,000,000-row background, 60.6 ms
+in an earlier diagnostic with an incomplete environment record). That is not enough to call a delay
+repeatable or noise, so the harness presses the control many times and records the machine around it.
+
+The press scans the in-memory store from the start of the page on screen for the next changed reason
+and wraps once, so where it starts decides how far it scans. A sampling run presses it from three
+origins in turn: the first page (a scan up to the changed reason, a third of the way in), the page after
+the changed reason's (a scan of the whole review) and the last page (a wrap to the changed reason).
+Press 0 follows the refused press and the second walk, which is where the single observation was made;
+it is kept apart, because a first press on a freshly loaded page may differ from the rest. Moving to an
+origin is a "Go to reason number" that is not counted as a measured jump.
+
+What a press is timed as is unchanged: the page's own clock from the pointerdown to the frame after
+the focused heading is the changed reason. Each press also records its origin, its offset in the
+sequence and the page's long-task time between two reads just outside its interval, which separates a
+slow press with the main thread busy from one with nothing running in the page. The run reads the host's
+`/proc/loadavg`, `/proc/stat` (CPU steal, iowait, idle ticks) and `/proc/pressure/cpu` before the walk,
+before and after the presses and at the end, and the row carries the differences; in a container these
+are the counters of the kernel it runs on. A counter that cannot be read is `null`, never zero.
+
+```bash
+# fresh, new, outside the checkout; hours; a dedicated Docker daemon (see "Reason-review scale run")
+E=~/.local/state/fold/next-changed/$(git rev-parse --short=12 HEAD)
+scripts/reason-review-scale.sh --only qc1 --evidence-dir $E \
+  --qc1-arg --sizes --qc1-arg 100000,1000000 --qc1-arg --counts --qc1-arg 0 --qc1-arg --dense-counts --qc1-arg 100000 \
+  --qc1-arg --next-changed-only --qc1-arg --next-changed-presses --qc1-arg 30 --qc1-arg --next-changed-runs --qc1-arg 3
+scripts/reason-review-next-changed.sh --out $E/next-changed.json --evidence $E/qc1
+```
+
+`scripts/reason-review-next-changed.sh --dry-run` prints the same commands. `--next-changed-only`
+loads the background rows of each size and runs only the rendered panel at the dense count, once per
+`--next-changed-runs` (cases `browser-panel-100000-nc1` to `-nc3`, each a fresh account, a fresh page
+load and a fresh walk), so the discovery, deletion, request-size and plan matrices are not run. The run's
+own `evidence-status.json` is then incomplete by construction and the wrapper's QC-1 step does not pass:
+this is not QC-1 evidence, and the report below reads the rows, not the verdict. Running it again with
+another `--evidence-dir` adds an independent stack to the same configurations; pass every `qc1`
+directory with its own `--evidence`.
+
+`reason-review-next-changed.sh` writes `next-changed.json`: for each configuration (a 100,000-reason
+review over a 100,000-row and over a 1,000,000-row background) the counted runs, the pooled and the
+per-run p50, p95 and max (nearest rank, the same as `percentile` in `qc1/panel-core.mjs`), the first
+press of each run, the figures by origin, the slowest presses with their long-task time, and the load
+context of each run. A run counts only when it was measured, stopped in no phase, answered by the
+stack's own origin, walked exactly the reasons seeded, was refused with 409 and reloaded, pressed at
+least 30 times and as often as it was asked, was not profiled, carries its load counters, and comes from
+a directory whose environment is a complete record of the revision asked for. The record is `COMPLETE`
+(exit 0) only with at least 3 counted runs in both configurations; otherwise `INCOMPLETE` (exit 10)
+and each gap is named, and a configuration with no counted run has no figures at all.
+
+The record decides nothing. It does not call a delay noise and does not call the target met; the target
+is `QC1_NAV_BUDGET_MS`, an engineering proposal of the scaling design and not an owner decision. Its one
+stated consequence is the issue's own: when a configuration's pooled p95 is over the target, profile
+before changing anything. Repeat the sampling with `--qc1-arg --profile-next-changed`: a V8 CPU profile of
+the page across the presses is written beside each result as a `.cpuprofile`
+(`browser-<size>-<count>-nc<N>.json.nextchanged.cpuprofile`) for DevTools or speedscope. The profiler
+adds sampling overhead, so a profiled run is a diagnostic and the record never counts it. A fix to the
+control follows a reproduction and a profile, with a Vitest on a 100,000-reason store that fails
+without it; none is written before then.
+
+- The result goes in `docs/plan/M7.4-ERASURE-INVENTORY.md`, section 12.3, "#298 navigation samples",
+  copied from `next-changed.json`, with the original observations kept beside it.
+- **Checks that run without Docker**: `qc1-panel-fixtures.mjs` (the repeated presses, their origins,
+  the uncounted moves, a run that stops part-way, the load deltas, the profiler and the parsers) and
+  `make reason-review-scale-test` (`reason-review-next-changed.sh --self-test`: hand-computed p50, p95
+  and max over stub presses, the runs it must refuse to count, pooling across stacks, and no figures
+  without a run).
+
 ### Source guards
 
 - Source guards are the parse-only tests in `guards_<concern>_test.go`, `throttle_keys_test.go`,

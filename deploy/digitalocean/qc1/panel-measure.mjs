@@ -16,7 +16,8 @@
 // installed Chromium, see browser.mjs), QC1_ADMIN_EMAIL, QC1_ADMIN_PASSWORD, QC1_TARGET_EMAIL, QC1_EXPECT (reasons the account holds), QC1_OUT
 // (file for the JSON result). Optional: QC1_CHANGE_CMD (an executable called with one request id: it changes that reason behind the page),
 // QC1_NO_SUBTLE=1 (remove crypto.subtle before the page loads, as a plain-http LAN address lacks it, so the bundled SHA-256 runs), QC1_CLICKS
-// (default 30), QC1_PHASE_CMD (an executable called with a phase name that prints the WAL position and audit_logs figures as JSON: open, walk-end,
+// (default 30), QC1_NEXT_CHANGED_PRESSES (default 1: how many times "Next changed reason" is pressed; above 1 the repeated presses of #298 are sampled, see panel-core.mjs),
+// QC1_PROFILE_NEXT_CHANGED=1 (a V8 CPU profile across the repeated presses, written to QC1_OUT.nextchanged.cpuprofile; a diagnostic whose overhead makes its figures unfit to judge), QC1_PHASE_CMD (an executable called with a phase name that prints the WAL position and audit_logs figures as JSON: open, walk-end,
 // interactions-end, press-start, press-end). Exit 3 when the browser tooling is not usable, 4 when sign-in fails, 5 when the run breaks before any
 // result is written; the pages seen so far are still in QC1_OUT.pages.jsonl, and the runner records them as a partial row. Exit 6 when a PHASE failed after the run
 // started: the file is written with `failed` naming the phase and every figure measured before it (including any budget already crossed); the runner
@@ -31,10 +32,11 @@
 // stamped in the page, from the pointerdown on the Delete menu item, where each happens; clicks and navigation are timed from their pointerdown to the frame after
 // the commit; only a page request's time is Playwright's (its request timing). The phase hook's and the Node loop's clocks measure nothing. Every review page
 // response is persisted as it completes to QC1_OUT.pages.jsonl (page-observer.mjs), so a run that stops part-way keeps every page it saw, slow ones included.
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { cpus } from "node:os";
 import { launchOptions, resolvePlaywright } from "./browser.mjs";
 import { pageObserver } from "./page-observer.mjs";
-import { measurePanel, CLICKS_DEFAULT, WEB } from "./panel-core.mjs";
+import { measurePanel, CLICKS_DEFAULT, WEB, parseLoadavg, parseProcStatCpu, parsePressureCpu } from "./panel-core.mjs";
 import { bodyRuneSummary } from "./response-accounting.mjs";
 import { playwrightDriver, INIT_SCRIPT, NO_SUBTLE_SCRIPT } from "./panel-driver.mjs";
 
@@ -43,7 +45,21 @@ for (const k of ["QC1_URL", "QC1_WEB_DIR", "QC1_ADMIN_EMAIL", "QC1_ADMIN_PASSWOR
   if (!env[k]) { process.stderr.write(`panel-measure: ${k} is required\n`); process.exit(2); }
 }
 const expected = Number(env.QC1_EXPECT);
+const nextChangedPresses = Number(env.QC1_NEXT_CHANGED_PRESSES ?? 1);
+if (!Number.isInteger(nextChangedPresses) || nextChangedPresses < 1) { process.stderr.write("panel-measure: QC1_NEXT_CHANGED_PRESSES must be a whole number of at least 1\n"); process.exit(2); }
+const profileNextChanged = env.QC1_PROFILE_NEXT_CHANGED === "1";
 const url = env.QC1_URL.replace(/\/$/, "");
+
+// The host's own counters, read from /proc by this process (the one that drives the browser, on the machine the stack shares with it). In a container these are
+// the counters of the kernel the container runs on, which is the contention the page felt; a counter that cannot be read is null, never a guess (panel-core.mjs parses).
+const procText = (p) => { try { return readFileSync(p, "utf8"); } catch { return null; } };
+const loadSnapshot = async () => ({
+  at: Date.now(),
+  loadavg: parseLoadavg(procText("/proc/loadavg")),
+  cpu: parseProcStatCpu(procText("/proc/stat")),
+  cpuPressureSomeAvg10: parsePressureCpu(procText("/proc/pressure/cpu")),
+  cpus: cpus().length,
+});
 const origin = new URL(url).origin;
 
 let pw;
@@ -92,12 +108,15 @@ try {
     }
   });
 
-  const driver = playwrightDriver({ page, context, url, targetEmail: env.QC1_TARGET_EMAIL, expected, changeCmd: env.QC1_CHANGE_CMD ?? "", phaseCmd: env.QC1_PHASE_CMD ?? "", observer });
+  const driver = playwrightDriver({ page, context, url, targetEmail: env.QC1_TARGET_EMAIL, expected, changeCmd: env.QC1_CHANGE_CMD ?? "", phaseCmd: env.QC1_PHASE_CMD ?? "", profileFile: profileNextChanged ? `${env.QC1_OUT}.nextchanged.cpuprofile` : "", observer });
   const result = await measurePanel(driver, {
     expected,
     now: () => performance.now(),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     clicksTotal: Number(env.QC1_CLICKS ?? CLICKS_DEFAULT),
+    nextChangedPresses,
+    profileNextChanged,
+    loadSnapshot,
   });
   // A run that failed part-way is WRITTEN anyway, with `failed` naming the phase: the phases that finished keep their figures (and any budget already
   // crossed). The runner records such a file as a partial row and the judge keeps its budget findings; the exit status is 6 so it is never mistaken for a

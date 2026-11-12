@@ -86,3 +86,4 @@ compose-smoke:
 reason-review-scale-test:
 	bash scripts/reason-review-scale.sh --self-test
 	bash scripts/reason-review-matrix.sh --self-test
+	bash scripts/reason-review-next-changed.sh --self-test

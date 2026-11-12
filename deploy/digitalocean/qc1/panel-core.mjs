@@ -75,6 +75,58 @@ const never = () => {
 
 const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
+// --- load context (#298) -----------------------------------------------------------------------------------------------------------------------
+// A slow press is only worth judging next to what the machine was doing, so a run reads the host's own counters before and after the presses. These are pure parsers of
+// the text of /proc/loadavg, /proc/stat and /proc/pressure/cpu (panel-measure.mjs reads the files); a field that is absent is null, never a guess.
+
+/** /proc/loadavg: "0.52 0.58 0.59 2/713 12345". */
+export function parseLoadavg(text) {
+  const m = /^(\d+(?:\.\d+)?) (\d+(?:\.\d+)?) (\d+(?:\.\d+)?) (\d+)\/(\d+) \d+\s*$/.exec(String(text ?? ""));
+  if (!m) return null;
+  return { load1: Number(m[1]), load5: Number(m[2]), load15: Number(m[3]), runnable: Number(m[4]), tasks: Number(m[5]) };
+}
+
+/** The aggregate "cpu" line of /proc/stat, in clock ticks. Needs the steal column (the 8th number): a kernel without it gives null, not zero. */
+export function parseProcStatCpu(text) {
+  const line = String(text ?? "").split("\n").find((l) => /^cpu\s/.test(l));
+  if (!line) return null;
+  const f = line.trim().split(/\s+/).slice(1).map(Number);
+  if (f.length < 8 || f.slice(0, 8).some((v) => !Number.isFinite(v) || v < 0)) return null;
+  const [user, nice, system, idle, iowait, irq, softirq, steal] = f;
+  return { user, nice, system, idle, iowait, irq, softirq, steal, total: user + nice + system + idle + iowait + irq + softirq + steal };
+}
+
+/** The "some" avg10 of /proc/pressure/cpu (percent of the last 10 s some task waited for a CPU), or null. */
+export function parsePressureCpu(text) {
+  const m = /^some avg10=(\d+(?:\.\d+)?) /m.exec(String(text ?? ""));
+  return m ? Number(m[1]) : null;
+}
+
+/** What changed between two snapshots {at, loadavg, cpu}: the seconds between them and the share of the CPU ticks lost to steal, iowait and work. Null where either side lacks it. */
+export function loadDelta(a, b) {
+  const r1 = (v) => (v === null ? null : Math.round(v * 10) / 10);
+  const seconds = a && b && num(a.at) !== null && num(b.at) !== null ? Math.round(b.at - a.at) / 1000 : null;
+  const ca = a && a.cpu;
+  const cb = b && b.cpu;
+  const ticks = ca && cb ? cb.total - ca.total : 0;
+  const share = (k) => (ca && cb && ticks > 0 ? r1(((cb[k] - ca[k]) / ticks) * 100) : null);
+  return {
+    seconds,
+    cpuTicks: ca && cb ? ticks : null,
+    stealPercent: share("steal"),
+    iowaitPercent: share("iowait"),
+    idlePercent: share("idle"),
+    load1Start: a && a.loadavg ? a.loadavg.load1 : null,
+    load1End: b && b.loadavg ? b.loadavg.load1 : null,
+    load1Max: a && b && a.loadavg && b.loadavg ? Math.max(a.loadavg.load1, b.loadavg.load1) : null,
+  };
+}
+
+// Where each repeated press starts from. The press scans the store from the start of the page on screen for the next changed reason (wrapping once), so the origin decides how
+// far it scans: from the first page it scans up to the changed reason (a third of the way in), from the page after the changed one it wraps the whole review, from the last page
+// it wraps to the changed reason. The changed reason's own page is not an origin: from there the scan is a few entries and the page on screen does not change.
+export const NEXT_CHANGED_ORIGINS = ["first-page", "after-changed-page", "last-page"];
+
 /**
  * The F7 per-page figures over EVERY review page response the page received, in every walk (the first read, and the second read after a refused press), summarised from the
  * observations that COMPLETED. Each observation is persisted by the measurement process as it completes, so a run that stops part-way still has every page it saw, slow ones
@@ -130,13 +182,25 @@ export function phaseDelta(a, b) {
 }
 
 export async function measurePanel(d, opts) {
-  const { expected, now = never, sleep = never, pollMs = 50, timeoutMs = 900000, clicksTotal = CLICKS_DEFAULT } = opts;
+  const { expected, now = never, sleep = never, pollMs = 50, timeoutMs = 900000, clicksTotal = CLICKS_DEFAULT, nextChangedPresses = 1, loadSnapshot = null } = opts;
   if (!Number.isInteger(expected) || expected < 1) throw new Error("expected must be the whole number of reasons seeded");
+  if (!Number.isInteger(nextChangedPresses) || nextChangedPresses < 1) throw new Error("nextChangedPresses must be a whole number of at least 1");
   const firstPageItems = Math.min(DISPLAY_PAGE, expected);
   const chosen = new Set(); // ordinals this run has chosen
   const clicks = { beforeWalkEnd: [], midList: [], lastPage: [], afterWalk: [] };
   const nav = { nextPage: [], jump: [], nextUnchosen: [], nextChanged: [] };
   const marks = {};
+  const loads = {};
+  // A failed read of the host counters is a null snapshot (and says why), never a reason to lose the run.
+  const takeLoad = async (name) => {
+    if (typeof loadSnapshot !== "function") return;
+    try {
+      loads[name] = await loadSnapshot();
+    } catch (e) {
+      loads[name] = { error: String(e && e.message ? e.message : e).slice(0, 200) };
+    }
+  };
+  let sampling = null;
   const R = { pageObs: null, firstRows: null, firstPageMs: null, env: null, firstInteractiveMs: null, walkEndMs: null, walkTotal: null, walkStats: null, metrics: null, afterInteractions: null, press: null, reload: null, digest: null };
   let phase = "open";
   let failed = null;
@@ -164,6 +228,7 @@ export async function measurePanel(d, opts) {
   };
 
   try {
+    await takeLoad("start");
     await mark("open");
     await d.open();
     R.firstRows = (await until("the first page of reasons", async () => ((await d.snapshot()).rows >= firstPageItems ? { rows: (await d.snapshot()).rows } : null))).rows;
@@ -289,6 +354,8 @@ export async function measurePanel(d, opts) {
       const after = await d.snapshot();
       const unchosen = parseUnchosen(after.progress);
       R.digest = typeof d.digest === "function" ? await d.digest() : null;
+      await takeLoad("beforePresses");
+      const samplingStartedAt = now();
       await goto(0);
       const changedLat = await d.navigate("nextChanged", null, { heading: changedOrdinal });
       nav.nextChanged.push(changedLat);
@@ -302,12 +369,84 @@ export async function measurePanel(d, opts) {
         chosenByHarness: all.chosen,
       };
       R.reload = { reloadAfterRefusalMs: reloadMs, secondWalkPageResponses: secondWalkPages, unchosenAfterReload: unchosen, choicesSurvived: unchosen === 1 ? expected - 1 : null, changedOrdinal };
+      // #298: the same control pressed again, from three origins in turn (NEXT_CHANGED_ORIGINS), each press timed exactly as the first. The first press is the one that
+      // follows the refused press and the second walk, as the single observation did, and it is kept apart so a cold first press is seen as one. Moving to an origin is
+      // NOT a measured navigation (it is not in navigation.jump), and the long-task time of each press is read in the page just outside its interval.
+      if (nextChangedPresses > 1) {
+        phase = "next-changed-presses";
+        const changedPage = Math.floor(changedOrdinal / DISPLAY_PAGE) * DISPLAY_PAGE;
+        const originOrdinal = { "first-page": 0, "after-changed-page": changedPage + DISPLAY_PAGE, "last-page": expected - 1 };
+        const origins = NEXT_CHANGED_ORIGINS.filter((o) => originOrdinal[o] < expected && Math.floor(originOrdinal[o] / DISPLAY_PAGE) * DISPLAY_PAGE !== changedPage);
+        // Built in place, so a run that stops part-way keeps the presses it finished (summarised after the try, below).
+        sampling = { requested: nextChangedPresses, changedOrdinal, changedPage, origins, originOrdinal, presses: [{ index: 0, origin: "first-page", ms: changedLat, atMs: 0, longTaskMs: null, longTaskCount: null }], profile: null };
+        const presses = sampling.presses;
+        if (opts.profileNextChanged && typeof d.profile === "function") {
+          try {
+            await d.profile("start");
+            sampling.profile = { requested: true, file: null, error: null };
+          } catch (e) {
+            sampling.profile = { requested: true, file: null, error: `the profiler did not start: ${String(e && e.message ? e.message : e).slice(0, 200)}` };
+          }
+        }
+        for (let i = 1; i < nextChangedPresses && origins.length > 0; i++) {
+          const origin = origins[i % origins.length];
+          const at = originOrdinal[origin];
+          await d.navigate("goto", at + 1, { line: navLine(Math.floor(at / DISPLAY_PAGE) * DISPLAY_PAGE, expected, false), heading: at });
+          const before = typeof d.longTasks === "function" ? await d.longTasks() : null;
+          const startedAt = now();
+          const ms = await d.navigate("nextChanged", null, { heading: changedOrdinal });
+          const after = typeof d.longTasks === "function" ? await d.longTasks() : null;
+          nav.nextChanged.push(ms);
+          presses.push({
+            index: i,
+            origin,
+            ms,
+            atMs: Math.round(startedAt - samplingStartedAt),
+            longTaskMs: before && after ? Math.round((after.ms - before.ms) * 10) / 10 : null,
+            longTaskCount: before && after ? after.count - before.count : null,
+          });
+        }
+        if (sampling.profile && sampling.profile.error === null) {
+          try {
+            sampling.profile.file = (await d.profile("stop")).file ?? null;
+          } catch (e) {
+            sampling.profile.error = `the profile was not saved: ${String(e && e.message ? e.message : e).slice(0, 200)}`;
+          }
+        }
+      }
+      await takeLoad("afterPresses");
     }
   } catch (e) {
     // Keep what was measured: the phases that finished carry real figures (and real budget failures), and the failure names where the run stopped.
     failed = { phase, error: String(e && e.message ? e.message : e).slice(0, 400) };
   }
 
+  await takeLoad("end");
+  let nextChangedSampling = null;
+  if (sampling) {
+    const { presses, origins, originOrdinal } = sampling;
+    const byOrigin = {};
+    for (const o of NEXT_CHANGED_ORIGINS) byOrigin[o] = { ...summarize(presses.filter((p) => p.origin === o).map((p) => p.ms)), startOrdinal: origins.includes(o) ? originOrdinal[o] : null };
+    nextChangedSampling = {
+      requested: sampling.requested,
+      performed: presses.length,
+      changedOrdinal: sampling.changedOrdinal,
+      changedPage: sampling.changedPage,
+      origins,
+      all: summarize(presses.map((p) => p.ms)),
+      firstPressMs: presses[0].ms,
+      afterFirst: summarize(presses.slice(1).map((p) => p.ms)),
+      byOrigin,
+      presses,
+      profile: sampling.profile,
+      note: "press 0 follows the refused press and the second walk (the single observation's position); every other press first moves to an origin (a navigation that is not counted) and then presses; every ms is the page's own clock from the pointerdown to the frame after the focused heading is the changed reason; longTaskMs is the page's long-task time between two reads just outside the interval",
+    };
+  }
+  // Host counters at the edges of the run and of the presses; the deltas are arithmetic on those snapshots and nothing else (a snapshot that failed to read has no delta).
+  const readable = (a, b) => !!a && !!b && !a.error && !b.error;
+  const load = typeof loadSnapshot === "function"
+    ? { ...loads, presses: readable(loads.beforePresses, loads.afterPresses) ? loadDelta(loads.beforePresses, loads.afterPresses) : null, run: readable(loads.start, loads.end) ? loadDelta(loads.start, loads.end) : null }
+    : null;
   const all = [...clicks.beforeWalkEnd, ...clicks.midList, ...clicks.lastPage, ...clicks.afterWalk];
   const navSummary = Object.fromEntries(Object.entries(nav).map(([k, v]) => [k, { ...summarize(v), observed: v.length > 0, samples: v }]));
   if (timeline === null) {
@@ -376,6 +515,8 @@ export async function measurePanel(d, opts) {
     clicks: { ...summarize(all), beforeWalkEnd: clicks.beforeWalkEnd.length, midList: clicks.midList.length, lastPage: clicks.lastPage.length, afterWalk: clicks.afterWalk.length, samples: all },
     navigation: navSummary,
     press: R.press,
+    nextChangedSampling,
+    load,
     reload: R.reload,
     phases,
   };

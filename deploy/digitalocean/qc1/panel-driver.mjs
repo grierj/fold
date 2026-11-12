@@ -7,6 +7,7 @@
 // capture-phase pointerdown. The interval ends when the page shows what the control promises (the reason is chosen, the pager line or the
 // focused heading is the expected one) and two animation frames have followed.
 import { spawnSync } from "node:child_process";
+import { statSync, writeFileSync } from "node:fs";
 import { WEB } from "./panel-core.mjs";
 
 export const ROWS = WEB.reasonRows;
@@ -117,9 +118,10 @@ export const NO_SUBTLE_SCRIPT = 'Object.defineProperty(window.crypto, "subtle", 
 
 const round1 = (v) => Math.round(v * 10) / 10;
 
-export function playwrightDriver({ page, context, url, targetEmail, expected, changeCmd = "", phaseCmd = "", observer }) {
+export function playwrightDriver({ page, context, url, targetEmail, expected, changeCmd = "", phaseCmd = "", profileFile = "", observer }) {
   const rows = page.locator(ROWS);
   let rowEl = null;
+  let profiler = null;
   const deletes = [];
   page.on("request", (r) => {
     if (r.method() === "DELETE" && /\/api\/v1\/admin\/users\/\d+$/.test(new URL(r.url()).pathname)) deletes.push({ at: Date.now(), bytes: r.postDataBuffer()?.length ?? 0 });
@@ -278,6 +280,28 @@ export function playwrightDriver({ page, context, url, targetEmail, expected, ch
       } catch { /* the page is gone */ }
       const r2 = (v) => (typeof v === "number" ? Math.round(v * 100) / 100 : null);
       return observer.observationsWithMissing().map((o) => ({ ...o, pageReadMs: o.completed === false ? null : r2(inPage[o.seq]?.r), pageParseMs: o.completed === false ? null : r2(inPage[o.seq]?.p) }));
+    },
+    // The page's long-task time and count so far (INIT_SCRIPT's PerformanceObserver): the repeated presses read it just outside each interval.
+    async longTasks() {
+      return page.evaluate(() => ({ ms: window.__qc.longTaskMs, count: window.__qc.longTasks }));
+    },
+    // A V8 CPU profile (Chrome DevTools Profiler) of the page across the repeated presses, only when the run asked for it (QC1_PROFILE_NEXT_CHANGED=1). It is a
+    // diagnostic written beside the result as a .cpuprofile for the DevTools or speedscope; its sampling adds overhead, so the figures of a profiled run are never
+    // the ones to judge a budget with.
+    async profile(action) {
+      if (profileFile === "") throw new Error("no profile file was named");
+      if (action === "start") {
+        profiler = await context.newCDPSession(page);
+        await profiler.send("Profiler.enable");
+        await profiler.send("Profiler.setSamplingInterval", { interval: 200 });
+        await profiler.send("Profiler.start");
+        return { started: true };
+      }
+      if (!profiler) throw new Error("the profiler was not started");
+      const { profile } = await profiler.send("Profiler.stop");
+      writeFileSync(profileFile, JSON.stringify(profile));
+      profiler = null;
+      return { file: profileFile, bytes: statSync(profileFile).size };
     },
     async metrics() {
       const cdp = await context.newCDPSession(page);

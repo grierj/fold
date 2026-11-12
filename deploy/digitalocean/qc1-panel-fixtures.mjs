@@ -2,7 +2,7 @@
 // VIRTUAL clock (no browser, no sleeping), so the sequence, the readiness rule, the click and navigation bookkeeping and the finding the judge
 // reads are tested here. Run by qc1-fixtures.sh; exits non-zero with a line on stderr on the first failure.
 import assert from "node:assert/strict";
-import { measurePanel, navLine, parseNavLine, parseUnchosen, percentile, summarize, summarizePages, DISPLAY_PAGE, FIRST_CLICK_MS } from "./qc1/panel-core.mjs";
+import { measurePanel, navLine, parseNavLine, parseUnchosen, percentile, summarize, summarizePages, DISPLAY_PAGE, FIRST_CLICK_MS, NEXT_CHANGED_ORIGINS, loadDelta, parseLoadavg, parseProcStatCpu, parsePressureCpu } from "./qc1/panel-core.mjs";
 import { pageObserver } from "./qc1/page-observer.mjs";
 import { bodyRuneSummary, countRunes, domTextAgreement, expectedShownIds, shownRange } from "./qc1/response-accounting.mjs";
 
@@ -701,6 +701,180 @@ clock = 0;
   // The judge's rule (qc1/lib.sh) is that rowsChecked + skipped is every row expected on the page, so a screen that skips what it should have compared is not exact.
   const partial = check(screenOf(1, 50));
   assert.equal(partial.rowsChecked + partial.skipped, partial.expectedRows);
+}
+
+// --- "Next changed reason" sampled repeatedly (#298) -----------------------------------------------------------------------------------------------------
+// The fake panel gives each nextChanged press a time of its own (10, 11, 12 ... ms), so every figure below is arithmetic on known inputs. The host counters and the
+// long-task time are faked on the same virtual clock; nothing here says anything about the real panel's speed.
+{
+  const pressTimes = () => {
+    let k = 0;
+    return (kind) => (kind === "nextChanged" ? 10 + k++ : 20);
+  };
+  const sampled = async (opts, extra = {}) => {
+    clock = 0;
+    const p = fakePanel(opts);
+    return { p, r: await measurePanel(p, { expected: opts.expected, now, sleep, ...extra }) };
+  };
+
+  // the default is the single observation, unchanged: no sampling block and no load block
+  {
+    const { r } = await sampled({ expected: 1000 });
+    assert.equal(r.nextChangedSampling, null);
+    assert.equal(r.load, null);
+    assert.equal(r.navigation.nextChanged.count, 1);
+  }
+
+  // a whole sampling run: 30 presses from three origins in turn, the first kept apart, moves to an origin not counted as navigation
+  {
+    const base = await sampled({ expected: 1000 });
+    const { r, p } = await sampled({ expected: 1000, navMs: pressTimes() }, { nextChangedPresses: 30 });
+    assert.equal(r.failed, null);
+    const s = r.nextChangedSampling;
+    assert.equal(s.requested, 30);
+    assert.equal(s.performed, 30);
+    assert.equal(r.navigation.nextChanged.count, 30, "every press is a nextChanged navigation sample");
+    assert.equal(r.navigation.jump.count, base.r.navigation.jump.count, "moving to an origin is not a measured jump");
+    assert.deepEqual(s.all, { count: 30, p50Ms: 24, p95Ms: 38, maxMs: 39 }, "10..39 ms: nearest-rank p50 is rank 15, p95 rank 29");
+    assert.equal(s.firstPressMs, 10);
+    assert.deepEqual(s.afterFirst, { count: 29, p50Ms: 25, p95Ms: 38, maxMs: 39 });
+    assert.deepEqual(s.presses.slice(0, 4).map((x) => x.origin), ["first-page", "after-changed-page", "last-page", "first-page"]);
+    assert.deepEqual(NEXT_CHANGED_ORIGINS, ["first-page", "after-changed-page", "last-page"]);
+    assert.equal(s.changedOrdinal, 333);
+    assert.equal(s.changedPage, 300);
+    assert.deepEqual(Object.values(s.byOrigin).map((o) => o.count), [10, 10, 10]);
+    assert.deepEqual(Object.values(s.byOrigin).map((o) => o.startOrdinal), [0, 350, 999]);
+    assert.deepEqual(s.presses.map((x) => x.index), Array.from({ length: 30 }, (_, i) => i));
+    assert.ok(s.presses.every((x, i) => i === 0 || x.atMs > s.presses[i - 1].atMs), "the presses are stamped in the order they ran");
+    assert.equal(s.profile, null, "no profile unless asked for");
+    // after the first press every press is a move to an origin and then the press
+    const calls = p.state.navCalls;
+    const firstPress = calls.indexOf("nextChanged");
+    assert.deepEqual(calls.slice(firstPress + 1, firstPress + 5), ["goto", "nextChanged", "goto", "nextChanged"]);
+    assert.equal(calls.filter((c) => c === "nextChanged").length, 30);
+    // the refused press and the second walk are recorded exactly as in a single-press run
+    assert.equal(r.press.status, "409");
+    assert.equal(r.reload.unchosenAfterReload, 1);
+  }
+
+  // a review that fits one page has no origin to press from: it keeps the one press and says so instead of faking more
+  {
+    const { r } = await sampled({ expected: 50, navMs: pressTimes() }, { nextChangedPresses: 5 });
+    assert.equal(r.nextChangedSampling.performed, 1);
+    assert.equal(r.nextChangedSampling.requested, 5);
+    assert.deepEqual(r.nextChangedSampling.origins, []);
+  }
+  // two pages: the changed reason's own page is never an origin
+  {
+    const { r } = await sampled({ expected: 100, navMs: pressTimes() }, { nextChangedPresses: 5 });
+    assert.deepEqual(r.nextChangedSampling.origins, ["after-changed-page", "last-page"]);
+    assert.equal(r.nextChangedSampling.performed, 5);
+    assert.equal(r.nextChangedSampling.byOrigin["first-page"].count, 1, "only the first press is from the first page");
+  }
+
+  // a run that stops part-way keeps the presses it finished, and names the phase
+  {
+    let k = 0;
+    const { r } = await sampled({ expected: 1000, navMs: (kind) => { if (kind === "nextChanged" && k++ === 5) throw new Error("the page stopped answering"); return 20; } }, { nextChangedPresses: 30 });
+    assert.equal(r.failed.phase, "next-changed-presses");
+    assert.equal(r.nextChangedSampling.performed, 5);
+    assert.equal(r.nextChangedSampling.requested, 30);
+    assert.equal(r.press.status, "409", "the refused press is still recorded");
+    assert.equal(r.navigation.nextChanged.count, 5);
+  }
+
+  // load context: counters read at the edges of the run and of the presses; the deltas are arithmetic on those snapshots
+  {
+    let calls = 0;
+    const snapshot = async () => {
+      calls++;
+      return { at: 1000 * calls, loadavg: { load1: 0.5 * calls, load5: 0, load15: 0, runnable: 1, tasks: 100 }, cpu: { total: 1000 * calls, steal: 50 * calls, iowait: 20 * calls, idle: 400 * calls }, cpus: 2, cpuPressureSomeAvg10: null };
+    };
+    const { r } = await sampled({ expected: 1000, navMs: pressTimes() }, { nextChangedPresses: 3, loadSnapshot: snapshot });
+    assert.equal(calls, 4, "start, before the presses, after the presses, end");
+    assert.deepEqual(Object.keys(r.load).sort(), ["afterPresses", "beforePresses", "end", "presses", "run", "start"]);
+    assert.deepEqual(r.load.presses, loadDelta(r.load.beforePresses, r.load.afterPresses));
+    assert.equal(r.load.presses.stealPercent, 5);
+    assert.equal(r.load.presses.iowaitPercent, 2);
+    assert.equal(r.load.presses.idlePercent, 40);
+    assert.equal(r.load.presses.seconds, 1);
+    assert.equal(r.load.presses.load1Start, 1);
+    assert.equal(r.load.presses.load1End, 1.5);
+    assert.equal(r.load.run.seconds, 3);
+  }
+  // a counter that cannot be read is an error entry, never a failed run and never a guess
+  {
+    const { r } = await sampled({ expected: 1000 }, { loadSnapshot: async () => { throw new Error("no /proc"); } });
+    assert.equal(r.failed, null);
+    assert.equal(r.load.start.error, "no /proc");
+    assert.equal(r.load.presses, null);
+  }
+
+  // long-task time around each press (read just outside its interval); the first press has none
+  {
+    let ms = 0;
+    let count = 0;
+    const longTasks = async () => ({ ms: (ms += 3.5), count: ++count });
+    clock = 0;
+    const p = fakePanel({ expected: 1000, navMs: pressTimes() });
+    p.longTasks = longTasks;
+    const r = await measurePanel(p, { expected: 1000, now, sleep, nextChangedPresses: 4 });
+    const s = r.nextChangedSampling;
+    assert.equal(s.presses[0].longTaskMs, null);
+    assert.deepEqual(s.presses.slice(1).map((x) => [x.longTaskMs, x.longTaskCount]), [[3.5, 1], [3.5, 1], [3.5, 1]]);
+  }
+
+  // the profiler: started before the repeated presses, stopped after, its file recorded; a profiler that will not start is an error entry and the presses still run
+  {
+    const seen = [];
+    clock = 0;
+    const p = fakePanel({ expected: 1000, navMs: pressTimes() });
+    p.profile = async (action) => { seen.push(action); return action === "stop" ? { file: "/out/x.cpuprofile" } : { started: true }; };
+    const r = await measurePanel(p, { expected: 1000, now, sleep, nextChangedPresses: 4, profileNextChanged: true });
+    assert.deepEqual(seen, ["start", "stop"]);
+    assert.deepEqual(r.nextChangedSampling.profile, { requested: true, file: "/out/x.cpuprofile", error: null });
+    clock = 0;
+    const q = fakePanel({ expected: 1000, navMs: pressTimes() });
+    q.profile = async () => { throw new Error("no CDP"); };
+    const r2 = await measurePanel(q, { expected: 1000, now, sleep, nextChangedPresses: 4, profileNextChanged: true });
+    assert.equal(r2.nextChangedSampling.performed, 4);
+    assert.equal(r2.nextChangedSampling.profile.file, null);
+    assert.ok(r2.nextChangedSampling.profile.error.includes("did not start"));
+    // not asked for: the driver's profiler is never touched
+    seen.length = 0;
+    clock = 0;
+    const t = fakePanel({ expected: 1000, navMs: pressTimes() });
+    t.profile = async (a) => { seen.push(a); return {}; };
+    await measurePanel(t, { expected: 1000, now, sleep, nextChangedPresses: 4 });
+    assert.deepEqual(seen, []);
+  }
+
+  // a number of presses that is not a whole number of at least 1 is refused before anything runs
+  for (const bad of [0, -1, 1.5, "30", NaN]) {
+    clock = 0;
+    await assert.rejects(measurePanel(fakePanel({ expected: 1000 }), { expected: 1000, now, sleep, nextChangedPresses: bad }), /nextChangedPresses must be a whole number/);
+  }
+}
+
+// --- the host counters' parsers (#298) ---------------------------------------------------------------------------------------------------------------------
+assert.deepEqual(parseLoadavg("0.52 0.58 0.59 2/713 12345\n"), { load1: 0.52, load5: 0.58, load15: 0.59, runnable: 2, tasks: 713 });
+assert.equal(parseLoadavg("not a loadavg"), null);
+assert.equal(parseLoadavg(null), null);
+const statText = "cpu  100 5 50 800 20 3 4 6 0 0\ncpu0 50 2 25 400 10 1 2 3 0 0\nintr 12345\n";
+assert.deepEqual(parseProcStatCpu(statText), { user: 100, nice: 5, system: 50, idle: 800, iowait: 20, irq: 3, softirq: 4, steal: 6, total: 988 });
+assert.equal(parseProcStatCpu("cpu  1 2 3 4 5 6 7\n"), null, "a kernel without the steal column gives no figure, not zero");
+assert.equal(parseProcStatCpu("cpu  1 2 x 4 5 6 7 8\n"), null);
+assert.equal(parseProcStatCpu(""), null);
+assert.equal(parsePressureCpu("some avg10=1.25 avg60=0.50 avg300=0.20 total=12345\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"), 1.25);
+assert.equal(parsePressureCpu(null), null);
+{
+  const a = { at: 0, loadavg: { load1: 1 }, cpu: { total: 1000, steal: 10, iowait: 0, idle: 500 } };
+  const b = { at: 2500, loadavg: { load1: 3 }, cpu: { total: 2000, steal: 110, iowait: 50, idle: 900 } };
+  assert.deepEqual(loadDelta(a, b), { seconds: 2.5, cpuTicks: 1000, stealPercent: 10, iowaitPercent: 5, idlePercent: 40, load1Start: 1, load1End: 3, load1Max: 3 });
+  const none = loadDelta(a, { at: 3000 });
+  assert.deepEqual([none.stealPercent, none.cpuTicks, none.load1End, none.load1Max], [null, null, null, null], "a missing side is missing, not zero");
+  assert.equal(loadDelta(a, { ...b, cpu: { ...b.cpu, total: 1000 } }).stealPercent, null, "no ticks passed: no share");
+  assert.equal(loadDelta(null, b).seconds, null);
 }
 
 console.log("qc1 panel fixtures: ok");
