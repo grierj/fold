@@ -50,6 +50,24 @@
 # cannot keep a previous pass; the completed record is parsed as JSON before
 # success is reported. Seed spellings are canonical (no leading zeros).
 # Exit status: 0 only when every step passed.
+#
+# Interruption (INT/TERM to this script's own PID) also stops the owned step:
+# the step runs as the script's one background child, so the trap fires while
+# the step runs; it forwards TERM to the step root plus its current
+# descendants (deepest first, npm/node grandchildren of the web step
+# included), waits about 5s, KILLs stragglers, reaps the step root, and
+# finalizes the incomplete record before exiting (INT exits 130, TERM 143).
+# Only those enumerated owned PIDs are signalled. Cancellation probes for the
+# lead (checkout root; signal only the script PID, never the test PIDs):
+#
+#   E=$(mktemp -d) && scripts/reason-review-hardening.sh --fuzz-time 10m \
+#     --evidence-dir "$E/run" & S=$!; for i in $(seq 1 60); do
+#     [ -e "$E/run/fuzz.log" ] && break; sleep 1; done; kill -TERM "$S"
+#   wait "$S"; echo "exit=$? (TERM wants 143)"
+#   node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(r.result!=="incomplete")throw new Error("want incomplete")' "$E/run/evidence.json"
+#   ps -eo pid,ppid,args | grep -E 'go test|npm|vitest' | grep -v grep || echo "no owned survivors"
+#
+# Repeat with `kill -INT` (wants exit 130).
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
@@ -209,13 +227,108 @@ write_evidence() {
 EOF
 }
 
+# Bounded cancellation: each step runs as this script's one owned background
+# child, so a trapped INT/TERM fires while the step runs instead of waiting
+# for it. The handler forwards the signal to the owned tree only (the step
+# root plus the descendants it still has, deepest first, so npm/node
+# grandchildren of the web step go before their parents), waits at most
+# about 5s, then KILLs stragglers, reaps the step root, and finalizes the
+# incomplete record. Only enumerated owned PIDs are signalled; the handler
+# blocks nested signals during its bounded cleanup and then exits with the
+# signal's status (INT 130, TERM 143).
+active_pid=
+cancelling=0
+
+# owned_tree ROOT prints ROOT plus its current descendants, deepest first.
+# shellcheck disable=SC2329 # reached only through cancel_run below
+owned_tree() {
+	local root=${1:-}
+	[[ -n $root ]] || return 0
+	local snap all queue
+	all=("$root")
+	queue=("$root")
+	snap=$(ps -eo pid=,ppid= 2>/dev/null) || return 0
+	local p pid ppid
+	while ((${#queue[@]} > 0)); do
+		p=${queue[0]}
+		queue=("${queue[@]:1}")
+		while read -r pid ppid; do
+			[[ ${pid:-} =~ ^[0-9]+$ ]] || continue
+			[[ $ppid == "$p" ]] || continue
+			[[ $pid == "$p" ]] && continue
+			all+=("$pid")
+			queue+=("$pid")
+		done <<<"$snap"
+	done
+	local i
+	for ((i = ${#all[@]} - 1; i >= 0; i--)); do
+		printf '%s\n' "${all[i]}"
+	done
+}
+
+# signal_owned SIGNAL ROOT sends SIGNAL to the owned tree, deepest first.
+# shellcheck disable=SC2329 # reached only through cancel_run below
+signal_owned() {
+	local sig=$1 root=$2 pid
+	while read -r pid; do
+		[[ -n ${pid:-} ]] || continue
+		kill -s "$sig" "$pid" 2>/dev/null || true
+	done < <(owned_tree "$root")
+}
+
+# owned_alive ROOT succeeds while any owned PID still exists.
+# shellcheck disable=SC2329 # reached only through cancel_run below
+owned_alive() {
+	local root=$1 pid
+	while read -r pid; do
+		[[ -n ${pid:-} ]] || continue
+		if kill -0 "$pid" 2>/dev/null; then
+			return 0
+		fi
+	done < <(owned_tree "$root")
+	return 1
+}
+
+# shellcheck disable=SC2329 # reached only through on_int/on_term below
+cancel_run() { # SIGNAL EXIT_CODE
+	local sig=$1 code=$2
+	((cancelling == 0)) || exit "$code"
+	cancelling=1
+	trap '' INT TERM
+	if [[ -n ${active_pid:-} ]] && kill -0 "$active_pid" 2>/dev/null; then
+		signal_owned TERM "$active_pid"
+		local i
+		for ((i = 0; i < 50; i++)); do
+			owned_alive "$active_pid" || break
+			sleep 0.1
+		done
+		signal_owned KILL "$active_pid"
+		sleep 0.2
+		signal_owned KILL "$active_pid"
+		wait "$active_pid" 2>/dev/null || true
+	fi
+	active_pid=
+	write_evidence incomplete
+	echo "reason-review-hardening: interrupted by $sig; record: $evidence/evidence.json (incomplete)" >&2
+	exit "$code"
+}
+
+# shellcheck disable=SC2329 # reached only through the trap below
+on_int() { cancel_run INT 130; }
+# shellcheck disable=SC2329 # reached only through the trap below
+on_term() { cancel_run TERM 143; }
+trap on_int INT
+trap on_term TERM
+
 write_evidence incomplete
-trap 'write_evidence incomplete; echo "reason-review-hardening: interrupted; record: $evidence/evidence.json (incomplete)" >&2; exit 130' INT TERM
 
 # run_step NAME LOGFILE COMMAND...: runs the command with its output in the log
 # and leaves the outcome in the step_* variables. A failed step does not stop
 # the run, so the record is complete. The caller may then call check_step, and
-# must call record_step once.
+# must call record_step once. The step runs as the one owned background child
+# so the INT/TERM handler above can forward a signal to it; active_pid is set
+# immediately at fork and cleared right after the reap, so the handler never
+# touches an older step or an unrelated process.
 run_step() {
 	local name=$1 log=$2
 	shift 2
@@ -226,8 +339,11 @@ run_step() {
 	s0=$SECONDS
 	echo "== $name: $step_cmd"
 	set +e
-	"$@" >"$evidence/$log" 2>&1
+	"$@" >"$evidence/$log" 2>&1 &
+	active_pid=$!
+	wait "$active_pid"
 	step_status=$?
+	active_pid=
 	set -e
 	s1=$SECONDS
 	step_end=$(now)
