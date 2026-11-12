@@ -346,7 +346,18 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   a probe never opens the FIFO by name; an interruption case kills a shell holding two freshly
   forked probes (one marked, one not) before they take a step and checks that they end by
   themselves once released. A guard reads the script itself and fails if a signal is aimed at what
-  a look at the host found, at a pid read from a file, or at the container's holders. For the
+  a look at the host found, at a pid read from a file, or at the container's holders. The
+  self-test has no watchdog of its own: every runner it starts runs under `timeout --foreground
+  -s KILL` (`bounded_exec`), whose parent-child pair is the only thing that can send the time
+  limit's KILL, so a limit cannot outlive its runner or signal a number that has changed hands. The
+  signal a case sends goes to that `timeout` (alive, because the runner it holds cannot leave the
+  running workload before the signal), which passes it on to the runner alone. A fixture
+  interrupts a shell that has started a runner under `bounded_exec` while the runner waits at a
+  gate, lets the runner finish long before its limit and checks that nothing carrying the case's
+  marker remains. The runner's cleanup restores the stderr the run started with (fd 7) before it
+  reports anything, because a signal taken inside a polling loop's `2>/dev/null` would otherwise send
+  the container's name and the command to remove it nowhere; `nest-hang-rm` and `nest-direct`
+  read that line from stderr. For the
   signals that remain, a function loaded through `BASH_ENV` records every `kill` of the runner and
   the stubs (the function, the file, whether the target was a live process, the arguments) in two
   cases: a cancel whose evidence copy stalls after the workload has ended and its docker client has

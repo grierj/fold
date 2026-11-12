@@ -213,6 +213,7 @@ limited() {
   set -m
   (
     trap - INT TERM HUP
+    exec 7>&-
     local crc=0
     "$@" >"$out" 2>/dev/null </dev/null || crc=$?
     printf '%s\n' "$crc" >"$TMP/limited.tmp" && mv "$TMP/limited.tmp" "$TMP/limited.rc"
@@ -304,6 +305,7 @@ inner_exec() {
   set -m
   (
     trap - INT TERM HUP
+    exec 7>&-
     local crc=0
     docker exec -e "$OWN_MARK" "$@" </dev/null || crc=$?
     printf '%s\n' "$crc" >"$TMP/inner.tmp" && mv "$TMP/inner.tmp" "$TMP/inner.rc"
@@ -473,6 +475,10 @@ stop_text() {
 cleanup() {
   local rc=$? note job
   trap - EXIT
+  # A signal can be taken (on_signal exits) while a compound command with its own `2>/dev/null` is running (the polling loops of limited and inner_exec), and the EXIT
+  # trap then runs with that redirection still in force: every diagnostic below, the container's name and id included, would go nowhere. fd 7 is the stderr the run
+  # started with.
+  exec 2>&7
   trap '' INT TERM HUP   # a second signal must not cut the collection short
   # A signal recorded while a group was being launched, when the run ends some other way before limited could take it, is this run's reason and status, not a
   # signal for the cleanup's own calls: it is taken here, once, and never replayed.
@@ -547,6 +553,7 @@ on_signal() {
   SIG_PENDING="" SIG_PENDING_RC=""
   trap '' INT TERM HUP; INTERRUPTED="$1"; CLEAN_END=""; exit "$2"
 }
+exec 7>&2   # the stderr the run started with, for cleanup (see there); the held client jobs close it
 trap cleanup EXIT
 trap 'on_signal INT 130' INT
 trap 'on_signal TERM 143' TERM

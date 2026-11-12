@@ -165,6 +165,17 @@ done
 
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
+# bounded_exec SECONDS COMMAND...: replaces this shell with COMMAND under `timeout`, which holds COMMAND as its own child and kills it itself (KILL, COMMAND alone) when
+# the time is up. The self-test uses it for every runner it starts and has no watchdog of its own: a watchdog is a second process that holds the runner's number, and
+# it can outlive the runner it was started for (an interrupted self-test, a runner that ended early) and signal a number that is by then somebody else's. Here the only
+# process that can ever send the KILL is the one that is the runner's parent, which does not exist any longer than the runner does. Nothing else is signalled by the
+# time limit, and a runner that ends sooner takes its limit with it.
+bounded_exec() {
+	local limit=$1
+	shift
+	exec timeout --foreground -s KILL "$limit" "$@"
+}
+
 # --- the self-test: stub tools in a scratch repository ------------------------
 # The script derives its root from its own location, so a copy placed in a
 # scratch git repository whose deploy/digitalocean tools are stubs runs the whole
@@ -491,7 +502,10 @@ STUB
 		done
 		shift
 		rm -f "$tmp/ready" "$tmp/pid" "$tmp/log"
-		(cd "$repo" && exec env STUB_LOG="$tmp/log" STUB_RECORD="$tmp/$name/evidence.json" STUB_SLEEP=120 STUB_READY="$tmp/ready" STUB_PID="$tmp/pid" "${envs[@]}" \
+		# p is `timeout`, the parent of the tool (bounded_exec): it, and so p, lives as long as the tool does, and the tool is held by the stub until this signal
+		# (the stub is ready), so the signal goes to a live process that is this shell's child. A tool that never gets that far ends by itself, at the latest at
+		# the limit, which `timeout` enforces; nothing here signals it.
+		(cd "$repo" && bounded_exec 150 env STUB_LOG="$tmp/log" STUB_RECORD="$tmp/$name/evidence.json" STUB_SLEEP=120 STUB_READY="$tmp/ready" STUB_PID="$tmp/pid" "${envs[@]}" \
 			bash scripts/reason-review-scale.sh --evidence-dir "$tmp/$name" "$@") >"$tmp/$name.out" 2>&1 &
 		p=$!
 		for ((i = 0; i < 300; i++)); do
@@ -504,9 +518,7 @@ STUB
 			wait "$p" || rc=$?
 		else
 			t_fail "$name: the stub never became ready"
-			kill -KILL "$p" 2>/dev/null || true
-			wait "$p" 2>/dev/null || true
-			rc=-1
+			wait "$p" || rc=$?
 		fi
 	}
 
@@ -792,7 +804,7 @@ DESC
 	# n_signal NAME SIGNAL ENV... -- COMMAND...: runs COMMAND in the nested repository with the stub docker first on the
 	# path, sends SIGNAL to it once the workload is running in the container, and leaves rc.
 	n_signal() {
-		local name=$1 sig=$2 p wd
+		local name=$1 sig=$2 p
 		shift 2
 		local envs=()
 		while (($#)) && [[ $1 != -- ]]; do
@@ -801,14 +813,12 @@ DESC
 		done
 		shift
 		n_reset
-		(cd "$nroot" && exec env "PATH=$bin:$PATH" "STUB_FAKE=$fake" "STUB_BIN=$bin" "STUB_LOG=$tmp/nlog" FOLD_SCALE_STOP_GRACE=60 FOLD_NESTED_STOP_GRACE=5 FOLD_NESTED_KILL_WAIT=5 "${envs[@]}" "$@") >"$tmp/$name.out" 2>&1 &
+		# A runner that never returns must fail this test, not hang it: bounded_exec has `timeout` KILL it after 150s (it then exits 137). There is no watchdog process:
+		# p is `timeout`, the runner's parent, and it lives exactly as long as the runner does (see bounded_exec). The signal below goes to it, and it passes it on to
+		# the runner alone (--foreground): it is sent only once the workload is running, which the runner can only leave by that signal, so p is alive and is this
+		# shell's child. A run that never got that far is not signalled by anything here; it ends by itself or at the limit.
+		(cd "$nroot" && bounded_exec 150 env "PATH=$bin:$PATH" "STUB_FAKE=$fake" "STUB_BIN=$bin" "STUB_LOG=$tmp/nlog" FOLD_SCALE_STOP_GRACE=60 FOLD_NESTED_STOP_GRACE=5 FOLD_NESTED_KILL_WAIT=5 "${envs[@]}" "$@") >"$tmp/$name.out" 2>&1 &
 		p=$!
-		# A runner that never returns must fail this test, not hang it: it is KILLed after 150s and then exits 137.
-		(
-			sleep 150
-			kill -KILL "$p" 2>/dev/null
-		) >/dev/null 2>&1 &
-		wd=$!
 		rc=0
 		if n_wait; then
 			# Before anything is cancelled: the runner's own ownership scan (the script it sends, run unchanged, with kill replaced by a recorder)
@@ -819,12 +829,8 @@ DESC
 			wait "$p" || rc=$?
 		else
 			t_fail "$name: the workload never started in the container"
-			kill -KILL "$p" 2>/dev/null || true
-			wait "$p" 2>/dev/null || true
-			rc=-1
+			wait "$p" || rc=$?
 		fi
-		kill "$wd" 2>/dev/null || true
-		wait "$wd" 2>/dev/null || true
 		[[ $n_want_removed == 0 || -e $fake/removed ]] || t_fail "$name: the container was not removed"
 	}
 	# n_run NAME ENV... -- COMMAND...: the same, without a signal (the run ends by itself).
@@ -985,6 +991,58 @@ kill -KILL $$'
 		done
 		[[ -e $tmp/interrupt-ready.1 && -e $tmp/interrupt-ready.2 ]] || t_fail "interrupt: a probe never reached its final program once released"
 	}
+	# n_bounded_interrupt: a shell that has started a runner under bounded_exec is interrupted (TERM, the way the self-test is) while the runner is still going. The
+	# runner is held at a gate until then, so it cannot have finished first. Then the runner is let go, and it finishes long before its limit (20 seconds). Nothing
+	# of the shell's, the runner's parent included, may be left once the runner is done: whatever it left would be a process that holds a limit or the runner's number
+	# and could still signal after the runner's number belongs to someone else. Every process of the case carries BOUNDED_FIXTURE in its environment, so this is seen,
+	# not assumed; nothing is signalled to find it.
+	n_bounded_interrupt() {
+		local dir=$tmp/bounded outer orc=0 g i
+		mkdir "$dir"
+		mkfifo "$dir/gate"
+		exec {g}<>"$dir/gate"
+		{
+			declare -f bounded_exec
+			cat <<'OUTER'
+trap 'exit 143' TERM
+( bounded_exec 20 bash "$1/runner.sh" "$1/gate" "$1/done" ) &
+runner=$!
+: >"$1/ready"
+wait "$runner"
+OUTER
+		} >"$dir/outer.sh"
+		# The runner blocks reading the gate (the descriptor held above is a writer, so the open does not wait) and then marks that it finished.
+		# shellcheck disable=SC2016 # the runner expands its own $1 and $2
+		printf '%s\n' 'read -r _ <"$1"' ': >"$2"' >"$dir/runner.sh"
+		env "BOUNDED_FIXTURE=$dir" bash "$dir/outer.sh" "$dir" >/dev/null 2>&1 &
+		outer=$!
+		for ((i = 0; i < 100; i++)); do
+			[[ -e $dir/ready ]] && break
+			sleep 0.05
+		done
+		if [[ -e $dir/ready ]]; then
+			kill -TERM "$outer"
+			wait "$outer" || orc=$?
+			[[ $orc == 143 ]] || t_fail "bounded: the interrupted shell exited $orc, want 143"
+		else
+			t_fail "bounded: the shell never started its runner"
+			wait "$outer" || orc=$?
+		fi
+		[[ ! -e $dir/done ]] || t_fail "bounded: the runner finished before it was let go (the case did not interrupt a shell with a runner running)"
+		echo go >&"$g"
+		for ((i = 0; i < 200; i++)); do
+			[[ -e $dir/done ]] && break
+			sleep 0.05
+		done
+		[[ -e $dir/done ]] || t_fail "bounded: the runner never finished after the interrupted shell was gone"
+		for ((i = 0; i < 200; i++)); do
+			find_marked "BOUNDED_FIXTURE=$dir"
+			((${#FOUND[@]})) || break
+			sleep 0.05
+		done
+		((${#FOUND[@]} == 0)) || t_fail "bounded: processes of the interrupted shell remain after its runner finished (pids ${FOUND[*]}): something that could signal later"
+		exec {g}>&-
+	}
 	# n_left_gone NAME: the children that docker clients answered and exited with, leaving them behind (and ignoring TERM), are gone; at least one was left. A survivor is
 	# reported, not signalled: its number is a record, and it carries a bound (a sleep of 90 seconds).
 	n_left_gone() {
@@ -1065,6 +1123,7 @@ RECORDER
 	n_collected nest-direct "$tmp/nest-direct"
 	n_before "$scan_term" "$first_cp" || t_fail "nest-direct: the run inside was not asked to stop before its artifacts were copied"
 	jq -e '.aborted.signal == "TERM"' "$tmp/nest-direct/evidence-status.json" >/dev/null 2>&1 || t_fail "nest-direct: the run inside did not finish its own cleanup before the copy"
+	grep -q 'restore-drill-nested: interrupted by TERM; artifacts copied to ' "$tmp/nest-direct.out" || t_fail "nest-direct: stderr does not say the run was interrupted (a signal taken inside a redirected loop must not silence the cleanup)"
 
 	# A run inside that will not stop is killed after the grace, and its partial artifacts are still copied out.
 	n_signal nest-kill TERM STUB_INNER_STUBBORN=1 FOLD_NESTED_STOP_GRACE=2 -- bash scripts/reason-review-scale.sh --evidence-dir "$tmp/nest-kill" --only qc1
@@ -1191,6 +1250,7 @@ HOOK
 	n_no_host_signals
 	n_probe_markers
 	n_probe_interrupt
+	n_bounded_interrupt
 	rm -f "$tmp/launch-signal-sent"
 	t0=$SECONDS
 	n_run nest-launch-signal STUB_CASE=nest-launch-signal STUB_QUICK=1 STUB_SCAN_HANG_FIRST=1 STUB_HANG_STUBBORN=1 "BASH_ENV=$tmp/signal-in-launch.sh" "LAUNCH_SIGNAL_MARK=$tmp/launch-signal-sent" FOLD_NESTED_CALL_TIMEOUT=2 FOLD_NESTED_STOP_GRACE=8 FOLD_NESTED_KILL_WAIT=4 FOLD_NESTED_CLEANUP_BUDGET=30 FOLD_NESTED_RM_RESERVE=6 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-launch-signal" --qc1
