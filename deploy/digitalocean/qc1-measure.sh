@@ -738,10 +738,14 @@ record() {
   CASE_SEQ=$((CASE_SEQ + 1))
   # No row count is taken here: record runs after the operation and often after its scenario was dropped. Each operation carries the rows
   # contact_requests held just before and after it (tableRowsBefore/After in its figures); a case with several operations keeps one per operation.
-  jq -nc --arg status "${RECORD_STATUS:-measured}" --argjson item "$1" --arg case "$2" --argjson size "$3" --argjson extra "$4" --arg layout "$LAYOUT" --arg charset "$CHARSET" \
+  # The figures reach jq through a file, never a process argument: a browser case carries the final screen's 50 reason texts (1,000 multi-byte runes each, over 140 KB), and Linux
+  # refuses one argument above 128 KiB (E2BIG). printf is a builtin, so the text never passes through an exec.
+  local extra_file="$WORK/record-extra.json"
+  printf '%s' "$4" >"$extra_file"
+  jq -nc --arg status "${RECORD_STATUS:-measured}" --argjson item "$1" --arg case "$2" --argjson size "$3" --slurpfile extra "$extra_file" --arg layout "$LAYOUT" --arg charset "$CHARSET" \
     --argjson reasonLen "$REASON_LEN" --argjson targetLen "$TARGET_REASON_LEN" --argjson workers "$CURRENT_WORKERS" --argjson seq "$CASE_SEQ" \
     '{status:$status, item:$item, case:$case, size:$size, seq:$seq, layout:$layout, charset:$charset, reasonLen:$reasonLen, targetReasonLen:$targetLen, workers:$workers,
-      table:{backgroundRows:$size, note:"size is the BACKGROUND row count; the rows the table really held (background plus the scenario rows, n + k) are tableRowsBefore/After in each operation'"'"'s figures (and per phase for the browser case)"}} + $extra' >>"$MEASUREMENTS"
+      table:{backgroundRows:$size, note:"size is the BACKGROUND row count; the rows the table really held (background plus the scenario rows, n + k) are tableRowsBefore/After in each operation'"'"'s figures (and per phase for the browser case)"}} + $extra[0]' >>"$MEASUREMENTS"
 }
 
 load_filler() { # n reasons

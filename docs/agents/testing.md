@@ -486,6 +486,17 @@ interruption, for this directory, with the summary the rows give. `COLLECTION-FA
 nested runner could not bring out of the container) is a gap of its own even when every row is
 complete.
 
+The layout is bound to the rows, not only to the labels. The judge (`qc1_evidence_status`) requires
+every discovery, deletion, workers and browser row (items 3, 6, 9 and 10) to carry the `layout` its
+`record()` writes, equal to the layout the settings name. A row of another layout, or of none, is a
+`settings-disagreement` finding (`what: "layout"`), so a `head` or `tail` cell cannot be certified
+by its environment label over rows measured in `spread`. The request-size and plan rows load their
+own layouts and are not held to it. Each cell's record carries its `rowLayouts`.
+
+`record()` hands the row's figures to `jq` in a file, never as a process argument: a multibyte
+browser case holds the final screen's 50 reason texts (about 145 kB), and Linux refuses one
+argument above 128 KiB. `qc1-fixtures.sh` runs the runner's real `record()` on such a screen.
+
 - **`--charset multibyte`** replaces the reason text with a 21-rune unit of 1- to 4-byte UTF-8 runes
   (accented letters and Omega, the euro sign, CJK, a zero-width joiner, emoji and combining marks),
   repeated and cut to the requested **rune** length, with the row's ASCII ordinal at the end so

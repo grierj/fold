@@ -450,6 +450,7 @@ refused '' qc1_environment_problems "$WORK/no-such-env.json" "$HEAD_FAKE"
 env_bad memsparse '.calibration.dbMemory.samples = 2' 'too sparse'
 
 [[ "$QC1_BROWSER_COUNTS" == 1000,10000 ]]
+REAL_BROWSER_COUNTS="$QC1_BROWSER_COUNTS"   # the counts a real run (and the matrix script, which sources lib.sh itself) is held to
 QC1_BROWSER_COUNTS=10,100   # the fixture sizes are 10 and 100: its browser rows are at counts the table holds
 # A complete set of rows for sizes S, counts C and dense counts D: every kind holds its instruments, its expectation and its outcome. Dense counts are
 # additive: the same discovery, browser and deletion rows for each dense count the table holds. The set-v1 request-size row is the largest deletion count
@@ -485,7 +486,7 @@ AUTOEX='{"scope":"on for this one deletion only, off and waited for before the l
 explained_row() { # which size
   printf '{"status":"measured","item":6,"case":"order-control-delete-%s-explained","size":%s,"workers":0,"targetReasonLen":1000,"reasons":0,"expect":{"items":0,"kept":0,"removed":0},"outcome":%s,"explained":{"status":"200","ms":2900,"requestMs":2850,"reasonsKept":0,"reasonsRemoved":0,"auditRowsBefore":10,"auditBytesBefore":1000,"tableRowsBefore":%s,"targetUserId":46},"auditRetention":%s,"autoExplain":%s,"plannerSettings":{"jit":"on"}}\n' "$1" "$2" "$(outc 0 0)" "$2" "$AUD_EV" "$AUTOEX"
 }
-gen() { # sizes counts [dense]
+gen_rows() { # sizes counts [dense]
   local s k d m c kept removed bc K dlist ci np pre pages digest ph probe probec act k9 name item
   probe="$(probe_json public)"; probec="$(probe_json qc1_clean)"
   for s in $(qc1_list "$1"); do
@@ -532,6 +533,8 @@ gen() { # sizes counts [dense]
   s="$(qc1_list "$1" | sort -n | tail -n 1)"; k9=$(( s < 1000 ? s : 1000 ))
   printf '{"status":"observation","item":9,"case":"workers-on-delete","size":%s,"workers":2,"reasons":%s,"expect":{"items":%s,"kept":%s,"removed":%s},"outcome":%s,"delete":%s}\n' "$s" "$k9" "$k9" "$(( k9 / 2 ))" "$(( k9 - k9 / 2 ))" "$(outc "$(( k9 / 2 ))" "$(( k9 - k9 / 2 ))")" "$(dele "$(( s + k9 ))" "$(( k9 / 2 ))" "$(( k9 - k9 / 2 ))")"
 }
+# Every row of a case that loads the cell's scenario (discovery, deletion, workers, browser) carries the layout the runner's record() writes: spread, the baseline cell.
+gen() { gen_rows "$@" | sed -E 's/^(\{"status":"(measured|observation)","item":(3|6|9|10),.*)\}$/\1,"layout":"spread"}/'; }
 PEND='{"status":"pending","item":4,"case":"legacy-discovery","size":null,"reason":"T07B-3a"}
 {"status":"pending","item":5,"case":"legacy-put","size":null,"reason":"T07B-3a"}'
 status_of() { qc1_evidence_status "$1" "${2:-10,100}" "${3:-0,10,100,1000,10000}" "$WORK/env.json" "$HEAD_FAKE" 6291456 "${4:-}"; }
@@ -889,7 +892,7 @@ for lim in 'gate hold time' 'digest-only time' 'isolated server-side parse' 'mul
   [[ "$(jq -r --arg l "$lim" '[.notMeasured[] | select(contains($l))] | length' <<<"$st")" == 1 ]] || { echo "notMeasured lacks: $lim" >&2; exit 1; }
 done
 # THE REVIEW'S CASE: an environment record whose settings claim the whole matrix, with the 10 and 100 row sizes and arguments. The settings alone never make a run full.
-jq -c '.settings += {sizes:"10000,100000,1000000", counts:"0,10,100,1000,10000", deleteCounts:"0,10,100,1000,10000,100000", denseCounts:"100000", targetReasonLen:1000, wire:"set-v1", browser:true}' "$WORK/env.json" >"$WORK/env.full"
+jq -c '.settings += {sizes:"10000,100000,1000000", counts:"0,10,100,1000,10000", deleteCounts:"0,10,100,1000,10000,100000", denseCounts:"100000", layout:"spread", targetReasonLen:1000, wire:"set-v1", browser:true}' "$WORK/env.json" >"$WORK/env.full"
 fake="$(qc1_evidence_status "$WORK/e2.jsonl" 10,100 0,10,100,1000,10000 "$WORK/env.full" "$HEAD_FAKE" 6291456)"
 [[ "$(jq -r .coverage.kind <<<"$fake")" == pilot && "$(jq -r .releaseEvidence <<<"$fake")" == false && "$(jq -r .complete <<<"$fake")" == false ]] || { echo "a fake-full environment passed: $(jq -c '[.coverage, .complete, .releaseEvidence]' <<<"$fake")" >&2; exit 1; }
 [[ "$(jq -r '[.coverage.reasons[] | select(contains("rows of the full matrix are not measured and clean"))] | length' <<<"$fake")" == 1 ]]
@@ -909,11 +912,34 @@ fs="$(qc1_evidence_status "$WORK/full.jsonl" 10000,100000 0,10,100,1000,10000 "$
 [[ "$(jq -r .coverage.kind <<<"$fs")" == pilot && "$(jq -r '[.invalid[] | select(.failure == "settings-disagreement" and .what == "sizes")] | length' <<<"$fs")" == 1 ]]
 jq -c '.settings.denseCounts = "none"' "$WORK/env.full" >"$WORK/env.nodense"
 fs="$(full_status "$WORK/full.jsonl" "$WORK/env.nodense")"; [[ "$(jq -r .coverage.kind <<<"$fs")" == pilot && "$(jq -r '[.invalid[] | select(.what == "dense counts")] | length' <<<"$fs")" == 1 ]]
-for spec in '.settings.browser = false|no browser' '.settings.targetReasonLen = 200|1,000-rune' 'del(.settings.targetReasonLen)|1,000-rune' '.settings.wire = "items"|not the set-v1 wire' 'del(.settings.sizes)|do not name the sizes'; do
+for spec in '.settings.browser = false|no browser' '.settings.targetReasonLen = 200|1,000-rune' 'del(.settings.targetReasonLen)|1,000-rune' '.settings.wire = "items"|not the set-v1 wire' 'del(.settings.sizes)|do not name the sizes' 'del(.settings.layout)|do not name the layout' '.settings.layout = "diagonal"|do not name the layout'; do
   jq -c "${spec%%|*}" "$WORK/env.full" >"$WORK/env.cov"
   fs="$(full_status "$WORK/full.jsonl" "$WORK/env.cov")"
   [[ "$(jq -r .coverage.kind <<<"$fs")" == pilot && "$(jq -r .releaseEvidence <<<"$fs")" == false && "$(jq -r --arg w "${spec##*|}" '[.coverage.reasons[] | select(contains($w))] | length > 0' <<<"$fs")" == true ]] || { echo "coverage not pilot for ${spec%%|*}: $(jq -c .coverage <<<"$fs")" >&2; exit 1; }
 done
+# The layout the settings name must be the layout of the rows that load the scenario (discovery, deletion, workers, browser): a row of another layout, or of none, is a disagreement, so a cell cannot
+# be certified full by its labels while its measurements were taken in another layout. The request-size and plan rows load their own layouts and are not held to it.
+layout_case() { # name jq-filter-on-rows [env-file]: the rows with the filter applied, judged in the full environment (spread)
+  jq -c "$2" "$WORK/full.jsonl" >"$WORK/full.$1"
+  fs="$(full_status "$WORK/full.$1" "${3:-$WORK/env.full}")"
+}
+layout_refused() { # name jq-filter-on-rows [env-file]: what the layout rows say is refused, and the run is a pilot
+  layout_case "$@"
+  [[ "$(jq -r .coverage.kind <<<"$fs")" == pilot && "$(jq -r .releaseEvidence <<<"$fs")" == false && "$(jq -r .complete <<<"$fs")" == false \
+    && "$(jq -r '[.invalid[] | select(.failure == "settings-disagreement" and .what == "layout")] | length > 0' <<<"$fs")" == true ]] || { echo "layout case $1 was not refused: $(jq -c '[.coverage.kind, .invalid[:3]]' <<<"$fs")" >&2; exit 1; }
+}
+jq -c '.settings.layout = "tail"' "$WORK/env.full" >"$WORK/env.layout-tail"
+layout_refused lay-none 'if .item == 10 and .case == "browser-panel-100" and .size == 10000 then del(.layout) else . end'
+layout_refused lay-null 'if .item == 3 and .case == "discovery-requester-100" and .size == 100000 then .layout = null else . end'
+layout_refused lay-one-tail 'if .item == 6 and .case == "delete-subject-100-mixed" and .size == 100000 then .layout = "tail" else . end'
+layout_refused lay-workers 'if .item == 9 then .layout = "head" else . end'
+layout_refused lay-all-head 'if .item == 3 or .item == 6 or .item == 9 or .item == 10 then .layout = "head" else . end'
+layout_refused lay-env-tail 'if .item == 3 or .item == 6 or .item == 9 or .item == 10 then .layout = "spread" else . end' "$WORK/env.layout-tail"
+layout_case lay-request-size 'if .item == 5 then .layout = "tail" else . end'
+[[ "$(jq -c '[.coverage.kind, .complete, .releaseEvidence, (.invalid | length)]' <<<"$fs")" == '["full",true,true,0]' ]] || { echo "a request-size row of another layout broke a full run: $(jq -c '.invalid[:3]' <<<"$fs")" >&2; exit 1; }
+# A run of the tail layout is full when its rows are the tail's, and only then.
+layout_case lay-tail 'if .item == 3 or .item == 6 or .item == 9 or .item == 10 then .layout = "tail" else . end' "$WORK/env.layout-tail"
+[[ "$(jq -c '[.coverage.kind, .complete, .releaseEvidence, (.invalid | length)]' <<<"$fs")" == '["full",true,true,0]' ]] || { echo "a tail run with tail rows is not full: $(jq -c '[.coverage.reasons, .invalid[:3]]' <<<"$fs")" >&2; exit 1; }
 # A full run that is not clean is not release evidence.
 jq -c 'if .item == 10 and .case == "browser-panel-100" then . else . end | if .item == 8 then .generic.source = "harness" else . end' "$WORK/full.jsonl" >"$WORK/full.dirty"
 fs="$(full_status "$WORK/full.dirty")"; [[ "$(jq -r .releaseEvidence <<<"$fs")" == false && "$(jq -r .complete <<<"$fs")" == false ]]
@@ -2004,15 +2030,19 @@ MX_LIB="$(sha256sum "$HERE/qc1/lib.sh" | cut -d' ' -f1)"; MX_FACTS="$(sha256sum 
 MX_CELLS=(ascii-spread ascii-tail ascii-head multibyte-spread)
 mx_base_cell() { # name rows-file: a complete cell with a status that is true of its rows (the runner record is made per case)
   local name="$1" d="$MX/base/$1/qc1"
-  mkdir -p "$d"; cp "$2" "$d/measurements.jsonl"
+  mkdir -p "$d"
+  jq -c --arg ly "${name#*-}" 'if (.status == "measured" or .status == "observation") and (.item == 3 or .item == 6 or .item == 9 or .item == 10) then .layout = $ly else . end' "$2" >"$d/measurements.jsonl"   # the rows of the cell are of its layout
   jq -c --arg ly "${name#*-}" --arg cs "${name%%-*}" --arg lib "$MX_LIB" --arg facts "$MX_FACTS" '.settings += {layout:$ly, charset:$cs} | .maxRequestBytes = 6291456 | .incomplete = false
     | (.sources[] | select(.path == "deploy/digitalocean/qc1/lib.sh") | .sha256) = $lib | (.sources[] | select(.path == "deploy/digitalocean/qc1/app-facts.json") | .sha256) = $facts' "$WORK/env.full" >"$d/environment.json"
   qc1_evidence_status "$d/measurements.jsonl" 10000,100000,1000000 0,10,100,1000,10000 "$d/environment.json" "$HEAD_FAKE" 6291456 100000 >"$d/evidence-status.json"
   [[ "$(jq -c '[.coverage.kind, .complete, .releaseEvidence]' "$d/evidence-status.json")" == '["full",true,true]' ]] || { echo "the matrix fixture cell $name is not full: $(jq -c '[.coverage, .missing[:2], .pending[:2], .invalid[:2]]' "$d/evidence-status.json")" >&2; exit 1; }
 }
-jq -c "$MB" "$WORK/full.jsonl" >"$WORK/full.mb"
-for c in ascii-spread ascii-tail ascii-head; do mx_base_cell "$c" "$WORK/full.jsonl"; done
-mx_base_cell multibyte-spread "$WORK/full.mb"
+# The matrix script sources lib.sh itself and holds a cell to the real browser counts (1,000 and 10,000, and the dense 100,000), so the control's rows are of those counts and are judged with them here.
+QC1_BROWSER_COUNTS="$REAL_BROWSER_COUNTS"
+{ gen 10000,100000,1000000 0,10,100,1000,10000 100000; legacy_rows 10000,100000,1000000; } >"$WORK/full.real"
+jq -c "$MB" "$WORK/full.real" >"$WORK/full.real.mb"
+for c in ascii-spread ascii-tail ascii-head; do mx_base_cell "$c" "$WORK/full.real"; done
+mx_base_cell multibyte-spread "$WORK/full.real.mb"
 mx_runner() { # case-dir cell: the runner's record of a clean run of the cell, with the summary of the status the cell holds
   local d="$1/$2/qc1"
   jq -nc --arg dir "$d" --arg rev "$HEAD_FAKE" --slurpfile st "$d/evidence-status.json" '{schema:"fold/reason-review-scale/v1", revision:$rev, workingTreeClean:true, result:"partial",
@@ -2098,6 +2128,49 @@ jq -e '[.gaps[] | select(test("cell ascii-head: the saved evidence-status.json d
 mx_pilot rows 'cell ascii-tail: its settings do not name the full matrix'
 mx_pilot rows 'cell multibyte-spread: its settings name another layout or charset'
 mx_case revision; mx_edit ascii-tail environment.json '.revision = "2222222222222222222222222222222222222222"'; mx_run revision; mx_pilot revision 'more than one revision'
+# R2 (layout): the rows that load the scenario are of the layout the cell names. A head label over rows measured in the spread layout, a browser row that names no layout, and a deletion row of another
+# layout each make the recomputed status carry an invalid finding for that cell (the saved status is made honest first, so the layout is the only thing wrong), and nothing is named for the untouched cell.
+mx_case layout
+mx_edit ascii-head measurements.jsonl 'if .layout != null then .layout = "spread" else . end'
+mx_edit ascii-tail measurements.jsonl 'if .item == 10 and .case == "browser-panel-1000" and .size == 10000 then del(.layout) else . end'
+mx_edit multibyte-spread measurements.jsonl 'if .item == 6 and .case == "delete-subject-100-mixed" and .size == 100000 then .layout = "tail" else . end'
+for c in ascii-head ascii-tail multibyte-spread; do
+  qc1_evidence_status "$MX_DIR/$c/qc1/measurements.jsonl" 10000,100000,1000000 0,10,100,1000,10000 "$MX_DIR/$c/qc1/environment.json" "$HEAD_FAKE" 6291456 100000 >"$MX_DIR/$c/qc1/evidence-status.json"
+  [[ "$(jq -r '[.invalid[] | select(.failure == "settings-disagreement" and .what == "layout")] | length > 0' "$MX_DIR/$c/qc1/evidence-status.json")" == true ]] || { echo "matrix layout case: $c has no layout finding" >&2; exit 1; }
+  mx_runner "$MX_DIR" "$c"
+done
+mx_run layout
+for c in ascii-head ascii-tail multibyte-spread; do mx_pilot layout "cell $c: [0-9]+ invalid finding.s., first: settings-disagreement"; done
+jq -e '[.gaps[] | select(test("cell ascii-spread"))] | length == 0' "$MX/out-layout.json" >/dev/null || { echo "the untouched cell is named: $(jq -c .gaps "$MX/out-layout.json")" >&2; exit 1; }
+jq -e '([.cells[] | select(.name == "ascii-spread") | .rowLayouts | map(.layout)] == [["spread"]]) and ([.cells[] | select(.name == "ascii-head") | .rowLayouts | map(.layout)] == [["spread"]]) and ([.cells[] | select(.name == "ascii-tail") | .rowLayouts | map(.layout) | sort] == [["none", "tail"]])' "$MX/out-layout.json" >/dev/null || { echo "the cells do not carry the layouts of their rows: $(jq -c '[.cells[] | {name, rowLayouts}]' "$MX/out-layout.json")" >&2; exit 1; }
+# the control's cells each carry only their own layout
+jq -e '.cells | all(. as $c | ($c.rowLayouts | map(.layout)) == [($c.name | sub("^[a-z]+-"; ""))])' "$MX/out-control.json" >/dev/null || { echo "the control cells carry another layout than their name: $(jq -c '[.cells[] | {name, rowLayouts}]' "$MX/out-control.json")" >&2; exit 1; }
+QC1_BROWSER_COUNTS=10,100   # back to the fixture's own counts for what follows
+
+# --- recording a browser case (R4): the figures reach jq through a file -------------------------------------------------------------------------------------------------------------
+# The real record() of the runner, taken from its source, appends a browser row whose panel result holds the final screen's reason texts: 50 rows of 1,000 mixed 1- to 4-byte runes (61 bytes per 21 runes, about
+# 2.9 bytes a rune), over 140 KB, which is more than the 128 KiB Linux allows as one process argument. The row must be appended whole, byte for byte. (A subshell: its variables are the runner's, not this script's.)
+(
+  eval "$(sed -n '/^record() {/,/^}/p' "$RUNNER_SRC")"
+  MB_TEXT="$(jq -nr '[97,98,99, 233,246,252,769, 8364,8482,8226,8230,8212,8211, 128512,128513,128514,128515,128516,128517,128518,128519] as $p | [range(0; 1000) | $p[. % ($p | length)]] | implode')"
+  [[ "$(jq -nr --arg t "$MB_TEXT" '$t | length')" == 1000 && "$(jq -nr --arg t "$MB_TEXT" '$t | utf8bytelength')" -gt 2800 ]]
+  jq -nc --arg t "$MB_TEXT" '{captured: true, nav: "Reasons 1 to 50 of 1000", navCount: 1, rows: [range(0; 50) | {id: ((1000 + .) | tostring), reasonElements: 1, text: $t}]}' >"$WORK/rec-screen.json"
+  jq -c '{reasons: 1000, variant: "standard", browser: {walkTotal: 1000, screen: .}, agreement: {digest: {checked: true, equal: true}}}' "$WORK/rec-screen.json" >"$WORK/rec-extra.json"
+  REC_EXTRA="$(cat "$WORK/rec-extra.json")"
+  (( $(printf '%s' "$REC_EXTRA" | wc -c) > 131072 )) || { echo "the recording fixture is not larger than one process argument (128 KiB): $(printf '%s' "$REC_EXTRA" | wc -c) bytes" >&2; exit 1; }
+  MEASUREMENTS="$WORK/rec-measurements.jsonl"; : >"$MEASUREMENTS"
+  # shellcheck disable=SC2034  # read by the runner's record(), which was eval'd from its source
+  LAYOUT=spread CHARSET=multibyte REASON_LEN=200 TARGET_REASON_LEN=1000 CURRENT_WORKERS=0 CASE_SEQ=0
+  record 10 browser-panel-1000 10000 "$REC_EXTRA"
+  record 10 browser-panel-10000 10000 "$REC_EXTRA"
+  [[ "$(wc -l <"$MEASUREMENTS")" == 2 && "$(jq -sc '[.[] | [.seq, .item, .case, .layout, .charset, .size]]' "$MEASUREMENTS")" == '[[1,10,"browser-panel-1000","spread","multibyte",10000],[2,10,"browser-panel-10000","spread","multibyte",10000]]' ]] || { echo "record() did not append two rows: $(head -c 300 "$MEASUREMENTS")" >&2; exit 1; }
+  jq -es --arg t "$MB_TEXT" --slurpfile s "$WORK/rec-screen.json" 'all(.[]; (.browser.screen == $s[0]) and (.browser.screen.rows | (length == 50) and all(.[]; .text == $t)) and .agreement.digest.equal == true and .table.backgroundRows == 10000)' "$MEASUREMENTS" >/dev/null || { echo "record() altered the screen text" >&2; exit 1; }
+  record 2 unrelated 100 '{"expect":{"items":0}}'
+  [[ "$(tail -n 1 "$MEASUREMENTS" | jq -c '[.item, .case, .expect.items]')" == '[2,"unrelated",0]' ]]
+)
+# the runner's own source: a figure never goes through a process argument again
+if sed -n '/^record() {/,/^}/p' "$RUNNER_SRC" | grep -q -- '--argjson extra'; then echo 'qc1: record() passes the figures as a process argument' >&2; exit 1; fi
+sed -n '/^record() {/,/^}/p' "$RUNNER_SRC" | grep -qF -- '--slurpfile extra "$extra_file"'
 mut asc-noagree-ok "$BP then .agreement = {digest: {checked: false, equal: null}} else . end"   # an ASCII run need not have compared; it must not have found a difference
 st="$(status_of "$WORK/e2.asc-noagree-ok")"; [[ "$(jq -r .complete <<<"$st")" == true ]]
 

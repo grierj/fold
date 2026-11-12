@@ -891,7 +891,11 @@ qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head 
             | {what:"target reason length", settings:$s.targetReasonLen, row:{item, size, case, targetReasonLen}}),
          # a row of another charset than the settings name (a pre-charset record means ascii)
          ($rows[] | select((type == "object") and (.status == "measured" or .status == "observation") and .item != null and ((.charset // "ascii") != ($s.charset // "ascii")))
-            | {what:"charset", settings:($s.charset // "ascii"), row:{item, size, case, charset}}) ]) as $disagree
+            | {what:"charset", settings:($s.charset // "ascii"), row:{item, size, case, charset}}),
+         # a row of a case that loads the scenario of the cell (discovery, deletion, workers, browser) must carry the layout the settings name: a row of another layout, or of none, is not
+         # the measurement of that cell, however the saved coverage reads. (The request-size and plan rows load their own layouts and are not held to this.)
+         ($rows[] | select((type == "object") and (.status == "measured" or .status == "observation") and (.item == 3 or .item == 6 or .item == 9 or .item == 10) and $s.layout != null and (.layout != $s.layout))
+            | {what:"layout", settings:$s.layout, row:{item, size, case, layout}}) ]) as $disagree
     | ([ $fullWant[] | select(clean(.) | not) ]) as $fullGaps
     | ([ $rows[] | select((type == "object") and (.item == 3 or .item == 6 or .item == 10) and (.status == "measured" or .status == "observation") and .targetReasonLen != 1000) ] | length) as $shortTargets
     | ([ (if ($env == null) then "environment record unreadable" else empty end),
@@ -900,6 +904,7 @@ qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head 
          (if $s.targetReasonLen != 1000 then "the settings do not name 1,000-rune target reasons (targetReasonLen " + ($s.targetReasonLen | tostring) + ")" else empty end),
          (if $s.browser != true then "no browser panel measurement" else empty end),
          (if $s.wire != "set-v1" then "not the set-v1 wire" else empty end),
+         (if ($s.layout | IN("spread", "tail", "head") | not) then "the settings do not name the layout (spread, tail or head) the rows were measured in" else empty end),
          (if ($disagree | length) > 0 then "the settings disagree with the arguments or the rows: " + ($disagree | map(.what) | join(", ")) else empty end),
          (if $s.sizes == null or $s.counts == null or $s.denseCounts == null or $s.deleteCounts == null then "the settings do not name the sizes, counts, dense counts and deletion counts" else empty end) ]) as $covReasons
     | { missing: [ $want[] | select(present(.) | not) ],

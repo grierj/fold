@@ -23,6 +23,8 @@
 # with qc1_evidence_status (deploy/digitalocean/qc1/lib.sh, the function that wrote the saved status), and judges by that. The saved evidence-status.json must equal the
 # recomputed one, so a stale, edited or mismatched status file is a gap, not a certificate. The judge that recomputes must be the one the run recorded (the sha256 of
 # lib.sh and app-facts.json in the environment record), the environment must be a complete record with no problem named, and the settings must name the full matrix.
+# The judge also binds the layout: every discovery, deletion, workers and browser row must carry the layout the cell's settings name, so a head or tail label over
+# rows measured in another layout (or rows that name none) is an invalid finding of the recomputed status, and each cell's record carries its rowLayouts.
 # The runner's record (evidence.json) must exist, name the same revision on a clean tree, and show one QC-1 step that exited 0, was not a failure or an interruption,
 # is the directory given, and summarised the same status. COLLECTION-FAILED.txt, which the nested runner writes when it could not bring something out of the
 # container, is a gap of its own even when every row is complete.
@@ -176,6 +178,7 @@ cell_json_in() {
 		                 incomplete:(($e.incomplete // false) != false)},
 		   fixtures: ($e.settings | {sizes, counts, denseCounts, deleteCounts, layout, charset, reasonLen, targetReasonLen, browser, wire}),
 		   artifacts: $artifacts,
+		   rowLayouts: ($m | map(select(.item == 3 or .item == 6 or .item == 9 or .item == 10) | .layout // "none") | group_by(.) | map({layout: .[0], rows: length})),
 		   judge: {libMatchesRun: (srcsha("deploy/digitalocean/qc1/lib.sh") == $libSha), factsMatchRun: (srcsha("deploy/digitalocean/qc1/app-facts.json") == $factsSha)},
 		   recompute: {ok:$recomputedOk, why:$why,
 		               savedEqualsRecomputed: ($recomputedOk and ($sv == $rc[0])),
@@ -276,7 +279,7 @@ if ((self_test)); then
 			  settings:{sizes:"10000,100000,1000000", counts:"0,10,100,1000,10000", denseCounts:"100000", deleteCounts:"0,10,100,1000,10000,100000", layout:$ly, charset:$cs, reasonLen:200, targetReasonLen:1000, browser:true, wire:"set-v1"}}' >"$d/environment.json"
 		echo '{"complete":true,"coverage":{"kind":"full","reasons":[]},"releaseEvidence":true,"missing":[],"invalid":[],"budgetFailures":[],"pending":[]}' >"$d/evidence-status.json"
 		{
-			jq -nc '{status:"measured", item:6, size:10000, case:"delete-requester-10-mixed", delete:{ms:120, walBytes:5000, appPeakKb:300, dbPeakKb:900, auditRowsAfter:40}, outcome:{textExact:true}}'
+			jq -nc --arg ly "$ly" '{status:"measured", item:6, size:10000, case:"delete-requester-10-mixed", layout:$ly, delete:{ms:120, walBytes:5000, appPeakKb:300, dbPeakKb:900, auditRowsAfter:40}, outcome:{textExact:true}}'
 			jq -nc '{status:"measured", item:5, size:10000, case:"request-size", request:{capacity:{reasons:18873540}, largest:{bodyBytes:800}, legacyComparison:{idDigits:5, capacityEntries:52760, fitBytes:6291400, fitStatus:"409", overStatus:"413"}}}'
 		} >"$d/measurements.jsonl"
 		runner_record "$name" "$r" "$verdict" "$result"
