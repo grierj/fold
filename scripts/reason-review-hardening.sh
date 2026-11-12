@@ -85,7 +85,7 @@
 # is written, which then stands.
 # Needs: bash with job control (`set -m` is verified before any work starts)
 # and the tools checked at start (git, sleep, grep, sed, find, comm, sort, cp,
-# mktemp, tail, uname, date, node, go, npm). A missing tool is reported and
+# mktemp, tail, uname, date, node, go, npm, xargs, sha256sum, cut). A missing tool is reported and
 # nothing runs. The recorded runs use Linux and GNU coreutils/findutils; macOS
 # is unverified. SIGINT must not have been ignored when the
 # script started: a noninteractive shell starts a plain `cmd &` with SIGINT
