@@ -387,7 +387,9 @@ if ((self_test)); then
 	jq -c '.steps[0].artifacts = "'"$work"'/elsewhere/qc1"' "$work/ascii-tail/evidence.json" >"$work/ascii-tail/evidence.json.tmp" && mv "$work/ascii-tail/evidence.json.tmp" "$work/ascii-tail/evidence.json"
 	expect elsewhere PILOT 10 "cell ascii-tail: the runner record.s qc1 step is for another directory" "${all[@]}"
 	stub ascii-tail
-	jq -c '.steps[0].summary.releaseEvidence = false' "$work/ascii-tail/evidence.json" >"$work/ascii-tail/evidence.json.tmp" && mv "$work/ascii-tail/evidence.json.tmp" "$work/ascii-tail/evidence.json"
+	# A stub is a pilot, so its honest summary says releaseEvidence false: the mismatch is the runner claiming release evidence the rows do not hold. (Setting it to false would change nothing.)
+	jq -e '.steps[0].summary.releaseEvidence == false' "$work/ascii-tail/evidence.json" >/dev/null || { echo "self-test runnersummary: the stub's honest summary does not say releaseEvidence false" >&2; exit 1; }
+	jq -c '.steps[0].summary.releaseEvidence = true' "$work/ascii-tail/evidence.json" >"$work/ascii-tail/evidence.json.tmp" && mv "$work/ascii-tail/evidence.json.tmp" "$work/ascii-tail/evidence.json"
 	expect runnersummary PILOT 10 "cell ascii-tail: the runner.s summary of its QC-1 step differs" "${all[@]}"
 	stub ascii-tail
 	jq -c '.steps += [.steps[0]]' "$work/ascii-tail/evidence.json" >"$work/ascii-tail/evidence.json.tmp" && mv "$work/ascii-tail/evidence.json.tmp" "$work/ascii-tail/evidence.json"
