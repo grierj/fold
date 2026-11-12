@@ -180,6 +180,69 @@ manual probes, and `TestReasonHardening*` (account_erasure_reasons_envelope_test
 script with stub tools, real signals, a supervisor killed on its own with its command and a TERM-ignoring descendant still running, and bystander processes (the tests identify processes by PID and start time and end the script only through its handle, never a PID read back from a file). The race detector says nothing about PostgreSQL
 lock correctness: the deterministic lock tests in the normal checks decide that.
 
+### Reason-review verification cadence
+
+While you work on contact-request reason review, run the focused checks for the kind of change
+you are making, and keep them cheap enough to repeat. They do not replace the final run: the
+candidate head still runs the full list in `AGENTS.md` ("Before every push" and the merge gate:
+`go build ./...`, `make lint`, `make deadcode`, `make test`, `cd web && npm test && npm run
+build`, `make e2e`) and CI. Every name below is a test that exists today; the long runs
+(hardening above, scale below) belong to a candidate, not to the edit loop.
+
+| You changed | Run while iterating | Why this one |
+|---|---|---|
+| The scanner: the scan SQL, batches, cursor, the tombstone discovery markers | `go test . -count=1 -run '^(TestReasonScanNoSkip\|TestReasonScanIsBounded\|TestReasonOrderingMatrix\|TestBatchedScanMatchesTheSingleStatementOnPostgres\|TestTombstoneDiscoveryNumericMarkersAndShape\|TestTombstoneStructuralMatchAndNumericMarker)$'` | The traversal must not skip or repeat a request, every unit stays bounded, the batched scan equals the single statement, and the markers decide what a sweep revisits. Needs `DATABASE_URL`. |
+| A transaction, the attempt ledger or the restore fence | `go test . -count=8 -run '^TestAttemptLifecycle$'`; `go test . -count=1 -run '^TestFencedTransactionsTakeTheTicketFirst$'`; then the restore-fence tests below | `-count=8` because the lifecycle tests are about ordering; the guard reads the whole production tree; the fence tests dump and restore a real database, so they need the `pg_dump` setup in "Restore tests" above (`TestRestoreFence*`, `TestReasonReviewRestoreWithOpenPanel`). |
+| The review UI or its store | `cd web && npx vitest run src/components/ReasonReviewList.test.tsx src/components/ReasonReviewSection.test.tsx src/lib/reasonReviewStore.test.ts`; then `make e2e` (the shards decide which specs run together, so a spec filter after the spec list does not narrow it; with `DATABASE_URL` set, `E2E_SHARDS=1 web/e2e/run.sh --grep "reviewing contact-request reasons"` runs the deletion flow alone, after `cd web && npm run build`), which includes `admin-delete-user.spec.ts` and the `a11y` and `layout` specs | Vitest is the fast loop; the e2e spec drives the real deletion; axe and layout catch what a unit test cannot see. Look at the 390px screenshots (`.cursor/skills/verify-ui`). |
+| Recovery: `restore.sh`, the drill, the deploy tools | `make provision-dry-run` (the dry-run container also runs the drill fixtures, `restore-drill-modes-fixtures.sh` among them; needs Docker), then only the drill cases the change can reach, through `restore-drill.sh` (the case list is its `drill_progress_init` call) | The full drill is long; `docs/agents/deploy.md` ("Full restore drill frequency") is the one place that says when it is owed. |
+
+Run `-run` patterns exactly as written: an unanchored pattern that matches nothing passes
+silently, so read the `--- PASS` lines for the names you meant.
+
+### Reason-review scale run
+
+`scripts/reason-review-scale.sh` runs the QC-1 measurement (`deploy/digitalocean/qc1-measure.sh`)
+and the restore drill (`deploy/digitalocean/restore-drill.sh`) behind one entry point, one
+revision-bound record, and the same cautions as the hardening script: outside CI, a clean
+committed HEAD only, an evidence directory outside the checkout that is new or empty, and a
+record that starts `incomplete` so an interrupted rerun cannot keep a previous pass. By default
+each step runs in a throwaway container with its own Docker daemon
+(`restore-drill-nested.sh`); `--runner direct` is for a machine that already is that disposable
+host. `--dry-run` prints the steps, the matrix, the coverage the invocation asks for and the
+record path, and starts nothing; read it before a run that takes hours.
+
+```bash
+scripts/reason-review-scale.sh --dry-run
+scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
+```
+
+- **The record** (`evidence.json`, schema `fold/reason-review-scale/v1`): revision, tree,
+  whether the tree was clean, the tool files' sha256, the host, the arguments, and per step the
+  command, start and end, seconds, exit status, verdict (`pass`, `partial` or `fail`), log and
+  the tool's own artifact directory (`qc1/`, `drill/`). `requested` says what the invocation
+  asked for; `coverage` says what was reached.
+- **Coverage is `full` only when** both steps ran, the drill was the full drill, nothing was
+  passed through to either tool, QC-1's own `evidence-status.json` says complete, coverage
+  `full` and `releaseEvidence` true, and the drill exited 0 with a `restore-drill.json` for the
+  same revision. Everything else is `partial` with the reasons listed: one step only, the
+  `--crossings-only` diagnostic (it exits 10 on a pass and is never acceptance), a QC-1 pilot,
+  any `--qc1-arg` or `--drill-arg`. An `incomplete` or `fail` record is never `full`.
+- **Exit status**: 0 only for `pass`, 10 for `partial`, 1 for `fail`, 2 for a refusal before any
+  step ran, 129, 130 or 143 after a signal (the record is left `incomplete`).
+- **QC-1 is a measurement.** Its budget failures are counted in the step's summary for the
+  reviewed engineering disposition its header describes; they do not fail the step.
+- **When the full drill is owed** is decided only in `docs/agents/deploy.md` ("Full restore drill
+  frequency"). The script makes you state the reason (`--drill-reason`) and records it with the
+  run date; it does not repeat the rule.
+- **Its own test**: `make reason-review-scale-test` (also part of `make test`) runs
+  `scripts/reason-review-scale.sh --self-test`, which copies the script into a scratch git
+  repository whose `deploy/digitalocean` tools are stubs and checks, with no Docker: the record
+  shape; that a partial, pilot, crossings-only, one-step or pass-through run is never `full`;
+  that a failed step, an unreadable QC-1 record or another revision fails; the dry run; the
+  refusals (dirty tree, used or in-checkout evidence directory, missing drill reason); that the
+  record a running step sees is `incomplete`; and that TERM and HUP end the step and leave an
+  `incomplete` record. Real runs on a droplet-class host are a hand check, not covered by this.
+
 ### Source guards
 
 - Source guards are the parse-only tests in `guards_<concern>_test.go`, `throttle_keys_test.go`,

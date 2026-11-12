@@ -3,7 +3,7 @@
 DEV_COMPOSE := docker compose -f deploy/docker-compose.dev.yml
 DEV_DATABASE_URL := postgres://fold:fold@localhost:5432/fold?sslmode=disable
 
-.PHONY: dev test lint lint-go lint-web devdb e2e lint-sh provision-dry-run compose-smoke deadcode
+.PHONY: dev test lint lint-go lint-web devdb e2e lint-sh provision-dry-run compose-smoke deadcode reason-review-scale-test
 
 # Start the dev database and wait until it accepts connections.
 devdb:
@@ -19,7 +19,7 @@ dev: devdb
 
 # go test ./... against DATABASE_URL, with the root package split across
 # parallel shards (scripts/go-test.sh); starts the dev database when it is unset.
-test:
+test: reason-review-scale-test
 	@if [ -z "$$DATABASE_URL" ]; then \
 		$(DEV_COMPOSE) up -d --wait db && \
 		DATABASE_URL="$(DEV_DATABASE_URL)" scripts/go-test.sh; \
@@ -79,3 +79,8 @@ provision-dry-run:
 # Builds ghcr.io/grierj/fold:ci. The release workflow passes --image instead.
 compose-smoke:
 	bash scripts/compose-smoke.sh
+
+# The reason-review scale wrapper's own checks, against stub tools in a scratch
+# repository: no Docker, a few seconds. Also a prerequisite of make test.
+reason-review-scale-test:
+	bash scripts/reason-review-scale.sh --self-test
