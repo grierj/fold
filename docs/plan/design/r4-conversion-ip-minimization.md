@@ -608,10 +608,12 @@ or reads the SQL of sections 3 and 6 against the schema, and gives an explicit v
 Any scope or over-clearing finding blocks. Approval of an exact revision covers that revision
 only; a later change to this file needs a new review of what changed.
 
-**Review record: r1 received two independent combined reviews with findings (R303-01,
-R303-02, F-COUNT, F-GAP, F-RESIDUE, F-LOCK) and no approval. The r2 review left three
-findings open. No reviewer has read r3.
-Nothing here is approved.**
+**Review record:** r1 received two independent reviews with findings (R303-01, R303-02,
+F-COUNT, F-GAP, F-RESIDUE, F-LOCK). The r2 review left three findings open. An independent
+reviewer approved r3 at commit `ead7e7bc9e1b135ceabc6fd34adfaebabde6bc81`, closing those
+findings and confirming the scope, selectors, gates, counts, sweep and residue above. This
+record adds no design change; the review of the commit containing it must also cover this
+record. The approval does not decide the open matters below.
 
 What an approval would not do: approve #305's code, change a sweep version or a migration,
 close G-9, establish G-8, authorize P1, P3, P4 or P5, widen decision 5, or answer Q3. #305 stays
