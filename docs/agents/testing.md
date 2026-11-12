@@ -617,16 +617,19 @@ malformed, that names an expected sampling measurement as missing (a standard-sh
 case}` entry, the reason count parsed from its case name), or whose outer runner record is present
 but unfinished, unbound, unreadable or malformed, marks no single well-formed QC-1 step for this
 directory and revision, or marks its QC-1 step interrupted, failed with a nonzero exit, passed or
-partial with a contradicting exit, or failed with exit 0 for any reason beyond intentional
-omissions, contributes runs that are listed but never counted; the one accepted outer shape is an
+partial with a contradicting exit or with a summary that contradicts the verdict or the directory's
+validated status (the exit must be a JSON integer matching the verdict, and a pass or partial summary
+must have the runner's shape and say what the directory's status says), or failed with exit 0 for any
+reason beyond intentional omissions, contributes runs that are listed but never counted; the one
+accepted outer shape is an
 exit-0 failure explained entirely by the sampling design omitting the full matrix, proven by the
 step's own summary agreeing with the directory's validated status. Expected sampling-only omissions
 (other missing rows, legacy pending cases, pilot coverage) are recorded, not failures. A repeated
 `--evidence` directory is refused; an identical record copied across directories of one stack is
 counted once, while a repeated or conflicting identity within one measurements file, or conflicting
 records of one identity across directories of one stack, excludes every occurrence — and identity
-covers validity, not only timings, so equal-timed copies that differ in status, window, agreement or
-sampling data conflict instead of collapsing. The record is `COMPLETE` (exit 0) only with at least 3 counted runs in both
+is the canonical original record, so equal-timed copies that differ in status, window, agreement,
+sampling, page accounting or other recorded validity facts conflict instead of collapsing. The record is `COMPLETE` (exit 0) only with at least 3 counted runs in both
 configurations; otherwise `INCOMPLETE` (exit 10) and each gap is named, and a configuration with no
 counted run has no figures at all.
 

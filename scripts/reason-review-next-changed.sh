@@ -30,13 +30,18 @@
 # incomplete, whose evidence-status.json is missing, unreadable or malformed (it must be one finalized object: a boolean complete, typed missing/pending/invalid/
 # budgetFailures arrays with valid entries, and a coverage record with a kind), that lacks an expected sampling measurement (a standard-shaped {item, size,
 # case} sampling entry, the reason count parsed from its case name, like every other missing entry) or names a non-legacy pending case, or whose outer runner
-# record is unfinished, unbound, malformed, or marks its qc1 step failed or interrupted, contributes runs that are listed but never counted. One exit-0 outer
+# record is unfinished, unbound, or malformed, or marks its qc1 step interrupted, failed with a nonzero exit, passed or partial
+# with a contradicting exit or a summary that contradicts the verdict or this directory's validated status, or failed with exit 0
+# for any reason beyond intentional omissions, contributes runs that are listed but never counted. A present step's exit must be a
+# JSON integer matching its verdict (pass takes 0 only; partial takes 0 or 10), and its summary must have the runner's own shape
+# and agree with this directory's status. One exit-0 outer
 # failure is accepted: a fail explained entirely by the sampling design omitting the full matrix (ordinary missing rows, legacy pending cases, pilot coverage),
 # proven by the step's own summary agreeing with this directory's validated evidence-status.json. Expected sampling-only omissions are recorded, not failures.
 # One stack is one observation: a repeated canonical --evidence directory is refused; a repeated identity within one measurements file excludes every occurrence
 # (each is suspect); an identical record copied across directories of one stack is counted once and named, while conflicting records of one identity exclude
-# every occurrence. Identity covers validity, not only timings: two records with the same presses but different status, window, agreement or sampling data
-# conflict. A malformed local or outer record is a failure, never an omission; an absent outer record is the direct-QC-evidence shape and is fine.
+# every occurrence. Identity is the canonical original record: two records with equal timed presses but different status, window,
+# agreement, sampling, page accounting or other recorded validity facts conflict instead of collapsing. A malformed local or outer
+# record is a failure, never an omission; an absent outer record is the direct-QC-evidence shape and is fine.
 #
 # What it does not do. It does not call a delay noise, does not call a target met, and does not choose a fix: it prints the numbers, their load context and the one mechanical
 # consequence the issue states (a pooled p95 over the target means a profile is the next step). The target is the scaling design's proposal (QC1_NAV_BUDGET_MS), not an
@@ -123,12 +128,14 @@ def stats: {count: length, p50Ms: pct(50), p95Ms: pct(95), maxMs: (if length == 
 # one stack a demonstrably identical record is the same run copied, counted once; records that conflict are untrustworthy, so
 # none of them counts. Runs of independent stacks pool. The outcome never depends on directory or row order: a uniform copy group
 # always counts exactly one run, and a repeated or conflicting identity always counts none.
-# The comparison token carries validity, not only timings: pressed ms, first-press ms, load and browser version are already
-# projected, and the original row status, window, agreement and full sampling record travel beside them (tok fields), so two
-# directories with equal timed presses but conflicting scheduler overlap, agreement, status, origins or indices get different
-# tokens and exclude every occurrence. Volatile instrument readings outside the counting rules (render and heap figures, click and
-# navigation summaries, page accounting beyond the judge) stay out of the token; only dir/stack (location metadata) is excluded.
-def run_token: ([.presses, .firstPressMs, .load, .browser, .tokStatus, .tokWindow, .tokAgreement, .tokSampling, .tokChecks] | tojson);
+# The comparison token carries the canonical original record, not only timings: pressed ms, first-press ms, load and the
+# browser version are already projected, and the original row status, window, agreement, full sampling record, full browser
+# record and the row judge-invalid verdicts travel beside them (tok fields). The browser record carries every page-accounting,
+# digest, phase, first-page, click, navigation, load and secure-context fact the QC judge reads, so two directories whose copies
+# differ in any recorded validity fact get different tokens and exclude every occurrence. Carrying the whole browser record is
+# fail-closed: a difference can only turn a collapse into an exclusion, never an exclusion into a count; only dir/stack
+# (location metadata) is excluded.
+def run_token: ([.presses, .firstPressMs, .load, .browser, .tokStatus, .tokWindow, .tokAgreement, .tokSampling, .tokChecks, .tokInvalid] | tojson);
 def mark_duplicates:
   ((map([.dir, .background // -1, .case // "?"] | tojson)) | group_by(.) | map(select(length > 1) | .[0]) | unique) as $within
   | (. as $runs
@@ -168,7 +175,9 @@ judge_findings() {
 # the duplicate-run check. Budget findings are kept beside the row and never count against it. The sampling record itself is validated at the boundary (R6):
 # requested/performed are whole numbers matching the recorded presses and at least the required count, every press is an object with a nonnegative time, a
 # 0..N-1 index, a runner origin and a nonnegative offset, firstPressMs is the first press, and the load counters are numbers. A malformed value names its
-# excluded row; no shape aborts the report. Validity fields travel beside the row for the duplicate check (tok*).
+# excluded row; no shape aborts the report. Summaries are computed only from safe projected presses (objects with a numeric
+# time and a string origin, $ok), so a non-object element or a non-string origin cannot reach a jq field access or object key.
+# The full original browser record and the row's own judge verdicts travel beside the row for the duplicate check (tok*).
 runs_json() {
 	local dir=$1 invalid=$2 budget=$3 stack=$4
 	jq -sc --argjson need "$REQUIRED_PRESSES" --argjson target "$TARGET_MS" --arg dir "$dir" --argjson invalid "$invalid" --argjson budget "$budget" --arg stack "$stack" "$JQ_DEFS"'
@@ -178,6 +187,8 @@ runs_json() {
 		  | . as $r | (($r.browser // {}) | if type == "object" then . else {} end) as $b | (($b.nextChangedSampling // null) | if type == "object" then . else null end) as $s
 		  | ([ ($s.presses // [])[]? | select(type == "object") | .ms | select(isnum) ]) as $ms
 		  | (($s.presses // []) | if type == "array" then . else [] end) as $pl
+		  | ([ $pl[] | select(type == "object") | select((.ms | isnum) and (((.origin | type) == "string") or .origin == null))
+		      | {index: .index, origin: (.origin // "unknown"), ms: .ms, atMs: .atMs, longTaskMs: (.longTaskMs // null), longTaskCount: (.longTaskCount // null)} ]) as $ok
 		  | (($b.press // {}) | if type == "object" then . else {} end) as $bp
 		  | (($b.reload // {}) | if type == "object" then . else {} end) as $br
 		  | (($b.load // {}) | if type == "object" then . else {} end) as $bl
@@ -218,13 +229,14 @@ runs_json() {
 		      tokWindow: (.window // null),
 		      tokAgreement: (.agreement // null),
 		      tokSampling: $s,
-		      tokChecks: ({failed: $b.failed, apiOrigin: $b.apiOrigin, walkTotal: $b.walkTotal, press: $b.press, reload: $b.reload, load: $b.load, browser: $b.browser}),
+		      tokChecks: ({browser: $b, row: ({charset: (.charset // null), textShape: (.textShape // null), targetReasonLen: (.targetReasonLen // null)})}),
+		      tokInvalid: ([ $invalid[] | select(.item == 10 and .size == $r.size and .case == $r.case) ]),
 		      stats: ($ms | stats),
 		      overTarget: ([ $ms[] | select(. > $target) ] | length),
 		      firstPressMs: ($s.firstPressMs // null),
-		      afterFirst: (($pl[1:] | map(.ms | select(isnum))) | stats),
-		      byOrigin: (reduce ($pl[] | select(type == "object")) as $p ({}; .[($p.origin // "unknown")] += [$p.ms]) | map_values(stats)),
-		      slowest: ([ $pl[] | select(type == "object") | select(.ms | isnum) ] | sort_by(-.ms) | .[0:5] | map({index, origin, ms, atMs, longTaskMs, longTaskCount})),
+		      afterFirst: (($pl[1:] | map(select(type == "object") | .ms | select(isnum))) | stats),
+		      byOrigin: ((reduce $ok[] as $p ({}; .[$p.origin] += [$p.ms])) | map_values(stats)),
+		      slowest: (($ok | sort_by(-.ms) | .[0:5] | map({index, origin, ms, atMs, longTaskMs, longTaskCount}))),
 		      load: ($b.load // null),
 		      browser: ($b.browser // null)
 		    }
@@ -237,6 +249,7 @@ runs_json() {
 # (browser-panel-<reasons>-nc<n>, as the row's case), never a reasons field. requested_sampling names one the sampling design
 # expects: item 10, a case for this reason count, a background this report pools. It is the one predicate for a missing sampling
 # row, shared by the directory check and the outer-failure tie-out so the two never disagree.
+# shellcheck disable=SC2016  # the jq parameters $reasons/$backgrounds expand in jq, not in shell
 SAMPLING_DEFS='def requested_sampling($reasons; $backgrounds): type == "object" and .item == 10 and (((((.case // "") | capture("^browser-panel-(?<r>[0-9]+)-nc[0-9]+$") // null) | if . == null then -1 else (.r | tonumber) end) == $reasons) and (((.size // -1)) as $s | ($backgrounds | index($s)) != null));'
 
 # outer_fail_explained STEP DIR is 0 iff an exit-0 outer qc1 failure is explained entirely by the sampling design omitting the full matrix: the
@@ -260,15 +273,56 @@ outer_fail_explained() { # outer qc1 step JSON, evidence dir
 	' >/dev/null 2>&1
 }
 
+# outer_step_summary_ok STEP VERDICT is 0 iff the step summary has the runner's own qc1_summary shape
+# (reason-review-scale.sh qc1_summary: counts and kinds, not the rows): a boolean complete, a coverage string,
+# numeric budget-failure/invalid/missing/pending counts and a boolean aborted. A pass or partial additionally
+# records no abort and no collection failure, and says what its verdict means: pass is complete with full coverage,
+# release evidence and zero missing, pending and invalid; partial carries no missing and no invalid (its pending
+# cases and pilot coverage are the sampling design). Anything else is a malformed step, never a counted run.
+outer_step_summary_ok() { # step verdict
+	local step=$1 verdict=$2
+	jq -e --arg verdict "$verdict" '
+		(.summary // null) as $s
+		| (($s | type) == "object")
+		and ((($s.complete | type) == "boolean") and (($s.coverage | type) == "string")
+			and (($s.budgetFailures | type) == "number") and (($s.invalid | type) == "number")
+			and (($s.missing | type) == "number") and (($s.pending | type) == "number")
+			and (($s.aborted | type) == "boolean"))
+		and (if $verdict == "pass" or $verdict == "partial" then ($s.aborted == false) and (($s.collectionFailed // false) == false) else true end)
+		and (if $verdict == "pass" then $s.complete == true and $s.coverage == "full" and ($s.releaseEvidence == true)
+			and $s.invalid == 0 and $s.missing == 0 and $s.pending == 0 else true end)
+		and (if $verdict == "partial" then $s.invalid == 0 and $s.missing == 0 else true end)
+	' <<<"$step" >/dev/null 2>&1
+}
+
+# outer_summary_matches STEP DIR is 0 iff the step summary says what this directory's validated
+# evidence-status.json says: the same completeness, the same missing, pending and invalid counts and the
+# same coverage kind. The runner writes the summary from this file (qc1_summary), so a mismatch means the
+# record does not describe this evidence.
+outer_summary_matches() { # step dir
+	local step=$1 d=$2
+	jq -ne --argjson step "$step" --slurpfile loc "$d/evidence-status.json" '
+		($loc[0] // null) as $l | ($step.summary // null) as $s
+		| (($s | type) == "object") and (($l | type) == "object")
+		and (($s.complete // null) == ($l.complete // null))
+		and (($s.missing // -1) == (($l.missing // null) | length))
+		and (($s.pending // -1) == (($l.pending // null) | length))
+		and (($s.invalid // -1) == (($l.invalid // null) | length))
+		and (($s.coverage // "") == (($l.coverage.kind // null) | tostring))
+	' >/dev/null 2>&1
+}
+
 # collection_problems DIR prints the collection and execution failures of one evidence directory (R2) as {"coll":[...],"omit":[...]}: "coll" fails the
 # directory, "omit" holds the expected sampling-only omissions, which are recorded but never fail. A failure excludes the directory's runs from the pool; the runs stay listed
 # with their own sampling reasons, and the failure itself is a gap. Expected omissions are the sampling design leaving out the full matrix: missing rows that
 # are not sampling rows, pending legacy cases, pilot coverage. Anything else unfinished — an uncollected copy, an abort, an incomplete environment, a missing
 # or malformed evidence-status.json, a missing sampling row, a non-legacy pending case, an unexplained incomplete status, a present outer runner record that is
-# unfinished, unbound, malformed, or marks no single well-formed qc1 step for this directory and revision, or an outer qc1 step that failed for any reason
-# beyond intentional omissions, contradicts its exit, or was interrupted — is a failure. A pass or partial step with a matching exit is accepted.
+# unfinished, unbound, or malformed, or marks no single well-formed qc1 step for this directory and revision, or an outer qc1 step that failed for any reason
+# beyond intentional omissions, contradicts its exit, carries a summary that contradicts its verdict or this directory's status, or was
+# interrupted — is a failure. A pass or partial step is accepted only with a JSON-integer exit matching its verdict and a summary that
+# has the runner's shape and says what this directory's status says.
 collection_problems() { # dir rev: prints {"coll":[...],"omit":[...]} for one evidence directory (R2, R5)
-	local d=$1 rev=$2 lines entry n parent shape step coll_json omit_json canon art verdict step_exit malformed_binding
+	local d=$1 rev=$2 lines entry entry2 n parent shape step coll_json omit_json canon art verdict step_exit malformed_binding
 	local -a failures=() skips=() bound=()
 	if [[ -e $d/COLLECTION-FAILED.txt ]]; then
 		lines=$(head -c 2000 "$d/COLLECTION-FAILED.txt" 2>/dev/null | jq -Rsc '[split("\n") | map(select(. != "")) | .[:5] | .[]] | join("; ")' 2>/dev/null || echo "see $d/COLLECTION-FAILED.txt")
@@ -344,9 +398,11 @@ collection_problems() { # dir rev: prints {"coll":[...],"omit":[...]} for one ev
 	# with revision, coverage, tools and steps). An absent record is the direct-QC-evidence shape and is fine; a present record must
 	# be a finished run bound to this directory: a recognized result other than "incomplete" (the wrapper publishes result "incomplete"
 	# with no steps before anything runs, and again after every step, so "incomplete" means unfinished), the revision asked for, and
-	# exactly one well-formed qc1 step whose artifacts are this directory, with a recognized verdict, a numeric exit and an object
-	# summary. A qc1 step that was interrupted, or that failed with a nonzero exit, fails the evidence, as does an exit contradicting
-	# its verdict (pass takes exit 0 only; partial takes 0 or 10, the runner's own finished-normally outcomes). So does an exit-0
+	# exactly one well-formed qc1 step whose artifacts are this directory, with a recognized verdict, a JSON-integer exit and an
+	# object summary in the runner's shape (outer_step_summary_ok) that agrees with the verdict and, for pass or partial, with this
+	# directory's validated status (outer_summary_matches). A qc1 step that was interrupted, or that failed with a nonzero exit,
+	# fails the evidence, as does an exit contradicting its verdict (pass takes exit 0 only; partial takes 0 or 10, the runner's
+	# own finished-normally outcomes). So does an exit-0
 	# failure for any reason beyond intentional omissions. The one accepted shape is an exit-0 fail explained entirely by the sampling
 	# design (ordinary missing rows, legacy pending cases, pilot coverage), proven by the step's own summary agreeing with this
 	# directory's validated evidence-status.json; it is recorded as an omission, never a failure.
@@ -383,10 +439,10 @@ collection_problems() { # dir rev: prints {"coll":[...],"omit":[...]} for one ev
 				failures+=("the outer runner record $parent marks ${#bound[@]} qc1 steps bound to $d: the run around this evidence cannot be checked")
 			else
 				step=${bound[0]}
-				entry=$(jq -r '"\(.verdict) (exit \(.exit // "?"))"' <<<"$step" 2>/dev/null || echo "unreadable")
+				entry=$(jq -r '"\(.verdict) (exit \((.exit // null) | tojson))"' <<<"$step" 2>/dev/null || echo "unreadable")
 				verdict=$(jq -r '.verdict // "missing"' <<<"$step" 2>/dev/null || echo "unreadable")
-				step_exit=$(jq -r '.exit // "missing"' <<<"$step" 2>/dev/null || echo "unreadable")
-				if [[ $verdict != pass && $verdict != partial && $verdict != fail && $verdict != interrupted ]] || [[ ! $step_exit =~ ^[0-9]+$ ]] || [[ $(jq -r 'if (.summary | type) == "object" then "ok" else "bad" end' <<<"$step" 2>/dev/null) != ok ]]; then
+				step_exit=$(jq -r 'if ((.exit | type) == "number") then (if (((.exit | floor) == .exit) and (.exit >= 0)) then (.exit | tostring) else "missing" end) else "missing" end' <<<"$step" 2>/dev/null || echo "unreadable")
+				if [[ $verdict != pass && $verdict != partial && $verdict != fail && $verdict != interrupted ]] || [[ $step_exit == missing || $step_exit == unreadable ]] || [[ $(jq -r 'if (.summary | type) == "object" then "ok" else "bad" end' <<<"$step" 2>/dev/null) != ok ]]; then
 					failures+=("the outer runner record $parent is malformed: its qc1 step has no recognized verdict, numeric exit and object summary ($entry)")
 				elif [[ $verdict == interrupted ]]; then
 					failures+=("the outer runner record $parent marks its qc1 step $entry: the step was interrupted")
@@ -394,6 +450,12 @@ collection_problems() { # dir rev: prints {"coll":[...],"omit":[...]} for one ev
 					failures+=("the outer runner record $parent marks its qc1 step pass with a contradictory exit $step_exit")
 				elif [[ $verdict == partial && $step_exit != 0 && $step_exit != 10 ]]; then
 					failures+=("the outer runner record $parent marks its qc1 step partial with exit $step_exit")
+				elif [[ $verdict == pass || $verdict == partial ]] && ! outer_step_summary_ok "$step" "$verdict"; then
+					entry2=$(jq -c '{verdict, exit, summary: (.summary // null | {complete, coverage, missing, pending, invalid, aborted})}' <<<"$step" 2>/dev/null || echo "$entry")
+					failures+=("the outer runner record $parent marks its qc1 step $entry with a summary contradicting that verdict: $entry2")
+				elif [[ $verdict == pass || $verdict == partial ]] && ! outer_summary_matches "$step" "$d"; then
+					entry2=$(jq -c '{verdict, exit, summary: (.summary // null | {complete, coverage, missing, pending, invalid, aborted})}' <<<"$step" 2>/dev/null || echo "$entry")
+					failures+=("the outer runner record $parent marks its qc1 step $entry with a summary that does not match $d/evidence-status.json: $entry2")
 				elif [[ $verdict == fail && $step_exit != 0 ]]; then
 					failures+=("the outer runner record $parent marks its qc1 step $entry")
 				elif [[ $verdict == fail ]]; then
@@ -405,7 +467,7 @@ collection_problems() { # dir rev: prints {"coll":[...],"omit":[...]} for one ev
 						failures+=("the outer runner record $parent marks its qc1 step fail (exit 0) for reasons beyond intentional omissions: $entry")
 					fi
 				else
-					: # a passing or partial step with a matching exit is the expected sampling shape (the full matrix is omitted by construction)
+					: # a passing or partial step with a matching exit and a summary that agrees with the verdict and this directory is the expected sampling shape (the full matrix is omitted by construction)
 				fi
 			fi
 		fi
@@ -449,7 +511,10 @@ build_record() {
 				dup_invalid=$(jq -c '[.invalid[]? | select(type == "object" and .failure == "duplicate-row" and .item != null and .case != null)]' "$d/evidence-status.json" 2>/dev/null || echo '[]')
 				judge_invalid=$(jq -c --argjson dup "$dup_invalid" '. + $dup' <<<"$judge_invalid" 2>/dev/null || echo "$judge_invalid")
 			fi
-			runs=$(runs_json "$d" "$judge_invalid" "$judge_budget" "$stack")
+			if ! runs=$(runs_json "$d" "$judge_invalid" "$judge_budget" "$stack"); then
+				runs='[]'
+				problems=$(jq -c '. + ["the sampling rows could not be read; nothing from this directory counts"]' <<<"$problems")
+			fi
 			# A directory whose runs were not asked for repeated presses by its own settings is named, so a mislabelled directory is a visible gap.
 			if [[ $(jq -r '.settings.nextChangedOnly // false' "$d/environment.json") != true ]]; then
 				problems=$(jq -c '. + ["environment.json does not record --next-changed-only"]' <<<"$problems")
@@ -522,9 +587,12 @@ build_record() {
 # outer failure explained entirely by those omissions, proven by the step summary agreeing with the validated status; repeated directory arguments (alias paths
 # included) are refused; an identical copied directory is counted once and named; a repeated or conflicting identity within one file, or conflicting records of
 # one identity across directories of one stack, excludes every occurrence, identically in either row or directory order. Still further stubs prove the R3/R5/R6/R7
-# rules: equal-timed copies that differ only in status, window, agreement or sampling data conflict instead of collapsing; a present outer record must be a
-# finished run bound to this directory and revision with one well-formed qc1 step whose exit matches its verdict; sampling counts, indices, origins, timings
-# and load counters are validated against the producer's record shape; and a standard-shaped missing sampling entry (no reasons key) fails like any other.
+# rules: equal-timed copies that differ in any recorded validity fact (status, window, agreement, sampling, page accounting,
+# digest, first page or another judge input) conflict instead of collapsing; a present outer record must be a finished run bound
+# to this directory and revision with one well-formed qc1 step whose JSON-integer exit matches its verdict and whose summary has
+# the runner's shape and agrees with the verdict and the directory's status; sampling counts, indices, origins, timings
+# and load counters are validated against the producer's record shape, and a malformed nested press never aborts the report;
+# and a standard-shaped missing sampling entry (no reasons key) fails like any other.
 # shellcheck disable=SC2016  # the jq filters passed to expect are not shell expansions
 next_changed_self_test() {
 	local work rev other a b c d1 d2 d3 f rc n=0
@@ -959,6 +1027,34 @@ next_changed_self_test() {
 	run --out "$work/valid7.json" --evidence "$fi2" --evidence "$fj" --revision "$rev" >/dev/null 2>&1 || rc=$?
 	[[ $rc == 10 ]] || fail "equal-timed directories differing only in a press index must leave the record incomplete (exit 10), exited $rc"
 	expect "a press-index conflict across copies keeps only the identical identity" '.configurations[0] | .runsFound == 4 and .runsCounted == 1' "$work/valid7.json"
+	# The remaining judge inputs travel in the token too: equal-timed copies that differ only in page accounting,
+	# or only in another omitted validity fact, conflict instead of collapsing, in either directory order.
+	fk=$work/pageacct-a
+	fl=$work/pageacct-b
+	cell "$fk" "$rev" "$(stub_row browser-panel-100000-nc1 100000 100000 "$(seq_ms 1 30)")" "$(stub_row browser-panel-100000-nc2 100000 100000 "$(seq_ms 1 30)")"
+	cell "$fl" "$rev" "$(stub_row browser-panel-100000-nc1 100000 100000 "$(seq_ms 1 30)" '.browser.pages.walks[0].incomplete = 1')" "$(stub_row browser-panel-100000-nc2 100000 100000 "$(seq_ms 1 30)")"
+	rc=0
+	run --out "$work/pageacct1.json" --evidence "$fk" --evidence "$fl" --revision "$rev" >/dev/null 2>&1 || rc=$?
+	[[ $rc == 10 ]] || fail "equal-timed directories differing only in page accounting must leave the record incomplete (exit 10), exited $rc"
+	expect "an incomplete page-accounting copy keeps only the identical identity" '.configurations[0] | .runsFound == 4 and .runsCounted == 1' "$work/pageacct1.json"
+	expect "the page-accounting conflict is named" '.configurations[0].gaps | map(contains("browser-panel-100000-nc1") and contains("conflicting duplicate")) | any' "$work/pageacct1.json"
+	rc=0
+	run --out "$work/pageacct2.json" --evidence "$fl" --evidence "$fk" --revision "$rev" >/dev/null 2>&1 || rc=$?
+	[[ $rc == 10 ]] || fail "the page-accounting conflict in the reverse directory order must leave the record incomplete (exit 10), exited $rc"
+	expect "the reverse page-accounting order counts the same run" '[.configurations[0] | .runsFound, .runsCounted] == [4, 1]' "$work/pageacct2.json"
+	fm=$work/firstpage-a
+	fn=$work/firstpage-b
+	cell "$fm" "$rev" "$(stub_row browser-panel-100000-nc1 100000 100000 "$(seq_ms 1 30)")" "$(stub_row browser-panel-100000-nc2 100000 100000 "$(seq_ms 1 30)")"
+	cell "$fn" "$rev" "$(stub_row browser-panel-100000-nc1 100000 100000 "$(seq_ms 1 30)" '.browser.firstPage.itemsRendered = 1')" "$(stub_row browser-panel-100000-nc2 100000 100000 "$(seq_ms 1 30)")"
+	rc=0
+	run --out "$work/firstpage1.json" --evidence "$fm" --evidence "$fn" --revision "$rev" >/dev/null 2>&1 || rc=$?
+	[[ $rc == 10 ]] || fail "equal-timed directories differing only in the first page must leave the record incomplete (exit 10), exited $rc"
+	expect "a first-page conflict across copies keeps only the identical identity" '.configurations[0] | .runsFound == 4 and .runsCounted == 1' "$work/firstpage1.json"
+	expect "the first-page conflict is named" '.configurations[0].gaps | map(contains("browser-panel-100000-nc1") and contains("conflicting duplicate")) | any' "$work/firstpage1.json"
+	rc=0
+	run --out "$work/firstpage2.json" --evidence "$fn" --evidence "$fm" --revision "$rev" >/dev/null 2>&1 || rc=$?
+	[[ $rc == 10 ]] || fail "the first-page conflict in the reverse directory order must leave the record incomplete (exit 10), exited $rc"
+	expect "the reverse first-page order counts the same run" '[.configurations[0] | .runsFound, .runsCounted] == [4, 1]' "$work/firstpage2.json"
 
 	# --- 16. a present outer record must be a finished run bound to this directory and revision, with one well-formed step whose exit matches its verdict ---
 	# The record shape is the runner's own (reason-review-scale.sh write_record): the wrapper publishes result "incomplete" with no
@@ -1040,19 +1136,66 @@ next_changed_self_test() {
 	gj=$work/outer-pass
 	mkdir -p "$gj"
 	cp -r "$a" "$gj/qc1"
-	outer_record "$gj/qc1" pass pass 0 '{"complete":true}' >"$gj/evidence.json"
+	jq -nc '{complete:true, missing:[], pending:[], invalid:[], budgetFailures:[], coverage:{kind:"full", reasons:[]}, releaseEvidence:true}' >"$gj/qc1/evidence-status.json"
+	outer_record "$gj/qc1" pass pass 0 '{"complete":true, "coverage":"full", "releaseEvidence":true, "budgetFailures":0, "invalid":0, "missing":0, "pending":0, "aborted":false, "abortedReason":"", "missingCases":[], "pendingCases":[], "invalidFindings":[], "coverageReasons":[]}' >"$gj/evidence.json"
 	rc=0
 	run --out "$work/outerpass.json" --evidence "$gj/qc1" --revision "$rev" >/dev/null 2>&1 || rc=$?
 	[[ $rc == 0 ]] || fail "a bound passing step with exit 0 must stay COMPLETE, exited $rc"
 	expect "a bound passing step stays complete" '.complete == true' "$work/outerpass.json"
+	expect "a bound passing step marks no outer failure" '.evidenceDirectories[0].collectionProblems == []' "$work/outerpass.json"
 	gk=$work/outer-partial
 	mkdir -p "$gk"
 	cp -r "$a" "$gk/qc1"
-	outer_record "$gk/qc1" partial partial 10 '{"complete":true}' >"$gk/evidence.json"
+	outer_record "$gk/qc1" partial partial 10 '{"complete":true, "coverage":"pilot", "releaseEvidence":false, "budgetFailures":0, "invalid":0, "missing":0, "pending":0, "aborted":false, "abortedReason":"", "missingCases":[], "pendingCases":[], "invalidFindings":[], "coverageReasons":[]}' >"$gk/evidence.json"
 	rc=0
 	run --out "$work/outerpartial.json" --evidence "$gk/qc1" --revision "$rev" >/dev/null 2>&1 || rc=$?
 	[[ $rc == 0 ]] || fail "a bound partial step with exit 10 must stay COMPLETE, exited $rc"
 	expect "a bound partial step with exit 10 stays complete" '.complete == true' "$work/outerpartial.json"
+	expect "a bound partial step marks no outer failure" '.evidenceDirectories[0].collectionProblems == []' "$work/outerpartial.json"
+	# A string exit, an empty or contradictory summary, and a summary that does not say what the directory's
+	# validated status says are malformed steps, never counted runs: the exit must be a JSON integer, and a pass
+	# or partial summary must have the runner's shape, agree with the verdict and match this directory.
+	gse=$work/outer-stringexit
+	mkdir -p "$gse"
+	cp -r "$a" "$gse/qc1"
+	outer_record "$gse/qc1" fail pass 0 '{}' >"$gse/tmp.json"
+	jq -c '.steps[0].exit = "0"' "$gse/tmp.json" >"$gse/evidence.json"
+	rc=0
+	run --out "$work/outerstringexit.json" --evidence "$gse/qc1" --revision "$rev" >/dev/null 2>&1 || rc=$?
+	[[ $rc == 10 ]] || fail "a qc1 step with a string exit must leave the record incomplete (exit 10), exited $rc"
+	expect "a string exit is a malformed step" '.complete == false and (.gaps | map(contains("outer runner") and contains("malformed") and contains("exit \"0\"")) | any)' "$work/outerstringexit.json"
+	gee=$work/outer-emptysummary
+	mkdir -p "$gee"
+	cp -r "$a" "$gee/qc1"
+	outer_record "$gee/qc1" fail pass 0 '{}' >"$gee/evidence.json"
+	rc=0
+	run --out "$work/outeremptysummary.json" --evidence "$gee/qc1" --revision "$rev" >/dev/null 2>&1 || rc=$?
+	[[ $rc == 10 ]] || fail "a qc1 step with an empty summary must leave the record incomplete (exit 10), exited $rc"
+	expect "an empty summary contradicts its verdict" '.complete == false and (.gaps | map(contains("outer runner") and contains("contradicting that verdict")) | any)' "$work/outeremptysummary.json"
+	gcf=$work/outer-collectfail
+	mkdir -p "$gcf"
+	cp -r "$a" "$gcf/qc1"
+	outer_record "$gcf/qc1" fail pass 0 '{"complete":true, "coverage":"full", "releaseEvidence":true, "budgetFailures":0, "invalid":0, "missing":0, "pending":0, "aborted":false, "abortedReason":"", "collectionFailed":true, "collectionFailures":["the run inside could not be confirmed stopped"], "missingCases":[], "pendingCases":[], "invalidFindings":[], "coverageReasons":[]}' >"$gcf/evidence.json"
+	rc=0
+	run --out "$work/outercollectfail.json" --evidence "$gcf/qc1" --revision "$rev" >/dev/null 2>&1 || rc=$?
+	[[ $rc == 10 ]] || fail "a passing summary recording a collection failure must leave the record incomplete (exit 10), exited $rc"
+	expect "a collection failure contradicts a pass" '.complete == false and (.gaps | map(contains("outer runner") and contains("contradicting that verdict")) | any)' "$work/outercollectfail.json"
+	gab=$work/outer-abortedpartial
+	mkdir -p "$gab"
+	cp -r "$a" "$gab/qc1"
+	outer_record "$gab/qc1" fail partial 10 '{"complete":false, "coverage":"pilot", "releaseEvidence":false, "budgetFailures":0, "invalid":0, "missing":0, "pending":0, "aborted":true, "abortedReason":"TERM", "missingCases":[], "pendingCases":[], "invalidFindings":[], "coverageReasons":[]}' >"$gab/evidence.json"
+	rc=0
+	run --out "$work/outerabortedpartial.json" --evidence "$gab/qc1" --revision "$rev" >/dev/null 2>&1 || rc=$?
+	[[ $rc == 10 ]] || fail "a partial summary recording an abort must leave the record incomplete (exit 10), exited $rc"
+	expect "an abort contradicts a partial" '.complete == false and (.gaps | map(contains("outer runner") and contains("contradicting that verdict")) | any)' "$work/outerabortedpartial.json"
+	gmm=$work/outer-mismatch
+	mkdir -p "$gmm"
+	cp -r "$a" "$gmm/qc1"
+	outer_record "$gmm/qc1" fail pass 0 '{"complete":true, "coverage":"full", "releaseEvidence":true, "budgetFailures":0, "invalid":0, "missing":0, "pending":0, "aborted":false, "abortedReason":"", "missingCases":[], "pendingCases":[], "invalidFindings":[], "coverageReasons":[]}' >"$gmm/evidence.json"
+	rc=0
+	run --out "$work/outermismatch.json" --evidence "$gmm/qc1" --revision "$rev" >/dev/null 2>&1 || rc=$?
+	[[ $rc == 10 ]] || fail "a passing summary that does not match this directory must leave the record incomplete (exit 10), exited $rc"
+	expect "a summary that does not match this directory is named" '.complete == false and (.gaps | map(contains("outer runner") and contains("does not match")) | any' "$work/outermismatch.json"
 
 	# --- 17. the sampling record's counts, indices, origins, timings and load counters are validated against the producer's shape ---
 	# The producer (deploy/digitalocean/qc1/panel-core.mjs) writes requested as the asked loop bound, performed as presses.length,
@@ -1081,6 +1224,22 @@ next_changed_self_test() {
 	expect "a mismatched first press is named" '.configurations[0].gaps | map(contains("browser-panel-100000-nc7") and contains("firstPressMs")) | any' "$f"
 	expect "a mistyped load counter is named" '.configurations[0].gaps | map(contains("browser-panel-100000-nc8") and contains("not numbers")) | any' "$f"
 	expect "a mistyped count is named" '.configurations[0].gaps | map(contains("browser-panel-100000-nc9") and contains("whole numbers")) | any' "$f"
+
+	# A malformed nested press names its excluded row without aborting the report: a non-object element and a
+	# non-string origin beside an independent clean control still publish INCOMPLETE JSON with the clean figures.
+	gp=$work/pressshape
+	cell "$gp" "$rev" \
+		"$(stub_row browser-panel-100000-nc1 100000 100000 "$(seq_ms 1 30)")" \
+		"$(stub_row browser-panel-100000-nc2 100000 100000 "$(seq_ms 1 30)" '.browser.nextChangedSampling.presses[5] = "bad"')" \
+		"$(stub_row browser-panel-100000-nc3 100000 100000 "$(seq_ms 1 30)" '.browser.nextChangedSampling.presses[5].origin = 42')"
+	rc=0
+	run --out "$work/pressshape.json" --evidence "$gp" --revision "$rev" >/dev/null 2>&1 || rc=$?
+	[[ $rc == 10 ]] || fail "malformed nested press records must leave the record incomplete (exit 10), exited $rc"
+	f=$work/pressshape.json
+	expect "the clean row is still counted beside malformed rows" '.configurations[0] | .runsFound == 3 and .runsCounted == 1' "$f"
+	expect "the clean figures are still published" '.configurations[0].pooled.presses.count == 30' "$f"
+	expect "a non-object press element is named" '.configurations[0].gaps | map(contains("browser-panel-100000-nc2") and contains("not an object")) | any' "$f"
+	expect "a non-string press origin is named" '.configurations[0].gaps | map(contains("browser-panel-100000-nc3") and contains("not one the runner records")) | any' "$f"
 
 	# --- 18. a standard-shaped missing sampling entry fails: the reason count lives in the case name, never a reasons key ---
 	# The status schema (deploy/digitalocean/qc1/lib.sh) lists missing entries as {item, size, case} only, like the validcase check;
