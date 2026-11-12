@@ -354,19 +354,27 @@ type auditConversionCandidate struct {
 	models.AuditLog
 }
 
+// auditConversionRequestsSQL is the first statement discoverAuditConversionsIn
+// sends, and the erasure sends it directly after the retention report on the
+// same connection. The QC-1 harness uses it to tie a logged report to the
+// deletion it measured (deploy/digitalocean/qc1/app-facts.json, held equal to
+// this text by TestQC1AppFacts). Changing it, or what runs between the two,
+// changes that proof.
+const auditConversionRequestsSQL = `SELECT r.id, r.household_person_id AS person_id, r.invitation_id, r.approved_user_id AS user_id, h.household_id,
+ EXISTS (SELECT 1 FROM audit_logs m WHERE m.action = 'household.person_updated' AND m.target_type = 'household_person' AND m.target_id = r.household_person_id) AS marker
+ FROM account_requests r LEFT JOIN household_people h ON h.id = r.household_person_id
+ WHERE r.source = 'household_conversion' AND r.status = 'approved' AND r.decided_by = ?`
+
 // Discovery uses retained keys before checking any shape. A wrong household,
 // string identity or missing writer key remains in its whole candidate group.
 // G-8 has no approved provenance mechanism, so this path never writes an IP.
 // Plan 6.5.1 specifies text-equal discovery: stored numbers such as 5.0 may
 // be missed when no other arm matches, although auditJSONID accepts
 // them during validation. Resolve this discovery limit before enabling G-8
-// transfer scrubbing. The malformed-nomination diagnostic has the same limit.
+// transfer scrubbing. The retention report's malformed-link term has the same limit.
 func discoverAuditConversionsIn(tx *gorm.DB, uid uint) (auditConversionCounts, error) {
 	out := auditConversionCounts{ByReason: map[string]int64{}}
-	const requests = `SELECT r.id, r.household_person_id AS person_id, r.invitation_id, r.approved_user_id AS user_id, h.household_id,
- EXISTS (SELECT 1 FROM audit_logs m WHERE m.action = 'household.person_updated' AND m.target_type = 'household_person' AND m.target_id = r.household_person_id) AS marker
- FROM account_requests r LEFT JOIN household_people h ON h.id = r.household_person_id
- WHERE r.source = 'household_conversion' AND r.status = 'approved' AND r.decided_by = ?`
+	const requests = auditConversionRequestsSQL
 	var reqs []auditConversionRequestRow
 	if err := tx.Raw(requests, uid).Scan(&reqs).Error; err != nil {
 		return out, err

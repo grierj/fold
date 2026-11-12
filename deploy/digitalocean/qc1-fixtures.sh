@@ -480,7 +480,14 @@ outc() { printf '{"dbOk":true,"accountDeleted":"true","reasonsBlank":%s,"reasons
 rolesof() { if [[ "$1" == requester ]]; then printf '{"requester":%s,"subject":0}' "$2"; else printf '{"requester":0,"subject":%s}' "$2"; fi; }          # direction k
 # The audit-retention report statement as the REAL pilot3 server log has it (testdata/qc1-pilot3-audit-retention.log: one deletion of account 46, its plan with a JIT section), turned into
 # the evidence the runner records by the same function. The explained rows below carry it, so the healthy fixtures are of the real statement and not of a typed one.
-PILOT3_AUDIT_LOG="$HERE/testdata/qc1-pilot3-audit-retention.log"
+# That log was written by a build that still ran a diagnostic count after the report; the application no longer does, and what follows the report today is conversion discovery's first query
+# (testdata/qc1-current-audit-retention.log is a real log of the current build). PILOT3_RAW stays as it was captured. PILOT3_AUDIT_LOG is its first 105 lines (the application's audit UPDATE and the
+# report with its plan) followed by the real current successor block with only its backend and account changed to pilot3's (12393, 46): the plan and JIT cases below keep their real plan, and the
+# identity they carry is the current shape.
+PILOT3_RAW="$HERE/testdata/qc1-pilot3-audit-retention.log"
+CURRENT_AUDIT_LOG="$HERE/testdata/qc1-current-audit-retention.log"
+PILOT3_AUDIT_LOG="$WORK/pilot3-current-shape.log"
+{ head -n 105 "$PILOT3_RAW"; sed -n '299,316p' "$CURRENT_AUDIT_LOG" | sed "1s/\[661\]/[12393]/; s/\\\$1 = '13'/\$1 = '46'/"; } >"$PILOT3_AUDIT_LOG"
 AUD_EV="$(qc1_audit_report_evidence "$PILOT3_AUDIT_LOG" 46 true)"
 AUTOEX='{"scope":"on for this one deletion only, off and waited for before the log was read; the matrix itself runs with auto_explain off","settings":{"log_lock_waits":"on"},"caveats":["one execution","log_lock_waits reports only waits longer than deadlock_timeout","no row locks","other sessions in the same log","docker logs --since"]}'
 explained_row() { # which size
@@ -2316,11 +2323,11 @@ LOG
 printf '%s\n' '2026-11-07 14:30:50.046 UTC [1] LOG:  received SIGHUP, reloading configuration files' >"$WORK/pg.pilot2"
 [[ "$(qc1_plan_counts "$WORK/pg.pilot2")" == '{"scanner-initial":0,"scanner-continuation":0,"page-items":0,"delete-set":0,"blank-batch":0}' ]]       # what the pilot saw: nothing
 # === the audit-retention report statement: the explained order controls, and the planner estimates of both scanner probes ===============================================
-# (1) THE REAL STATEMENT. testdata/qc1-pilot3-audit-retention.log is the pilot3 server log of ONE deletion (account 46): the application's own audit UPDATE, the report statement with its
-# auto_explain plan (a JIT section in it) and the diagnostic count that follows, all in backend 12393. The evidence function is run on it as the runner runs it.
+# (1) THE REAL STATEMENT. testdata/qc1-pilot3-audit-retention.log is the pilot3 server log of ONE deletion (account 46): the application's own audit UPDATE and the report statement with its
+# auto_explain plan (a JIT section in it), in backend 12393. PILOT3_AUDIT_LOG (above) is that log with the current build's successor block after it. The evidence function is run on it as the runner runs it.
 [[ "$(qc1_audit_pieces | wc -l)" == 4 ]]   # the facts hold the four fixed pieces around the classification, the subject mention and the malformed-link term
 [[ "$(jq -c '.identity.fixedPieceLengths' <<<"$AUD_EV")" == '[52,47,6,96]' ]] || { echo "the audit report statement changed (qc1/app-facts.json): review the explained-delete evidence and the fixture log: $(jq -c .identity.fixedPieceLengths <<<"$AUD_EV")" >&2; exit 1; }
-[[ "$(jq -c '[.statementBlocks, .identity.prefixOk, .identity.suffixOk, .identity.piecesInOrder, .identity.variablePartsNonEmpty, .identity.parametersAreTarget, .identity.backendPid, .identity.auditUpdatesBefore, .identity.malformedCountAfter, .identity.queryTextBytes, .rowLocks, .lockWaits.logged, .lockWaits.count, .durationMs]' <<<"$AUD_EV")" == '[1,true,true,true,true,true,"12393",1,1,14255,false,true,0,2153.339]' ]]
+[[ "$(jq -c '[.statementBlocks, .identity.prefixOk, .identity.suffixOk, .identity.piecesInOrder, .identity.variablePartsNonEmpty, .identity.parametersAreTarget, .identity.backendPid, .identity.auditUpdatesBefore, .identity.successor.blocksInLog, .identity.queryTextBytes, .rowLocks, .lockWaits.logged, .lockWaits.count, .durationMs, .identity.successor.found, .identity.proven]' <<<"$AUD_EV")" == '[1,true,true,true,true,true,"12393",1,1,14255,false,true,0,2153.339,true,true]' ]]
 [[ "$(jq -r '.identity.queryTextSha256' <<<"$AUD_EV")" == 8e6e08f3bf5708ec8eb6e2c8d9aa1b343c8569dc2e32dd6131ca5d3930483869 ]]
 # the plan, parsed: the planner ESTIMATES beside what happened, the Seq Scan that removed 78,521 rows, and the JIT section that is 97% of the statement
 [[ "$(jq -c '.plan.nodes[0] | [.nodeType, .startupCost, .totalCost, .planRows, .width, .actualTotalMs, .actualRows, .sharedHit, .sharedRead]' <<<"$AUD_EV")" == '["GroupAggregate",9615677.90,9658395.74,606,72,2153.337,0,2827,0]' ]]
@@ -2336,9 +2343,11 @@ sed '13,105d' "$PILOT3_AUDIT_LOG" >"$WORK/aud.none"; [[ "$(aud "$WORK/aud.none" 
 : >"$WORK/aud.empty"; [[ "$(aud "$WORK/aud.empty" | jq -c .)" == '{"statementBlocks":0}' ]]
 { cat "$PILOT3_AUDIT_LOG"; sed -n '13,105p' "$PILOT3_AUDIT_LOG"; } >"$WORK/aud.two"; [[ "$(aud "$WORK/aud.two" | jq '.statementBlocks')" == 2 ]]   # two candidate statements
 [[ "$(aud "$PILOT3_AUDIT_LOG" 47 | jq -c '[.identity.parametersAreTarget, .identity.targetUserId]')" == '[false,47]' ]]               # another account's deletion
-sed '13s/\[12393\]/[777]/' "$PILOT3_AUDIT_LOG" >"$WORK/aud.pid"; [[ "$(aud "$WORK/aud.pid" | jq -c '[.identity.backendPid, .identity.auditUpdatesBefore, .identity.malformedCountAfter]')" == '["777",0,0]' ]]
-sed '1,12d' "$PILOT3_AUDIT_LOG" >"$WORK/aud.noupd"; [[ "$(aud "$WORK/aud.noupd" | jq -c '[.identity.auditUpdatesBefore, .identity.malformedCountAfter]')" == '[0,1]' ]]
-sed '106,$d' "$PILOT3_AUDIT_LOG" >"$WORK/aud.nocount"; [[ "$(aud "$WORK/aud.nocount" | jq -c '[.identity.auditUpdatesBefore, .identity.malformedCountAfter]')" == '[1,0]' ]]
+sed '13s/\[12393\]/[777]/' "$PILOT3_AUDIT_LOG" >"$WORK/aud.pid"; [[ "$(aud "$WORK/aud.pid" | jq -c '[.identity.backendPid, .identity.auditUpdatesBefore, .identity.successor.found, .identity.proven]')" == '["777",0,false,false]' ]]
+sed '1,12d' "$PILOT3_AUDIT_LOG" >"$WORK/aud.noupd"; [[ "$(aud "$WORK/aud.noupd" | jq -c '[.identity.auditUpdatesBefore, .identity.successor.found, .identity.proven]')" == '[0,true,false]' ]]
+sed '106,$d' "$PILOT3_AUDIT_LOG" >"$WORK/aud.nosucc"; [[ "$(aud "$WORK/aud.nosucc" | jq -c '[.identity.auditUpdatesBefore, .identity.successor.found, .identity.proven]')" == '[1,false,false]' ]]
+# the pilot3 log AS CAPTURED ends in the removed diagnostic count: a count of an obsolete statement is no successor, so its report is not proven for the current build
+[[ "$(aud "$PILOT3_RAW" | jq -c '[.identity.auditUpdatesBefore, .identity.successor.found, .identity.successor.blocksInLog, .identity.proven]')" == '[1,false,0,false]' ]]
 sed "s/GROUP BY class, action/GROUP BY class/" "$PILOT3_AUDIT_LOG" >"$WORK/aud.suffix"; [[ "$(aud "$WORK/aud.suffix" | jq -c '[.identity.prefixOk, .identity.suffixOk]')" == '[true,false]' ]]   # same start, a different end
 sed "s/ AS class FROM audit_logs WHERE ip <> '' AND ((/ AS class FROM audit_logs WHERE ((/" "$PILOT3_AUDIT_LOG" >"$WORK/aud.middle"; [[ "$(aud "$WORK/aud.middle" | jq -c '.identity.piecesInOrder')" == false ]]   # a fixed middle piece gone
 sed '/^\t\(JIT:\|  Functions:\|  Options:\|  Timing:\)/d' "$PILOT3_AUDIT_LOG" >"$WORK/aud.nojit"; [[ "$(aud "$WORK/aud.nojit" | jq -c '[.statementBlocks, .plan.jit]')" == '[1,null]' ]]   # a plan without a JIT section is still a plan
@@ -2357,7 +2366,20 @@ exinv ex-two '.auditRetention.statementBlocks = 2' audit-statement-ambiguous
 for k in prefixOk suffixOk piecesInOrder variablePartsNonEmpty parametersAreTarget; do exinv "ex-id-$k" ".auditRetention.identity.$k = false" audit-statement-unproven; done
 exinv ex-id-pid '.auditRetention.identity.backendPid = ""' audit-statement-unproven
 exinv ex-id-before '.auditRetention.identity.auditUpdatesBefore = 0' audit-statement-unproven
-exinv ex-id-after '.auditRetention.identity.malformedCountAfter = 0' audit-statement-unproven
+exinv ex-id-proven '.auditRetention.identity.proven = false' audit-statement-unproven
+exinv ex-id-proven-gone 'del(.auditRetention.identity.proven)' audit-statement-unproven
+exinv ex-id-reportblocks '.auditRetention.identity.reportBlocks = 2' audit-statement-unproven
+exinv ex-id-reportline-gone 'del(.auditRetention.identity.reportLine)' audit-statement-unproven
+exinv ex-id-succ-gone 'del(.auditRetention.identity.successor)' audit-statement-unproven
+exinv ex-id-succ-null '.auditRetention.identity.successor = null' audit-statement-unproven
+exinv ex-id-succ-found '.auditRetention.identity.successor.found = false' audit-statement-unproven
+exinv ex-id-succ-text '.auditRetention.identity.successor.textMatchesSource = false' audit-statement-unproven
+exinv ex-id-succ-pid '.auditRetention.identity.successor.backendPid = "999"' audit-statement-unproven
+exinv ex-id-succ-params '.auditRetention.identity.successor.parameters = "$1 = '"'"'47'"'"'"' audit-statement-unproven
+exinv ex-id-succ-params-extra '.auditRetention.identity.successor.parameters = "$1 = '"'"'46'"'"', $2 = '"'"'46'"'"'"' audit-statement-unproven
+exinv ex-id-succ-count '.auditRetention.identity.successor.blocksInLog = 2' audit-statement-unproven
+exinv ex-id-succ-count-zero '.auditRetention.identity.successor.blocksInLog = 0' audit-statement-unproven
+exinv ex-id-succ-before '.auditRetention.identity.successor.line = 1' audit-statement-unproven       # logged before the report
 exinv ex-id-sha '.auditRetention.identity.queryTextSha256 = "xyz"' audit-statement-unproven
 exinv ex-id-gone 'del(.auditRetention.identity)' audit-statement-unproven
 exinv ex-nodes-gone '.auditRetention.plan.nodes = []' audit-plan-incomplete
@@ -2504,6 +2526,57 @@ for nm in cut3 cut7 other5 other8 arr-scalar extra gap swapped noparams t-op t-n
   mut "ev-$nm" "$EX then .auditRetention = $(pev "$nm" | jq -c .) else . end"; expect_invalid "ev-$nm" audit-statement-unproven
 done
 mut ev-ok "$EX then .auditRetention = $(pev arr-ids | jq -c .) else . end"; [[ "$(jq -r .complete <<<"$(status_of "$WORK/e2.ev-ok")")" == true ]]
+# (a2) THE REAL CURRENT LOG AND ITS SUCCESSOR. testdata/qc1-current-audit-retention.log is lines 620 to 935, unmodified, of the server log of one real explained deletion of account 13 by the current build
+# (the T294 matrix cell ascii-spread, size 10000, order-control-delete-start-explained): the erasure's six IP UPDATEs and five metadata UPDATEs, the report statement with its plan, and the first query of
+# conversion discovery, all in backend 661. The earlier judge required a later "SELECT count(*) FROM audit_logs WHERE ip <> ''" that the application no longer sends, so it marked this row, and 23 like it,
+# audit-statement-unproven. The report is now tied to its deletion by what the application sends after it: the facts file's successor statement, the first one its backend logs, with the deleted account as
+# its only argument, the only such block in the log. The source log (162,294 bytes, sha256 2d212d3237b3cd2b33d08aaf736506926d1d17a0644fbbd9bc5e79737ce7a989) stays outside the checkout with its matrix.
+[[ "$(sha256sum "$CURRENT_AUDIT_LOG" | cut -d' ' -f1)" == 04a3b9b82937cbcfaa30f99d29fda137a6aa3790c002ce75f2a525e9084ad6f8 ]]
+[[ "$(qc1_log_blocks "$CURRENT_AUDIT_LOG" | awk -F'\t' 'index($4, "SELECT count(*) FROM audit_logs WHERE ip <> ") == 1 { c++ } END { print c + 0 }')" == 0 ]]   # the removed diagnostic is not in the real log
+grep -qF 'SELECT count(*) FROM audit_logs WHERE ip <> ' "$HERE/qc1/lib.sh" && exit 1                                                                                     # and the harness does not look for it
+CUR_EV="$(aud "$CURRENT_AUDIT_LOG" 13)"
+[[ "$(jq -c '[.statementBlocks, .identity.proven, .identity.backendPid, .identity.reportBlocks, .identity.auditUpdatesBefore, .identity.queryTextBytes, .identity.queryTextSha256, .durationMs, (.plan.nodes | length)]' <<<"$CUR_EV")" == '[1,true,"661",1,6,14255,"8e6e08f3bf5708ec8eb6e2c8d9aa1b343c8569dc2e32dd6131ca5d3930483869",0.082,23]' ]]
+[[ "$(jq -c '[.identity.reportLine, (.identity.successor | [.found, .line, .backendPid, .textMatchesSource, .parameters, .blocksInLog, .textBytes])]' <<<"$CUR_EV")" == '[210,[true,299,"661",true,"$1 = '"'"'13'"'"'",1,457]]' ]]
+jq -e '.identity.proof | test("conversion discovery") and (test("NOT PROVEN") | not)' <<<"$CUR_EV" >/dev/null
+# the judge accepts the real current row, and its summary says the identity is proven
+mut cur-ok "$EX then .auditRetention = $(jq -c . <<<"$CUR_EV") | .explained.targetUserId = 13 else . end"; [[ "$(jq -r .complete <<<"$(status_of "$WORK/e2.cur-ok")")" == true ]]
+[[ "$(jq -c '.confounding.explainedOrderControls | map(select(.size == 100 and .case == "order-control-delete-end-explained") | .identityProven)' <<<"$(status_of "$WORK/e2.cur-ok")")" == '[true]' ]]
+# Each change to the real log, or to who it is judged for, leaves the report NOT proven; the evidence says so (identity.proven false and a proof text that says NOT PROVEN) and the judge agrees, and the
+# summary's identityProven follows the judge. A duplicated report block is the one ambiguity, answered as such.
+curc() { # name failure [target]: the evidence of $WORK/cur.<name> is not proven; the judge answers failure; the summary's identityProven is false
+  local ev t="${3:-13}" st
+  ev="$(aud "$WORK/cur.$1" "$t")"
+  if [[ "$(jq -r '.identity.proven' <<<"$ev")" != false ]] || ! jq -e '.identity.proof | startswith("NOT PROVEN")' <<<"$ev" >/dev/null; then echo "cur.$1: the evidence says proven: $(jq -c .identity <<<"$ev")" >&2; exit 1; fi
+  mut "cur-$1" "$EX then .auditRetention = $(jq -c . <<<"$ev") | .explained.targetUserId = $t else . end"; expect_invalid "cur-$1" "$2"
+  st="$(status_of "$WORK/e2.cur-$1")"
+  [[ "$(jq -c '.confounding.explainedOrderControls | map(select(.size == 100 and .case == "order-control-delete-end-explained") | .identityProven)' <<<"$st")" == '[false]' ]] || { echo "cur.$1: the summary says the identity is proven" >&2; exit 1; }
+}
+CUR="$CURRENT_AUDIT_LOG"
+# the successor: altered text (a changed predicate; the same start with a different end; one with a different projection), another backend, another account, parameters missing, truncated or extended
+sed "303s/r.status = 'approved'/r.status = 'pending'/" "$CUR" >"$WORK/cur.s-text";                       curc s-text audit-statement-unproven
+sed '303s/r.decided_by = \$1$/r.decided_by = $1 OR true/' "$CUR" >"$WORK/cur.s-end";                   curc s-end audit-statement-unproven
+sed '300s/SELECT r.id,/SELECT r.id, r.status,/' "$CUR" >"$WORK/cur.s-proj";                            curc s-proj audit-statement-unproven
+sed '299s/\[661\]/[777]/' "$CUR" >"$WORK/cur.s-pid";                                                    curc s-pid audit-statement-unproven
+sed "304s/\\\$1 = '13'/\$1 = '14'/" "$CUR" >"$WORK/cur.s-uid";                                          curc s-uid audit-statement-unproven
+sed '304d' "$CUR" >"$WORK/cur.s-noparams";                                                              curc s-noparams audit-statement-unproven
+sed "304s/\$/, \\\$2 = '13'/" "$CUR" >"$WORK/cur.s-extra";                                              curc s-extra audit-statement-unproven
+sed '299,$d' "$CUR" >"$WORK/cur.s-gone";                                                                curc s-gone audit-statement-unproven
+{ sed -n '1,298p' "$CUR"; sed -n '1,11p' "$CUR"; sed -n '299,316p' "$CUR"; } >"$WORK/cur.s-notfirst";   curc s-notfirst audit-statement-unproven   # another statement of the backend between the two
+{ sed -n '1,209p' "$CUR"; sed -n '299,316p' "$CUR"; sed -n '210,298p' "$CUR"; } >"$WORK/cur.s-before";  curc s-before audit-statement-unproven     # the successor logged before the report
+{ cat "$CUR"; sed -n '299,316p' "$CUR" | sed '1s/\[661\]/[777]/'; } >"$WORK/cur.s-dup-other";            curc s-dup-other audit-statement-unproven   # a second successor block, another backend
+{ cat "$CUR"; sed -n '299,316p' "$CUR"; } >"$WORK/cur.s-dup-same";                                      curc s-dup-same audit-statement-unproven    # a second successor block, the same backend
+[[ "$(jq -c '.identity.successor | [.found, .blocksInLog]' <<<"$(aud "$WORK/cur.s-dup-same" 13)")" == '[true,2]' ]]
+# the report: a duplicate block, an altered tail, parameters truncated or naming another account, another account judged, no preceding audit UPDATE
+{ cat "$CUR"; sed -n '210,298p' "$CUR"; } >"$WORK/cur.r-dup";                                           curc r-dup audit-statement-ambiguous
+[[ "$(aud "$WORK/cur.r-dup" 13 | jq -c '[.statementBlocks, .identity.reportBlocks]')" == '[2,2]' ]]
+sed 's/GROUP BY class, action/GROUP BY class/' "$CUR" >"$WORK/cur.r-tail";                              curc r-tail audit-statement-unproven
+sed "s/OR meta_json->>'teenUserId' = CAST(CAST(\\\$6/AND meta_json->>'teenUserId' = CAST(CAST(\$6/" "$CUR" >"$WORK/cur.r-mid"; curc r-mid audit-statement-unproven
+sed '234s/, \$3 = .*$//' "$CUR" >"$WORK/cur.r-params-cut";                                              curc r-params-cut audit-statement-unproven
+sed "234s/\\\$8 = '13'/\$8 = '14'/" "$CUR" >"$WORK/cur.r-params-uid";                                   curc r-params-uid audit-statement-unproven
+sed '1,209d' "$CUR" >"$WORK/cur.r-noupd";                                                               curc r-noupd audit-statement-unproven
+cp "$CUR" "$WORK/cur.r-target";                                                                         curc r-target audit-statement-unproven 14   # evidence of account 13's deletion offered for account 14
+# the stale marker alone no longer proves anything: a log that holds the OLD report and diagnostic shape (pilot3, as captured) is not proven either
+[[ "$(aud "$PILOT3_RAW" | jq -r '.identity.proven')" == false ]]
 # (b) A COMPLETE PLAN. The audit_logs scan needs its estimates (startup and total cost, rows) and, once it ran, its actual rows, loops, time and shared buffers; the top node too.
 SCANL=45; BUFL=48
 pmut "${SCANL}s/  (cost=0.00..9615649.14 rows=620 width=64)//" p-nocost;                       [[ "$(pf p-nocost '[.plan.nodes | map(select(.relation == "audit_logs")) | length]')" == '[0]' ]]    # no estimates: not even a node

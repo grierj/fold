@@ -486,6 +486,20 @@ interruption, for this directory, with the summary the rows give. `COLLECTION-FA
 nested runner could not bring out of the container) is a gap of its own even when every row is
 complete.
 
+An explained deletion's audit-retention report (item 6, `order-control-delete-*-explained`) is tied
+to its deletion by what the application sends around it, not by a statement the harness remembers:
+the report is the Go source text with its complete parameter list, it follows the erasure's own
+audit UPDATEs on its backend, and the first statement that backend logs after it is conversion
+discovery's first query (`auditConversionRequestsSQL`, in `app-facts.json` as `auditReport.successor`),
+with the deleted account as its only argument and no second block of its kind in the log. One
+predicate (`audit_identity_ok` in `qc1/lib.sh`) sets `identity.proven` and its proof text when the
+evidence is collected and is rechecked by the judge, so `identityProven` in the status is the
+judge's verdict. If erasure changes what runs between the report and that query,
+`TestQC1PlanMarkersAreWhatTheApplicationSends` and `TestQC1AppFacts` fail; regenerate the facts as
+above and review the proof. `testdata/qc1-current-audit-retention.log` is a real log of the current
+build for this check. Judging older evidence with a changed `lib.sh` makes a new, labelled
+diagnostic; the saved matrix and its recorded `lib.sh` hash are never rewritten.
+
 The layout is bound to the rows, not only to the labels. The judge (`qc1_evidence_status`) requires
 every discovery, deletion, workers and browser row (items 3, 6, 9 and 10) to carry the `layout` its
 `record()` writes, equal to the layout the settings name. A row of another layout, or of none, is a

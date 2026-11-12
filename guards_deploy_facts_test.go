@@ -58,6 +58,7 @@ type qc1GoFacts struct {
 		Pieces                  []string `json:"pieces"`
 		SubjectMention          string   `json:"subjectMention"`
 		MalformedConversionLink string   `json:"malformedConversionLink"`
+		Successor               string   `json:"successor"`
 	} `json:"auditReport"`
 }
 
@@ -96,6 +97,9 @@ func qc1CodeFacts(t *testing.T) qc1GoFacts {
 	f.AuditReport.Pieces = []string{head, p1, p2, p3}
 	f.AuditReport.SubjectMention = auditSubjectMention
 	f.AuditReport.MalformedConversionLink = auditMalformedConversionLink
+	// The erasure sends conversion discovery's first statement directly after the report, on the same
+	// connection; the harness finds it in the log to tie the logged report to its deletion.
+	f.AuditReport.Successor = strings.Replace(auditConversionRequestsSQL, "?", "$1", 1)
 	return f
 }
 
@@ -217,6 +221,22 @@ func TestQC1PlanMarkersAreWhatTheApplicationSends(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("the audit report the application sent is not the facts file's statement with its arguments numbered:\n%s", tail)
+	}
+	// The harness ties a logged report to its deletion by the statement that follows it on
+	// the same connection: conversion discovery's first query, text for text the facts file's.
+	// This test sees every connection's statements, so it proves the order, not the adjacency;
+	// eraseAuditDetailsIn runs nothing between the two.
+	reportAt, successorAt := -1, -1
+	for i, q := range sent {
+		switch {
+		case reportAt < 0 && strings.HasPrefix(q, facts.Pieces[0]) && strings.HasSuffix(q, tail):
+			reportAt = i
+		case reportAt >= 0 && successorAt < 0 && q == facts.Successor:
+			successorAt = i
+		}
+	}
+	if reportAt < 0 || successorAt < 0 {
+		t.Errorf("the application did not send the facts file's successor statement after the audit report (report at %d, successor at %d):\n%s", reportAt, successorAt, facts.Successor)
 	}
 }
 

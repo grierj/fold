@@ -329,7 +329,7 @@ qc1_environment_problems() { # environment.json head
 #            assessment; a browser row with a missing figure.
 # Rows with status measured or observation are judged; observations (workers
 # on) are budget-judged but never required to be attributable.
-qc1_judge_defs() { cat <<'JQ'
+qc1_judge_defs() { qc1_audit_identity_defs; cat <<'JQ'
     def inv($why; $x): {class:"invalid", failure:$why} + $x;
     def bud($why; $x): {class:"budget", failure:$why} + $x;
     def numz: if type == "number" then . else null end;
@@ -458,17 +458,7 @@ qc1_judge_defs() { cat <<'JQ'
     def explained_case($m): ($m.case | type) == "string" and ($m.case | endswith("-explained"));
     def audit_retention($m):
       ($m.auditRetention) as $a | ($m.explained) as $x
-      | def isnum: type == "number";
-        def num_all($o; $keys): $o | type == "object" and ($keys | all(. as $k | $o[$k] | isnum));
-        # The parameters the statement was run with, checked again from what the row stored: every position against the kind of argument the Go source puts there. The account is the one
-        # the explained deletion deleted; an array position is an id-array literal; a list shorter or longer than its kinds, or naming another account anywhere, fails.
-        def params_ok($i; $acct):
-          ($i.parameterKinds) as $k | ($i.parameterValues) as $v
-          | ($k | type) == "array" and ($v | type) == "array" and ($k | length) >= 8 and ($k | length) == ($v | length) and ($acct | isnum)
-            and ([ range(0; $k | length) as $j
-                   | if $k[$j] == "uid" then $v[$j] == ("'" + ($acct | tostring) + "'")
-                     elif ($k[$j] == "people" or $k[$j] == "requests" or $k[$j] == "invitations") then (($v[$j] | type) == "string" and ($v[$j] | test("^'\\{([0-9]+(,[0-9]+)*)?\\}'$")))
-                     else false end ] | all);
+      | def num_all($o; $keys): $o | type == "object" and ($keys | all(. as $k | $o[$k] | isnum));
         # A JIT section is either truly absent (null, and no stray JIT lines in the plan text) or complete: every field the collector promises, numeric, and a total that is the sum of its parts.
         def jit_ok($p):
           ($p | has("jit")) and ($p.jitStray == false)
@@ -491,12 +481,8 @@ qc1_judge_defs() { cat <<'JQ'
             ( $a.identity ) as $i | ( $a.plan.nodes ) as $n | ( $a.plan ) as $p
             | ( [ if ($n | type) == "array" then $n[] | select(.relation == "audit_logs") else empty end ] ) as $sc
             | ( [ $sc[] | select(.neverExecuted != true) ] ) as $ran
-            | ( if ($i | type) != "object" or $i.prefixOk != true or $i.suffixOk != true or $i.piecesInOrder != true or $i.variablePartsNonEmpty != true or $i.parametersAreTarget != true
-                   or $i.tailMatchesSource != true or $i.classificationOk != true
-                   or ($i.targetUserId | isnum | not) or $i.targetUserId != $x.targetUserId or (params_ok($i; $i.targetUserId) | not)
-                   or ($i.backendPid | type) != "string" or ($i.backendPid | length) == 0 or ($i.auditUpdatesBefore | type) != "number" or $i.auditUpdatesBefore < 1 or ($i.malformedCountAfter | type) != "number" or $i.malformedCountAfter < 1
-                   or ($i.queryTextSha256 | type) != "string" or ($i.queryTextSha256 | test("^[0-9a-f]{64}$") | not) or ($i.queryTextBytes | type) != "number" or $i.queryTextBytes < 1
-                then inv("audit-statement-unproven"; {why:"the logged statement must be the Go source text (fixed pieces, subject-mention and malformed-link constants byte for byte, a classification of the source shape), take the complete parameter list with the deleted account at every account position and id arrays at the array positions, and sit in the backend of the erasure own audit UPDATEs before it and its diagnostic count after it", identity:$i}) else empty end ),
+            | ( if ($i | type) != "object" or $i.proven != true or (audit_identity_ok($i; $x.targetUserId) | not)
+                then inv("audit-statement-unproven"; {why:"the logged statement must be the Go source text (fixed pieces, subject-mention and malformed-link constants byte for byte, a classification of the source shape), take the complete parameter list with the deleted account at every account position and id arrays at the array positions, sit in the backend of the erasure own audit UPDATEs before it, and be followed on that backend, as its first logged statement, by the application own conversion discovery (the Go source text, the deleted account as its only parameter), the only one in the log", identity:$i}) else empty end ),
               ( if ($n | type) != "array" or ($n | length) == 0 or (num_all($n[0]; ["startupCost", "totalCost", "planRows", "actualRows", "actualTotalMs"]) | not)
                    or ($sc | length) == 0 or ($ran | length) == 0
                    or ([ $sc[] | select(num_all(.; ["startupCost", "totalCost", "planRows"]) | not) ] | length) > 0
@@ -943,10 +929,11 @@ qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head 
               # The audit-retention report statement of the EXPLAINED deletions (the extra zero-reason deletions run with auto_explain on for that one operation): the statement time, how much of it was
               # JIT, the planner estimate for the plan root and the audit_logs scan with what it really did. Recorded, never judged; these deletions carry the capture overhead, so their time is
               # not compared with the unexplained controls above.
+              # identityProven is the judge own verdict (no audit-statement-unproven, -ambiguous or audit-plan-missing finding for the row), never a count of flags the row carries.
               explainedOrderControls: ( [ $ms[] | select(.item == 6 and ((.case | type) == "string") and (.case | endswith("-explained")))
                   | (.auditRetention // {}) as $a | ($a.plan.nodes // []) as $n | ($a.plan.jit // null) as $j | ([ $n[] | select(.relation == "audit_logs") ] | .[0]) as $sc
                   | {size: .size, case: .case, seq: .seq, deleteMsWithCapture: .explained.ms, statementMs: $a.durationMs, statementBlocks: $a.statementBlocks,
-                     identityProven: (($a.identity // {}) as $i | ([$i.prefixOk, $i.suffixOk, $i.piecesInOrder, $i.variablePartsNonEmpty, $i.parametersAreTarget] | all)),
+                     identityProven: (. as $r | $judgeOk and $a.statementBlocks == 1 and ([ $judged[] | select(.item == $r.item and .size == $r.size and .case == $r.case and (.failure == "audit-statement-unproven" or .failure == "audit-statement-ambiguous" or .failure == "audit-plan-missing")) ] | length) == 0),
                      planRoot: (if ($n | length) == 0 then null else {node: $n[0].nodeType, estimatedTotalCost: $n[0].totalCost, estimatedRows: $n[0].planRows, actualRows: $n[0].actualRows, actualTotalMs: $n[0].actualTotalMs} end),
                      auditLogsScan: (if $sc == null then null else {node: $sc.nodeType, estimatedTotalCost: $sc.totalCost, estimatedRows: $sc.planRows, actualRows: $sc.actualRows, rowsRemovedByFilter: $sc.rowsRemovedByFilter, sharedHit: $sc.sharedHit, sharedRead: $sc.sharedRead, actualTotalMs: $sc.actualTotalMs} end),
                      jit: (if $j == null then null else {functions: $j.functions, totalMs: $j.totalMs, optimizationMs: $j.optimizationMs, emissionMs: $j.emissionMs,
@@ -1084,7 +1071,7 @@ qc1_plan_shapes() { # log which
 # deletion once the audit table had grown, and pilot3's own plan-stage log held one execution of it (a Seq Scan whose plan cost was 9.6 million and whose 2,153 ms was 2,093 ms of JIT compilation).
 # What follows reads an auto_explain log written while the application ran a deletion and PROVES the statement it reports is the application's own and no other: the fixed pieces of the Go
 # statement, in order, around three non-empty variable parts; its parameters are the deleted account's id; it ran in the backend of the erasure's own audit statements, after the UPDATEs that blank
-# addresses and before the diagnostic count that follows it. Nothing is substituted, re-run or reconstructed by the harness.
+# addresses, and the first statement that backend logs after it is the application's conversion discovery for the same account. Nothing is substituted, re-run or reconstructed by the harness.
 
 # The four fixed pieces of the statement, one per line, from the facts file (TestQC1AppFacts holds them equal to auditRetentionReportSQL).
 qc1_audit_pieces() { qc1_fact '.go.auditReport.pieces[]'; }
@@ -1176,20 +1163,64 @@ qc1_audit_expected() {
     | if ($mention | length) == 0 or ($link | length) == 0 or (.kinds | length) == 0 then . + {kinds: []} else . end'
 }
 
+# The identity proof of an audit-retention report, one predicate for both ends: qc1_audit_report_evidence sets identity.proven and its proof text with it, and the judge rechecks every
+# stored row with it. So the summary's identityProven and the proof text can never say more than the judge accepts. A pure function of the stored evidence: it holds when the report
+# statement is the Go source text with its complete parameters, ran in the erasure's backend after that erasure's own audit UPDATEs, and that backend's first logged statement
+# after it is the application's conversion discovery for the same account, the only one in the log.
+qc1_audit_identity_defs() { cat <<'JQ'
+    def isnum: type == "number";
+    # The parameters the statement was run with, checked again from what the row stored: every position against the kind of argument the Go source puts there. The account is the one
+    # the explained deletion deleted; an array position is an id-array literal; a list shorter or longer than its kinds, or naming another account anywhere, fails.
+    def audit_params_ok($i; $acct):
+      ($i.parameterKinds) as $k | ($i.parameterValues) as $v
+      | ($k | type) == "array" and ($v | type) == "array" and ($k | length) >= 8 and ($k | length) == ($v | length) and ($acct | isnum)
+        and ([ range(0; $k | length) as $j
+               | if $k[$j] == "uid" then $v[$j] == ("'" + ($acct | tostring) + "'")
+                 elif ($k[$j] == "people" or $k[$j] == "requests" or $k[$j] == "invitations") then (($v[$j] | type) == "string" and ($v[$j] | test("^'\\{([0-9]+(,[0-9]+)*)?\\}'$")))
+                 else false end ] | all);
+    # The statement that follows the report: found on the report's own backend, after it, as that backend's first logged statement; the Go source text of conversion discovery's first query
+    # (flag set by the collector against the facts file); the deleted account as its only parameter; and the only block of its kind in the whole log.
+    def audit_successor_ok($i):
+      ($i.successor) as $s
+      | ($s | type) == "object" and $s.found == true and $s.textMatchesSource == true
+        and ($s.backendPid | type) == "string" and ($s.backendPid | length) > 0 and $s.backendPid == $i.backendPid
+        and ($s.line | isnum) and ($i.reportLine | isnum) and $s.line > $i.reportLine
+        and ($s.parameters | type) == "string" and ($i.targetUserId | isnum) and $s.parameters == ("$1 = '" + ($i.targetUserId | tostring) + "'")
+        and ($s.blocksInLog | isnum) and $s.blocksInLog == 1;
+    def audit_identity_ok($i; $acct):
+      ($i | type) == "object"
+      and $i.prefixOk == true and $i.suffixOk == true and $i.piecesInOrder == true and $i.variablePartsNonEmpty == true and $i.parametersAreTarget == true
+      and $i.tailMatchesSource == true and $i.classificationOk == true
+      and ($i.targetUserId | isnum) and ($acct | isnum) and $i.targetUserId == $acct and audit_params_ok($i; $i.targetUserId)
+      and ($i.backendPid | type) == "string" and ($i.backendPid | length) > 0
+      and ($i.reportBlocks | isnum) and $i.reportBlocks == 1
+      and ($i.auditUpdatesBefore | isnum) and $i.auditUpdatesBefore >= 1
+      and ($i.queryTextSha256 | type) == "string" and ($i.queryTextSha256 | test("^[0-9a-f]{64}$")) and ($i.queryTextBytes | isnum) and $i.queryTextBytes >= 1
+      and audit_successor_ok($i);
+JQ
+}
+
+# The query text and the parameters of one auto_explain block (stdin) as the server logged them; a continuation line of the text loses only the log's leading tab.
+qc1_block_query() { awk '/^\tQuery Text: / { inq = 1; sub(/^\tQuery Text: /, ""); print; next } inq && /^\tQuery Parameters: / { exit } inq && /^\t[A-Za-z]/ { exit } inq { sub(/^\t/, ""); print }'; }
+qc1_block_params() { awk '/^\tQuery Parameters: / { sub(/^\tQuery Parameters: /, ""); print; exit }'; }
+
 # The audit-retention report statement in an auto_explain log, proven to be the application own and no other, with its plan. Arguments: the log, the id of the
 # account the deletion deleted, whether log_lock_waits was on while the log was written. Prints one JSON object; statementBlocks is 0 when the log holds none (the caller marks that INVALID).
+# The proof ties the logged report to the deletion by what the application sends around it: its own audit UPDATEs before it, and after it, on the same backend as the first statement that
+# backend logs, the first query of conversion discovery (the facts file's successor, the deleted account its only argument), the only such block in the log.
 qc1_audit_report_evidence() { # log target-user-id lockwaits-logged(true|false)
-  local q log="$1" target="$2" lw="$3" blocks n block1 qtext params rest pid line dur sha i p expected kinds_json values_json mention link var1 tail_txt
+  local q log="$1" target="$2" lw="$3" blocks n block1 qtext params rest pid line dur sha i p expected kinds_json values_json mention link var1 tail_txt ev
+  local sfact sfirst sline spid sblock stext sparams ssha succ_json
   local -a pieces=()
-  local prefix_ok=false suffix_ok=false order_ok=false tail_ok=false class_ok=false param_ok=false before=0 after=0 parts_ok=false lockw samples bytes
+  local prefix_ok=false suffix_ok=false order_ok=false tail_ok=false class_ok=false param_ok=false before=0 parts_ok=false lockw samples bytes sfound=false stext_ok=false scount=0
   blocks="$(qc1_extract_plans "$log" audit-report)" || return 2
   n="$(grep -c 'duration: .* plan:' <<<"$blocks" || true)"
   [[ "$n" =~ ^[0-9]+$ ]] || n=0
   if (( n == 0 )); then printf '%s\n' '{"statementBlocks":0}'; return 0; fi
   block1="$(awk '/duration: .* plan:/ { c++ } c == 1' <<<"$blocks")"
   mapfile -t pieces < <(qc1_audit_pieces)
-  qtext="$(awk '/^\tQuery Text: / { inq = 1; sub(/^\tQuery Text: /, ""); print; next } inq && /^\tQuery Parameters: / { exit } inq && /^\t[A-Za-z]/ { exit } inq { sub(/^\t/, ""); print }' <<<"$block1")"
-  params="$(awk '/^\tQuery Parameters: / { sub(/^\tQuery Parameters: /, ""); print; exit }' <<<"$block1")"
+  qtext="$(qc1_block_query <<<"$block1")"
+  params="$(qc1_block_params <<<"$block1")"
   expected="$(qc1_audit_expected)"
   kinds_json="$(jq -c '.kinds' <<<"$expected")"
   if (( ${#pieces[@]} == 4 )); then
@@ -1218,30 +1249,50 @@ qc1_audit_report_evidence() { # log target-user-id lockwaits-logged(true|false)
              | if $kind == "uid" then $v == ($q + $target + $q)
                elif $kind == "people" or $kind == "requests" or $kind == "invitations" then ($v | test("^" + $q + "\\{([0-9]+(,[0-9]+)*)?\\}" + $q + "$"))
                else false end ] | all)')"
-  # where it sits in the log: its backend, and the application's own audit statements around it
-  read -r line pid dur _ < <(qc1_log_blocks "$log" | awk -F'\t' 'index($4, "SELECT class, action, count(*) FROM (SELECT action, ") == 1 { print $1, $2, $3; exit }')
+  # where it sits in the log: its backend, and the application's own statements around it
+  read -r line pid dur _ < <(qc1_log_blocks "$log" | awk -F'\t' 'index($4, "SELECT class, action, count(*) FROM (SELECT action, ") == 1 { print $1, $2, $3; exit }') || true
   if [[ -n "${line:-}" ]]; then
     before="$(qc1_log_blocks "$log" | awk -F'\t' -v l="$line" -v p="$pid" '$1 < l && $2 == p && index($4, "UPDATE audit_logs SET ip = ") == 1 { c++ } END { print c + 0 }')"
-    after="$(qc1_log_blocks "$log" | awk -F'\t' -v l="$line" -v p="$pid" '$1 > l && $2 == p && index($4, "SELECT count(*) FROM audit_logs WHERE ip <> ") == 1 { c++ } END { print c + 0 }')"
+    # After it: the first block its backend logged. It must be the facts file's successor statement, text for text (an altered one, another query that starts the same way, or a
+    # different statement in between all fail), with the deleted account as its only parameter. And exactly one block in the whole log starts as the successor does.
+    sfact="$(qc1_fact '.go.auditReport.successor' -j; printf x)"; sfact="${sfact%x}"
+    read -r sline spid _ < <(qc1_log_blocks "$log" | awk -F'\t' -v l="$line" -v p="$pid" '$1 > l && $2 == p { print $1, $2; exit }') || true
+    if [[ -n "${sline:-}" ]]; then
+      sblock="$(awk -v s="$sline" 'NR < s { next } NR > s && /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9:.]+ [A-Z]+ \[[0-9]+\] / { exit } { print }' "$log")"
+      stext="$(qc1_block_query <<<"$sblock")"
+      sparams="$(qc1_block_params <<<"$sblock")"
+      [[ -n "$sfact" && "$stext" == "$sfact" ]] && stext_ok=true
+      sfound=$stext_ok
+    fi
+    sfirst="${sfact%%$'\n'*}"; sfirst="${sfirst:0:90}"
+    scount="$(qc1_log_blocks "$log" | awk -F'\t' -v m="$sfirst" 'm != "" && index($4, m) == 1 { c++ } END { print c + 0 }')"
   fi
+  ssha="$(printf '%s' "${stext:-}" | sha256sum | cut -d' ' -f1)"
+  succ_json="$(jq -nc --argjson found "$sfound" --argjson line "${sline:-null}" --arg pid "${spid:-}" --argjson text_ok "$stext_ok" --arg params "${sparams:-}" --argjson count "$scount" \
+    --argjson bytes "$(printf '%s' "${stext:-}" | wc -c)" --arg sha "$ssha" \
+    '{found: $found, line: $line, backendPid: $pid, textMatchesSource: $text_ok, parameters: $params, blocksInLog: $count, textBytes: $bytes, textSha256: $sha}')"
   sha="$(printf '%s' "$qtext" | sha256sum | cut -d' ' -f1)"
   bytes="$(printf '%s' "$qtext" | wc -c)"
   lockw="$(grep -cE 'still waiting for|acquired [A-Za-z]+Lock on .* after|avoided deadlock' "$log" || true)"; [[ "$lockw" =~ ^[0-9]+$ ]] || lockw=0
   samples="$({ grep -E 'still waiting for|acquired [A-Za-z]+Lock on .* after|avoided deadlock' "$log" || true; } | head -n 3 | cut -c1-200 | jq -Rsc 'split("\n") | map(select(length > 0))')"
-  jq -nc --argjson blocks "$n" --argjson prefix "$prefix_ok" --argjson suffix "$suffix_ok" --argjson order "$order_ok" --argjson parts "$parts_ok" --argjson param "$param_ok" \
-    --argjson before "${before:-0}" --argjson after "${after:-0}" --arg sha "$sha" --argjson bytes "$bytes" --arg pid "${pid:-}" --argjson target "$target" --arg params "$params" \
+  ev="$(jq -nc --argjson blocks "$n" --argjson prefix "$prefix_ok" --argjson suffix "$suffix_ok" --argjson order "$order_ok" --argjson parts "$parts_ok" --argjson param "$param_ok" \
+    --argjson before "${before:-0}" --arg sha "$sha" --argjson bytes "$bytes" --arg pid "${pid:-}" --argjson rline "${line:-null}" --argjson target "$target" --arg params "$params" \
     --argjson pieces "$(printf '%s\n' "${pieces[@]}" | jq -Rsc 'split("\n")[:-1] | map(length)')" --argjson dur "${dur:-null}" --argjson lw "$lw" --argjson lockw "$lockw" --argjson samples "$samples" \
-    --argjson tailok "$tail_ok" --argjson classok "$class_ok" --argjson kinds "$kinds_json" --argjson vals "$values_json" \
+    --argjson tailok "$tail_ok" --argjson classok "$class_ok" --argjson kinds "$kinds_json" --argjson vals "$values_json" --argjson succ "$succ_json" \
     --argjson plan "$(printf '%s\n' "$block1" | qc1_plan_nodes)" '
     { statementBlocks: $blocks,
       identity: { prefixOk: $prefix, suffixOk: $suffix, piecesInOrder: $order, variablePartsNonEmpty: $parts, parametersAreTarget: $param, parameters: $params, parameterKinds: $kinds, parameterValues: ($vals | map(.v)), tailMatchesSource: $tailok, classificationOk: $classok, targetUserId: $target,
-                  backendPid: $pid, auditUpdatesBefore: $before, malformedCountAfter: $after, queryTextBytes: $bytes, queryTextSha256: $sha, fixedPieceLengths: $pieces,
-                  proof: "the statement text is the Go source text (the fixed pieces, the subject-mention and malformed-link constants byte for byte, a classification of the source shape), it took the complete parameter list the source puts in it (the deleted account at every account position, id arrays at the array positions), and it ran in the backend of the erasure own audit UPDATEs before it and its diagnostic count after it; the harness ran, re-ran and substituted nothing" },
+                  backendPid: $pid, reportBlocks: $blocks, reportLine: $rline, auditUpdatesBefore: $before, successor: $succ, queryTextBytes: $bytes, queryTextSha256: $sha, fixedPieceLengths: $pieces },
       durationMs: $dur,
       plan: $plan,
       rowLocks: false,
       rowLocksWhy: "a plain SELECT (no FOR UPDATE / FOR SHARE in its text): it takes an ACCESS SHARE lock on audit_logs only and locks no rows",
-      lockWaits: { logged: $lw, count: $lockw, samples: $samples, note: "log_lock_waits was on while the log was written: a wait longer than deadlock_timeout (1 s) would be logged; an empty count means none was logged, not that no lock was ever briefly waited for" } }'
+      lockWaits: { logged: $lw, count: $lockw, samples: $samples, note: "log_lock_waits was on while the log was written: a wait longer than deadlock_timeout (1 s) would be logged; an empty count means none was logged, not that no lock was ever briefly waited for" } }')"
+  # proven and its proof text come from the one predicate the judge uses; a proof the predicate does not hold is said not to be one.
+  jq -c --argjson t "$target" \
+    --arg yes "the statement text is the Go source text (the fixed pieces, the subject-mention and malformed-link constants byte for byte, a classification of the source shape); it took the complete parameter list the source puts in it (the deleted account at every account position, id arrays at the array positions); it ran in the backend of the erasure own audit UPDATEs before it; and the first statement that backend logged after it is the application own conversion discovery (the Go source text, the deleted account as its only parameter), the only one in the log; the harness ran, re-ran and substituted nothing" \
+    --arg no "NOT PROVEN: at least one of these does not hold (the flags beside this text say which): the statement text is the Go source text; the complete parameter list with the deleted account at every account position; the backend of the erasure own audit UPDATEs before it; the application own conversion discovery, the deleted account its only parameter, as the first statement that backend logged after it and the only one in the log. The judge marks such a row INVALID" \
+    -f <(qc1_audit_identity_defs; printf '%s\n' '(audit_identity_ok(.identity; $t)) as $ok | .identity.proven = $ok | .identity.proof = (if $ok then $yes else $no end)') <<<"$ev"
 }
 
 # The scanner statement (initial | continuation) with its ? placeholders numbered $1, $2 ... (what GORM sends to PostgreSQL), so a generic plan is of the REAL
