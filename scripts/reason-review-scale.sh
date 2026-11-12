@@ -90,7 +90,9 @@
 # seconds (default 180) to finish its own cleanup, which for the nested runner is
 # stopping the run inside, copying the artifacts out and removing its container (each
 # Docker call in it has a deadline, and the runner's cleanup budget, FOLD_NESTED_CLEANUP_BUDGET,
-# defaults to this grace less ten seconds, so removal ends before the group is KILLed); then
+# defaults to this grace less ten seconds, less five for a grace of 40 or shorter; an explicit
+# budget must leave five seconds of the grace, and a grace under 8 seconds is refused, so
+# removal ends before the group is KILLed); then
 # the whole group is KILLed, and the step's record says which happened. A step that
 # ends by itself has its group KILLed as well, so nothing it leaves behind survives
 # it. A process that leaves the group on purpose (setsid, setpgid) is outside what
@@ -404,6 +406,28 @@ STUB
 	done
 	grep -q 'Full restore drill frequency' "$tmp/dry.out" || t_fail "dry: the drill frequency pointer is missing"
 
+	# The stop grace and the nested cleanup budget are checked together, before anything is created or started. A grace too short for the runner's minimum budget,
+	# and a budget that leaves under 5 seconds of the grace, are refused (never replaced by a longer default); the shortest grace that fits is accepted and its derived
+	# budget is the one printed; the direct runner has no nested cleanup to size.
+	local gc
+	for gc in "FOLD_SCALE_STOP_GRACE=2" "FOLD_SCALE_STOP_GRACE=7" "FOLD_SCALE_STOP_GRACE=abc" "FOLD_SCALE_STOP_GRACE=20 FOLD_NESTED_CLEANUP_BUDGET=16" "FOLD_SCALE_STOP_GRACE=20 FOLD_NESTED_CLEANUP_BUDGET=2" "FOLD_SCALE_STOP_GRACE=60 FOLD_NESTED_CLEANUP_BUDGET=x" "FOLD_NESTED_CLEANUP_BUDGET=180"; do
+		# shellcheck disable=SC2086 # $gc is one or two NAME=value words
+		t_run "grace-refused" $gc -- --dry-run
+		t_rc "grace-refused ($gc)" 2
+		grep -q 'FOLD_SCALE_STOP_GRACE\|FOLD_NESTED_CLEANUP_BUDGET' "$tmp/grace-refused.out" || t_fail "grace-refused ($gc): the refusal names neither setting"
+		[[ ! -e $tmp/grace-refused && ! -e $tmp/log ]] || t_fail "grace-refused ($gc): something was created or started"
+	done
+	t_run grace-min FOLD_SCALE_STOP_GRACE=8 -- --dry-run
+	t_rc grace-min 0
+	grep -q 'cleanup:   the nested runner gets 3s for its cleanup inside a 8s stop grace' "$tmp/grace-min.out" || t_fail "grace-min: the derived budget is not the one printed"
+	t_run grace-fit FOLD_SCALE_STOP_GRACE=20 FOLD_NESTED_CLEANUP_BUDGET=15 -- --dry-run
+	t_rc grace-fit 0
+	grep -q 'gets 15s for its cleanup inside a 20s stop grace' "$tmp/grace-fit.out" || t_fail "grace-fit: the explicit budget is not the one printed"
+	t_run grace-big -- --dry-run
+	grep -q 'gets 170s for its cleanup inside a 180s stop grace' "$tmp/grace-big.out" || t_fail "grace-big: the default budget is not the grace less ten seconds"
+	t_run grace-direct FOLD_SCALE_STOP_GRACE=2 -- --dry-run --runner direct
+	t_rc grace-direct 0
+
 	# --- cancellation: the step's whole process group, and nothing else ---------------------
 	# t_alive PID: the process exists and is not a zombie.
 	t_alive() {
@@ -496,7 +520,7 @@ STUB
 	t_alive "$bystander" || t_fail "orphan-done: a process that is not the step's was ended"
 
 	# A tool that ignores TERM entirely is killed once the grace has run out, and the record says so.
-	t_signal stubborn TERM STUB_IGNORE_TERM=1 STUB_ORPHAN_PID="$tmp/orphan-s" FOLD_SCALE_STOP_GRACE=2 -- --drill-reason x
+	t_signal stubborn TERM STUB_IGNORE_TERM=1 STUB_ORPHAN_PID="$tmp/orphan-s" FOLD_SCALE_STOP_GRACE=2 -- --runner direct --drill-reason x
 	t_rc stubborn 143
 	t_check stubborn "killed past the grace" '.steps[1].verdict == "interrupted" and .steps[1].summary.commandStopped == "only after KILL, past the grace"'
 	t_gone "a tool that ignores TERM" "$tmp/pid"
@@ -560,7 +584,10 @@ pause)
 	for p in $(holders); do kill -STOP "$p" 2>/dev/null || true; done
 	: >"$STUB_FAKE/paused"
 	;;
-unpause) for p in $(holders); do kill -CONT "$p" 2>/dev/null || true; done ;;
+unpause)
+	[[ -z ${STUB_UNPAUSE_HANG:-} ]] || hang
+	for p in $(holders); do kill -CONT "$p" 2>/dev/null || true; done
+	;;
 cp)
 	case $2 in
 	c*:*)
@@ -588,6 +615,13 @@ exec)
 	*fold-owned-scan*)
 		[[ -z ${STUB_SCAN_HANG:-} ]] || hang
 		[[ -z ${STUB_SCAN_FAIL:-} ]] || exit 1
+		# A client that answers and exits while a child of its own, one that ignores TERM, stays behind in its process group.
+		if [[ -n ${STUB_SCAN_LEAVE:-} ]]; then
+			(trap '' TERM INT HUP; exec sleep 600) </dev/null >/dev/null 2>&1 &
+			echo $! >>"$STUB_FAKE/left.pids"
+			"$@"
+			exit
+		fi
 		exec "$@"
 		;;
 	*browser-prepare.sh*)
@@ -771,6 +805,18 @@ DESC
 		done
 		((n >= 2)) || t_fail "$1: no stalled docker client was started (the case did not exercise a hang)"
 	}
+	# n_left_gone NAME: the children that docker clients answered and exited with, leaving them behind (and ignoring TERM), are gone; at least one was left.
+	n_left_gone() {
+		local p n=0
+		for p in $(cat "$fake/left.pids" 2>/dev/null || true); do
+			n=$((n + 1))
+			if t_alive "$p"; then
+				t_fail "$1: the child $p of a docker client that had already exited was not ended"
+				kill -KILL "$p" 2>/dev/null || true
+			fi
+		done
+		((n >= 1)) || t_fail "$1: the stub left no child behind (the case did not exercise the lifecycle)"
+	}
 	n_only_ours() {
 		if grep -E '^(rm|ps|pause|unpause|cp c|exec) ' "$tmp/nlog" | grep -v 'c\{64\}' | grep -vq 'work.bundle\|^exec -e'; then t_fail "$1: a docker call named something but the run's own container"; fi
 		t_alive "$bystander" || t_fail "$1: a process that does not belong to the run was ended"
@@ -888,7 +934,7 @@ DESC
 	# Every docker call of the cleanup has a deadline. A docker client that stalls (the daemon does not answer) is ended with its whole process group, also when it
 	# ignores TERM; the failure is counted and recorded; the time reserved for removal is not spent on anything before it; and a container that cannot be shown to be
 	# gone is named. The small budgets below are the production ones in proportion (stop, copies, a reserve for removal, one call). Each case must return on its own.
-	local t0 timing='FOLD_NESTED_CALL_TIMEOUT=2 FOLD_NESTED_STOP_GRACE=2 FOLD_NESTED_KILL_WAIT=2'
+	local t0 bad short='FOLD_NESTED_STOP_GRACE=2 FOLD_NESTED_KILL_WAIT=2' timing='FOLD_NESTED_CALL_TIMEOUT=2 FOLD_NESTED_STOP_GRACE=2 FOLD_NESTED_KILL_WAIT=2'
 	# The lookup stalls and ignores TERM, signalled through the wrapper (the way a person cancels): the stop cannot be established, so the container is frozen
 	# before the copy, the copy is recorded as incomplete with the stalled lookups said, and the container is still removed within the budget.
 	t0=$SECONDS
@@ -933,6 +979,16 @@ DESC
 	n_hung_gone nest-hang-cp-prep
 	grep -q 'work/prep.*stalled past its deadline' "$tmp/nest-hang-cp-prep/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-hang-cp-prep: the stalled copy was not recorded as stalled"
 	[[ -s $tmp/nest-hang-cp-prep/done ]] || t_fail "nest-hang-cp-prep: the evidence copy was starved by the stalled one"
+	# A stalled preparation copy with the advertised per-call timeout (15s) and a short cleanup budget: it gets only its share of the time, so the main evidence copy
+	# still runs (a call timeout that was raised to its own length would have used all of what the budget leaves).
+	t0=$SECONDS
+	# shellcheck disable=SC2086
+	n_run nest-hang-cp-prep-default STUB_QUICK=1 STUB_CP_HANG=prep STUB_HANG_STUBBORN=1 $short FOLD_NESTED_CLEANUP_BUDGET=20 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-cp-prep-default" --qc1
+	[[ $rc == 1 ]] || t_fail "nest-hang-cp-prep-default: exit $rc, want 1 for a run that exited 0 but could not be collected"
+	n_took nest-hang-cp-prep-default "$t0" 16
+	n_hung_gone nest-hang-cp-prep-default
+	grep -q 'work/prep.*stalled past its deadline' "$tmp/nest-hang-cp-prep-default/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-hang-cp-prep-default: the stalled copy was not recorded as stalled"
+	[[ -s $tmp/nest-hang-cp-prep-default/done ]] || t_fail "nest-hang-cp-prep-default: the main evidence copy was starved by the stalled preparation copy"
 	# A pause that stalls: it is ended and the record says the freeze is unknown, not that it worked.
 	t0=$SECONDS
 	# shellcheck disable=SC2086
@@ -941,6 +997,52 @@ DESC
 	n_took nest-hang-pause "$t0" 28
 	n_hung_gone nest-hang-pause
 	grep -q 'may NOT be frozen' "$tmp/nest-hang-pause/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-hang-pause: the record does not say the freeze is unknown"
+	# An unpause that stalls and ignores TERM, with the default call timeout (15s) and a cleanup budget whose removal reserve (6s) is shorter than it: the lookups
+	# fail, the container is frozen, and the unpause may only use half of the time left, so removal is still attempted (after the unpause, inside the window) and works.
+	t0=$SECONDS
+	# shellcheck disable=SC2086
+	n_run nest-hang-unpause STUB_QUICK=1 STUB_DESC=1 STUB_SCAN_FAIL=1 STUB_UNPAUSE_HANG=1 STUB_HANG_STUBBORN=1 FOLD_NESTED_CLEANUP_BUDGET=20 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-unpause" --qc1
+	[[ $rc == 1 ]] || t_fail "nest-hang-unpause: exit $rc, want 1 (the stop could not be established; 124 means the runner never returned)"
+	n_took nest-hang-unpause "$t0" 26
+	n_hung_gone nest-hang-unpause
+	n_only_ours nest-hang-unpause
+	n_before '^pause c\{64\}$' "$first_cp" || t_fail "nest-hang-unpause: the container was not frozen before the copy"
+	n_before '^unpause c\{64\}$' '^rm -fv ' || t_fail "nest-hang-unpause: removal was not attempted after the stalled unpause"
+	grep -q 'was frozen' "$tmp/nest-hang-unpause/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-hang-unpause: the record does not say the container was frozen"
+	[[ -s $tmp/nest-hang-unpause/done ]] || t_fail "nest-hang-unpause: the evidence was not copied"
+	# The same stall followed by a removal that stalls too: the failure names the container and says the unpause stalled.
+	n_want_removed=0
+	t0=$SECONDS
+	# shellcheck disable=SC2086
+	n_run nest-hang-unpause-rm STUB_QUICK=1 STUB_SCAN_FAIL=1 STUB_UNPAUSE_HANG=1 STUB_RM_HANG=1 STUB_HANG_STUBBORN=1 $timing FOLD_NESTED_CLEANUP_BUDGET=12 FOLD_NESTED_RM_RESERVE=4 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-unpause-rm" --qc1
+	[[ $rc == 1 ]] || t_fail "nest-hang-unpause-rm: exit $rc, want 1 (124 means the runner never returned)"
+	n_took nest-hang-unpause-rm "$t0" 20
+	n_hung_gone nest-hang-unpause-rm
+	n_before '^unpause c\{64\}$' '^rm -fv ' || t_fail "nest-hang-unpause-rm: removal was not attempted after the stalled unpause"
+	grep -q 'could not be removed.*the unpause stalled and was killed.*docker rm -fv c\{64\}' "$tmp/nest-hang-unpause-rm/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-hang-unpause-rm: the record does not name the container and the stalled unpause"
+	n_clear_holders
+	n_want_removed=1
+	# A docker client that answers and exits while a child of its own, one that ignores TERM, stays in its process group: the group is held until it has been ended,
+	# after a normal end and on a signal through the wrapper. Processes outside the groups are left alone.
+	n_run nest-left-child STUB_QUICK=1 STUB_SCAN_LEAVE=1 FOLD_NESTED_STOP_GRACE=2 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-left-child" --qc1
+	[[ $rc == 0 ]] || t_fail "nest-left-child: exit $rc, want 0 (the lookups worked)"
+	n_left_gone nest-left-child
+	n_only_ours nest-left-child
+	[[ ! -e $tmp/nest-left-child/COLLECTION-FAILED.txt ]] || t_fail "nest-left-child: a lookup that answered was recorded as a failure"
+	n_signal nest-left-term TERM STUB_SCAN_LEAVE=1 -- bash scripts/reason-review-scale.sh --evidence-dir "$tmp/nest-left-term" --only qc1
+	t_rc nest-left-term 143
+	n_left_gone nest-left-term
+	n_only_ours nest-left-term
+	n_collected nest-left-term "$tmp/nest-left-term/qc1"
+	# A cleanup budget the nested runner cannot use is refused before anything is started, never replaced by its longer default.
+	n_want_removed=0
+	for bad in 2 0 abc 1.5; do
+		n_run "nest-budget-$bad" FOLD_NESTED_CLEANUP_BUDGET=$bad -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-budget-$bad" --qc1
+		[[ $rc == 1 ]] || t_fail "nest-budget-$bad: exit $rc, want 1"
+		grep -q 'FOLD_NESTED_CLEANUP_BUDGET' "$tmp/nest-budget-$bad.out" || t_fail "nest-budget-$bad: the refusal does not name the setting"
+		[[ ! -s $tmp/nlog && ! -e $tmp/nest-budget-$bad ]] || t_fail "nest-budget-$bad: something was started or created before the refusal"
+	done
+	n_want_removed=1
 	# Removal that stalls and ignores TERM, every time: the run returns within its budget, names the container (its name and id, and the command to end it) on stderr
 	# and in COLLECTION-FAILED.txt, and a normal end does not stay a pass. What the run left in the container is ended by hand here, not by the runner.
 	n_want_removed=0
@@ -1040,13 +1142,26 @@ for f in "$nested_tool" "$qc1_tool" "$drill_tool"; do
 	[[ -f $f ]] || die "$f is missing from this checkout"
 done
 
-# The nested runner's whole cleanup (stop, copies, removal; every Docker call in it has a deadline) must end before this wrapper's grace does, or the wrapper
-# KILLs it mid-removal and the container stays behind. Unless the person set a budget, it is the grace less ten seconds.
-if [[ -z ${FOLD_NESTED_CLEANUP_BUDGET:-} ]]; then
-	stop_grace=${FOLD_SCALE_STOP_GRACE:-180}
-	[[ $stop_grace =~ ^[0-9]+$ ]] || stop_grace=180
-	FOLD_NESTED_CLEANUP_BUDGET=$((stop_grace > 40 ? stop_grace - 10 : stop_grace * 3 / 4))
-	export FOLD_NESTED_CLEANUP_BUDGET
+# The stop grace (FOLD_SCALE_STOP_GRACE) and, for the nested runner, the budget of its whole cleanup (FOLD_NESTED_CLEANUP_BUDGET: stop, copies, removal, every
+# Docker call in it with a deadline) are checked together before anything starts. The cleanup must end before the grace does, with margin, or this wrapper KILLs
+# the runner mid-removal and the container stays behind; so a combination without that margin is refused, never repaired. Unless the person set a budget, it is
+# the grace less ten seconds (less five when the grace is 40 or shorter), and a grace too short to leave the runner its minimum of 3 is refused.
+stop_grace=${FOLD_SCALE_STOP_GRACE:-180}
+[[ $stop_grace =~ ^[0-9]+$ ]] || die "FOLD_SCALE_STOP_GRACE=$stop_grace is not a whole number of seconds"
+stop_grace=$((10#$stop_grace))
+export FOLD_SCALE_STOP_GRACE=$stop_grace
+nested_budget=
+if [[ $runner == nested ]]; then
+	if [[ -n ${FOLD_NESTED_CLEANUP_BUDGET:-} ]]; then
+		[[ $FOLD_NESTED_CLEANUP_BUDGET =~ ^[0-9]+$ ]] || die "FOLD_NESTED_CLEANUP_BUDGET=$FOLD_NESTED_CLEANUP_BUDGET is not a whole number of seconds"
+		nested_budget=$((10#$FOLD_NESTED_CLEANUP_BUDGET))
+		((nested_budget >= 3)) || die "FOLD_NESTED_CLEANUP_BUDGET=$nested_budget is below the 3 seconds the nested runner needs"
+		((nested_budget + 5 <= stop_grace)) || die "FOLD_NESTED_CLEANUP_BUDGET=$nested_budget leaves less than 5 seconds of FOLD_SCALE_STOP_GRACE=$stop_grace after the cleanup; raise the grace or lower the budget"
+	else
+		nested_budget=$((stop_grace > 40 ? stop_grace - 10 : stop_grace - 5))
+		((nested_budget >= 3)) || die "FOLD_SCALE_STOP_GRACE=$stop_grace is too short for the nested runner's cleanup; it needs at least 8 seconds"
+	fi
+	export FOLD_NESTED_CLEANUP_BUDGET=$nested_budget
 fi
 
 revision=$(git rev-parse HEAD)
@@ -1104,6 +1219,7 @@ if ((dry_run)); then
 	echo "reason-review scale run: DRY RUN. Nothing is started and nothing is written."
 	echo "revision:  $revision ($([[ $clean == true ]] && echo 'tree clean' || echo 'tree NOT clean: a real run refuses this'))"
 	echo "runner:    $runner"
+	[[ -z $nested_budget ]] || echo "cleanup:   the nested runner gets ${nested_budget}s for its cleanup inside a ${stop_grace}s stop grace"
 	echo "evidence:  $evidence"
 	echo "record:    $evidence/evidence.json (starts incomplete; written at the end as pass, partial or fail)"
 	echo

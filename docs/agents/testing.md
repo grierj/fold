@@ -260,12 +260,21 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   OOM kill) gets `FOLD_NESTED_SIGNAL_WAIT` seconds (default 5) for a pending signal, never an open-ended
   wait, then goes through the same bounded stop and collection and keeps its own status.
   Every Docker call the cleanup makes (lookups, pause, unpause, both copies, removal) is a client
-  with an absolute deadline: one that has not answered is killed with its whole process group,
-  also when it ignores TERM, and counted (a stalled lookup, pause or copy is said in
-  `COLLECTION-FAILED.txt`). The whole cleanup has `FOLD_NESTED_CLEANUP_BUDGET` seconds (default 170; the
-  wrapper sets it to its grace less ten seconds unless you do), a single call
-  `FOLD_NESTED_CALL_TIMEOUT` (15), and the last `FOLD_NESTED_RM_RESERVE` seconds (30) are for removal
-  alone: stop and copies end before them. A container that cannot be shown to be gone (a
+  with an absolute deadline, in a process group the runner holds until it has ended it: one that
+  has not answered is killed with its whole group, also when it ignores TERM, and so is a
+  descendant a client leaves behind after it exits; a stall is counted (a stalled lookup, pause or
+  copy is said in `COLLECTION-FAILED.txt`). The whole cleanup has `FOLD_NESTED_CLEANUP_BUDGET`
+  seconds (default 170; a whole number of at least 3, otherwise the runner refuses to start), a
+  single call `FOLD_NESTED_CALL_TIMEOUT` (15; the copy of `/work/out` may use what the stop and
+  the preparation copy leave), and the last `FOLD_NESTED_RM_RESERVE` seconds (30, at most a third
+  of the budget) are for removal alone: the stop gets at most three quarters of the time before
+  them, the preparation copy at most a quarter of what then remains, the pause a third and the
+  unpause half of what is left, so a stalled one cannot use up what the next step needs. The
+  wrapper checks `FOLD_SCALE_STOP_GRACE` and the budget together before it starts anything (a
+  `--dry-run` shows the result): the budget it sets is the grace less ten seconds (less five for a
+  grace of 40 or shorter), a grace under 8 seconds is refused, and an explicit budget must leave
+  5 seconds of the grace or is refused; it is never replaced by a longer default. A container that
+  cannot be shown to be gone (a
   listing by its id that ran and came back empty) is named, with its id and
   `docker rm -fv <id>`, on stderr and in `COLLECTION-FAILED.txt`, and the run exits 1 instead of 0.
   Limits: a KILL sent to either script cannot do any of this; a tool that replaces its whole
@@ -299,7 +308,10 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   before the copy and keeps the workload's status; that a leftover after a normal end is ended and
   noted; that a lookup, a pause, a copy and a removal that stall (the stub's client has a child of
   its own, and ignores TERM in some cases) are all ended, the run returns within its budget on its
-  own, the stall is recorded, the evidence copy is not starved by a stalled preparation copy, a
+  own, the stall is recorded, the evidence copy is not starved by a stalled preparation copy (also
+  with the default call timeout and a short budget), a stalled unpause still leaves a removal
+  attempt, a client that exits and leaves a TERM-ignoring child has that child ended, a budget the
+  runner cannot use or one that does not fit the wrapper's grace is refused, a
   removal that stalls once is retried, one that never works names the container and fails the
   run, and a process or container that is not the run's is untouched; and that a failed copy or an
   unestablished stop turns a run that exited 0 (or a
