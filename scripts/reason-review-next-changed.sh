@@ -41,7 +41,9 @@
 # (each is suspect); an identical record copied across directories of one stack is counted once and named, while conflicting records of one identity exclude
 # every occurrence. Identity is the canonical original record: two records with equal timed presses but different status, window,
 # agreement, sampling, page accounting or other recorded validity facts conflict instead of collapsing. A malformed local or outer
-# record is a failure, never an omission; an absent outer record is the direct-QC-evidence shape and is fine.
+# record is a failure, never an omission; an absent outer record is the direct-QC-evidence shape and is fine. A malformed
+# nested value excludes its own row with its original identity and conflict evidence kept, never the directory's other rows;
+# a directory whose sampling rows cannot be projected at all fails the record, so hidden conflicts can never read COMPLETE.
 #
 # What it does not do. It does not call a delay noise, does not call a target met, and does not choose a fix: it prints the numbers, their load context and the one mechanical
 # consequence the issue states (a pooled p95 over the target means a profile is the next step). The target is the scaling design's proposal (QC1_NAV_BUDGET_MS), not an
@@ -177,6 +179,8 @@ judge_findings() {
 # 0..N-1 index, a runner origin and a nonnegative offset, firstPressMs is the first press, and the load counters are numbers. A malformed value names its
 # excluded row; no shape aborts the report. Summaries are computed only from safe projected presses (objects with a numeric
 # time and a string origin, $ok), so a non-object element or a non-string origin cannot reach a jq field access or object key.
+# A row that still cannot be projected keeps its original stack, background, case and comparison evidence as an excluded run
+# instead of dropping the directory's rows; only a directory-level failure that prevents keeping any identity fails the report (see build_record).
 # The full original browser record and the row's own judge verdicts travel beside the row for the duplicate check (tok*).
 runs_json() {
 	local dir=$1 invalid=$2 budget=$3 stack=$4
@@ -184,20 +188,21 @@ runs_json() {
 		def isnum: type == "number";
 		def isint: type == "number" and ((. % 1) == 0);
 		[ .[] | select(type == "object" and .item == 10 and ((.case // "") | test("^browser-panel-[0-9]+-nc[0-9]+$")))
-		  | . as $r | (($r.browser // {}) | if type == "object" then . else {} end) as $b | (($b.nextChangedSampling // null) | if type == "object" then . else null end) as $s
+		  | . as $r | try ((($r.browser // {}) | if type == "object" then . else {} end) as $b | (($b.nextChangedSampling // null) | if type == "object" then . else null end) as $s
 		  | ([ ($s.presses // [])[]? | select(type == "object") | .ms | select(isnum) ]) as $ms
 		  | (($s.presses // []) | if type == "array" then . else [] end) as $pl
 		  | ([ $pl[] | select(type == "object") | select((.ms | isnum) and (((.origin | type) == "string") or .origin == null))
 		      | {index: .index, origin: (.origin // "unknown"), ms: .ms, atMs: .atMs, longTaskMs: (.longTaskMs // null), longTaskCount: (.longTaskCount // null)} ]) as $ok
 		  | (($b.press // {}) | if type == "object" then . else {} end) as $bp
 		  | (($b.reload // {}) | if type == "object" then . else {} end) as $br
-		  | (($b.load // {}) | if type == "object" then . else {} end) as $bl
+		  | (($b.load // {}) | if type == "object" then . else {} end) as $bl |
+          (($b.failed | objects | .phase) // null) as $failphase
 		  | {
 		      dir: $dir, stack: $stack, case: .case, background: .size, reasons: .reasons, run: (.case | capture("-nc(?<n>[0-9]+)$").n | tonumber),
 		      budgets: ([ $budget[] | select(.item == 10 and .size == $r.size and .case == $r.case) | {failure, detail: (del(.class, .failure, .item, .size, .case))} ]),
 		      problems: [
 		        (if .status != "measured" then "row status is \(.status), not measured" else empty end),
-		        (if $b.failed != null then "the run stopped in \($b.failed.phase // "an unknown phase")" else empty end),
+		        (if $b.failed != null then "the run stopped in \($failphase // "an unknown phase")" else empty end),
 		        (if $b.apiOrigin != "real" then "the pages did not all come from the stack origin" else empty end),
 		        (if $b.walkTotal != .reasons then "the walk found \($b.walkTotal) reasons, not \(.reasons)" else empty end),
 		        (if ($bp.observed != true) or ($bp.status != "409") then "the refused press was not observed as 409" else empty end),
@@ -217,9 +222,10 @@ runs_json() {
 		        (if $s != null and ([$pl[] | select(type == "object") | .atMs | select((type != "number") or (. < 0))] | length) > 0 then "a press offset is not a nonnegative number" else empty end),
 		        (if $s != null and ($s.profile != null) then "the run was profiled (sampling overhead): a diagnostic, not a sample" else empty end),
 		        (if $b.load == null then "no host load counters were read"
-		         elif ($bl.presses | type) != "object" or ($bl.presses.seconds == null) or ($bl.presses.stealPercent == null) or ($bl.presses.load1Start == null) or ($bl.presses.load1End == null)
+		         elif ($bl.presses | type) != "object" then "the host load counters around the presses are incomplete (loadavg, CPU steal)"
+         elif (($bl.presses.seconds? // null) == null) or (($bl.presses.stealPercent? // null) == null) or (($bl.presses.load1Start? // null) == null) or (($bl.presses.load1End? // null) == null)
 		         then "the host load counters around the presses are incomplete (loadavg, CPU steal)"
-		         elif ([$bl.presses.seconds, $bl.presses.stealPercent, $bl.presses.load1Start, $bl.presses.load1End] | map(select(type == "number")) | length) != 4
+		         elif ([($bl.presses.seconds? // null), ($bl.presses.stealPercent? // null), ($bl.presses.load1Start? // null), ($bl.presses.load1End? // null)] | map(select(type == "number")) | length) != 4
 		         then "the host load counters around the presses are not numbers (loadavg, CPU steal)"
 		         else empty end)
 		      ],
@@ -241,7 +247,24 @@ runs_json() {
 		      browser: ($b.browser // null)
 		    }
 		  | .problems += ([ $invalid[] | select(.item == 10 and .size == $r.size and .case == $r.case) | "the QC judge finds this row invalid: \(.failure)" ])
-		  | .counted = (.problems | length == 0)
+		  | .counted = (.problems | length == 0)) catch ({
+      dir: $dir, stack: $stack, case: ($r.case // "unknown"),
+      background: ($r.size // -1), reasons: ($r.reasons // null),
+      run: (try (($r.case // "") | capture("-nc(?<n>[0-9]+)$").n | tonumber) catch -1),
+      budgets: ([$budget[] | select(type == "object" and .item == 10 and .size == $r.size and .case == $r.case) | {failure, detail: (del(.class, .failure, .item, .size, .case))}]),
+      problems: (["the sampling row could not be projected without error; the row is excluded, not counted"]
+        + [$invalid[] | select(type == "object" and .item == 10 and .size == $r.size and .case == $r.case) | "the QC judge finds this row invalid: \(.failure)"]),
+      counted: false, presses: [],
+      tokStatus: ($r.status // null),
+      tokWindow: ($r.window // null),
+      tokAgreement: ($r.agreement // null),
+      tokSampling: ((($r.browser // null) | if type == "object" then (.nextChangedSampling // null) else null end)),
+      tokChecks: ({browser: ((($r.browser // null) | if type == "object" then . else {} end)), row: ({charset: ($r.charset // null), textShape: ($r.textShape // null), targetReasonLen: ($r.targetReasonLen // null)})}),
+      tokInvalid: ([$invalid[] | select(type == "object" and .item == 10 and .size == $r.size and .case == $r.case)]),
+      stats: ([] | stats), overTarget: 0, firstPressMs: null,
+      afterFirst: ([] | stats), byOrigin: {}, slowest: [],
+      load: null, browser: null
+    })
 		]' "$dir/measurements.jsonl"
 }
 
@@ -483,7 +506,7 @@ build_record() {
 	shift
 	# (Repeated canonical --evidence directories were already refused before anything was written; repeated or conflicting run identities are marked below.)
 	for d in "$@"; do
-		local present=true why='' problems='[]' envrev=null browserv=null runs='[]' stack='' cap=0
+		local present=true why='' problems='[]' envrev=null browserv=null runs='[]' stack='' cap=0 profailed=false
 		local judge='{"ok":true,"invalid":[],"budget":[]}' judge_invalid='[]' judge_budget='[]' dup_invalid='[]' coll='[]' omit='[]'
 		local cj=''
 		if [[ ! -s $d/measurements.jsonl || ! -s $d/environment.json ]] || ! jq -e . "$d/environment.json" >/dev/null 2>&1; then
@@ -512,6 +535,7 @@ build_record() {
 				judge_invalid=$(jq -c --argjson dup "$dup_invalid" '. + $dup' <<<"$judge_invalid" 2>/dev/null || echo "$judge_invalid")
 			fi
 			if ! runs=$(runs_json "$d" "$judge_invalid" "$judge_budget" "$stack"); then
+				profailed=true
 				runs='[]'
 				problems=$(jq -c '. + ["the sampling rows could not be read; nothing from this directory counts"]' <<<"$problems")
 			fi
@@ -526,8 +550,8 @@ build_record() {
 			omit=$(jq -c '.omit' <<<"$cj")
 		fi
 		dirjson=$(jq -c --arg dir "$d" --argjson present "$present" --arg why "$why" --argjson revision "$envrev" --argjson chromium "$browserv" --argjson problems "$problems" \
-			--argjson collectionProblems "$coll" --argjson omissions "$omit" --arg stack "$stack" \
-			'. + [{dir:$dir, present:$present, why:(if $why == "" then null else $why end), revision:$revision, chromium:$chromium, environmentProblems:$problems, collectionProblems:$collectionProblems, omissions:$omissions, stack:$stack}]' <<<"$dirjson")
+			--argjson collectionProblems "$coll" --argjson omissions "$omit" --arg stack "$stack" --argjson projectionFailed "$profailed" \
+			'. + [{dir:$dir, present:$present, why:(if $why == "" then null else $why end), revision:$revision, chromium:$chromium, environmentProblems:$problems, collectionProblems:$collectionProblems, omissions:$omissions, stack:$stack, projectionFailed:$projectionFailed}]' <<<"$dirjson")
 		if [[ $present == true ]]; then
 			# a directory of another revision, with an environment problem, or with a collection/execution failure contributes runs that are listed but not counted
 			all=$(jq -c --argjson runs "$runs" --argjson problems "$problems" --argjson revision "$envrev" --arg rev "$rev" --argjson coll "$coll" '
@@ -567,9 +591,10 @@ build_record() {
 		    originalObservations: $original,
 		    evidenceDirectories: $dirs,
 		    configurations: $configs,
-		    complete: ($configs | all(.complete)),
+		    complete: (($configs | all(.complete)) and ([$dirs[] | select(.projectionFailed // false)] | length == 0)),
 		    gaps: [ $configs[] | .gaps[] ] + [ $dirs[] | select(.present | not) | "\(.dir): \(.why)" ]
-		          + [ $dirs[] | . as $dd | (.collectionProblems // [])[] | "\($dd.dir): \(.)" ],
+		          + [ $dirs[] | . as $dd | (.collectionProblems // [])[] | "\($dd.dir): \(.)" ]
+		          + [ $dirs[] | select(.projectionFailed // false) | "\(.dir): the sampling rows could not be projected without error; nothing from this directory can be trusted, so the record cannot be complete" ],
 		    consequence: (if ($configs | any(.p95OverTarget == true))
 		                  then "a pooled p95 is over the target in " + ([ $configs[] | select(.p95OverTarget == true) | "\(.background)-row background" ] | join(", ")) + ": profile the control (repeat the sampling with --qc1-arg --profile-next-changed) before any change"
 		                  else null end),
@@ -591,7 +616,9 @@ build_record() {
 # digest, first page or another judge input) conflict instead of collapsing; a present outer record must be a finished run bound
 # to this directory and revision with one well-formed qc1 step whose JSON-integer exit matches its verdict and whose summary has
 # the runner's shape and agrees with the verdict and the directory's status; sampling counts, indices, origins, timings
-# and load counters are validated against the producer's record shape, and a malformed nested press never aborts the report;
+# and load counters are validated against the producer's record shape, and a malformed nested value (a non-object press,
+# a non-string origin, a scalar browser.failed) names its excluded row without aborting the report while a clean directory
+# beside its malformed conflicting copy excludes every occurrence of that identity in either directory order;
 # and a standard-shaped missing sampling entry (no reasons key) fails like any other.
 # shellcheck disable=SC2016  # the jq filters passed to expect are not shell expansions
 next_changed_self_test() {
@@ -1195,7 +1222,7 @@ next_changed_self_test() {
 	rc=0
 	run --out "$work/outermismatch.json" --evidence "$gmm/qc1" --revision "$rev" >/dev/null 2>&1 || rc=$?
 	[[ $rc == 10 ]] || fail "a passing summary that does not match this directory must leave the record incomplete (exit 10), exited $rc"
-	expect "a summary that does not match this directory is named" '.complete == false and (.gaps | map(contains("outer runner") and contains("does not match")) | any' "$work/outermismatch.json"
+	expect "a summary that does not match this directory is named" '.complete == false and (.gaps | map(contains("outer runner") and contains("does not match")) | any)' "$work/outermismatch.json"
 
 	# --- 17. the sampling record's counts, indices, origins, timings and load counters are validated against the producer's shape ---
 	# The producer (deploy/digitalocean/qc1/panel-core.mjs) writes requested as the asked loop bound, performed as presses.length,
@@ -1240,6 +1267,40 @@ next_changed_self_test() {
 	expect "the clean figures are still published" '.configurations[0].pooled.presses.count == 30' "$f"
 	expect "a non-object press element is named" '.configurations[0].gaps | map(contains("browser-panel-100000-nc2") and contains("not an object")) | any' "$f"
 	expect "a non-string press origin is named" '.configurations[0].gaps | map(contains("browser-panel-100000-nc3") and contains("not one the runner records")) | any' "$f"
+
+	# A scalar browser.failed names its excluded row without aborting the report: the malformed row keeps its identity
+	# while the clean row still counts with its published figures. A clean directory beside a malformed conflicting copy
+	# excludes every occurrence of the conflicting identity in either directory order, keeps the identical rows counted
+	# once each, and never reads COMPLETE.
+	gs=$work/failedshape
+	cell "$gs" "$rev" \
+		"$(stub_row browser-panel-100000-nc1 100000 100000 "$(seq_ms 1 30)")" \
+		"$(stub_row browser-panel-100000-nc2 100000 100000 "$(seq_ms 1 30)" '.browser.failed = 42')"
+	rc=0
+	run --out "$work/failedshape.json" --evidence "$gs" --revision "$rev" >/dev/null 2>&1 || rc=$?
+	[[ $rc == 10 ]] || fail "a scalar browser.failed must leave the record incomplete (exit 10), exited $rc"
+	f=$work/failedshape.json
+	expect "the clean row is still counted beside a scalar-failed row" '.configurations[0] | .runsFound == 2 and .runsCounted == 1' "$f"
+	expect "the clean figures are still published" '.configurations[0].pooled.presses.count == 30' "$f"
+	expect "a scalar browser.failed is named as a stopped run" '.configurations[0].gaps | map(contains("browser-panel-100000-nc2") and contains("stopped in")) | any' "$f"
+	gt=$work/failconf-a
+	gu=$work/failconf-b
+	cell "$gt" "$rev" "$(stub_row browser-panel-100000-nc1 100000 100000 "$(seq_ms 1 30)")" "$(stub_row browser-panel-100000-nc2 100000 100000 "$(seq_ms 1 30)")" "$(stub_row browser-panel-100000-nc3 100000 100000 "$(seq_ms 1 30)")"
+	cell "$gu" "$rev" "$(stub_row browser-panel-100000-nc1 100000 100000 "$(seq_ms 1 30)" '.browser.failed = 42')" "$(stub_row browser-panel-100000-nc2 100000 100000 "$(seq_ms 1 30)")" "$(stub_row browser-panel-100000-nc3 100000 100000 "$(seq_ms 1 30)")"
+	rc=0
+	run --out "$work/failconf1.json" --evidence "$gt" --evidence "$gu" --revision "$rev" >/dev/null 2>&1 || rc=$?
+	[[ $rc == 10 ]] || fail "a clean directory beside its malformed conflicting copy must leave the record incomplete (exit 10), exited $rc"
+	expect "the conflicting malformed copy keeps only the identical identities" '.configurations[0] | .runsFound == 6 and .runsCounted == 2 and .complete == false' "$work/failconf1.json"
+	expect "the malformed conflict is named" '.configurations[0].gaps | map(contains("browser-panel-100000-nc1") and contains("conflicting duplicate")) | any' "$work/failconf1.json"
+	expect "the malformed copy is also named as a stopped run" '.configurations[0].gaps | map(contains("browser-panel-100000-nc1") and contains("stopped in")) | any' "$work/failconf1.json"
+	rc=0
+	run --out "$work/failconf2.json" --evidence "$gu" --evidence "$gt" --revision "$rev" >/dev/null 2>&1 || rc=$?
+	[[ $rc == 10 ]] || fail "the malformed conflicting copy in the reverse directory order must leave the record incomplete (exit 10), exited $rc"
+	expect "the reverse malformed order counts the same runs" '[.configurations[0] | .runsFound, .runsCounted] == [6, 2]' "$work/failconf2.json"
+	jq -c '.configurations[0].pooled' "$work/failconf1.json" >"$work/failconfpool1.json"
+	jq -c '.configurations[0].pooled' "$work/failconf2.json" >"$work/failconfpool2.json"
+	cmp -s "$work/failconfpool1.json" "$work/failconfpool2.json" || fail "the reverse malformed order must pool the identical figures"
+	ok "malformed conflicting copies pool identically in either order"
 
 	# --- 18. a standard-shaped missing sampling entry fails: the reason count lives in the case name, never a reasons key ---
 	# The status schema (deploy/digitalocean/qc1/lib.sh) lists missing entries as {item, size, case} only, like the validcase check;

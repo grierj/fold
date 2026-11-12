@@ -629,7 +629,11 @@ step's own summary agreeing with the directory's validated status. Expected samp
 counted once, while a repeated or conflicting identity within one measurements file, or conflicting
 records of one identity across directories of one stack, excludes every occurrence — and identity
 is the canonical original record, so equal-timed copies that differ in status, window, agreement,
-sampling, page accounting or other recorded validity facts conflict instead of collapsing. The record is `COMPLETE` (exit 0) only with at least 3 counted runs in both
+sampling, page accounting or other recorded validity facts conflict instead of collapsing. A malformed
+nested value (a non-object press, a non-string origin, a scalar `browser.failed`) excludes its own row
+with its original identity and conflict evidence kept, never the directory's other rows; a directory
+whose sampling rows cannot be projected at all fails the record, so hidden conflicts can never read
+`COMPLETE`. The record is `COMPLETE` (exit 0) only with at least 3 counted runs in both
 configurations; otherwise `INCOMPLETE` (exit 10) and each gap is named, and a configuration with no
 counted run has no figures at all.
 
