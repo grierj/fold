@@ -21,8 +21,15 @@
 # What counts. A run is one measurements.jsonl row, case browser-panel-<reasons>-nc<N>, that is measured (not partial or failed), stopped in no phase, answered by the stack's
 # own origin, walked exactly the reasons seeded, was refused with 409 and reloaded, pressed the control as many times as it was asked to and at least 30 times, never ran
 # under the profiler, and carries the host's load counters (an absent counter is a gap, not a zero). Each evidence directory's environment must be a complete record of the
-# revision asked for (qc1_environment_problems). A configuration is complete only with at least 3 counted runs; the record is COMPLETE only when both configurations are.
-# Several --evidence directories add independent stacks: their runs are pooled by (background rows, reasons).
+# revision asked for (qc1_environment_problems). A counted run must also be clean under the existing QC judge recomputed here from the recorded rows (qc1_judge over the
+# directory's measurements.jsonl): an invalid finding for the row excludes it (it stays listed with the reason) while a budget finding is kept beside the row and never
+# excludes it. Intentionally missing full-matrix cases never exclude a sampling-only row. A configuration is complete only with at least 3 counted runs; the record is
+# COMPLETE only when both configurations are. Several --evidence directories add independent stacks: their runs are pooled by (background rows, reasons).
+# A directory whose artifacts could not be collected (COLLECTION-FAILED.txt), whose run aborted (abort.json or an aborted evidence-status.json), whose environment is
+# incomplete, that lacks an expected sampling measurement or names a non-legacy pending case, or whose outer runner record marks its qc1 step failed or interrupted,
+# contributes runs that are listed but never counted. Expected sampling-only omissions (other missing rows, legacy pending cases, pilot coverage) are recorded, not
+# failures. One stack is one observation: a repeated canonical --evidence directory is refused, and a repeated run identity (the same stack/container, case and
+# background, e.g. a copied directory or a repeated row) is counted once and named as a duplicate.
 #
 # What it does not do. It does not call a delay noise, does not call a target met, and does not choose a fix: it prints the numbers, their load context and the one mechanical
 # consequence the issue states (a pooled p95 over the target means a profile is the next step). The target is the scaling design's proposal (QC1_NAV_BUDGET_MS), not an
@@ -103,18 +110,38 @@ EOF
 JQ_DEFS='
 def pct($p): if length == 0 then null else sort as $s | $s[([($p / 100 * length) | ceil, 1] | max) - 1] end;
 def stats: {count: length, p50Ms: pct(50), p95Ms: pct(95), maxMs: (if length == 0 then null else max end)};
+def dedup_runs:
+  (reduce .[] as $r ({seen:{}, out:[]};
+    (([$r.stack // "?", $r.background // -1, $r.case // "?"] | tojson) as $k
+    | if .seen[$k] then (.seen[$k]) as $first
+      | .out += [$r | .counted = false | .problems += ["duplicate run: the same stack, case and background as the run in " + $first + "; counted once, not again"]]
+      else (.out += [$r] | .seen[$k] = $r.dir) end))) | .out;
 '
 
-# runs_json DIR prints the sampling rows of one evidence directory as an array of run objects, each with the reasons it does or does not count.
+# judge_findings DIR CAP prints {"ok":bool,"invalid":[],"budget":[]}: the existing QC judge (qc1_judge) recomputed over the directory's measurements.jsonl.
+# Its findings carry the judged row's item, size and case, so the caller attaches each one to that sampling row (R1). A judge that cannot run is ok:false.
+judge_findings() {
+	local out judge
+	if out=$(qc1_judge "$1/measurements.jsonl" "$2" 2>/dev/null) && judge=$(jq -sc '{ok:true,invalid:[.[] | select(.class == "invalid")],budget:[.[] | select(.class == "budget")]}' <<<"$out" 2>/dev/null); then
+		printf '%s\n' "$judge"
+	else
+		echo '{"ok":false,"invalid":[],"budget":[]}'
+	fi
+}
+
+# runs_json DIR INVALID BUDGET STACK prints the sampling rows of one evidence directory as an array of run objects, each with the reasons it does or does not
+# count. INVALID/BUDGET are the judge findings (see judge_findings) attached to rows by item, size and case; STACK is the directory's stack identity, carried for
+# the duplicate-run check. Budget findings are kept beside the row and never count against it.
 runs_json() {
-	local dir=$1
-	jq -sc --argjson need "$REQUIRED_PRESSES" --argjson target "$TARGET_MS" --arg dir "$dir" "$JQ_DEFS"'
+	local dir=$1 invalid=$2 budget=$3 stack=$4
+	jq -sc --argjson need "$REQUIRED_PRESSES" --argjson target "$TARGET_MS" --arg dir "$dir" --argjson invalid "$invalid" --argjson budget "$budget" --arg stack "$stack" "$JQ_DEFS"'
 		def isnum: type == "number";
 		[ .[] | select(type == "object" and .item == 10 and ((.case // "") | test("^browser-panel-[0-9]+-nc[0-9]+$")))
 		  | . as $r | ($r.browser // {}) as $b | ($b.nextChangedSampling // null) as $s
 		  | ([ ($s.presses // [])[] | .ms | select(isnum) ]) as $ms
 		  | {
-		      dir: $dir, case: .case, background: .size, reasons: .reasons, run: (.case | capture("-nc(?<n>[0-9]+)$").n | tonumber),
+		      dir: $dir, stack: $stack, case: .case, background: .size, reasons: .reasons, run: (.case | capture("-nc(?<n>[0-9]+)$").n | tonumber),
+		      budgets: ([ $budget[] | select(.item == 10 and .size == $r.size and .case == $r.case) | {failure, detail: (del(.class, .failure, .item, .size, .case))} ]),
 		      problems: [
 		        (if .status != "measured" then "row status is \(.status), not measured" else empty end),
 		        (if $b.failed != null then "the run stopped in \($b.failed.phase // "an unknown phase")" else empty end),
@@ -144,16 +171,98 @@ runs_json() {
 		      load: ($b.load // null),
 		      browser: ($b.browser // null)
 		    }
+		  | .problems += ([ $invalid[] | select(.item == 10 and .size == $r.size and .case == $r.case) | "the QC judge finds this row invalid: \(.failure)" ])
 		  | .counted = (.problems | length == 0)
 		]' "$dir/measurements.jsonl"
+}
+
+# collection_problems DIR prints the collection and execution failures of one evidence directory (R2) as {"coll":[...],"omit":[...]}: "coll" fails the
+# directory, "omit" holds the expected sampling-only omissions, which are recorded but never fail. A failure excludes the directory's runs from the pool; the runs stay listed
+# with their own sampling reasons, and the failure itself is a gap. Expected omissions are the sampling design leaving out the full matrix: missing rows that
+# are not sampling rows, pending legacy cases, pilot coverage. Anything else unfinished — an uncollected copy, an abort, an incomplete environment, a missing
+# sampling row, a non-legacy pending case, an unexplained incomplete status, or an outer runner record whose qc1 step failed or was interrupted — is a failure.
+collection_problems() { # dir: prints {"coll":[...],"omit":[...]} for one evidence directory (R2)
+	local d=$1 lines entry n parent coll_json omit_json
+	local -a failures=() skips=()
+	if [[ -e $d/COLLECTION-FAILED.txt ]]; then
+		lines=$(head -c 2000 "$d/COLLECTION-FAILED.txt" 2>/dev/null | jq -Rsc '[split("\n") | map(select(. != "")) | .[:5] | .[]] | join("; ")' 2>/dev/null || echo "see $d/COLLECTION-FAILED.txt")
+		failures+=("the run's artifacts could not be collected completely before the copy (COLLECTION-FAILED.txt): $lines")
+	fi
+	if [[ -s $d/abort.json ]]; then
+		entry=$(jq -c '{signal: (.signal // null), step: (.step // null), exitCode: (.exitCode // null)}' "$d/abort.json" 2>/dev/null || echo '{}')
+		failures+=("the run aborted before it finished (abort.json carries $entry); the rows are as measured, not a finished run")
+	fi
+	if jq -e '.incomplete == true' "$d/environment.json" >/dev/null 2>&1; then
+		entry=$(jq -r '.incompleteReason // "no reason recorded"' "$d/environment.json" 2>/dev/null || echo "no reason recorded")
+		failures+=("the environment record is incomplete: $entry")
+	fi
+	if [[ ! -s $d/evidence-status.json ]] || ! jq -e . "$d/evidence-status.json" >/dev/null 2>&1; then
+		failures+=("evidence-status.json is missing or unreadable: the run cannot be shown to have finished")
+	else
+		if jq -e '.aborted != null' "$d/evidence-status.json" >/dev/null 2>&1; then
+			entry=$(jq -c '.aborted' "$d/evidence-status.json" 2>/dev/null || echo '"?"')
+			failures+=("evidence-status.json carries an abort: $entry")
+		fi
+		# Invalid findings without a row identity are the tool's own verdict on the environment, the settings, duplicates and the judge run itself.
+		while IFS= read -r entry; do
+			if [[ -n $entry ]]; then
+				failures+=("evidence-status.json records an invalid finding: $entry")
+			fi
+		done < <(jq -rc '.invalid // [] | map(select(type == "object" and (.item == null or .case == null))) | .[] | "\(.failure // "unknown"): \((.problem // .what // "") | tostring | .[:200])"' "$d/evidence-status.json" 2>/dev/null || true)
+		# A missing sampling row is a failure; missing anything else is the sampling design omitting the full matrix.
+		while IFS= read -r entry; do
+			if [[ -n $entry ]]; then
+				failures+=("an expected sampling measurement is missing: $entry")
+			fi
+		done < <(jq -rc --argjson reasons "$REVIEW_REASONS" --argjson backgrounds "$BACKGROUNDS" \
+			'.missing // [] | map(select(type == "object" and .item == 10 and ((.case // "") | test("^browser-panel-[0-9]+-nc[0-9]+$")) and .reasons == $reasons and ((.size // -1) as $s | $backgrounds | index($s)))) | .[] | "item \(.item), size \(.size), case \(.case)"' \
+			"$d/evidence-status.json" 2>/dev/null || true)
+		n=$(jq -r '[.missing // [] | .[] | select(type == "object" and (.item != 10 or ((.case // "") | test("^browser-panel-[0-9]+-nc[0-9]+$") | not)))] | length' "$d/evidence-status.json" 2>/dev/null || echo 0)
+		if [[ $n =~ ^[0-9]+$ ]] && ((n > 0)); then
+			skips+=("$n expected measurement(s) of the full matrix are omitted by the sampling design (they are not sampling rows)")
+		fi
+		# Pending legacy cases carry their T07B reason by design; any other pending case is a failure.
+		while IFS= read -r entry; do
+			if [[ -n $entry ]]; then
+				failures+=("a non-legacy case is pending: $entry")
+			fi
+		done < <(jq -rc '.pending // [] | map(select(type == "object" and .item != 4 and .item != 5)) | .[] | "item \(.item), size \(.size), case \(.case) (reason: \(.reason // "none"))"' "$d/evidence-status.json" 2>/dev/null || true)
+		n=$(jq -r '[.pending // [] | .[] | select(type == "object" and (.item == 4 or .item == 5))] | length' "$d/evidence-status.json" 2>/dev/null || echo 0)
+		if [[ $n =~ ^[0-9]+$ ]] && ((n > 0)); then
+			skips+=("$n legacy case(s) are pending by design (their T07B-3a reason is named)")
+		fi
+		if jq -e '.complete == false and ((.missing // []) | length) == 0 and ((.pending // []) | length) == 0 and ((.invalid // []) | length) == 0 and .aborted == null' "$d/evidence-status.json" >/dev/null 2>&1; then
+			failures+=("evidence-status.json is not complete and names no missing, pending or invalid case")
+		fi
+		entry=$(jq -r '.coverage.kind // "unknown"' "$d/evidence-status.json" 2>/dev/null || echo unknown)
+		if [[ $entry != full ]]; then
+			skips+=("coverage is $entry, not full: sampling is a pilot by construction")
+		fi
+	fi
+	# The outer runner record beside the evidence directory (reason-review-scale.sh): a qc1 step that failed or was interrupted fails the evidence; a
+	# partial or passing step is the expected sampling shape (the full matrix is omitted by construction).
+	parent=$(dirname -- "$(realpath -m "$d")")/evidence.json
+	if [[ -s $parent ]] && jq -e . "$parent" >/dev/null 2>&1; then
+		while IFS= read -r entry; do
+			if [[ -n $entry ]]; then
+				failures+=("the outer runner record $parent marks its qc1 step $entry")
+			fi
+		done < <(jq -rc '.steps // [] | map(select(type == "object" and .name == "qc1" and (.verdict == "fail" or .verdict == "interrupted"))) | .[] | "\(.verdict) (exit \(.exit // "?"))"' "$parent" 2>/dev/null || true)
+	fi
+	if ((${#failures[@]})); then coll_json=$(printf '%s\n' "${failures[@]}" | jq -R . | jq -sc .); else coll_json='[]'; fi
+	if ((${#skips[@]})); then omit_json=$(printf '%s\n' "${skips[@]}" | jq -R . | jq -sc .); else omit_json='[]'; fi
+	jq -nc --argjson coll "$coll_json" --argjson omit "$omit_json" '{coll:$coll, omit:$omit}'
 }
 
 # build_record DIR... prints the record (stdout) from the evidence directories; gaps are in the record, never errors.
 build_record() {
 	local rev=$1 d all='[]' dirjson='[]'
 	shift
+	# (Repeated canonical --evidence directories were already refused before anything was written; repeated run identities are counted once below.)
 	for d in "$@"; do
-		local present=true why='' problems='[]' envrev=null browserv=null runs='[]'
+		local present=true why='' problems='[]' envrev=null browserv=null runs='[]' stack='' cap=0
+		local judge='{"ok":true,"invalid":[],"budget":[]}' judge_invalid='[]' judge_budget='[]' coll='[]' omit='[]'
+		local cj=''
 		if [[ ! -s $d/measurements.jsonl || ! -s $d/environment.json ]] || ! jq -e . "$d/environment.json" >/dev/null 2>&1; then
 			present=false
 			why='measurements.jsonl or environment.json is missing or unreadable'
@@ -163,20 +272,38 @@ build_record() {
 		else
 			envrev=$(jq -c '.revision // null' "$d/environment.json")
 			browserv=$(jq -c '.browserRuntime.chromium // null' "$d/environment.json")
+			stack=$(jq -r '[.appContainerId // "?", .dbContainerId // "?", .revision // "?"] | join("/")' "$d/environment.json" 2>/dev/null || echo "?/?/?")
 			problems=$(qc1_environment_problems "$d/environment.json" "$rev" 2>/dev/null | jq -R . | jq -sc .) || problems='["the environment record could not be checked"]'
-			runs=$(runs_json "$d")
+			cap=$(jq -r '.maxRequestBytes // 0' "$d/environment.json" 2>/dev/null || echo 0)
+			if [[ ! $cap =~ ^[0-9]+$ ]]; then cap=0; fi
+			# R1: recompute the existing QC judge from the recorded rows. An invalid finding excludes its row; budgets are kept beside it.
+			judge=$(judge_findings "$d" "$cap")
+			if [[ $(jq -r '.ok' <<<"$judge") != true ]]; then
+				problems=$(jq -c '. + ["the QC judge could not be recomputed from measurements.jsonl"]' <<<"$problems")
+			else
+				judge_invalid=$(jq -c '.invalid' <<<"$judge")
+				judge_budget=$(jq -c '.budget' <<<"$judge")
+			fi
+			runs=$(runs_json "$d" "$judge_invalid" "$judge_budget" "$stack")
 			# A directory whose runs were not asked for repeated presses by its own settings is named, so a mislabelled directory is a visible gap.
 			if [[ $(jq -r '.settings.nextChangedOnly // false' "$d/environment.json") != true ]]; then
 				problems=$(jq -c '. + ["environment.json does not record --next-changed-only"]' <<<"$problems")
 			fi
+			# R2: collection and execution failures exclude the directory's runs but stay visible as gaps.
+			cj=$(collection_problems "$d")
+			if ! jq -e . <<<"$cj" >/dev/null 2>&1; then cj='{"coll":["the collection markers could not be checked"],"omit":[]}'; fi
+			coll=$(jq -c '.coll' <<<"$cj")
+			omit=$(jq -c '.omit' <<<"$cj")
 		fi
 		dirjson=$(jq -c --arg dir "$d" --argjson present "$present" --arg why "$why" --argjson revision "$envrev" --argjson chromium "$browserv" --argjson problems "$problems" \
-			'. + [{dir:$dir, present:$present, why:(if $why == "" then null else $why end), revision:$revision, chromium:$chromium, environmentProblems:$problems}]' <<<"$dirjson")
+			--argjson collectionProblems "$coll" --argjson omissions "$omit" --arg stack "$stack" \
+			'. + [{dir:$dir, present:$present, why:(if $why == "" then null else $why end), revision:$revision, chromium:$chromium, environmentProblems:$problems, collectionProblems:$collectionProblems, omissions:$omissions, stack:$stack}]' <<<"$dirjson")
 		if [[ $present == true ]]; then
-			# a directory of another revision or with an environment problem contributes runs that are listed but not counted
-			all=$(jq -c --argjson runs "$runs" --argjson problems "$problems" --argjson revision "$envrev" --arg rev "$rev" '
+			# a directory of another revision, with an environment problem, or with a collection/execution failure contributes runs that are listed but not counted
+			all=$(jq -c --argjson runs "$runs" --argjson problems "$problems" --argjson revision "$envrev" --arg rev "$rev" --argjson coll "$coll" '
 				. + [ $runs[] | if ($revision != $rev) then (.problems += ["the evidence is for revision \($revision), not \($rev)"] | .counted = false)
 				      elif ($problems | length) > 0 then (.problems += ["the evidence directory has an environment problem"] | .counted = false)
+				      elif ($coll | length) > 0 then (.problems += $coll | .counted = false)
 				      else . end ]' <<<"$all")
 		fi
 	done
@@ -189,7 +316,8 @@ build_record() {
 		      afterFirstPress: ($rest | stats),
 		      firstPressOfEachRun: ([ $counted[] | .firstPressMs | select(type == "number") ] | stats),
 		      overTarget: ($all | map(select(. > $target)) | length) };
-		( [ $backgrounds[] as $bg
+		($runs | dedup_runs) as $runs
+		| ( [ $backgrounds[] as $bg
 		    | ([ $runs[] | select(.background == $bg and .reasons == $reasons) ]) as $mine
 		    | ($mine | map(select(.counted))) as $counted
 		    | (if ($counted | length) == 0 then null else pooled($counted) end) as $pool
@@ -200,7 +328,7 @@ build_record() {
 		                (if ($mine | length) > 0 and ($counted | length) < $runsNeeded then "\($counted | length) counted runs of the \($runsNeeded) needed for the \($bg)-row background" else empty end),
 		                ($mine[] | select(.counted | not) | "\(.case) in \(.dir) not counted: \(.problems | join("; "))") ],
 		        pooled: $pool,
-		        perRun: ($mine | map({case, dir, run, counted, problems, stats, overTarget, firstPressMs, afterFirst, byOrigin, slowest, load, chromium: .browser})),
+		        perRun: ($mine | map({case, dir, stack, run, counted, problems, stats, overTarget, firstPressMs, afterFirst, byOrigin, slowest, load, chromium: .browser, judgeBudgets: .budgets})),
 		        p95OverTarget: (if $pool == null then null else ($pool.presses.p95Ms > $target) end)
 		      } ] ) as $configs
 		| { record: "next-changed-reason-samples", issue: 298, generatedAt: $generatedAt, revision: $revision,
@@ -210,7 +338,8 @@ build_record() {
 		    evidenceDirectories: $dirs,
 		    configurations: $configs,
 		    complete: ($configs | all(.complete)),
-		    gaps: [ $configs[] | .gaps[] ] + [ $dirs[] | select(.present | not) | "\(.dir): \(.why)" ],
+		    gaps: [ $configs[] | .gaps[] ] + [ $dirs[] | select(.present | not) | "\(.dir): \(.why)" ]
+		          + [ $dirs[] | . as $dd | (.collectionProblems // [])[] | "\($dd.dir): \(.)" ],
 		    consequence: (if ($configs | any(.p95OverTarget == true))
 		                  then "a pooled p95 is over the target in " + ([ $configs[] | select(.p95OverTarget == true) | "\(.background)-row background" ] | join(", ")) + ": profile the control (repeat the sampling with --qc1-arg --profile-next-changed) before any change"
 		                  else null end),
@@ -220,7 +349,11 @@ build_record() {
 
 # This script's own checks, against stub evidence written here (never against a measurement): the figures are computed by hand from stub press times, so each assertion
 # is a fact about THIS script's arithmetic and bookkeeping, not about the product. The stubs also prove the refusals: a run that is short, failed, partial, profiled, for
-# another revision, under a broken environment or without load counters is listed and never counted, and an absent configuration has no figures at all.
+# another revision, under a broken environment or without load counters is listed and never counted, and an absent configuration has no figures at all. Further stubs
+# prove the R1-R3 rules: judge-invalid rows (scheduler overlap, incomplete page accounting, a browser/server digest disagreement) are excluded while a budget finding
+# stays beside its counted row; collection and execution failures (a collection marker, an abort, an incomplete environment, a failed outer qc1 step) exclude the
+# directory while expected sampling-only omissions (other missing rows, legacy pending cases, pilot coverage, a partial outer step) stay COMPLETE; repeated directory
+# arguments (alias paths included) are refused, and a copied directory or a repeated row identity is counted once and named.
 # shellcheck disable=SC2016  # the jq filters passed to expect are not shell expansions
 next_changed_self_test() {
 	local work rev other a b c d1 d2 d3 f rc n=0
@@ -245,9 +378,10 @@ next_changed_self_test() {
 	}
 
 	# An environment record that qc1_environment_problems finds nothing wrong with, for revision $1.
-	stub_env() { # revision [nextChangedOnly] [limitsApplied]
+	stub_env() { # revision [nextChangedOnly] [limitsApplied] [tag]
 		local img pg cid sha
-		img="sha256:$(hex64 a)" pg="sha256:$(hex64 b)" cid=$(hex64 e) sha=$(hex64 f)
+		# tag picks the container identity: two stacks with different tags pool (independent stacks), the same tag twice is one stack seen twice (a copy).
+		img="sha256:$(hex64 a)" pg="sha256:$(hex64 b)" cid=$(hex64 "${4:-${STUB_TAG:-e}}") sha=$(hex64 f)
 		jq -nc --arg rev "$1" --arg img "$img" --arg pg "$pg" --arg cid "$cid" --arg sha "$sha" --argjson only "${2:-true}" --argjson limits "${3:-true}" \
 			--argjson sources "$(printf '%s\n' "${QC1_SOURCE_FILES[@]}" | jq -R . | jq -sc .)" '
 			{revision:$rev, imageId:$img, appImageId:$img, postgresImageId:$pg, dbImageId:$pg, appContainers:[{id:$cid, imageId:$img}], limitsApplied:$limits,
@@ -258,23 +392,44 @@ next_changed_self_test() {
 	}
 	# One sampling row. ms is a space-separated list of press times; patch is a jq expression applied to the row (default: none).
 	stub_row() { # case background reasons ms [patch]
-		jq -nc --arg case "$1" --argjson bg "$2" --argjson reasons "$3" --arg ms "$4" "
-			(\$ms | split(\" \") | map(tonumber)) as \$v
-			| {status:\"measured\", item:10, case:\$case, size:\$bg, reasons:\$reasons,
-			   browser:{failed:null, apiOrigin:\"real\", walkTotal:\$reasons, press:{observed:true, status:\"409\"}, reload:{unchosenAfterReload:1},
-			     nextChangedSampling:{requested:(\$v | length), performed:(\$v | length), firstPressMs:\$v[0], profile:null,
-			       presses:[range(0; \$v | length) as \$i | {index:\$i, origin:([\"first-page\",\"after-changed-page\",\"last-page\"][\$i % 3]), ms:\$v[\$i], atMs:(\$i * 100), longTaskMs:0, longTaskCount:0}]},
+		local c=$1 bg=$2 reasons=$3 ms=$4
+		jq -nc --arg case "$c" --argjson bg "$bg" --argjson reasons "$reasons" --arg ms "$ms" '
+			($ms | split(" ") | map(tonumber)) as $v
+			| {status:"measured", item:10, case:$case, size:$bg, reasons:$reasons,
+			   window:{walBytes:1000, appPeakKb:100, dbPeakKb:100, gateTicks:100, commitCalls:5, dbMemSamples:5, gateMaxGapMs:10,
+			     auditRowsBefore:0, auditRowsAfter:10, auditBytesBefore:0, auditBytesAfter:100, topStatements:[], tableRowsBefore:($bg + $reasons), tableRowsAfter:($bg + $reasons),
+			     auditActionsBefore:0, auditActionsAfter:10, auditActionsDelta:10, schedulerOverlap:false, schedulerRows:0},
+			   browser:{failed:null, apiOrigin:"real", walkTotal:$reasons, pageRequests:1000, pageResponseBytes:10000000,
+			     press:{observed:true, status:"409", bodyBytes:200, responseMs:5}, reload:{unchosenAfterReload:1},
+			     secureContext:true, renderReadyMs:44000, walkEndMs:43000,
+			     firstPage:{itemsRendered:(if $reasons < 50 then $reasons else 50 end), firstInteractiveMs:42000},
+			     clicks:{count:30, p50Ms:5, p95Ms:8, maxMs:12},
+			     navigation:{nextPage:{maxMs:5}, jump:{maxMs:5}, nextUnchosen:{maxMs:5}, nextChanged:{maxMs:5}},
+			     pages:{count:2000, responseBytesMax:5000, requestMsMax:8000, readMsMax:7000, parseMsMax:600, parseMsTotal:600000, incomplete:0,
+			       absent:{bytes:0, requestMs:0, readMs:0, parseMs:0, nodeParseMs:0},
+			       walks:[{walk:1, started:1000, completed:1000, incomplete:0}, {walk:2, started:1000, completed:1000, incomplete:0}]},
+			     digest:{path:"webcrypto", buildMs:5, preimageBytes:(35 + 40 * $reasons)},
+			     phases:{walk:{walBytes:100, auditActionsDelta:0, tableRows:{before:($bg + $reasons)}, auditBytes:50},
+			       interactions:{walBytes:100, auditActionsDelta:0, tableRows:{before:($bg + $reasons)}, auditBytes:50},
+			       press:{walBytes:100, auditActionsDelta:0, tableRows:{before:($bg + $reasons)}, auditBytes:50}},
+			     heapAfterGcBytes:1000000, domNodes:5000, longTaskMs:3,
+			     nextChangedSampling:{requested:($v | length), performed:($v | length), firstPressMs:$v[0], profile:null,
+			       presses:[range(0; $v | length) as $i | {index:$i, origin:(["first-page","after-changed-page","last-page"][$i % 3]), ms:$v[$i], atMs:($i * 100), longTaskMs:0, longTaskCount:0}]},
 			     load:{presses:{seconds:10, stealPercent:0.1, load1Start:0.5, load1End:0.6}},
-			     browser:\"chromium 130.0\"}}
-			| ${5:-.}"
+			     browser:"chromium 130.0"}}
+			' | jq "${5:-.}"
 	}
 	seq_ms() { seq -s ' ' "$1" "$2"; } # 1 2 ... 30
-	cell() { # dir revision rows-file-lines... : writes environment.json and measurements.jsonl
+	stub_status() { # a clean tool verdict for stub evidence: complete with nothing pending, pilot coverage by construction
+		jq -n -c '{complete:true, missing:[], pending:[], invalid:[], budgetFailures:[], coverage:{kind:"pilot", reasons:["stub evidence for the report self-test"]}, releaseEvidence:false}'
+	}
+	cell() { # dir revision rows-file-lines... : writes environment.json, measurements.jsonl and a clean evidence-status.json
 		local dir=$1 revision=$2
 		shift 2
 		mkdir -p "$dir"
 		stub_env "$revision" >"$dir/environment.json"
 		printf '%s\n' "$@" >"$dir/measurements.jsonl"
+		stub_status >"$dir/evidence-status.json"
 	}
 	run() { # out-var extra-args... ; runs the script as a user does
 		bash "${BASH_SOURCE[0]}" "$@"
@@ -356,11 +511,11 @@ next_changed_self_test() {
 	expect "the profiled run is called a diagnostic" '.configurations[0].gaps | map(contains("profiled") and contains("diagnostic")) | any' "$f"
 	expect "a counted run still reports the single clean figures only" '.configurations[0].pooled.presses | .count == 30 and .p95Ms == 29' "$f"
 
-	# --- 6. pooling across independent stacks --------------------------------------------------------------------------------------------------------------------------
+	# --- 6. pooling across independent stacks (different container identities pool; section 12 proves one stack counted twice does not) -----------------------
 	d3=$work/stack-b
 	cell "$work/stack-a" "$rev" "$(stub_row browser-panel-100000-nc1 100000 100000 "$(seq_ms 1 30)")" "$(stub_row browser-panel-100000-nc2 100000 100000 "$(seq_ms 1 30)")" \
 		"$(stub_row browser-panel-100000-nc1 1000000 100000 "$(seq_ms 1 30)")" "$(stub_row browser-panel-100000-nc2 1000000 100000 "$(seq_ms 1 30)")"
-	cell "$d3" "$rev" "$(stub_row browser-panel-100000-nc1 100000 100000 "$(seq_ms 1 30)")" "$(stub_row browser-panel-100000-nc1 1000000 100000 "$(seq_ms 1 30)")"
+	STUB_TAG=f cell "$d3" "$rev" "$(stub_row browser-panel-100000-nc1 100000 100000 "$(seq_ms 1 30)")" "$(stub_row browser-panel-100000-nc1 1000000 100000 "$(seq_ms 1 30)")"
 	rc=0
 	run --out "$work/pool.json" --evidence "$work/stack-a" --evidence "$d3" --revision "$rev" >/dev/null 2>&1 || rc=$?
 	[[ $rc == 0 ]] || fail "two stacks of 2 and 1 runs must pool to 3 and exit 0, exited $rc"
@@ -400,6 +555,97 @@ next_changed_self_test() {
 	done
 	ok "dry run"
 
+	# --- 10. the recomputed QC judge excludes invalid rows and keeps budgets beside the row --------------------------------------------------------------
+	e=$work/judged
+	cell "$e" "$rev" \
+		"$(stub_row browser-panel-100000-nc1 100000 100000 "$(seq_ms 1 30)")" \
+		"$(stub_row browser-panel-100000-nc2 100000 100000 "$(seq_ms 1 30)" '.window.schedulerOverlap = true')" \
+		"$(stub_row browser-panel-100000-nc3 100000 100000 "$(seq_ms 1 30)" '.browser.pages.incomplete = 1')" \
+		"$(stub_row browser-panel-100000-nc4 100000 100000 "$(seq_ms 1 30)" '.agreement = {digest:{checked:true, equal:false}}')" \
+		"$(stub_row browser-panel-100000-nc5 100000 100000 "$(seq_ms 1 30)" '.browser.navigation.nextChanged.maxMs = 420')"
+	rc=0
+	run --out "$work/judged.json" --evidence "$e" --revision "$rev" >/dev/null 2>&1 || rc=$?
+	[[ $rc == 10 ]] || fail "judge-excluded rows must leave the record incomplete (exit 10), exited $rc"
+	f=$work/judged.json
+	expect "only the clean row and the budget row are counted among five" '.configurations[0] | .runsFound == 5 and .runsCounted == 2 and .complete == false' "$f"
+	expect "a scheduler confound is named" '.configurations[0].gaps | map(contains("browser-panel-100000-nc2") and contains("scheduler")) | any' "$f"
+	expect "incomplete page accounting is named" '.configurations[0].gaps | map(contains("browser-panel-100000-nc3") and contains("pages-incomplete")) | any' "$f"
+	expect "a browser/server digest disagreement is named" '.configurations[0].gaps | map(contains("browser-panel-100000-nc4") and contains("digest")) | any' "$f"
+	expect "a budget finding is kept beside its row and never excludes it" '.configurations[0].perRun[] | select(.case == "browser-panel-100000-nc5") | .counted == true and (.judgeBudgets | map(.failure) | contains(["navigation"]))' "$f"
+
+	# --- 11. collection and execution failures exclude the directory; expected sampling-only omissions do not ------------------------------------------------
+	ej=$work/collfail
+	cp -r "$a" "$ej"
+	printf '%s\n' '/work/out (the run evidence) could not be copied out' 'the run inside could not be confirmed stopped before the copy' >"$ej/COLLECTION-FAILED.txt"
+	rc=0
+	run --out "$work/collfail.json" --evidence "$ej" --revision "$rev" >/dev/null 2>&1 || rc=$?
+	[[ $rc == 10 ]] || fail "a collection marker must leave the record incomplete (exit 10), exited $rc"
+	expect "the collection failure is named and nothing is counted" '.complete == false and (.gaps | map(contains("COLLECTION-FAILED")) | any) and ([.configurations[].runsCounted] == [0, 0])' "$work/collfail.json"
+	ek=$work/aborted
+	cp -r "$a" "$ek"
+	jq -nc '{complete:false, missing:[], pending:[{item:4, size:100000, case:"legacy-discovery-10", reason:"T07B-3a"}], invalid:[], budgetFailures:[], coverage:{kind:"pilot", reasons:["the run ended early"]}, releaseEvidence:false, aborted:{outcome:"aborted", exitCode:143, signal:"TERM", step:"qc1", sizeInProgress:100000}}' >"$ek/evidence-status.json"
+	jq -nc '{outcome:"aborted", exitCode:143, signal:"TERM", step:"qc1", sizeInProgress:100000}' >"$ek/abort.json"
+	rc=0
+	run --out "$work/aborted.json" --evidence "$ek" --revision "$rev" >/dev/null 2>&1 || rc=$?
+	[[ $rc == 10 ]] || fail "an aborted finalized directory must leave the record incomplete (exit 10), exited $rc"
+	expect "the abort is named and nothing is counted" '.complete == false and (.gaps | map(contains("abort")) | any) and ([.configurations[].runsCounted] == [0, 0])' "$work/aborted.json"
+	el=$work/envincomplete
+	cp -r "$a" "$el"
+	jq '.incomplete = true | .incompleteReason = "the run ended before it finished"' "$el/environment.json" >"$el/environment.json.tmp" && mv "$el/environment.json.tmp" "$el/environment.json"
+	rc=0
+	run --out "$work/envincomplete.json" --evidence "$el" --revision "$rev" >/dev/null 2>&1 || rc=$?
+	[[ $rc == 10 ]] || fail "an incomplete environment must leave the record incomplete (exit 10), exited $rc"
+	expect "the incomplete environment is named" '.complete == false and (.gaps | map(contains("incomplete")) | any)' "$work/envincomplete.json"
+	em=$work/outer-fail
+	mkdir -p "$em"
+	cp -r "$a" "$em/qc1"
+	jq -nc '{result:"fail", coverage:{kind:"partial", reasons:["QC-1 exited 3"]}, steps:[{name:"qc1", verdict:"fail", exit:3, summary:{complete:false}}]}' >"$em/evidence.json"
+	rc=0
+	run --out "$work/outerfail.json" --evidence "$em/qc1" --revision "$rev" >/dev/null 2>&1 || rc=$?
+	[[ $rc == 10 ]] || fail "an outer interruption after the rows were written must leave the record incomplete (exit 10), exited $rc"
+	expect "the failed outer step is named" '.complete == false and (.gaps | map(contains("outer runner")) | any)' "$work/outerfail.json"
+	en=$work/outer-partial
+	mkdir -p "$en"
+	cp -r "$a" "$en/qc1"
+	jq -nc '{result:"partial", coverage:{kind:"partial", reasons:["the full matrix is omitted by the sampling design"]}, steps:[{name:"qc1", verdict:"partial", exit:0, summary:{complete:false}}]}' >"$en/evidence.json"
+	rc=0
+	run --out "$work/outerpartial.json" --evidence "$en/qc1" --revision "$rev" >/dev/null 2>&1 || rc=$?
+	[[ $rc == 0 ]] || fail "an outer partial step is the expected sampling shape and must stay COMPLETE, exited $rc"
+	expect "the expected outer shape stays complete" '.complete == true' "$work/outerpartial.json"
+	eo=$work/omissions
+	cp -r "$a" "$eo"
+	jq -nc '{complete:false, missing:[{item:3, size:100000, case:"discovery-requester-10"}], pending:[{item:4, size:100000, case:"legacy-discovery-10", reason:"T07B-3a"}], invalid:[], budgetFailures:[], coverage:{kind:"pilot", reasons:["rows of the full matrix are not measured and clean: 40"]}, releaseEvidence:false}' >"$eo/evidence-status.json"
+	rc=0
+	run --out "$work/omissions.json" --evidence "$eo" --revision "$rev" >/dev/null 2>&1 || rc=$?
+	[[ $rc == 0 ]] || fail "expected sampling-only omissions must stay COMPLETE, exited $rc"
+	expect "omissions are recorded, not failures" '.complete == true and ([.evidenceDirectories[0].omissions | length] | .[0] > 0)' "$work/omissions.json"
+
+	# --- 12. one run cannot become several: repeated arguments are refused, copies and repeated rows count once ----------------------------------------------
+	rc=0
+	run --out "$work/dup.json" --evidence "$a" --evidence "$a" --revision "$rev" >/dev/null 2>&1 || rc=$?
+	[[ $rc == 2 && ! -e $work/dup.json ]] || fail "a repeated evidence directory must be refused with exit 2 and write nothing, exited $rc"
+	rc=0
+	run --out "$work/dup2.json" --evidence "$a" --evidence "$a/." --revision "$rev" >/dev/null 2>&1 || rc=$?
+	[[ $rc == 2 && ! -e $work/dup2.json ]] || fail "a repeated evidence directory through /. must be refused with exit 2 and write nothing, exited $rc"
+	ln -s "$a" "$work/alias"
+	rc=0
+	run --out "$work/dup3.json" --evidence "$a" --evidence "$work/alias" --revision "$rev" >/dev/null 2>&1 || rc=$?
+	[[ $rc == 2 && ! -e $work/dup3.json ]] || fail "a repeated evidence directory through a symlink must be refused with exit 2 and write nothing, exited $rc"
+	ep=$work/single
+	cell "$ep" "$rev" "$(stub_row browser-panel-100000-nc1 100000 100000 "$(seq_ms 1 30)")" "$(stub_row browser-panel-100000-nc1 1000000 100000 "$(seq_ms 1 30)")"
+	cp -r "$ep" "$work/single-copy"
+	rc=0
+	run --out "$work/dupcopy.json" --evidence "$ep" --evidence "$work/single-copy" --revision "$rev" >/dev/null 2>&1 || rc=$?
+	[[ $rc == 10 ]] || fail "a copied evidence directory must not add observations (exit 10), exited $rc"
+	expect "a copied directory is counted once and named" '[.configurations[] | .runsCounted] == [1, 1] and (.gaps | map(contains("duplicate run")) | any)' "$work/dupcopy.json"
+	eq=$work/duprows
+	cell "$eq" "$rev" "$(stub_row browser-panel-100000-nc1 100000 100000 "$(seq_ms 1 30)")" "$(stub_row browser-panel-100000-nc1 100000 100000 "$(seq_ms 1 30)")"
+	rc=0
+	run --out "$work/duprows.json" --evidence "$eq" --revision "$rev" >/dev/null 2>&1 || rc=$?
+	[[ $rc == 10 ]] || fail "a repeated row identity must not add observations (exit 10), exited $rc"
+	expect "a repeated row identity is counted once and named" '.configurations[0] | .runsFound == 2 and .runsCounted == 1' "$work/duprows.json"
+	expect "the repeated row is named as a duplicate" '.configurations[0].gaps | map(contains("browser-panel-100000-nc1") and contains("duplicate run")) | any' "$work/duprows.json"
+
 	echo "reason-review-next-changed self-test: ok ($n checks)"
 }
 
@@ -425,8 +671,16 @@ if [[ -z $revision ]]; then
 	revision=$(git -C "$root" rev-parse HEAD 2>/dev/null) || die "cannot read HEAD; pass --revision"
 fi
 [[ $revision =~ ^[0-9a-f]{40}$ ]] || die "--revision must be a full 40-character SHA"
+# R3: one run cannot become several through repeated directory arguments. Canonicalize every directory (so D, D/. and a symlink to D are the same),
+# refuse one inside the checkout, and refuse a repeat. This runs before anything is written.
+declare -A _seen_evidence=()
 for d in "${dirs[@]}"; do
-	case $(realpath -m "$d") in "$root" | "$root"/*) die "$d is inside this checkout; evidence stays outside it" ;; esac
+	canon_dir=$(realpath -m "$d")
+	case $canon_dir in "$root" | "$root"/*) die "$d is inside this checkout; evidence stays outside it" ;; esac
+	if [[ -n ${_seen_evidence[$canon_dir]:-} ]]; then
+		die "$d is the same evidence directory as ${_seen_evidence[$canon_dir]}; one run cannot become two through repeated directory arguments"
+	fi
+	_seen_evidence[$canon_dir]=$d
 done
 mkdir -p -- "$(dirname -- "$out")"
 tmp_out=$(mktemp "${out}.XXXXXX")

@@ -604,10 +604,18 @@ per-run p50, p95 and max (nearest rank, the same as `percentile` in `qc1/panel-c
 press of each run, the figures by origin, the slowest presses with their long-task time, and the load
 context of each run. A run counts only when it was measured, stopped in no phase, answered by the
 stack's own origin, walked exactly the reasons seeded, was refused with 409 and reloaded, pressed at
-least 30 times and as often as it was asked, was not profiled, carries its load counters, and comes from
-a directory whose environment is a complete record of the revision asked for. The record is `COMPLETE`
-(exit 0) only with at least 3 counted runs in both configurations; otherwise `INCOMPLETE` (exit 10)
-and each gap is named, and a configuration with no counted run has no figures at all.
+least 30 times and as often as it was asked, was not profiled, carries its load counters, comes from
+a directory whose environment is a complete record of the revision asked for, and is clean under the
+existing QC judge recomputed from the recorded rows (`qc1_judge` over the directory's
+`measurements.jsonl`): an invalid finding for the row excludes it while a budget finding is kept
+beside the row and never excludes it. A directory whose artifacts could not be collected, whose run
+aborted, whose environment is incomplete, or whose outer runner record marks its QC-1 step failed or
+interrupted contributes runs that are listed but never counted; expected sampling-only omissions
+(other missing rows, legacy pending cases, pilot coverage) are recorded, not failures. A repeated
+`--evidence` directory is refused, and a repeated run identity (the same stack, case and background)
+is counted once. The record is `COMPLETE` (exit 0) only with at least 3 counted runs in both
+configurations; otherwise `INCOMPLETE` (exit 10) and each gap is named, and a configuration with no
+counted run has no figures at all.
 
 The record decides nothing. It does not call a delay noise and does not call the target met; the target
 is `QC1_NAV_BUDGET_MS`, an engineering proposal of the scaling design and not an owner decision. Its one
