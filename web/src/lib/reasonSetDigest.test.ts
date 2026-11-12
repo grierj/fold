@@ -1,4 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
+import { appendFileSync } from "node:fs";
+import { env } from "node:process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import vectors from "./reasonSetVectors.json";
 import {
@@ -250,4 +252,149 @@ describe("the digest across chunk sizes and the 16 MiB line", () => {
       expect(lastDigestPath(), `${n} reasons`).toBe(path);
     }
   });
+});
+
+// The generated vectors: the same large reviews the Go suite builds
+// (account_erasure_reasons_envelope_test.go, TestReasonSetGeneratedVectors), so
+// both sides agree at every chunk and WebCrypto boundary. The file describes
+// them (see its generatedNote) and holds digests computed with Node's crypto,
+// independent of both implementations.
+type Generated = (typeof vectors.generated)[number];
+
+function buildGenerated(g: Generated) {
+  const first = BigInt(g.firstId);
+  const step = BigInt(g.step);
+  const ids = Array.from({ length: g.count }, (_, i) => String(first + BigInt(i) * step));
+  const hashes = new Uint8Array(g.count * 32);
+  let x = g.hashSeed >>> 0;
+  for (let i = 0; i < hashes.length; i++) {
+    x = (Math.imul(x, 1664525) + 1013904223) >>> 0;
+    hashes[i] = x >>> 24;
+  }
+  const codes = Uint8Array.from({ length: g.count }, (_, i) => (i % 3 === 1 ? 2 : 1));
+  return { ids, hashes, codes };
+}
+
+describe("the generated vectors", () => {
+  const withinWebCrypto = (n: number) => 35 + 40 * n <= WEBCRYPTO_PREIMAGE_LIMIT;
+
+  it("cover every chunk and WebCrypto boundary, derived from the exported constants", () => {
+    const last = Math.floor((WEBCRYPTO_PREIMAGE_LIMIT - 35) / 40);
+    const have = new Set(vectors.generated.map((g) => g.count));
+    for (const n of [ITEMS_PER_CHUNK - 1, ITEMS_PER_CHUNK, ITEMS_PER_CHUNK + 1, ITEMS_PER_CHUNK + 2, 2 * ITEMS_PER_CHUNK, 2 * ITEMS_PER_CHUNK + 1, last, last + 1]) {
+      expect(have.has(n), `a generated vector with ${n} reasons`).toBe(true);
+    }
+  });
+
+  it.each(vectors.generated)("$name: native and bundled digests and the packed choices equal the shared answers", async (g) => {
+    const { ids, hashes, codes } = buildGenerated(g);
+    expect(createHash("sha256").update(encodeChoices(codes, g.count)).digest("hex")).toBe(g.choicesSha256);
+
+    vi.stubGlobal("crypto", { subtle: nodeSubtle });
+    resetDigestChoice();
+    expect(await setDigestHex(ids, hashes, g.count)).toBe(g.digest);
+    expect(lastDigestPath()).toBe(withinWebCrypto(g.count) ? "webcrypto" : "fallback");
+
+    vi.stubGlobal("crypto", {});
+    resetDigestChoice();
+    expect(await setDigestHex(ids, hashes, g.count)).toBe(g.digest);
+    expect(lastDigestPath()).toBe("fallback");
+  }, 60_000);
+
+  it("keeps the large signed ids past 2^53 distinct and in two's complement", () => {
+    const g = vectors.generated[0];
+    const { ids, hashes } = buildGenerated(g);
+    const pre = digestPreimage(ids.slice(0, 2), hashes, 2);
+    expect(hexOf(pre.subarray(35, 43))).toBe("8000000000000000");
+    expect(ids[0]).toBe("-9223372036854775808");
+    expect(BigInt(ids[1]) - BigInt(ids[0])).toBe(BigInt(g.step));
+  });
+});
+
+describe("any way of splitting the preimage gives the same digest", () => {
+  const sizes = [1, 2, 3, 7, 64, 1000];
+
+  it.each(vectors.vectors)("$name: whole records in chunks of any size", (v) => {
+    for (const per of [...sizes, ITEMS_PER_CHUNK, 100_000]) {
+      const sha = new Sha256();
+      for (const part of preimageChunks(v.ids, hashesOf(v), v.ids.length, per)) sha.update(part);
+      expect(hexOf(sha.digest()), `${per} records per chunk`).toBe(v.digest);
+    }
+  });
+
+  it("26,215 generated reasons: chunks of one record, a chunk less than all, all, and more", () => {
+    const g = vectors.generated.find((x) => x.count === ITEMS_PER_CHUNK + 1)!;
+    const { ids, hashes } = buildGenerated(g);
+    for (const per of [1, 3, ITEMS_PER_CHUNK - 1, ITEMS_PER_CHUNK, ITEMS_PER_CHUNK + 1, 100_000]) {
+      const sha = new Sha256();
+      for (const part of preimageChunks(ids, hashes, g.count, per)) sha.update(part);
+      expect(hexOf(sha.digest()), `${per} records per chunk`).toBe(g.digest);
+    }
+  }, 60_000);
+});
+
+// Seeded random reviews against the reference digest, so a failure can be
+// replayed. FOLD_REASON_SEED runs just that seed; FOLD_REASON_SEED_BASE and
+// FOLD_REASON_RUNS choose the range (scripts/reason-review-hardening.sh sets them).
+function mulberry32(seed: number) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function seedsFromEnv(): number[] {
+  const one = env.FOLD_REASON_SEED;
+  if (one) return [Number(one)];
+  const base = Number(env.FOLD_REASON_SEED_BASE ?? 20261111);
+  const runs = Number(env.FOLD_REASON_RUNS ?? 8);
+  return Array.from({ length: runs }, (_, i) => base + i);
+}
+
+// FOLD_REASON_EVIDENCE names a file that scripts/reason-review-hardening.sh counts
+// to see that every seed it asked for really ran.
+function record(line: string) {
+  if (env.FOLD_REASON_EVIDENCE) appendFileSync(env.FOLD_REASON_EVIDENCE, line.replace(/\n/g, "\\n") + "\n");
+}
+
+describe("random reviews, replayable by seed", () => {
+  it.each(seedsFromEnv())("seed %i: both digest paths and every chunking equal the reference", async (seed) => {
+    const rng = mulberry32(seed);
+    const below = (n: number) => Math.floor(rng() * n);
+    const trace: string[] = [];
+    try {
+      for (let round = 0; round < 4; round++) {
+        const n = 1 + (rng() < 0.25 ? below(ITEMS_PER_CHUNK * 2 + 10) : below(300));
+        const start = -(2n ** 63n) + BigInt(below(2 ** 50)) * BigInt(below(2 ** 10) + 1);
+        const ids: string[] = [];
+        let id = start;
+        for (let i = 0; i < n; i++) {
+          ids.push(String(id));
+          id += 1n + BigInt(below(2 ** 40));
+        }
+        const hashes = Uint8Array.from({ length: n * 32 }, () => below(256));
+        const per = 1 + below(n + 2);
+        trace.push(`round ${round}: ${n} reasons from ${ids[0]}, ${per} per chunk`);
+        const want = referenceDigest(ids, hashes);
+
+        vi.stubGlobal("crypto", {});
+        resetDigestChoice();
+        expect(await setDigestHex(ids, hashes, n), "the bundled digest").toBe(want);
+        vi.stubGlobal("crypto", { subtle: nodeSubtle });
+        resetDigestChoice();
+        expect(await setDigestHex(ids, hashes, n), "the native digest").toBe(want);
+        const sha = new Sha256();
+        for (const part of preimageChunks(ids, hashes, n, per)) sha.update(part);
+        expect(hexOf(sha.digest()), "the chunked digest").toBe(want);
+      }
+      record(`digest seed ${seed} ok: ${trace.join(" | ")}`);
+    } catch (e) {
+      record(`digest seed ${seed} FAILED: ${trace.join(" | ")}; ${(e as Error).message}`);
+      throw new Error(`reproduce with FOLD_REASON_SEED=${seed}; trace: ${trace.join(" | ")}; ${(e as Error).message}`);
+    }
+  }, 60_000);
 });

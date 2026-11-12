@@ -97,5 +97,80 @@
       "preimageHex": "666f6c643a657261737572652d726561736f6e2d7365743a76310000000000000000040000000000000001c7ced5dce3eaf1f8ff060d141b222930373e454c535a61686f767d848b9299a00000000000000002ecf3fa01080f161d242b323940474e555c636a71787f868d949ba2a9b0b7bec5000000000000000311181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dce3ea0000000000000004363d444b525960676e757c838a91989fa6adb4bbc2c9d0d7dee5ecf3fa01080f",
       "digest": "91285390d037695ad1abda02837623dd0dba42d5ece316a35b2cd10c3c0deb39"
     }
+  ],
+  "generatedNote": "Large vectors, generated rather than listed. Item i (from 0) has id firstId + i*step (signed 64-bit, ascending), a review hash of 32 bytes from one byte stream (x = hashSeed as uint32; per byte: x = (x*1664525 + 1013904223) mod 2^32, byte = x >> 24), and choice code 2 (remove) when i mod 3 == 1, else 1 (keep). digest is as above. choicesSha256 is the SHA-256 of the standard padded base64 of the packed choice vector. Computed with Node crypto, independent of both implementations under test.",
+  "generated": [
+    {
+      "name": "chunk edge: 26,213 reasons (one record short of a full chunk)",
+      "count": 26213,
+      "firstId": "-9223372036854775808",
+      "step": "300000000000000",
+      "hashSeed": 123483002,
+      "digest": "aec341d4d427bdc1ba3e5dcad6ebde623dac12a28d8a957af14e74759c600137",
+      "choicesSha256": "07bfc9e89b70d76ca167151ac231d2e984132c477b9493d46d40eaa08c557739"
+    },
+    {
+      "name": "chunk edge: 26,214 reasons (exactly one full chunk)",
+      "count": 26214,
+      "firstId": "-9223372036854775808",
+      "step": "300000000000000",
+      "hashSeed": 123483003,
+      "digest": "efa0246a3c5adb202796058edd32998498dfdfa7061666cdd4c0ef030abc4c58",
+      "choicesSha256": "4383000a0b35de3fefd69c348cba43f8424c96011237e1e52ceb261665e93906"
+    },
+    {
+      "name": "chunk edge: 26,215 reasons (one full chunk and one record)",
+      "count": 26215,
+      "firstId": "-9223372036854775808",
+      "step": "300000000000000",
+      "hashSeed": 123483004,
+      "digest": "21b1b99d873184fbbd82c78103668b905ae6058cc58f6d8a0639fe44ae27a1d0",
+      "choicesSha256": "3bed2b14fb32f5de5eef92f4826229a8408b869820b6ab29b55a9a9676381f09"
+    },
+    {
+      "name": "chunk edge: 26,216 reasons (one full chunk and two records)",
+      "count": 26216,
+      "firstId": "-9223372036854775808",
+      "step": "300000000000000",
+      "hashSeed": 123483005,
+      "digest": "37181c8bf418187c2e5c668b5e34ce27343cd09b0118757bdeb3ec3743979580",
+      "choicesSha256": "bbb8354b22348698de031584dfad041c1ae5445d49e5d641c49b7063fb831aa4"
+    },
+    {
+      "name": "chunk edge: 52,428 reasons (exactly two full chunks)",
+      "count": 52428,
+      "firstId": "-9223372036854775808",
+      "step": "300000000000000",
+      "hashSeed": 123509217,
+      "digest": "e812e5dfa7380efb7118f38855e66288d70c286ca3486a772731a9268cb389a2",
+      "choicesSha256": "2f5851cccbdd3407a418e6327f8555227478e71cb2c6da788cddd144f4d127d3"
+    },
+    {
+      "name": "chunk edge: 52,429 reasons (two full chunks and one record)",
+      "count": 52429,
+      "firstId": "-9223372036854775808",
+      "step": "300000000000000",
+      "hashSeed": 123509218,
+      "digest": "75f3e2170c1af6483678ccc967811e5a079254e9b3373c2da43a64a9f15e25da",
+      "choicesSha256": "ddfb13b1602055a8bd604de2800d2a56e59c6341d5b951fad5af520ab1cbdef3"
+    },
+    {
+      "name": "WebCrypto limit: 419,429 reasons (last count that fits in 16 MiB)",
+      "count": 419429,
+      "firstId": "-9223372036854775808",
+      "step": "40000000000000",
+      "hashSeed": 123876218,
+      "digest": "65febd7ff7569d3d27f448d853728c8bd75d53da84754ce28f1ec386de31202b",
+      "choicesSha256": "59ce6dbd9108d112485f73ad1c437279e91a1a258d5d0d5aacefed823c9d8a14"
+    },
+    {
+      "name": "WebCrypto limit: 419,430 reasons (first count over 16 MiB)",
+      "count": 419430,
+      "firstId": "-9223372036854775808",
+      "step": "40000000000000",
+      "hashSeed": 123876219,
+      "digest": "ba818bafe196d7f8cc809d78c7cd27cb91850413cafa435cb2faa2917a54edff",
+      "choicesSha256": "99974c53d4473a677708914cfe4e3a6c82c068ed348f6a5e28e011c1d4f921a1"
+    }
   ]
 }

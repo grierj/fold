@@ -161,6 +161,25 @@ mounted path, a connection with no host, a socket directory that is missing).
   macOS Bash 3.2; treat `--network host` there as unverified and use `FOLD_PG_BIN`. Evidence for
   a change to the wrapper names the environments it actually ran on.
 
+### Reason-review hardening
+
+`scripts/reason-review-hardening.sh` is the longer reproducible run for contact-request reason
+review (issue #296), outside CI: deterministic Go vectors and the fuzz seed corpus, a bounded
+`go test -fuzz FuzzReasonEnvelope` run, the in-memory attempt-ledger and restore-fence tests
+under `-race` (`CGO_ENABLED=1` for that command only; a missing C toolchain fails the run
+instead of skipping it), and the seeded browser digest and review-store suites. It runs on
+Linux with GNU coreutils/findutils (macOS is unverified) and writes a revision-bound record
+outside the checkout (a non-empty evidence directory is refused, the
+record starts as `incomplete` so an interrupted rerun cannot keep a previous pass, and the
+completed `evidence.json` is parsed before success is reported). `--seed` replays one seed the
+log names; see the script header for options. Each step runs in a process group of its own
+that the script holds through a supervisor and signals only through bash's job table, so an
+INT, TERM or HUP to the script ends the step, a child that outlived its parent and a TERM-ignoring
+process alike, within about 11 seconds and leaves an `incomplete` record; the header has the
+manual probes, and `TestReasonHardening*` (account_erasure_reasons_envelope_test.go) drives the
+script with stub tools, real signals, a supervisor killed on its own with its command and a TERM-ignoring descendant still running, and bystander processes (the tests identify processes by PID and start time and end the script only through its handle, never a PID read back from a file). The race detector says nothing about PostgreSQL
+lock correctness: the deterministic lock tests in the normal checks decide that.
+
 ### Source guards
 
 - Source guards are the parse-only tests in `guards_<concern>_test.go`, `throttle_keys_test.go`,

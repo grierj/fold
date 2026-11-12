@@ -2,15 +2,23 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math/big"
 	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // The shared digest vectors: this suite and web/src/lib/reasonSetDigest.test.ts
@@ -100,6 +108,112 @@ func TestReasonSetDigestVectors(t *testing.T) {
 			}
 			if m := envelopeOf(entries); m["digest"] != v.Digest || m["choices"] != v.ChoicesBase64 {
 				t.Errorf("envelopeOf = %v", m)
+			}
+		})
+	}
+}
+
+// generatedReasonVector is a large vector that the shared file describes
+// instead of listing (see its generatedNote): web/src/lib/reasonSetDigest.test.ts
+// builds the same review from the same fields. Item i has id FirstID + i*Step,
+// 32 hash bytes from one linear congruential byte stream, and choice code 2
+// when i mod 3 is 1, else 1.
+type generatedReasonVector struct {
+	Name          string `json:"name"`
+	Count         int    `json:"count"`
+	FirstID       string `json:"firstId"`
+	Step          string `json:"step"`
+	HashSeed      uint32 `json:"hashSeed"`
+	Digest        string `json:"digest"`
+	ChoicesSha256 string `json:"choicesSha256"`
+}
+
+func loadGeneratedReasonVectors(t *testing.T) []generatedReasonVector {
+	t.Helper()
+	b, err := os.ReadFile(reasonSetVectorsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var f struct {
+		Generated []generatedReasonVector `json:"generated"`
+	}
+	if err := json.Unmarshal(b, &f); err != nil || len(f.Generated) == 0 {
+		t.Fatalf("generated vectors: %v (%d)", err, len(f.Generated))
+	}
+	return f.Generated
+}
+
+// The counts where a chunked or size-limited digest could differ from a whole
+// one: a 1 MiB chunk holds 26,214 whole 40-byte records, and WebCrypto takes a
+// preimage up to 16 MiB. Both are derived here from the wire format, so a
+// vector file that drops a boundary fails.
+func requiredGeneratedReasonCounts() []int {
+	perChunk := (1 << 20) / 40
+	lastWebCrypto := ((16 << 20) - 35) / 40
+	return []int{perChunk - 1, perChunk, perChunk + 1, perChunk + 2, 2 * perChunk, 2*perChunk + 1, lastWebCrypto, lastWebCrypto + 1}
+}
+
+func TestReasonSetGeneratedVectors(t *testing.T) {
+	vectors := loadGeneratedReasonVectors(t)
+	have := map[int]bool{}
+	for _, v := range vectors {
+		have[v.Count] = true
+	}
+	for _, n := range requiredGeneratedReasonCounts() {
+		if !have[n] {
+			t.Errorf("the shared file has no generated vector with %d reasons", n)
+		}
+	}
+	for _, v := range vectors {
+		t.Run(v.Name, func(t *testing.T) {
+			first, err1 := strconv.ParseInt(v.FirstID, 10, 64)
+			step, err2 := strconv.ParseInt(v.Step, 10, 64)
+			if err1 != nil || err2 != nil || step <= 0 || v.Count <= 0 {
+				t.Fatalf("vector %q is malformed", v.Name)
+			}
+			if last := new(big.Int).Add(big.NewInt(first), new(big.Int).Mul(big.NewInt(step), big.NewInt(int64(v.Count-1)))); !last.IsInt64() {
+				t.Fatalf("the last id of %q overflows int64", v.Name)
+			}
+			h := newReasonSetHasher(uint64(v.Count))
+			packed := make([]byte, (v.Count+3)/4)
+			x, id := v.HashSeed, first
+			for i := 0; i < v.Count; i++ {
+				var raw [sha256.Size]byte
+				for b := range raw {
+					x = x*1664525 + 1013904223
+					raw[b] = byte(x >> 24)
+				}
+				h.add(id, &raw)
+				code := byte(reasonCodeKeep)
+				if i%3 == 1 {
+					code = reasonCodeRemove
+				}
+				packed[i/4] |= code << (2 * uint(i%4))
+				if i < v.Count-1 {
+					id += step
+				}
+			}
+			sum := h.sum()
+			if got := hex.EncodeToString(sum[:]); got != v.Digest {
+				t.Errorf("digest %s, want %s", got, v.Digest)
+			}
+			choices := base64.StdEncoding.EncodeToString(packed)
+			cs := sha256.Sum256([]byte(choices))
+			if got := hex.EncodeToString(cs[:]); got != v.ChoicesSha256 {
+				t.Errorf("choices digest %s, want %s", got, v.ChoicesSha256)
+			}
+			env, ok := buildNewEnvelope(reasonSetFormat, strconv.Itoa(v.Count), v.Digest, choices)
+			if !ok || env.count != uint64(v.Count) {
+				t.Fatalf("the vector's envelope was refused (ok %v)", ok)
+			}
+			for i := 0; i < v.Count; i++ {
+				want := byte(reasonCodeKeep)
+				if i%3 == 1 {
+					want = reasonCodeRemove
+				}
+				if got := env.choiceAt(i); got != want {
+					t.Fatalf("choice %d is %d, want %d", i, got, want)
+				}
 			}
 		})
 	}
@@ -243,8 +357,39 @@ func FuzzReasonEnvelope(f *testing.F) {
 	f.Add(jsonEsc(`{"c#u006funt":"1"}`))
 	f.Add(jsonEsc(`{"#u0069tems":[],"items":[]}`))
 	f.Add(jsonEsc(`{"c#qount":"1"}`))
+	// Boundary counts around the byte (4), the padding slots and the largest
+	// counts a 64-bit count allows, each with a right-sized vector and then
+	// with its padding bits, its code and its length spoiled.
+	for _, n := range []int{1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17} {
+		f.Add(envJSON("set-v1", strconv.Itoa(n), envDigest, base64.StdEncoding.EncodeToString(fuzzChoices(n, 0x55))))
+		f.Add(envJSON("set-v1", strconv.Itoa(n), envDigest, base64.StdEncoding.EncodeToString(fuzzChoices(n, 0xaa))))
+		f.Add(envJSON("set-v1", strconv.Itoa(n), envDigest, base64.StdEncoding.EncodeToString(append(fuzzChoices(n, 0x55), 0))))
+		f.Add(envJSON("set-v1", strconv.Itoa(n), envDigest, base64.StdEncoding.EncodeToString(fuzzChoices(n, 0xff))))
+	}
+	for _, n := range []string{"9223372036854775807", "9223372036854775808", "18446744073709551615", "18446744073709551616", "4294967296", "4294967295"} {
+		f.Add(envJSON("set-v1", n, envDigest, "AQ=="))
+	}
+	f.Add("  " + envJSON("set-v1", "1", envDigest, "AQ==") + "\n")
+	f.Add(envJSON("set-v1", "1", envDigest, "AQ==") + envJSON("set-v1", "1", envDigest, "AQ=="))
+	f.Add("\ufeff" + envJSON("set-v1", "1", envDigest, "AQ=="))
+	f.Add(`{"items":[{"requestId":"-9223372036854775808","reviewHash":"` + envHash + `","choice":"keep"}]}`)
 	f.Fuzz(func(t *testing.T, raw string) {
+		// A nested key never makes a top-level key ambiguous: the wrapper names
+		// each of its two keys once, whatever the value holds.
+		if json.Valid([]byte(raw)) {
+			wrapped := []byte(`{"attemptId":"a","reasonReview":` + raw + `}`)
+			if got := scanTopKeys(wrapped); got.attemptAmbiguous || got.reviewAmbiguous {
+				t.Fatalf("a nested value made a top-level key ambiguous: %q", raw)
+			}
+		}
+		scanTopKeys([]byte(raw))
 		env, ok := parseReasonEnvelope(json.RawMessage(raw), false)
+		if again, ok2 := parseReasonEnvelope(json.RawMessage(raw), false); ok2 != ok || again.kind != env.kind || again.count != env.count {
+			t.Fatalf("parsing %q twice gave different answers", raw)
+		}
+		if _, accepted := parseReasonEnvelope(json.RawMessage(raw), true); accepted {
+			t.Fatalf("an ambiguous reasonReview key was accepted for %q", raw)
+		}
 		if !ok {
 			return
 		}
@@ -281,12 +426,27 @@ func FuzzReasonEnvelope(f *testing.F) {
 					t.Fatalf("accepted code %d at %d", c, i)
 				}
 			}
+			// Canonical form: what was accepted, written out again in the one
+			// spelling the reader prefers, is accepted and means the same.
+			canon := envJSON(reasonSetFormat, strconv.FormatUint(env.count, 10), hex.EncodeToString(env.digest[:]), base64.StdEncoding.EncodeToString(env.choices))
+			back, ok := parseReasonEnvelope(json.RawMessage(canon), false)
+			if !ok || back.kind != reasonEnvelopeNew || back.count != env.count || back.digest != env.digest || !bytes.Equal(back.choices, env.choices) {
+				t.Fatalf("accepted %q but its canonical form %q was not read back as the same envelope", raw, canon)
+			}
 		case reasonEnvelopeLegacy:
 			if len(seen) != 1 || !seen["items"] {
 				t.Fatalf("accepted a legacy envelope with keys %v", seen)
 			}
 		}
 	})
+}
+
+// fuzzChoices is the right length of choices vector for n items with every byte
+// set to fill: 0x55 is all keeps, 0xaa all removes, 0xff the unused code 3, and
+// any of them leaves the padding slots of the last byte set when n is not a
+// multiple of 4.
+func fuzzChoices(n int, fill byte) []byte {
+	return bytes.Repeat([]byte{fill}, (n+3)/4)
 }
 
 // Keys written with JSON escapes. encoding/json decodes a key before the reader
@@ -477,5 +637,638 @@ func TestReasonEnvelopeParseMemoryIsLinearInTheBody(t *testing.T) {
 	}
 	if pl > uint64(3.5*float64(large)) || sl > uint64(2.2*float64(large)) {
 		t.Errorf("absolute cost over the allowance: parse %d, scan %d", pl, sl)
+	}
+}
+
+// scripts/reason-review-hardening.sh: process ownership and cancellation. The
+// script is copied into a scratch git repository and run with stub go, npm and
+// node, whose steps misbehave on purpose: a command whose parent leaves before
+// its TERM-ignoring child, commands that ignore TERM themselves, a supervisor
+// killed from inside its group, a signal in the window between forking a step
+// and registering it. Real processes and real signals; bystanders (in the
+// test's own process group, and in the script's group beside it) must survive.
+
+const hardeningScriptPath = "scripts/reason-review-hardening.sh"
+
+// hardeningStubs are the stub tools, as shell. A step whose name is in
+// STUB_STEP acts as STUB_SCENARIO says; every other step passes and prints what
+// the script checks for.
+var hardeningStubs = map[string]string{
+	"go": `#!/bin/sh
+echo "go $*" >>"$STUB_DIR/calls"
+case "$1" in
+env) echo sh ;;
+version) echo "go version stub linux/amd64" ;;
+build) [ "${STUB_RACE_BUILD_FAIL:-}" != 1 ] || exit 1; while [ $# -gt 0 ]; do if [ "$1" = -o ]; then : >"$2"; fi; shift; done ;;
+test) shift; exec "$STUB_BEHAVE" go "$@" ;;
+esac
+`,
+	"npm": `#!/bin/sh
+exec "$STUB_BEHAVE" npm "$@"
+`,
+	"node": `#!/bin/sh
+case "$1" in --version) echo v0.0.0 ;; esac
+exit 0
+`,
+	"behave.sh": `#!/bin/sh
+kind=$1
+shift
+step=web
+if [ "$kind" = go ]; then
+	step=normal
+	for a in "$@"; do
+		case "$a" in -fuzz) step=fuzz ;; -race) step=race ;; esac
+	done
+fi
+passes() {
+	run=
+	count=1
+	while [ $# -gt 0 ]; do
+		case "$1" in -run) run=$2; shift ;; -count=*) count=${1#-count=} ;; esac
+		shift
+	done
+	names=$(printf %s "$run" | sed 's/^^(//; s/)\$$//' | tr '|' ' ')
+	i=0
+	while [ $i -lt "$count" ]; do
+		for n in $names; do echo "--- PASS: $n (0.00s)"; done
+		i=$((i + 1))
+	done
+}
+idle() {
+	i=0
+	while [ $i -lt 600 ]; do sleep 0.2; i=$((i + 1)); done
+}
+# await_release holds a scenario until the test has recorded the identities it
+# needs from the live processes (it writes the release file), or about 10s.
+await_release() {
+	i=0
+	while [ ! -e "$STUB_DIR/release" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+}
+stubborn() {
+	sh -c 'trap "" TERM; echo $$ >"$1"; i=0; while [ $i -lt 600 ]; do sleep 0.2; i=$((i+1)); done' sh "$STUB_DIR/grandchild.pid" &
+	# Not on until the child has written its PID, so "started" means it is there.
+	i=0
+	while [ ! -s "$STUB_DIR/grandchild.pid" ] && [ $i -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
+}
+if [ "$step" = "$STUB_STEP" ]; then
+	echo $$ >"$STUB_DIR/root.pid"
+	case "$STUB_SCENARIO" in
+	stray) stubborn; passes "$@"; : >"$STUB_DIR/started"; await_release; exit 0 ;;
+	termroot) stubborn; trap 'exit 0' TERM; : >"$STUB_DIR/started"; idle ;;
+	deaf) trap '' TERM; stubborn; : >"$STUB_DIR/started"; idle ;;
+	lostsup) stubborn; : >"$STUB_DIR/started"; await_release; kill -KILL $PPID; idle ;;
+	killgroup) : >"$STUB_DIR/started"; kill -KILL 0 ;;
+	esac
+fi
+case "$step" in
+normal | race) passes "$@" ;;
+web)
+	n=0
+	while [ $n -lt "$FOLD_REASON_RUNS" ]; do
+		echo "digest seed $((FOLD_REASON_SEED_BASE + n)) ok" >>"$FOLD_REASON_EVIDENCE"
+		echo "store seed $((FOLD_REASON_SEED_BASE + n)) ok" >>"$FOLD_REASON_EVIDENCE"
+		n=$((n + 1))
+	done
+	;;
+esac
+`,
+	"launch-hook.sh": `#!/bin/sh
+: >"$STUB_DIR/inwindow"
+i=0
+while [ ! -e "$STUB_DIR/started" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+sleep 1
+`,
+}
+
+type hardeningRig struct {
+	t        *testing.T
+	repo     string
+	stubs    string
+	state    string
+	evidence string
+	path     string
+}
+
+// newHardeningRig builds the scratch repository and the stub tools. withNode
+// false leaves node off the PATH altogether.
+func newHardeningRig(t *testing.T, withNode bool) *hardeningRig {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("these tests identify processes by their /proc start time")
+	}
+	dir := t.TempDir()
+	r := &hardeningRig{t: t, repo: filepath.Join(dir, "repo"), stubs: filepath.Join(dir, "stubs"), state: filepath.Join(dir, "state"), evidence: filepath.Join(dir, "evidence")}
+	for _, d := range []string{filepath.Join(r.repo, "scripts"), filepath.Join(r.repo, "web", "node_modules"), r.stubs, r.state} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	script, err := os.ReadFile(hardeningScriptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(r.repo, hardeningScriptPath), script, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range hardeningStubs {
+		if name == "node" && !withNode {
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(r.stubs, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The system tools the script needs, linked into one directory, so a test
+	// can leave one out; nothing else of the machine's PATH is visible.
+	tools := filepath.Join(dir, "tools")
+	if err := os.MkdirAll(tools, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"bash", "env", "sh", "git", "sleep", "grep", "sed", "find", "comm", "sort", "cp", "mv", "mktemp", "tail", "uname", "date", "cat", "rm", "mkdir", "ls", "dirname", "tr", "xargs", "sha256sum", "cut", "awk", "head"} {
+		p, err := exec.LookPath(name)
+		if err != nil {
+			t.Fatalf("the hardening script tests need %s on PATH: %v", name, err)
+		}
+		if err := os.Symlink(p, filepath.Join(tools, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r.path = r.stubs + string(os.PathListSeparator) + tools
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", r.repo, "-c", "user.name=test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false"}, args...)...)
+		cmd.Env = []string{"PATH=" + r.path, "HOME=" + dir}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	git("add", "-A")
+	git("commit", "-q", "-m", "scratch")
+	return r
+}
+
+type hardeningRun struct {
+	cmd  *exec.Cmd
+	done chan struct{}
+	err  error
+	out  string
+	// groupID is a process that shares the script's own process group (not a
+	// step's), when one was asked for: nothing the script does to a step may
+	// touch it.
+	groupID procID
+}
+
+// procID is a process's identity: its PID and the start time the kernel
+// recorded for it, so a later process that was given the same number is not
+// mistaken for it. The tests only observe processes by identity; the ones they
+// start are ended through their os/exec handles, and the stub processes only by
+// the script under test (they also give up on their own after a couple of
+// minutes), never by a PID read back from a file.
+type procID struct {
+	pid   int
+	start string
+}
+
+// procStat reads /proc/PID/stat as (state, start time).
+func procStat(pid int) (state, start string, ok bool) {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return "", "", false
+	}
+	s := string(b)
+	i := strings.LastIndexByte(s, ')')
+	if i < 0 {
+		return "", "", false
+	}
+	f := strings.Fields(s[i+1:]) // state is field 3 of the file, start time field 22
+	if len(f) < 20 {
+		return "", "", false
+	}
+	return f[0], f[19], true
+}
+
+func captureProc(pid int) (procID, bool) {
+	_, start, ok := procStat(pid)
+	return procID{pid, start}, ok
+}
+
+// ended: the process this identity names is gone, replaced by another process
+// with its number, or a zombie nobody has reaped (a container's PID 1 may not
+// reap), which can no longer run.
+func (p procID) ended() bool {
+	state, start, ok := procStat(p.pid)
+	return !ok || start != p.start || state == "Z" || state == "X"
+}
+
+// start runs the script in a process group of its own, so a signal to the
+// test's group and one to the script's cannot be confused. extraEnv is
+// STUB_STEP, STUB_SCENARIO and the like. When bystander is set, a process is
+// put in the script's own group beside it.
+func (r *hardeningRig) start(extraEnv []string, bystander bool, args ...string) *hardeningRun {
+	r.t.Helper()
+	script := filepath.Join(r.repo, hardeningScriptPath)
+	argv := append([]string{script, "--evidence-dir", r.evidence, "--fuzz-time", "1s", "--race-count", "1", "--seeds", "2"}, args...)
+	cmd := exec.Command("bash", argv...)
+	cmd.Dir = r.repo
+	cmd.Env = append([]string{"PATH=" + r.path, "HOME=" + r.state, "STUB_DIR=" + r.state, "STUB_BEHAVE=" + filepath.Join(r.stubs, "behave.sh")}, extraEnv...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// A file, not a pipe: a bystander that inherits a pipe would hold Wait open.
+	outPath := filepath.Join(r.state, "out.log")
+	outFile, err := os.Create(outPath)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	cmd.Stdout, cmd.Stderr = outFile, outFile
+	run := &hardeningRun{cmd: cmd, done: make(chan struct{})}
+	if err := cmd.Start(); err != nil {
+		r.t.Fatal(err)
+	}
+	go func() {
+		run.err = cmd.Wait()
+		_ = outFile.Close()
+		b, _ := os.ReadFile(outPath)
+		run.out = string(b)
+		close(run.done)
+	}()
+	if bystander {
+		b := exec.Command("sleep", "300")
+		b.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: cmd.Process.Pid}
+		if err := b.Start(); err != nil {
+			r.t.Fatalf("starting a bystander in the script's process group: %v", err)
+		}
+		var ok bool
+		if run.groupID, ok = captureProc(b.Process.Pid); !ok {
+			r.t.Fatal("the bystander is not running")
+		}
+		r.t.Cleanup(func() { _ = b.Process.Kill(); _ = b.Wait() })
+	}
+	// Cleanup holds the script's own handle: if the test failed with the script
+	// still running, ask it to stop, which ends the step it owns, and only then
+	// kill it. No PID read from a file and no saved group number is signalled.
+	r.t.Cleanup(func() {
+		select {
+		case <-run.done:
+			return
+		default:
+		}
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		select {
+		case <-run.done:
+		case <-time.After(30 * time.Second):
+			_ = cmd.Process.Kill()
+			<-run.done
+		}
+	})
+	return run
+}
+
+func (run *hardeningRun) exitCode(t *testing.T, within time.Duration) int {
+	t.Helper()
+	select {
+	case <-run.done:
+	case <-time.After(within):
+		t.Fatalf("the script was still running after %v", within)
+	}
+	if run.err == nil {
+		return 0
+	}
+	var ee *exec.ExitError
+	if !errors.As(run.err, &ee) {
+		t.Fatalf("waiting for the script: %v", run.err)
+	}
+	return ee.ExitCode()
+}
+
+func (r *hardeningRig) waitFor(name string, within time.Duration) {
+	r.t.Helper()
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(filepath.Join(r.state, name)); err == nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	r.t.Fatalf("%s never appeared", name)
+}
+
+// proc waits for a stub to write its PID and captures its identity at once.
+func (r *hardeningRig) proc(name string) procID {
+	r.t.Helper()
+	r.waitFor(name, 10*time.Second)
+	why := "never read"
+	for i := 0; i < 100; i++ { // the file may be created before the number is written
+		b, err := os.ReadFile(filepath.Join(r.state, name))
+		switch {
+		case err != nil:
+			why = err.Error()
+		default:
+			text := strings.TrimSpace(string(b))
+			pid, err := strconv.Atoi(text)
+			switch {
+			case err != nil || pid <= 1:
+				why = fmt.Sprintf("it holds %q, not a PID", text)
+			default:
+				if id, ok := captureProc(pid); ok {
+					return id
+				}
+				why = fmt.Sprintf("PID %d has no /proc entry (already gone)", pid)
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	r.t.Fatalf("%s: no live process to record: %s", name, why)
+	return procID{}
+}
+
+// release lets a held scenario go on, once the test has recorded identities
+// from the processes while they are alive.
+func (r *hardeningRig) release() {
+	r.t.Helper()
+	if err := os.WriteFile(filepath.Join(r.state, "release"), nil, 0o644); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+func (r *hardeningRig) expectEnded(what string, p procID) {
+	r.t.Helper()
+	for i := 0; i < 150; i++ {
+		if p.ended() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	r.t.Errorf("%s (PID %d) is still running", what, p.pid)
+}
+
+func (r *hardeningRig) expectAlive(what string, p procID) {
+	r.t.Helper()
+	if p.ended() {
+		r.t.Errorf("%s (PID %d) ended; it was not the step's to end", what, p.pid)
+	}
+}
+
+// bystanderInTestGroup is a process in the test's own process group, which no
+// part of the script may signal.
+func bystanderInTestGroup(t *testing.T) procID {
+	t.Helper()
+	cmd := exec.Command("sleep", "300")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	id, ok := captureProc(cmd.Process.Pid)
+	if !ok {
+		t.Fatal("the bystander is not running")
+	}
+	return id
+}
+
+type hardeningEvidence struct {
+	Result string `json:"result"`
+	Steps  []struct {
+		Name    string `json:"name"`
+		Exit    int    `json:"exit"`
+		Verdict string `json:"verdict"`
+	} `json:"steps"`
+}
+
+func (r *hardeningRig) record() hardeningEvidence {
+	r.t.Helper()
+	b, err := os.ReadFile(filepath.Join(r.evidence, "evidence.json"))
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	var ev hardeningEvidence
+	if err := json.Unmarshal(b, &ev); err != nil {
+		r.t.Fatalf("evidence.json is not JSON: %v\n%s", err, b)
+	}
+	return ev
+}
+
+// A step whose command leaves a TERM-ignoring child behind and exits first is
+// the case a process-list snapshot loses: the child is reparented and no
+// longer found from the root. The group still owns it, and a run that
+// completes normally leaves nothing of any step behind.
+func TestReasonHardeningStepLeftoversDoNotOutliveTheStep(t *testing.T) {
+	r := newHardeningRig(t, true)
+	bystander := bystanderInTestGroup(t)
+	run := r.start([]string{"STUB_STEP=normal", "STUB_SCENARIO=stray"}, true)
+	// The child's identity is recorded while it is alive; only then may its
+	// parent exit and leave it behind.
+	r.waitFor("started", 10*time.Second)
+	child := r.proc("grandchild.pid")
+	r.expectAlive("the TERM-ignoring child, before its parent exits", child)
+	r.release()
+	if code := run.exitCode(t, 60*time.Second); code != 0 {
+		t.Fatalf("the script exited %d:\n%s", code, run.out)
+	}
+	r.expectEnded("the TERM-ignoring child the first step left behind", child)
+	r.expectAlive("a bystander in the test's process group", bystander)
+	r.expectAlive("a bystander in the script's own process group", run.groupID)
+	ev := r.record()
+	if ev.Result != "pass" || len(ev.Steps) != 4 {
+		t.Fatalf("record: %+v", ev)
+	}
+	for _, s := range ev.Steps {
+		if s.Exit != 0 || s.Verdict != "pass" {
+			t.Errorf("step %+v", s)
+		}
+	}
+	if b, err := os.ReadFile(filepath.Join(r.evidence, "active.pgid")); err != nil || strings.TrimSpace(string(b)) == "" {
+		t.Errorf("active.pgid was not written: %v", err)
+	}
+}
+
+// TERM or INT to the script's PID alone: the command leaves on TERM but its
+// TERM-ignoring child does not, and the child is killed all the same; the
+// record is incomplete; the exit status is the signal's; the script's own group
+// and the caller's survive.
+func TestReasonHardeningCancellationKillsWhatTheParentLeft(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		sig  syscall.Signal
+		code int
+	}{{"TERM", syscall.SIGTERM, 143}, {"INT", syscall.SIGINT, 130}, {"HUP", syscall.SIGHUP, 129}} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.sig == syscall.SIGINT && signal.Ignored(syscall.SIGINT) {
+				t.Skip("this test process started with SIGINT ignored, which its children inherit and no shell script can undo")
+			}
+			r := newHardeningRig(t, true)
+			bystander := bystanderInTestGroup(t)
+			run := r.start([]string{"STUB_STEP=normal", "STUB_SCENARIO=termroot"}, true)
+			root, child := r.proc("root.pid"), r.proc("grandchild.pid")
+			r.waitFor("started", 10*time.Second)
+			if err := run.cmd.Process.Signal(tc.sig); err != nil { // the script alone, through its handle
+				t.Fatal(err)
+			}
+			if code := run.exitCode(t, 30*time.Second); code != tc.code {
+				t.Fatalf("exit %d, want %d:\n%s", code, tc.code, run.out)
+			}
+			r.expectEnded("the step's command", root)
+			r.expectEnded("the TERM-ignoring child whose parent had already left", child)
+			r.expectAlive("a bystander in the test's process group", bystander)
+			r.expectAlive("a bystander in the script's own process group", run.groupID)
+			if ev := r.record(); ev.Result != "incomplete" {
+				t.Errorf("result %q, want incomplete", ev.Result)
+			}
+		})
+	}
+}
+
+// A command and its child that both ignore TERM: the cleanup is still bounded,
+// ends with KILL, and does not wait on them.
+func TestReasonHardeningCancellationIsBoundedWhenTermIsIgnored(t *testing.T) {
+	r := newHardeningRig(t, true)
+	run := r.start([]string{"STUB_STEP=normal", "STUB_SCENARIO=deaf"}, false)
+	root, child := r.proc("root.pid"), r.proc("grandchild.pid")
+	r.waitFor("started", 10*time.Second)
+	began := time.Now()
+	if err := run.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if code := run.exitCode(t, 30*time.Second); code != 143 {
+		t.Fatalf("exit %d, want 143:\n%s", code, run.out)
+	}
+	if took := time.Since(began); took > 20*time.Second {
+		t.Errorf("cancellation took %v", took)
+	}
+	r.expectEnded("the TERM-ignoring command", root)
+	r.expectEnded("the TERM-ignoring child", child)
+	if ev := r.record(); ev.Result != "incomplete" {
+		t.Errorf("result %q, want incomplete", ev.Result)
+	}
+}
+
+// A signal in the window between forking the step and registering it is held,
+// then acted on: the step does not keep running behind an exited script. The
+// hook runs inside that window (FOLD_HARDENING_TEST_LAUNCH_HOOK) until the step
+// is up and the signal has had time to arrive.
+func TestReasonHardeningSignalDuringLaunchIsNotLost(t *testing.T) {
+	r := newHardeningRig(t, true)
+	run := r.start([]string{"STUB_STEP=normal", "STUB_SCENARIO=termroot", "FOLD_HARDENING_TEST_LAUNCH_HOOK=" + filepath.Join(r.stubs, "launch-hook.sh")}, false)
+	r.waitFor("inwindow", 10*time.Second)
+	r.waitFor("started", 10*time.Second)
+	root, child := r.proc("root.pid"), r.proc("grandchild.pid")
+	if err := run.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if code := run.exitCode(t, 30*time.Second); code != 143 {
+		t.Fatalf("exit %d, want 143:\n%s", code, run.out)
+	}
+	r.expectEnded("the step started in the launch window", root)
+	r.expectEnded("the step's TERM-ignoring child", child)
+	if ev := r.record(); ev.Result != "incomplete" || len(ev.Steps) != 0 {
+		t.Errorf("record %+v, want incomplete with no finished step", ev)
+	}
+}
+
+// Losing only the supervisor, the process that runs the command, while the
+// command and a TERM-ignoring descendant keep running: the holder that shares
+// the job notices, the step fails (125) and its whole group is ended, within a
+// bounded time, and the later steps still run. Bystanders in the test's group
+// and in the script's own group are untouched.
+func TestReasonHardeningLostSupervisorAloneLeavesNoSurvivors(t *testing.T) {
+	r := newHardeningRig(t, true)
+	bystander := bystanderInTestGroup(t)
+	run := r.start([]string{"STUB_STEP=normal", "STUB_SCENARIO=lostsup"}, true)
+	r.waitFor("started", 10*time.Second)
+	root, child := r.proc("root.pid"), r.proc("grandchild.pid")
+	r.expectAlive("the command, before its supervisor is killed", root)
+	r.expectAlive("the TERM-ignoring descendant, before its supervisor is killed", child)
+	r.release() // only now does the stub kill its own supervisor
+	if code := run.exitCode(t, 60*time.Second); code != 1 {
+		t.Fatalf("exit %d, want 1:\n%s", code, run.out)
+	}
+	r.expectEnded("the command whose supervisor was killed", root)
+	r.expectEnded("the TERM-ignoring descendant of that command", child)
+	r.expectAlive("a bystander in the test's process group", bystander)
+	r.expectAlive("a bystander in the script's own process group", run.groupID)
+	ev := r.record()
+	if ev.Result != "fail" || len(ev.Steps) != 4 || ev.Steps[0].Name != "normal" || ev.Steps[0].Exit != 125 || ev.Steps[0].Verdict != "fail" {
+		t.Fatalf("record %+v", ev)
+	}
+	for _, s := range ev.Steps[1:] {
+		if s.Verdict != "pass" {
+			t.Errorf("a later step did not run to a pass: %+v", s)
+		}
+	}
+	log, err := os.ReadFile(filepath.Join(r.evidence, "normal.log"))
+	if err != nil || !strings.Contains(string(log), "supervisor ended without reporting a status") {
+		t.Errorf("the step's log does not say the supervisor was lost: %v\n%s", err, log)
+	}
+}
+
+// The whole job gone at once (here the command kills its entire group,
+// supervisor and holder included) is a failed step, reported and recorded, not
+// a hang or a pass; the later steps still run. Nothing is left to signal, and
+// the script says so.
+func TestReasonHardeningLostJobFailsTheStep(t *testing.T) {
+	r := newHardeningRig(t, true)
+	bystander := bystanderInTestGroup(t)
+	run := r.start([]string{"STUB_STEP=normal", "STUB_SCENARIO=killgroup"}, false)
+	if code := run.exitCode(t, 60*time.Second); code != 1 {
+		t.Fatalf("exit %d, want 1:\n%s", code, run.out)
+	}
+	ev := r.record()
+	if ev.Result != "fail" || len(ev.Steps) != 4 || ev.Steps[0].Name != "normal" || ev.Steps[0].Exit != 125 || ev.Steps[0].Verdict != "fail" {
+		t.Errorf("record %+v", ev)
+	}
+	for _, s := range ev.Steps[1:] {
+		if s.Verdict != "pass" {
+			t.Errorf("a later step did not run to a pass: %+v", s)
+		}
+	}
+	if !strings.Contains(run.out, "both ended") {
+		t.Errorf("the script did not report that nothing stable was left to signal:\n%s", run.out)
+	}
+	r.expectAlive("a bystander in the test's process group", bystander)
+}
+
+// A missing tool is refused before anything runs, and nothing is written.
+func TestReasonHardeningRefusesWhenAToolIsMissing(t *testing.T) {
+	r := newHardeningRig(t, false)
+	run := r.start(nil, false)
+	if code := run.exitCode(t, 30*time.Second); code != 2 {
+		t.Fatalf("exit %d, want 2:\n%s", code, run.out)
+	}
+	if !strings.Contains(run.out, "node is required") {
+		t.Errorf("output does not name the missing tool:\n%s", run.out)
+	}
+	if _, err := os.Stat(r.evidence); err == nil {
+		t.Error("an evidence directory was created for a run that never started")
+	}
+	if _, err := os.Stat(filepath.Join(r.state, "calls")); err == nil {
+		t.Error("a tool ran before the dependencies were checked")
+	}
+}
+
+func TestReasonHardeningRefusesWithoutRaceToolchain(t *testing.T) {
+	for _, tc := range []struct {
+		name, setting, message string
+	}{
+		{"missing compiler", "CC=/nonexistent-fold-compiler", "needs a C compiler"},
+		{"race build fails", "STUB_RACE_BUILD_FAIL=1", "the race detector cannot build here"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newHardeningRig(t, true)
+			run := r.start([]string{tc.setting}, false)
+			if code := run.exitCode(t, 30*time.Second); code != 2 {
+				t.Fatalf("exit %d, want 2:\n%s", code, run.out)
+			}
+			if !strings.Contains(run.out, tc.message) {
+				t.Errorf("missing refusal %q:\n%s", tc.message, run.out)
+			}
+			if _, err := os.Stat(r.evidence); !os.IsNotExist(err) {
+				t.Errorf("evidence directory exists or cannot be checked: %v", err)
+			}
+			calls, err := os.ReadFile(filepath.Join(r.state, "calls"))
+			if err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(calls), "go test") {
+				t.Errorf("test command ran after toolchain refusal: %s", calls)
+			}
+		})
 	}
 }
