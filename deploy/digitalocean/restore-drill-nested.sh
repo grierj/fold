@@ -54,13 +54,13 @@
 # workload starts carries FOLD_NESTED_RUN=<run id> in its environment (each
 # docker exec passes it), so the runner COUNTS all of them by that marker, not
 # just the bash scripts: node, chromium, npm, orphans, processes in sessions of
-# their own. It never signals a process by its number: a number alone is not a
+# their own. It never signals a process it found by looking: a number alone is not a
 # process, and a shell holds only its own children. So there are two ways to end
-# anything. The graceful one: every docker exec runs the workload as the child of
-# a small supervisor (WRAP) that polls for the file /work/stop-request and then
-# sends TERM to its own child, a process it started and is waiting for, not a number
-# found by looking (the workload's traps turn that into a clean finish). The other is the container:
-# `docker kill` ends every process in it at once, by no number. After INT, TERM or
+# anything. The graceful one: every docker exec runs the workload under a small
+# supervisor (WRAP) that polls for the file /work/stop-request and then sends one TERM
+# to the workload's process group, by the number of a group that a leader process holds
+# for as long as the supervisor can send (the workload's traps turn that into a clean
+# finish). The other is the container: `docker kill` ends every process in it at once, by no number. After INT, TERM or
 # HUP the runner writes the file, waits up to FOLD_NESTED_STOP_GRACE seconds
 # (default 90) for the count to reach zero, then kills the container and checks for
 # up to FOLD_NESTED_KILL_WAIT seconds (default 15) that the daemon says it is no
@@ -262,8 +262,8 @@ limited() {
 }
 OWN_MARK="FOLD_NESTED_RUN=$RUN_ID"
 # The lookup runs inside the container (busybox sh): it counts the processes whose environment holds the marker and prints the number, nothing else. It signals nothing, in
-# any mode: a number alone is not a process (it can be handed to another one between a look and a signal, and no shell holds a process that is not its own child), so no
-# process is ever ended by a number. Modes: count (read-only) and ask, which first writes /work/stop-request, the request WRAP turns into a TERM to its own child.
+# any mode: a number found by looking is not a process (it can be handed to another one between the look and a signal), so no process is ever ended by one. Modes: count
+# (read-only) and ask, which first writes /work/stop-request, the request WRAP turns into a TERM to the workload's group.
 OWN_SCAN=$(cat <<'SCAN'
 m=$1; mode=$2; self=$$; n=0
 [ "$mode" != ask ] || : >/work/stop-request || exit 1
@@ -274,11 +274,38 @@ done
 echo "$n"
 SCAN
 )
-# WRAP is what each docker exec runs the workload under (bash -c "$WRAP" _ COMMAND...): it loads the Chromium the preparation found, starts the command as its own child and
-# polls for /work/stop-request. The request becomes TERM to that child, a process the supervisor started and is waiting for (it is looked at and signalled in consecutive statements,
-# never carried over from an earlier look, and a number is not handed out again before the whole range has been used), and the supervisor then waits for it and returns its status. Job control (set -m) is on so that the child starts with the signal dispositions it would have had as the exec's own process (a plain background child ignores INT). Nothing else is signalled, and nothing from outside holds a number inside the container.
+# WRAP is what each docker exec runs the workload under (bash -c "$WRAP" _ COMMAND...). It loads the Chromium the preparation found, then runs COMMAND in a process group of
+# its own, under a leader that does nothing but hold the group, and polls for /work/stop-request. The request becomes one TERM to that group, sent by the group's number, which
+# is safe because the leader (a subshell that ends only when this supervisor says so, or when the supervisor is gone) keeps the number in use: the command can end at any moment,
+# before the look, between the look and the signal or after it, and the number still names the leader's group and nothing else. The leader handles TERM itself (a handler, so
+# the command it starts keeps the default) and so outlives the signal; a request is acted on only once the leader has said it handles TERM (the .up file), since a TERM
+# before that would end the leader itself. Nothing is signalled by the number of a process that may have ended: bash reaps a finished child
+# at once, and its number can then be handed to another process. The group is TERMed as a whole, so the command's own children are asked too. The supervisor returns the
+# command's status, 137 if the leader was ended by something else, and takes the leader down when the command is over. Job control (set -m) gives the group, and it keeps the
+# command's INT working (a plain background child ignores INT).
 # shellcheck disable=SC2016 # the script runs inside the container
-WRAP='if [ -f /work/prep/browser.env ]; then set -a; . /work/prep/browser.env; set +a; fi; set -m; "$@" & c=$!; while kill -0 "$c" 2>/dev/null; do if [ -e /work/stop-request ]; then kill -TERM "$c" 2>/dev/null; break; fi; sleep 0.2; done; wait "$c"'
+WRAP=$(cat <<'WRAP'
+if [ -f /work/prep/browser.env ]; then set -a; . /work/prep/browser.env; set +a; fi
+w=/work/wrap.$$
+rm -f "$w.rc" "$w.go" "$w.up"
+set -m
+( trap : TERM; : >"$w.up"; "$@"; echo $? >"$w.tmp"; mv "$w.tmp" "$w.rc"; while [ ! -e "$w.go" ] && [ -d /proc/$$ ]; do sleep 0.1; done ) &
+g=$!
+set +m
+a=
+while [ ! -e "$w.rc" ]; do
+  case " $(jobs -rp | tr '\n' ' ') " in *" $g "*) ;; *) break ;; esac
+  if [ -z "$a" ] && [ -e "$w.up" ] && [ -e /work/stop-request ]; then kill -TERM -- "-$g"; a=1; fi
+  sleep 0.2
+done
+r=137
+[ -s "$w.rc" ] && r=$(cat "$w.rc")
+: >"$w.go"
+wait "$g" 2>/dev/null
+rm -f "$w.rc" "$w.go" "$w.tmp" "$w.up"
+exit "$r"
+WRAP
+)
 # owned MODE sets OWNED_N to the number of owned processes and succeeds only when the lookup itself worked. A failed docker exec, a lookup that printed nothing or
 # something else is a failure, never "none": an absence is only ever established by a lookup that ran and counted zero. Call it directly, not in $(...), so the
 # error count survives. The call is bounded (limited): CALL_T seconds, or the end of the stop phase (PHASE_END) if that comes first; one that stalls is killed and
@@ -373,7 +400,7 @@ kill_container() {
   done
 }
 # stop_inner ends everything the workload left running, and says whether that is established. Nothing is copied before it returns. The owned processes are asked to
-# stop first (the request file, which WRAP turns into a TERM to its own child, whose traps finish the run's own cleanup; after a normal end only leftovers remain to be
+# stop first (the request file, which WRAP turns into a TERM to the workload's group, whose traps finish the run's own cleanup; after a normal end only leftovers remain to be
 # asked). If the count is not zero after FOLD_NESTED_STOP_GRACE seconds (default 90) the container is killed, and the daemon is asked for up to FOLD_NESTED_KILL_WAIT seconds
 # (default 15) whether it has stopped. Both are absolute deadlines from the start of the stop, and together they get at most three quarters of the time before the removal reserve and end by STOP_LIMIT (open_window), so the
 # pause and the copies keep the rest. If a stop cannot be established (the kill does not take effect, or the daemon does not answer) the container is frozen, so what is copied

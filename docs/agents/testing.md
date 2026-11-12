@@ -248,9 +248,12 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   by that marker, with a lookup run inside the container that signals nothing: no process is
   ever stopped, resumed or ended by its number, because a number alone is not a process (it can
   be handed to another between a look and a signal) and a shell holds only its own children.
-  Two things end anything. Each `docker exec` runs the workload as the child of a small
-  supervisor (`WRAP`) that polls for `/work/stop-request` and sends TERM to its own child, whose
-  number comes from having started it, not from looking; after a signal the runner writes that file
+  Two things end anything. Each `docker exec` runs the workload under a small supervisor
+  (`WRAP`) that polls for `/work/stop-request` and sends one TERM to the workload's process
+  group. The group is held by a leader process that ends only when the supervisor says so, so its
+  number stays in use whenever the supervisor can send: the workload itself can end at any moment
+  and no signal ever goes to the number of a process that has ended (bash reaps a finished child
+  at once, and its number can be handed to another). After a signal the runner writes that file
   (`FOLD_NESTED_STOP_GRACE` seconds, default 90). Then the container is killed (`docker kill`:
   every process in it, at once, by no number) and the daemon is asked whether it has stopped
   (`FOLD_NESTED_KILL_WAIT`, default 15). A stop is established only by that answer or by two
@@ -381,9 +384,19 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   and `docker kill` as another (`sig-end`) with the state `docker inspect` then reports, that
   they act on themselves. The lookup signals nothing at all, which is the answer to a number
   that has changed hands (`n_scan_quiet`): the script, read as it stands, holds no signal, and
-  the count, run on this host's /proc beside two processes that stopped themselves (one with
-  the run's marker, one without, which stands for an unrelated process that came to hold a
-  number, already stopped), counts only the marked one and leaves both stopped. Every wait of
+  the count, run on this host's /proc beside two idle probes (one with the run's marker, one
+  without, which stands for an unrelated process that came to hold a number), counts only the
+  marked one and leaves both running. Those probes are owned through a channel like all the
+  others, so an interrupt at any point, between their fork and any later bookkeeping included,
+  leaves nothing stopped or waiting (`n_probe_interrupt` is that boundary). `n_wrap_group` runs
+  the real `WRAP`, extracted from the runner, with its `/work` in a directory of the case and
+  its `kill` replaced by a function that records every call and whether the target was alive.
+  A workload asked to stop ends 143 after one TERM to a live group; a workload that ends
+  between the supervisor's last look at the group and the signal (a hook, through `BASH_ENV`,
+  holds the workload at that boundary and lets it go) keeps its own status, and the one signal
+  goes to the held group, never to the number of the process that ended; a workload with no
+  request gets no signal. Its files are gone and no process carrying the case's marker remains.
+  Every wait of
   the simulated container (the docker client's wait for the workload's readiness, the writer's
   wait to record itself) ends when the container's directory, the lease its processes hold, is
   gone; `n_startup_interrupt` removes it at the boundary between the workload's launch and its

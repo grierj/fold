@@ -206,7 +206,7 @@ self_test_main() {
 		done
 	}
 	# RUNNERS: the background children of this self-test that nobody has waited for yet (bg_runner PID adds one, bg_done PID removes it): each runner is `timeout`, the parent
-	# of the runner (bounded_exec), and a fixture process that stops itself is one too. Each was started by this shell and has not been waited for, so it is this shell's own child. The run's directory holds the tools those runners use (the stub
+	# of the runner (bounded_exec). Each was started by this shell and has not been waited for, so it is this shell's own child. The run's directory holds the tools those runners use (the stub
 	# docker, the nested repository, the simulated container), so it is not removed before they have finished; see drop_selftest.
 	# RUNNER_LIMIT: the longest a runner started in the background may take, KILLed by `timeout` after that. It is a backstop for a runner that hangs, not a part of any case, so it
 	# has to leave a signalled runner the whole of its cleanup: the nested runner's default budget is 170 seconds, and the start and the signal come before it.
@@ -221,7 +221,7 @@ self_test_main() {
 	}
 	# drop_selftest: the exit of the self-test, whatever ended it (a signal included). A runner it started and has not waited for is still using the tools in the run's
 	# directory; removing them first would leave its cleanup with nothing to call, and its client groups running. So each running one is asked to stop (a TERM to `timeout`,
-	# which passes it to the runner alone; the resume after it is for a fixture process that stopped itself, whose TERM waits until it runs) and waited for, and only then is
+	# which passes it to the runner alone) and waited for, and only then is
 	# the directory removed. It is the lease of the simulated container's processes, which end when it is gone. A further signal is ignored meanwhile: the wait is bounded by
 	# the runners' own cleanup budget and the limit of bounded_exec.
 	# shellcheck disable=SC2329 # reached through the EXIT trap.
@@ -231,7 +231,6 @@ self_test_main() {
 		for r in ${RUNNERS[@]+"${RUNNERS[@]}"}; do
 			[[ " $(jobs -p | tr '\n' ' ') " == *" $r "* ]] || continue
 			builtin kill -TERM "$r" 2>/dev/null || true
-			builtin kill -CONT "$r" 2>/dev/null || true
 		done
 		for r in ${RUNNERS[@]+"${RUNNERS[@]}"}; do wait "$r" 2>/dev/null || true; done
 		[[ -n $dir && $dir != / ]] || return 0
@@ -1144,14 +1143,14 @@ OUTER
 		done
 		((${#FOUND[@]} == 0)) || t_fail "startup: processes of the interrupted case remain (pids ${FOUND[*]}): a client or a workload outlived its container's directory"
 	}
-	# n_scan_quiet: the ownership count signals nothing, in any mode, so it can never change the state of a process that is not its to change (stopping a process by its
-	# number to hold it, and resuming it when a check failed, would also resume an unrelated process that was already stopped). Two things are checked:
-	# the script, read as it stands, holds no signal at all (the word is spelled in two pieces so that this line does not match itself); and the count, run for real on
-	# this host's /proc in its read-only mode, leaves two processes that stopped themselves as they were: one that carries the run's marker, and one that does not, which
-	# stands for an unrelated process that came to hold a number, already stopped. Only the count of the marked one is expected. Both are this shell's own children,
-	# registered with the runners so that an interrupted self-test still ends them (drop_selftest), and resumed only at the end, when the case is over.
+	# n_scan_quiet: the ownership count signals nothing, in any mode, so it can never change the state of a process that is not its to change. Two things are checked: the
+	# script, read as it stands, holds no signal at all (the word is spelled in two pieces so that this line does not match itself); and the count, run for real on this
+	# host's /proc in its read-only mode, counts the one idle process that carries the run's marker and leaves it and a second one without the marker (which stands for an
+	# unrelated process that came to hold a number) as they were, neither stopped nor ended. Both are probes owned through a channel (n_life_fork), not through a number
+	# and not through any registration that an interrupt could miss: each ends by itself when this shell goes, wherever in the case that is (n_probe_interrupt is that
+	# boundary), and nothing here stops a process on purpose, so no probe can be left stopped by an interrupted case.
 	n_scan_quiet() {
-		local scan word='ki'"ll" mark="FOLD_NESTED_RUN=quiet.$$" bare held out i
+		local scan word='ki'"ll" mark="FOLD_NESTED_RUN=quiet.$$" bare held out p
 		scan=$(sed -n "/^OWN_SCAN=\$(cat <<'SCAN'\$/,/^SCAN\$/p" "$nroot/$nested_tool" | sed '1d;$d')
 		if [[ -z $scan ]]; then
 			t_fail "quiet: the ownership count could not be extracted"
@@ -1160,29 +1159,131 @@ OUTER
 		if grep -qE "(^|[^[:alnum:]_])${word}" <<<"$scan"; then
 			t_fail "quiet: the ownership count holds a signal; a process is never stopped, resumed or ended by its number"
 		fi
-		bash -c 'kill -STOP $$' &
-		bare=$!
-		bg_runner "$bare"
-		env "$mark" bash -c 'kill -STOP $$' &
-		held=$!
-		bg_runner "$held"
-		for ((i = 0; i < 100; i++)); do
-			[[ $(t_state "$bare") == T && $(t_state "$held") == T ]] && break
-			sleep 0.05
+		n_life_spawn "$tmp/quiet-ready.1" "$mark"
+		held=$SPAWNED
+		n_life_spawn "$tmp/quiet-ready.2"
+		bare=$SPAWNED
+		out=$(sh -c "$scan" fold-owned-scan "$mark" count 2>/dev/null) || out=
+		[[ $out == 1 ]] || t_fail "quiet: the count printed '$out', want 1 (the marked process; the one without the marker is not counted)"
+		for p in "$held" "$bare"; do
+			t_alive "$p" || t_fail "quiet: the probe $p was ended by the count"
+			if [[ $(t_state "$p") == T ]]; then
+				# A stopped process cannot end and keeps its number, so it is resumed here (a probe that is stopped cannot see its channel close).
+				t_fail "quiet: the probe $p was stopped by the count"
+				builtin kill -CONT "$p" 2>/dev/null || true
+			fi
 		done
-		if [[ $(t_state "$bare") != T || $(t_state "$held") != T ]]; then
-			t_fail "quiet: the two fixture processes did not stop themselves ($(t_state "$bare"), $(t_state "$held"))"
-		else
-			out=$(sh -c "$scan" fold-owned-scan "$mark" count 2>/dev/null) || out=
-			[[ $out == 1 ]] || t_fail "quiet: the count printed '$out', want 1 (the marked process; the one without the marker is not counted)"
-			[[ $(t_state "$bare") == T ]] || t_fail "quiet: the already-stopped process without the marker was resumed or ended by the count"
-			[[ $(t_state "$held") == T ]] || t_fail "quiet: the stopped marked process was resumed or ended by the count"
+		n_life_end "$held" "$bare"
+	}
+	# n_wrap_case NAME MODE WORKLOAD: runs the real WRAP (extracted from the nested runner as it stands, with its /work in a directory of this case) around WORKLOAD, a script
+	# of this case's directory, in the background under bounded_exec, and leaves the supervisor's status in WRAP_RC. The supervisor's own `kill` is a function that records
+	# every call (BASH_ENV; the file is read by the supervisor alone): whether the target was a live process when it was called, and the arguments. MODE: ask writes the
+	# request once the workload has started; hold fires the hook below; none sends nothing. Every process of the case carries WRAP_FIXTURE, so what is left is seen.
+	# The hook is the deterministic boundary: the first time the supervisor has listed its running jobs and found its leader among them (it cuts that list with tr, which the hook
+	# replaces), before it looks for the request and signals, the hook lets the workload go, waits until the workload has ended and its status has been recorded, and only then
+	# writes the request.
+	n_wrap_case() {
+		local name=$1 mode=$2 workload=$3 c=$dir/$1 i p
+		mkdir -p "$c/work"
+		cp "$dir/$workload" "$c/workload.sh"
+		(cd "$c" && bounded_exec 40 env "WRAP_FIXTURE=$dir" "WRAP_DIR=$c/work" "KILL_LOG=$c/kills" "BASH_ENV=$dir/hook.sh" "WRAP_MODE=$mode" \
+			bash -c "${wrap_src//\/work/$c/work}" _ bash "$c/workload.sh" "$c/work") >"$c/out" 2>&1 &
+		p=$!
+		bg_runner "$p"
+		if [[ $mode == ask ]]; then
+			for ((i = 0; i < 100; i++)); do
+				[[ -s $c/work/wl.pid ]] && break
+				sleep 0.05
+			done
+			[[ -s $c/work/wl.pid ]] || t_fail "wrap $name: the workload never started"
+			: >"$c/work/stop-request"
 		fi
-		kill -CONT "$bare" "$held" 2>/dev/null || true
-		wait "$bare" 2>/dev/null || true
-		wait "$held" 2>/dev/null || true
-		bg_done "$bare"
-		bg_done "$held"
+		WRAP_RC=0
+		wait "$p" || WRAP_RC=$?
+		bg_done "$p"
+	}
+	# n_wrap_kills NAME COUNT: the supervisor made COUNT signal calls, and every one was a TERM to a group (a negative number) that was still alive: the held leader's, never
+	# the number of a process that had ended. The group is not the workload's own number.
+	n_wrap_kills() {
+		local c=$dir/$1 n=0 line
+		[[ ! -e $c/kills ]] || n=$(wc -l <"$c/kills")
+		[[ $n == "$2" ]] || t_fail "wrap $1: the supervisor made $n signal calls, want $2 ($(cat "$c/kills" 2>/dev/null | tr '\n' ';'))"
+		while IFS= read -r line; do
+			[[ $line =~ ^alive=1\ -TERM\ --\ -[0-9]+$ ]] || t_fail "wrap $1: a signal that was not a TERM to a live group held by its leader: '$line'"
+			[[ ${line##*-} != "$(cat "$c/work/wl.pid" 2>/dev/null)" ]] || t_fail "wrap $1: the signal went to the workload's own number"
+		done < <(cat "$c/kills" 2>/dev/null)
+	}
+	# n_wrap_group: the supervisor every docker exec runs the workload under (WRAP), run for real. The workload ends by TERM when asked (143, one TERM to the held group);
+	# ends by itself before the request is acted on (the case that matters: the child is gone between the look at it and the signal, so a signal by its number would go to
+	# a number that was released: here the one signal goes to the leader's group, which is alive, and the workload's own status is kept); and ends with no request at all
+	# (no signal, status kept). Nothing is left in its directory and no process of the case remains.
+	n_wrap_group() {
+		local dir=$tmp/wrapfix i wrap_src
+		mkdir -p "$dir"
+		wrap_src=$(sed -n "/^WRAP=\$(cat <<'WRAP'\$/,/^WRAP\$/p" "$nroot/$nested_tool" | sed '1d;$d')
+		if [[ -z $wrap_src ]]; then
+			t_fail "wrap: the supervisor could not be extracted"
+			return 0
+		fi
+		cat >"$dir/hook.sh" <<'HOOK'
+kill() {
+	local last=${*: -1} t alive=0 st
+	t=${last#-}
+	if [[ $t =~ ^[0-9]+$ && -r /proc/$t/stat ]]; then
+		st=$(sed -E 's/^[0-9]+ \(.*\) (.) .*/\1/' "/proc/$t/stat" 2>/dev/null || true)
+		[[ -n $st && $st != Z ]] && alive=1
+	fi
+	printf 'alive=%s %s\n' "$alive" "$*" >>"$KILL_LOG"
+	builtin kill "$@"
+}
+tr() {
+	local i
+	if [[ $WRAP_MODE == hold && ! -e $WRAP_DIR/hooked ]]; then
+		: >"$WRAP_DIR/hooked"
+		: >"$WRAP_DIR/release"
+		for ((i = 0; i < 250; i++)); do
+			compgen -G "$WRAP_DIR/wrap.*.rc" >/dev/null && break
+			sleep 0.02
+		done
+		: >"$WRAP_DIR/stop-request"
+	fi
+	command tr "$@"
+}
+HOOK
+		cat >"$dir/term.sh" <<'WLTERM'
+trap 'echo got >"$1/term"; exit 143' TERM
+echo $$ >"$1/wl.pid"
+while :; do sleep 0.1; done
+WLTERM
+		cat >"$dir/release.sh" <<'WLREL'
+echo $$ >"$1/wl.pid"
+while [ ! -e "$1/release" ]; do sleep 0.02; done
+exit 5
+WLREL
+		cat >"$dir/quick.sh" <<'WLQUICK'
+echo $$ >"$1/wl.pid"
+exit 7
+WLQUICK
+		n_wrap_case ask ask term.sh
+		[[ $WRAP_RC == 143 ]] || t_fail "wrap ask: the status was $WRAP_RC, want 143 (the workload's own, after the TERM)"
+		[[ -e $dir/ask/work/term ]] || t_fail "wrap ask: the workload never got the TERM"
+		n_wrap_kills ask 1
+		n_wrap_case hold hold release.sh
+		[[ -e $dir/hold/work/hooked ]] || t_fail "wrap hold: the hook never fired (the case did not reach the boundary)"
+		[[ $WRAP_RC == 5 ]] || t_fail "wrap hold: the status was $WRAP_RC, want the workload's own 5, which had ended before the signal"
+		n_wrap_kills hold 1
+		n_wrap_case quiet none quick.sh
+		[[ $WRAP_RC == 7 ]] || t_fail "wrap quiet: the status was $WRAP_RC, want the workload's own 7"
+		n_wrap_kills quiet 0
+		for i in ask hold quiet; do
+			! compgen -G "$dir/$i/work/wrap.*" >/dev/null || t_fail "wrap $i: the supervisor left its files behind"
+		done
+		for ((i = 0; i < 100; i++)); do
+			find_marked "WRAP_FIXTURE=$dir"
+			((${#FOUND[@]})) || break
+			sleep 0.1
+		done
+		((${#FOUND[@]} == 0)) || t_fail "wrap: processes of the supervisor's cases remain (pids ${FOUND[*]}): its leader or its workload was not ended"
 	}
 	# n_outer_interrupt: the self-test itself is interrupted (TERM) while the real nested runner is mid-run, and its exit removes the directory that holds the tools the runner
 	# calls. Here the shell that plays the self-test has its own run directory with copies of the stub docker, the simulated container and the nested repository in it, and the
@@ -1240,7 +1341,7 @@ OUTER
 	# client is held in a group of its own: the group must end by itself (life_hold), where it used to outlive the runner by as long as its client ran. What is left is looked
 	# for by the case's marker, and the simulated container's own processes (the workload, which the removal flag ends) are the one thing allowed to remain until it is removed.
 	n_orphan_holders() {
-		local dir=$tmp/orphan runner i p rc2=0 left=()
+		local dir=$tmp/held-clients runner i p rc2=0 left=()
 		mkdir -p "$dir/fake" "$dir/tmp"
 		(cd "$nroot" && bounded_exec 8 env "PATH=$bin:$PATH" "STUB_FAKE=$dir/fake" "STUB_BIN=$bin" "STUB_LOG=$dir/log" "ORPHAN_FIXTURE=$dir" "TMPDIR=$dir/tmp" \
 			bash deploy/digitalocean/restore-drill-nested.sh --out "$dir/out" --qc1) >"$dir/runner.out" 2>&1 &
@@ -1481,6 +1582,7 @@ HOOK
 	n_probe_interrupt
 	n_bounded_interrupt
 	n_scan_quiet
+	n_wrap_group
 	n_outer_interrupt
 	n_orphan_holders
 	n_startup_interrupt
