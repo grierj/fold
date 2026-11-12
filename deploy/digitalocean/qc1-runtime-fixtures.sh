@@ -119,7 +119,7 @@ if command -v node >/dev/null; then
 
   if grep -n -i 'content-length' "$HERE/qc1/panel-measure.mjs" "$HERE/qc1/panel-driver.mjs" "$HERE/qc1/panel-core.mjs" "$HERE/qc1/page-observer.mjs"; then echo 'the panel measurement reads Content-Length' >&2; exit 1; fi
   # The decoded body size is the observer's: read from the body, null (absent) when the body cannot be read, never zero.
-  grep -qF 'const body = await r.body();' "$HERE/qc1/page-observer.mjs"; grep -qF 'rec.bytes = body.length;' "$HERE/qc1/page-observer.mjs"; grep -qF 'bytes: null, requestMs: null, nodeParseMs: null' "$HERE/qc1/page-observer.mjs"
+  grep -qF 'const body = await r.body();' "$HERE/qc1/page-observer.mjs"; grep -qF 'rec.bytes = body.length;' "$HERE/qc1/page-observer.mjs"; grep -qF 'bytes: null, runes: null, requestMs: null, nodeParseMs: null' "$HERE/qc1/page-observer.mjs"
   # --- the preflight against a fake Playwright: module resolution is real, the browser is not ------------------------------
   # Two fake packages, as the repository has them: @playwright/test (the measurement) and playwright (the restore proof), over one playwright-core.
   fakepkg() { # dir name version
@@ -765,6 +765,7 @@ exec >>"$WORK/harness.log" 2>&1
 KEEP="${KEEP:-0}"; SAMPLERS=(); CONTAINERS=(dbcid appcid); NET_ID=netid; VOL=""; VOL_TOKEN=""; DB_CID=dbcid; AUTOEXPLAIN_DIRTY=0
 SIZES=100000; COUNTS=0,10,100,1000,10000; DENSE=100000; DENSE_LIST=(100000); ALL_DELETE_LIST=(0 10 100 1000 10000 100000); REVISION="$(printf 'a%.0s' {1..40})"; MAX_REQUEST_BYTES=6291456
 IMAGE=qc1-fold:test; IMAGE_ID=sha256:test; LEVEL=2; DROPLET=2gb; DB_MEMORY=2g; APP_MEMORY=1g; CPUSET=0; LAYOUT=spread; REASON_LEN=200; TARGET_REASON_LEN=1000
+NEXT_CHANGED_PRESSES=1; NEXT_CHANGED_RUNS=1; NEXT_CHANGED_ONLY=0; PROFILE_NEXT_CHANGED=0
 SECONDS_PER_REASON=10; SITTING_MINUTES=15; PG_REPO_DIGESTS='["pg-digest"]'; APP_REPO_DIGESTS='["app-digest"]'
 APP_CONTAINERS='[{"imageId":"sha256:test","memoryLimitBytes":1024}]'; DAEMON_JSON='{"rootless":false}'; SOURCES='["source"]'; BROWSER_RUNTIME='{"ok":true}'
 sleep() { :; }
