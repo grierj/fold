@@ -63,7 +63,9 @@
 # established the container is frozen (docker pause) before the copy. Only then
 # are /work/prep and /work/out copied into --out, and the container is removed.
 # After a normal end the same check runs and ends any leftover (noted in
-# LEFTOVERS-STOPPED.txt). The exit status after a signal is 130, 143 or 129.
+# LEFTOVERS-STOPPED.txt). The exit status after a signal is 130, 143 or 129. A workload that ends with 137 or 143 while no signal reached this runner (a
+# killed docker client, an OOM kill) is given FOLD_NESTED_SIGNAL_WAIT seconds (default 5) for a pending signal, then goes through the same bounded stop and
+# collection, and its own status is kept.
 #
 # Records in --out: INTERRUPTED.txt (how the run stopped), COLLECTION-FAILED.txt
 # (a copy that failed, or a stop that could not be established). A collection
@@ -155,16 +157,22 @@ stopped_confirmed() {
   owned count && [[ "$OWNED_N" == 0 ]]
 }
 # inner_exec DOCKER_EXEC_ARGS...: the workload, started in the background and waited for, so that a signal runs the trap at once and not after a many-hour run.
-# A signal sent to the whole process group can end the docker client a moment before this script's own trap runs; a client that ended like a killed process
-# while the workload is still there is not the workload's end, so it is waited for here, and the trap, which is already on its way, stops it.
+# A signal sent to the whole process group can end the docker client a moment before this script's own trap runs, so a status of 128 or more is given a short,
+# bounded time (FOLD_NESTED_SIGNAL_WAIT seconds, default 5) in which that trap can fire and take over. It is not proof of anything: the same status comes from a
+# docker client killed by someone else, or from a workload that died of a signal or the OOM killer while a marked writer lives on. When no signal arrives the status
+# is returned as it is, and the caller goes on into the ordinary stop, verify, collect, remove sequence, which is bounded by its own grace times.
 inner_exec() {
-  local rc=0
+  local rc=0 wait_s="${FOLD_NESTED_SIGNAL_WAIT:-5}" i
+  [[ "$wait_s" =~ ^[0-9]+$ ]] || wait_s=5
   docker exec -e "$OWN_MARK" "$@" &
   INNER_CLIENT=$!
   wait "$INNER_CLIENT" || rc=$?
   INNER_CLIENT=""
   if (( rc >= 128 )); then
-    while owned count && [[ "$OWNED_N" != 0 ]]; do sleep 1; done
+    for ((i=0;i<wait_s;i++)); do
+      if owned count && [[ "$OWNED_N" == 0 ]]; then break; fi
+      sleep 1
+    done
   fi
   return "$rc"
 }

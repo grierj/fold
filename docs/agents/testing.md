@@ -256,6 +256,9 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   failed or a stop that could not be established. Such a failure is a failure of the run: the
   runner exits 1 instead of 0 (or 10 for `--crossings-only`), and the wrapper fails the step and
   carries the lines in its summary and coverage reasons even when the tool itself exited 0.
+  A workload that ends 137 or 143 while no signal reached the runner (a killed docker client, an
+  OOM kill) gets `FOLD_NESTED_SIGNAL_WAIT` seconds (default 5) for a pending signal, never an open-ended
+  wait, then goes through the same bounded stop and collection and keeps its own status.
   Limits: a KILL sent to either script cannot do any of this; a tool that replaces its whole
   environment would hide from the marker; the drill's own nested containers belong to the
   daemon and go with the container.
@@ -274,13 +277,17 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   a TERM-ignoring descendant of a tool that already exited, a leftover after a tool that ended
   by itself and a tool that ignores TERM all ended, and a bystander process untouched; and, with
   the real `restore-drill-nested.sh` against a stub docker that holds the artifacts only inside
-  its "container" (the ownership lookup it sends is executed for real, on this host's /proc,
-  against processes that carry the run's marker), that a cancel stops the run inside, copies the
+  its "container" (the workload shell is started with the run's marker already in its initial
+  environment, as `docker exec -e` does; before the cancel, the ownership lookup the runner
+  sends is run for real, on this host's /proc, with `kill` replaced by a recorder, and must name
+  that shell and any stubborn writer, and nothing without the marker), that a cancel stops the run inside, copies the
   artifacts out and only then removes the container, also when the run has to be killed; that a
   non-bash descendant in a session of its own that ignores TERM and keeps writing is found and
   killed before the copy, while a process without the marker is not touched; that a failing
   lookup is never read as "nothing running" (the container is frozen, and the copy recorded as
-  incomplete, also when the freeze fails); that a leftover after a normal end is ended and
+  incomplete, also when the freeze fails); that a docker exec ending 137 or 143 with no signal to
+  the runner and a TERM-ignoring writer left behind finishes in bounded time, kills the writer
+  before the copy and keeps the workload's status; that a leftover after a normal end is ended and
   noted; and that a failed copy or an unestablished stop turns a run that exited 0 (or a
   crossings-only 10) into exit 1, and fails the wrapper's step, with the reasons kept. Real runs
   on a droplet-class host are a hand check (`docs/FIRST-CHURCH-CHECKS.md`), not covered by this.

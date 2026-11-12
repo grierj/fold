@@ -526,15 +526,6 @@ writing() {
 	st=$(sed -E 's/^[0-9]+ \(.*\) (.) .*/\1/' "/proc/$1/stat" 2>/dev/null || true)
 	[[ -n $st && $st != Z && $st != T ]]
 }
-# spawn_desc: a non-bash writer in a session of its own that ignores TERM (the Node process of the browser panel). It carries the run's marker,
-# like everything the daemon starts for a docker exec, and is left behind when its parent ends.
-spawn_desc() {
-	(
-		export "${envs[@]}"
-		setsid sh -c "trap '' TERM; echo \$\$ >\"\$1\"; while :; do sleep 0.1; echo late >>\"\$2\"; done" _ "$STUB_FAKE/desc.pid" "$STUB_FAKE/work/out/late.txt" </dev/null >/dev/null 2>&1 &
-	)
-	until [[ -s $STUB_FAKE/desc.pid ]]; do sleep 0.02; done
-}
 case "$1" in
 run) printf 'c%.0s' {1..64}; echo ;;
 inspect) case "$*" in *NetworkMode*) echo bridge ;; *Mounts*) echo '/var/lib/docker /v' ;; esac ;;
@@ -594,21 +585,16 @@ exec)
 				jq -n --arg rev "$(git rev-parse HEAD)" '{revision:$rev}' >"$STUB_FAKE/work/out/environment.json"
 				echo '{"missing":[],"pending":[],"invalid":[],"budgetFailures":[],"coverage":{"kind":"full","reasons":[]},"complete":true,"releaseEvidence":true}' >"$STUB_FAKE/work/out/evidence-status.json"
 			fi
-			[[ -z ${STUB_DESC:-} ]] || spawn_desc
+			# A leftover writer, started with the exec's environment (the marker) the way the daemon starts it.
+			[[ -z ${STUB_DESC:-} ]] || env "${envs[@]}" "$STUB_BIN/stub-desc"
 			exit "${STUB_QUICK_RC:-0}"
 		fi
+		# The workload is exec'd with the exec's environment, as the daemon does for docker exec -e: the marker is in the initial environment of the
+		# shell that holds the TERM trap (stub-workload), not exported after it started. set -m gives it a process group of its own, so a signal
+		# that reaches this docker client on the host does not reach it.
 		set -m
-		(
-			export "${envs[@]}"
-			if [[ -n ${STUB_INNER_STUBBORN:-} ]]; then
-				trap '' TERM
-			else
-				trap 'echo "{\"aborted\":{\"signal\":\"TERM\"}}" >"$STUB_FAKE/work/out/evidence-status.json"; rm -f "$STUB_FAKE/running"; exit 143' TERM
-			fi
-			[[ -z ${STUB_DESC:-} ]] || spawn_desc
-			: >"$STUB_FAKE/wl-ready"
-			while :; do sleep 0.1; done
-		) &
+		mkfifo "$STUB_FAKE/idle"
+		env "${envs[@]}" "$STUB_BIN/stub-workload" &
 		wl=$!
 		echo "$wl" >"$STUB_FAKE/workload.pid"
 		until [[ -e $STUB_FAKE/wl-ready ]]; do sleep 0.02; done
@@ -621,7 +607,30 @@ exec)
 esac
 exit 0
 DOCKER
-	chmod +x "$bin/docker"
+	# The simulated workload shell: it holds the TERM trap, optionally leaves a TERM-ignoring non-bash writer behind, and idles without
+	# creating child processes (read on a fifo), so the processes carrying the marker are exactly the ones the test names.
+	cat >"$bin/stub-workload" <<'WORKLOAD'
+#!/usr/bin/env bash
+if [[ -n ${STUB_INNER_STUBBORN:-} ]]; then
+	trap '' TERM
+else
+	trap 'echo "{\"aborted\":{\"signal\":\"TERM\"}}" >"$STUB_FAKE/work/out/evidence-status.json"; rm -f "$STUB_FAKE/running"; exit 143' TERM
+fi
+[[ -z ${STUB_DESC:-} ]] || "$STUB_BIN/stub-desc"
+exec 3<>"$STUB_FAKE/idle"
+: >"$STUB_FAKE/wl-ready"
+while :; do read -r -t 0.1 -u 3 _ || true; done
+WORKLOAD
+	# A non-bash writer in a session of its own that ignores TERM (the Node process of the browser panel). It inherits the marker, is left
+	# behind when its parent ends and keeps writing into the container's output directory.
+	cat >"$bin/stub-desc" <<'DESC'
+#!/usr/bin/env bash
+(
+	setsid sh -c "trap '' TERM; echo \$\$ >\"\$1\"; while :; do sleep 0.1; echo late >>\"\$2\"; done" _ "$STUB_FAKE/desc.pid" "$STUB_FAKE/work/out/late.txt" </dev/null >/dev/null 2>&1 &
+)
+until [[ -s $STUB_FAKE/desc.pid ]]; do sleep 0.02; done
+DESC
+	chmod +x "$bin/docker" "$bin/stub-workload" "$bin/stub-desc"
 	# n_reset: a fresh container. n_wait: the workload is running in it.
 	n_reset() {
 		rm -rf "$fake"
@@ -645,7 +654,31 @@ DOCKER
 	}
 	# The log lines of the ownership scan: its arguments are the last thing on the line.
 	local scan_term=' fold-owned-scan FOLD_NESTED_RUN=[0-9a-f]* termroots$' scan_kill=' fold-owned-scan FOLD_NESTED_RUN=[0-9a-f]* killall$'
-	local first_cp='^cp c\{64\}:/work/[a-z]*/\. '
+	local first_cp='^cp c\{64\}:/work/[a-z]*/\. ' sigrc
+	# n_scan_sees NAME: the ownership scan of the nested runner, extracted from the tool as it stands, with kill replaced by a function that only
+	# records the pid, finds the workload shell recorded by the stub (found only if the marker is in the initial environment of that very
+	# process, as with a real docker exec -e) among the processes it would TERM, and the stubborn descendant too when there is one. A process
+	# without the marker (the bystander) is never among them.
+	n_scan_sees() {
+		local name=$1 mark scan rec=$tmp/$1.scan wl desc
+		mark=$(grep -o 'FOLD_NESTED_RUN=[0-9a-f]*' "$tmp/nlog" | head -n 1)
+		scan=$(sed -n "/^OWN_SCAN=\$(cat <<'SCAN'\$/,/^SCAN\$/p" "$nroot/$nested_tool" | sed '1d;$d')
+		wl=$(cat "$fake/workload.pid" 2>/dev/null || true)
+		if [[ -z $mark || -z $scan || -z $wl ]]; then
+			t_fail "$name: could not set up the ownership scan check (marker '$mark', workload '$wl')"
+			return 0
+		fi
+		: >"$rec"
+		REC=$rec sh -c 'kill() { printf "%s\n" "$2" >>"$REC"; }
+'"$scan" fold-owned-scan "$mark" termroots >/dev/null 2>&1 || true
+		grep -qx "$wl" "$rec" || t_fail "$name: the ownership scan does not find the workload shell $wl before the cancellation (found: $(tr '\n' ' ' <"$rec"))"
+		if [[ -s $fake/desc.pid ]]; then
+			desc=$(cat "$fake/desc.pid")
+			grep -qx "$desc" "$rec" || t_fail "$name: the ownership scan does not find the stubborn descendant '$desc' (found: $(tr '\n' ' ' <"$rec"))"
+		fi
+		! grep -qx "$bystander" "$rec" || t_fail "$name: the ownership scan named a process without the marker"
+		t_alive "$wl" || t_fail "$name: the workload was ended by the check itself"
+	}
 	# n_signal NAME SIGNAL ENV... -- COMMAND...: runs COMMAND in the nested repository with the stub docker first on the
 	# path, sends SIGNAL to it once the workload is running in the container, and leaves rc.
 	n_signal() {
@@ -658,10 +691,14 @@ DOCKER
 		done
 		shift
 		n_reset
-		(cd "$nroot" && exec env "PATH=$bin:$PATH" "STUB_FAKE=$fake" "STUB_LOG=$tmp/nlog" FOLD_SCALE_STOP_GRACE=60 FOLD_NESTED_STOP_GRACE=5 FOLD_NESTED_KILL_WAIT=5 "${envs[@]}" "$@") >"$tmp/$name.out" 2>&1 &
+		(cd "$nroot" && exec env "PATH=$bin:$PATH" "STUB_FAKE=$fake" "STUB_BIN=$bin" "STUB_LOG=$tmp/nlog" FOLD_SCALE_STOP_GRACE=60 FOLD_NESTED_STOP_GRACE=5 FOLD_NESTED_KILL_WAIT=5 "${envs[@]}" "$@") >"$tmp/$name.out" 2>&1 &
 		p=$!
 		rc=0
 		if n_wait; then
+			# Before anything is cancelled: the runner's own ownership scan (the script it sends, run unchanged, with kill replaced by a recorder)
+			# must name the recorded workload shell, and a stubborn writer if there is one, as processes to stop. This is what the copy-time
+			# checks below rest on, independent of the stub's removal of the container.
+			n_scan_sees "$name"
 			kill -s "$sig" "$p"
 			wait "$p" || rc=$?
 		else
@@ -684,7 +721,7 @@ DOCKER
 		shift
 		n_reset
 		rc=0
-		(cd "$nroot" && env "PATH=$bin:$PATH" "STUB_FAKE=$fake" "STUB_LOG=$tmp/nlog" "${envs[@]}" "$@") >"$tmp/$name.out" 2>&1 || rc=$?
+		(cd "$nroot" && env "PATH=$bin:$PATH" "STUB_FAKE=$fake" "STUB_BIN=$bin" "STUB_LOG=$tmp/nlog" "${envs[@]}" timeout 120 "$@") >"$tmp/$name.out" 2>&1 || rc=$?
 		[[ -e $fake/removed ]] || t_fail "$name: the container was not removed"
 	}
 	# n_collected NAME DIR: what existed only in the container is in DIR, it was copied before the container was removed, and nothing
@@ -777,6 +814,20 @@ DOCKER
 	n_before "$scan_kill" "$first_cp" || t_fail "nest-leftover: the leftover was not killed before the copy"
 	grep -q 'was killed' "$tmp/nest-leftover/LEFTOVERS-STOPPED.txt" 2>/dev/null || t_fail "nest-leftover: LEFTOVERS-STOPPED.txt does not say a leftover had to be killed"
 	[[ ! -e $tmp/nest-leftover/COLLECTION-FAILED.txt && ! -e $tmp/nest-leftover/INTERRUPTED.txt ]] || t_fail "nest-leftover: a verified stop of a leftover was recorded as a failure or an interruption"
+
+	# A docker exec that ends like a killed process (137, 143) although no signal reached the runner, while a marked writer that ignores TERM
+	# lives on: the runner does not wait for a signal that is not coming. It stops the writer within its grace (TERM, then KILL), verifies,
+	# copies and removes, in bounded time (timeout in n_run), and the run keeps the workload's own failure status.
+	for sigrc in 137 143; do
+		n_run "nest-sigexit-$sigrc" STUB_QUICK=1 STUB_QUICK_RC=$sigrc STUB_DESC=1 FOLD_NESTED_SIGNAL_WAIT=1 FOLD_NESTED_STOP_GRACE=2 FOLD_NESTED_KILL_WAIT=5 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-sigexit-$sigrc" --qc1
+		[[ $rc == "$sigrc" ]] || t_fail "nest-sigexit-$sigrc: exit $rc, want the workload's own $sigrc (124 means the runner never returned)"
+		[[ -s $fake/desc.pid ]] || t_fail "nest-sigexit-$sigrc: the stub left no descendant"
+		n_before "$scan_kill" "$first_cp" || t_fail "nest-sigexit-$sigrc: the surviving writer was not killed before the copy"
+		n_before '^cp c\{64\}:/work/out/\. ' '^rm -fv ' || t_fail "nest-sigexit-$sigrc: the container was removed before the copy"
+		[[ ! -e $fake/cp-saw-writer ]] || t_fail "nest-sigexit-$sigrc: a writer was still running when the copy was taken"
+		[[ -s $tmp/nest-sigexit-$sigrc/done && ! -e $tmp/nest-sigexit-$sigrc/INTERRUPTED.txt && ! -e $tmp/nest-sigexit-$sigrc/COLLECTION-FAILED.txt ]] || t_fail "nest-sigexit-$sigrc: collected the wrong things for a verified stop"
+		grep -q 'was killed' "$tmp/nest-sigexit-$sigrc/LEFTOVERS-STOPPED.txt" 2>/dev/null || t_fail "nest-sigexit-$sigrc: LEFTOVERS-STOPPED.txt does not say the writer was killed"
+	done
 
 	# The normal end with a copy that fails: a run that exited 0 and wrote its status must not stay a pass, through the launcher and the wrapper.
 	n_run nest-normal-cpfail STUB_QUICK=1 STUB_CP_FAIL=prep -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-normal-cpfail" --qc1
