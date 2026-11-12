@@ -604,22 +604,29 @@ per-run p50, p95 and max (nearest rank, the same as `percentile` in `qc1/panel-c
 press of each run, the figures by origin, the slowest presses with their long-task time, and the load
 context of each run. A run counts only when it was measured, stopped in no phase, answered by the
 stack's own origin, walked exactly the reasons seeded, was refused with 409 and reloaded, pressed at
-least 30 times and as often as it was asked, was not profiled, carries its load counters, comes from
+least 30 times and as often as it was asked (the recorded counts match the recorded presses, whose
+indices run 0..N-1 from the runner's origins with nonnegative times and a matching first press), was
+not profiled, carries numeric host load counters, comes from
 a directory whose environment is a complete record of the revision asked for, and is clean under the
 existing QC judge recomputed from the recorded rows (`qc1_judge` over the directory's
 `measurements.jsonl`): an invalid finding for the row excludes it while a budget finding is kept
 beside the row and never excludes it, and the directory's own `duplicate-row` findings are honored
 beside the recompute. A directory whose artifacts could not be collected, whose run
 aborted, whose environment is incomplete, whose `evidence-status.json` is missing, unreadable or
-malformed, or whose outer runner record is present but unreadable or malformed, or marks its QC-1
-step interrupted, failed with a nonzero exit, or failed with exit 0 for any reason beyond intentional
+malformed, that names an expected sampling measurement as missing (a standard-shaped `{item, size,
+case}` entry, the reason count parsed from its case name), or whose outer runner record is present
+but unfinished, unbound, unreadable or malformed, marks no single well-formed QC-1 step for this
+directory and revision, or marks its QC-1 step interrupted, failed with a nonzero exit, passed or
+partial with a contradicting exit, or failed with exit 0 for any reason beyond intentional
 omissions, contributes runs that are listed but never counted; the one accepted outer shape is an
 exit-0 failure explained entirely by the sampling design omitting the full matrix, proven by the
 step's own summary agreeing with the directory's validated status. Expected sampling-only omissions
 (other missing rows, legacy pending cases, pilot coverage) are recorded, not failures. A repeated
 `--evidence` directory is refused; an identical record copied across directories of one stack is
 counted once, while a repeated or conflicting identity within one measurements file, or conflicting
-records of one identity across directories of one stack, excludes every occurrence. The record is `COMPLETE` (exit 0) only with at least 3 counted runs in both
+records of one identity across directories of one stack, excludes every occurrence — and identity
+covers validity, not only timings, so equal-timed copies that differ in status, window, agreement or
+sampling data conflict instead of collapsing. The record is `COMPLETE` (exit 0) only with at least 3 counted runs in both
 configurations; otherwise `INCOMPLETE` (exit 10) and each gap is named, and a configuration with no
 counted run has no figures at all.
 
