@@ -236,6 +236,8 @@ self_test_main() {
 		[[ -n $dir && $dir != / ]] || return 0
 		# The lease is revoked by one rename, before anything is deleted: from that instant the path is gone for every process that holds it as a lease, and nothing can be
 		# created under it by name, so the removal cannot race a file being created in the tree it is deleting (an rm that lost that race left the directory, and the lease, in place).
+		# It is the quick path, not the bound: a rename that fails falls back to the removal in place, which can lose that race, so a long-lived process of a case that can be left
+		# behind must also end by a channel this exit does not depend on (the lifeline of n_wrap_interrupt).
 		dead=$dir.gone.$$
 		if mv -T -- "$dir" "$dead" 2>/dev/null; then dir=$dead; fi
 		rm -rf -- "$dir" || true
@@ -1227,15 +1229,21 @@ OUTER
 			[[ ${line##*-} != "$(cat "$c/work/wl.pid" 2>/dev/null)" ]] || t_fail "wrap $1: the signal went to the workload's own number"
 		done < <(cat "$c/kills" 2>/dev/null)
 	}
-	# n_wrap_interrupt MODE: the self-test is interrupted (TERM) while the real WRAP is running a workload, and its exit removes the directory the case lives in. The shell that plays
-	# the self-test has a run directory of its own and the same functions (bounded_exec, bg_runner, bg_done, drop_selftest, copied from this script) as the real one, and starts WRAP
-	# the way n_wrap_case does. The workload (gate.sh) is paused at a gate outside the run directory immediately before its first write into it, and goes on writing there until the
-	# directory is gone, so the exit really does race the creation of files in the tree it removes. MODE registration: the signal comes while the workload is paused and before
-	# bg_runner, so the exit does not know of the runner at all; the exit then lets the workload go and removes the directory. MODE request: the workload is let go and has written
-	# its first file, and the signal comes before any request to stop is written, with the runner registered, so the exit asks it to stop (a TERM to `timeout`, which passes it to the
-	# supervisor alone, and the supervisor has no handler: its leader and the workload are in groups of their own and are not reached). Either way the directory must be gone
-	# (renamed away first, so that nothing can be created in it by name) and nothing may be left: the workload and the leader end by themselves because the directory they live in
-	# (the lease) is gone, and so does the supervisor. What is left is looked for by the marker of the case, which every process of it carries.
+	# n_wrap_interrupt MODE: a self-test is interrupted (TERM) while the real WRAP is running a workload (gate.sh), and its exit removes the directory the case lives in. The shell that
+	# plays the self-test (outer.sh) has a run directory of its own and the same functions (bounded_exec, bg_runner, bg_done, drop_selftest, copied from this script) as the real one,
+	# and starts WRAP the way n_wrap_case does. The workload is held at a gate outside the run directory immediately before its first write into it, and goes on writing there until
+	# the directory is gone, so the exit really does race the creation of files in the tree it removes. Whatever the exit does or fails to do, the workload ends: it holds the read end
+	# of a lifeline, a FIFO whose write end only the interrupted shell holds (every client of it closes that end), so the end of the shell closes it, and the workload ends when it reads
+	# end of file. That is the bound; the lease (the directory, which is checked as well) only makes the usual case quick. Modes:
+	#   request       the workload has been let go and has written, the runner is registered, and no request to stop was written yet; the exit asks the runner to stop.
+	#   registration  the signal comes while the workload is paused and before bg_runner, so the exit knows nothing of the runner; the exit lets the workload go and removes the directory.
+	#   norename      as registration, with the rename impossible (its target is a non-empty directory) and the removal in the order the failing schedule had: rm has emptied the
+	#                 directory, the workload makes its first file, and only then does the rmdir come, which fails. The directory stays, with the lease in it, and the workload must
+	#                 still end. The case checks that the removal was lost: otherwise it proved nothing.
+	#   launch        the shell that is interrupted plays the self-test itself and has forked the "outer" shell of the real self-test (mode idle: it sends itself no signal) without
+	#                 it; the signal comes while that shell's workload waits at the gate, and the exit removes the whole case directory, the gate included. The gate can never be
+	#                 opened then, so the workload must end because its gate is gone.
+	# Nothing may be left: what is left is looked for by the marker of the case, which every process of it carries.
 	n_wrap_interrupt() {
 		local mode=$1 d="$dir/interrupt $1" outer orc=0 i
 		mkdir -p "$d/run/work" "$d/gate"
@@ -1245,28 +1253,60 @@ OUTER
 			declare -f bounded_exec bg_runner bg_done drop_selftest
 			cat <<'INTERRUPT'
 set -u
+d=$1 mode=$2
 RUNNERS=()
-export REASON_SCALE_SELFTEST="$1/run"
-# The exit lets the paused workload go and then removes the directory: the workload's first write and the removal run together.
-trap ': >"$1/gate/go"; drop_selftest' EXIT
-trap 'exit 143' TERM
-(bounded_exec 40 env "FOLD_WRAP_ROOT=$1/run/work" "WRAP_GATE=$1/gate" bash -c "$(cat "$1/wrap.sh")" _ bash "$1/run/workload.sh" "$1/run/work") >"$1/wrap.out" 2>&1 &
-p=$!
-if [[ $2 == request ]]; then bg_runner "$p"; fi
-for ((i = 0; i < 200; i++)); do
-	[[ -e $1/gate/at ]] && break
-	sleep 0.05
-done
-[[ -e $1/gate/at ]] || exit 99
-if [[ $2 == request ]]; then
-	: >"$1/gate/go"
+if [[ $mode == launch ]]; then
+	export REASON_SCALE_SELFTEST="$d"
+	trap drop_selftest EXIT
+	trap 'exit 143' TERM
+	bash "$d/outer.sh" "$d" idle >"$d/inner.out" 2>&1 &
 	for ((i = 0; i < 200; i++)); do
-		[[ -s $1/run/work/wl.pid ]] && break
+		[[ -e $d/gate/at ]] && break
 		sleep 0.05
 	done
-	[[ -s $1/run/work/wl.pid ]] || exit 98
+	[[ -e $d/gate/at ]] || exit 99
+	kill -TERM "$$"
+	wait
+	exit 1
 fi
-kill -TERM "$$"
+export REASON_SCALE_SELFTEST="$d/run"
+mkfifo "$d/life"
+exec 9<>"$d/life"
+if [[ $mode == norename ]]; then
+	mkdir -p "$d/run.gone.$$/keep"
+	rm() {
+		command find "$d/run/work" -mindepth 1 -delete 2>/dev/null
+		: >"$d/gate/go"
+		for ((i = 0; i < 200; i++)); do
+			[[ -s $d/run/work/wl.pid ]] && break
+			sleep 0.05
+		done
+		command rmdir -- "$d/run/work" 2>/dev/null
+		command rm -f -- "$d/run/workload.sh"
+		command rmdir -- "$d/run" 2>/dev/null
+	}
+	trap drop_selftest EXIT
+else
+	trap '{ : >"$d/gate/go"; } 2>/dev/null; drop_selftest' EXIT
+fi
+trap 'exit 143' TERM
+(bounded_exec 40 env "FOLD_WRAP_ROOT=$d/run/work" "WRAP_GATE=$d/gate" bash -c "$(cat "$d/wrap.sh")" _ bash "$d/run/workload.sh" "$d/run/work") 8<"$d/life" 9>&- >"$d/wrap.out" 2>&1 &
+p=$!
+if [[ $mode == request ]]; then bg_runner "$p"; fi
+for ((i = 0; i < 200; i++)); do
+	[[ -e $d/gate/at ]] && break
+	sleep 0.05
+done
+[[ -e $d/gate/at ]] || exit 99
+if [[ $mode == request ]]; then
+	: >"$d/gate/go"
+	for ((i = 0; i < 200; i++)); do
+		[[ -s $d/run/work/wl.pid ]] && break
+		sleep 0.05
+	done
+	[[ -s $d/run/work/wl.pid ]] || exit 98
+fi
+[[ $mode == idle ]] || kill -TERM "$$"
 wait "$p"
 INTERRUPT
 		} >"$d/outer.sh"
@@ -1276,14 +1316,20 @@ INTERRUPT
 		wait "$outer" || orc=$?
 		bg_done "$outer"
 		[[ $orc == 143 ]] || t_fail "wrap interrupt $mode: the interrupted shell exited $orc, want 143 (99: the workload never reached the gate, 98: it never wrote)"
-		[[ ! -e $d/run ]] || t_fail "wrap interrupt $mode: the run directory was not removed at the end"
-		! compgen -G "$d/run.gone.*" >/dev/null || t_fail "wrap interrupt $mode: the renamed run directory was not deleted"
+		if [[ $mode == norename ]]; then
+			[[ -s $d/run/work/wl.pid ]] || t_fail "wrap interrupt $mode: the removal was not lost to the workload's first write (the case proved nothing)"
+		else
+			[[ ! -e $d/run ]] || t_fail "wrap interrupt $mode: the run directory was not removed at the end"
+			! compgen -G "$d/run.gone.*" >/dev/null || t_fail "wrap interrupt $mode: the renamed run directory was not deleted"
+			! compgen -G "$d.gone.*" >/dev/null || t_fail "wrap interrupt $mode: the renamed case directory was not deleted"
+		fi
 		for ((i = 0; i < 100; i++)); do
 			find_marked "WRAP_INTERRUPT=$d"
 			((${#FOUND[@]})) || break
 			sleep 0.1
 		done
 		((${#FOUND[@]} == 0)) || t_fail "wrap interrupt $mode: processes of the interrupted self-test remain (pids ${FOUND[*]}): the supervisor, its leader or its workload"
+		rm -rf -- "$d/run" "$d"/run.gone.*
 	}
 	# n_wrap_group: the supervisor every docker exec runs the workload under (WRAP), run for real. The workload ends by TERM when asked (143, one TERM to the held group);
 	# ends by itself before the request is acted on (the case that matters: the child is gone between the look at it and the signal, so a signal by its number would go to
@@ -1337,13 +1383,17 @@ echo $$ >"$1/wl.pid"
 exit 7
 WLQUICK
 		# gate.sh (n_wrap_interrupt): says it is at the gate, waits for the gate to open, and only then makes its first write into the directory; it then keeps creating files there
-		# until the directory is gone. The gate is outside the directory, so the pause costs the directory nothing.
+		# until the directory is gone. The gate is outside the directory, so the pause costs the directory nothing. Three things end it: the directory it works in is gone (the lease),
+		# the gate is gone (it can never open then: it ends without writing), and the lifeline (fd 8, whose write end the shell that started it holds) reads end of file, which does
+		# not depend on any removal having worked. Each of its waits is a read with a timeout on the lifeline, so a wait is also the check.
 		cat >"$dir/gate.sh" <<'WLGATE'
 trap 'exit 143' TERM
+alive() { read -t 0.02 -u 8 _; (($? > 128)); }
 : >"$WRAP_GATE/at"
-while [ ! -e "$WRAP_GATE/go" ]; do sleep 0.02; done
+while [ ! -e "$WRAP_GATE/go" ] && [ -d "$WRAP_GATE" ] && [ -d "$1" ] && alive; do :; done
+[ -e "$WRAP_GATE/go" ] || exit 0
 echo $$ >"$1/wl.pid"
-while [ -d "$1" ]; do : >"$1/busy.$RANDOM" 2>/dev/null; sleep 0.01; done
+while [ -d "$1" ] && alive; do : >"$1/busy.$RANDOM" 2>/dev/null; done
 WLGATE
 		n_wrap_case ask ask term.sh
 		[[ $WRAP_RC == 143 ]] || t_fail "wrap ask: the status was $WRAP_RC, want 143 (the workload's own, after the TERM)"
@@ -1358,6 +1408,8 @@ WLGATE
 		n_wrap_kills quiet 0
 		n_wrap_interrupt request
 		n_wrap_interrupt registration
+		n_wrap_interrupt norename
+		n_wrap_interrupt launch
 		for i in ask hold quiet; do
 			! compgen -G "$dir/$i/work/wrap.*" >/dev/null || t_fail "wrap $i: the supervisor left its files behind"
 		done
