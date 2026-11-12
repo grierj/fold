@@ -171,7 +171,12 @@ instead of skipping it), and the seeded browser digest and review-store suites. 
 revision-bound record outside the checkout (a non-empty evidence directory is refused, the
 record starts as `incomplete` so an interrupted rerun cannot keep a previous pass, and the
 completed `evidence.json` is parsed before success is reported). `--seed` replays one seed the
-log names; see the script header for options. The race detector says nothing about PostgreSQL
+log names; see the script header for options. Each step runs in a process group of its own
+that the script holds through a supervisor and signals only through bash's job table, so an
+INT, TERM or HUP to the script ends the step, a child that outlived its parent and a TERM-ignoring
+process alike, within about 11 seconds and leaves an `incomplete` record; the header has the
+manual probes, and `TestReasonHardening*` (account_erasure_reasons_envelope_test.go) drives the
+script with stub tools, real signals and bystander processes. The race detector says nothing about PostgreSQL
 lock correctness: the deterministic lock tests in the normal checks decide that.
 
 ### Source guards

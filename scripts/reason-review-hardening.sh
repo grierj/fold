@@ -51,23 +51,53 @@
 # success is reported. Seed spellings are canonical (no leading zeros).
 # Exit status: 0 only when every step passed.
 #
-# Interruption (INT/TERM to this script's own PID) also stops the owned step:
-# the step runs as the script's one background child, so the trap fires while
-# the step runs; it forwards TERM to the step root plus its current
-# descendants (deepest first, npm/node grandchildren of the web step
-# included), waits about 5s, KILLs stragglers, reaps the step root, and
-# finalizes the incomplete record before exiting (INT exits 130, TERM 143).
-# Only those enumerated owned PIDs are signalled. Cancellation probes for the
-# lead (checkout root; signal only the script PID, never the test PIDs):
+# Interruption (INT, TERM or HUP to this script's own PID) stops the running
+# step and everything it started, then finalizes the record as incomplete and
+# exits 130, 143 or 129. Each step runs under a supervisor: a background
+# subshell that bash gives a process group of its own (`set -m`), whose
+# command's processes all stay in that group. The supervisor stays alive after
+# the command exits, until this script releases it, so the group's id is held
+# by a live process of ours for as long as we may signal it: a TERM-ignoring
+# grandchild that outlives its parent is still in the group, and the number
+# cannot be given to an unrelated process in the meantime. Signals go to the
+# group only through bash's job table (`kill %%`), which refuses a job that
+# has already ended; no process list, cached PID or kill -0 is consulted, so
+# nothing outside the group (this script, its caller, a bystander that happens
+# to share a PPID chain or a number) is ever signalled. Cleanup is TERM, up to
+# about 5s for the step's command to leave, half a second more for the rest of
+# the group, then KILL, then a bounded wait (5s) for the supervisor to be
+# reaped; the longest cleanup is about 11s whatever the processes do (a process
+# in uninterruptible sleep that outlives KILL is reported, not waited for).
+# After a step's command ends by itself the group is KILLed too, so nothing a
+# step leaves behind survives it. A process that leaves the group on purpose
+# (setsid, setpgid) is outside what this can own.
+# A signal that arrives between forking the supervisor and registering it is
+# held (the handler records it, nothing is ignored, children keep default
+# dispositions) and acted on as soon as the supervisor is registered, so the
+# step cannot escape; a signal during the final record is held until the record
+# is written, which then stands.
+# Needs: bash with job control (`set -m` is verified before any work starts)
+# and the tools checked at start (git, sleep, grep, sed, find, comm, sort, cp,
+# mktemp, tail, uname, date, node, go, npm). A missing tool is reported and
+# nothing runs. Linux or macOS. SIGINT must not have been ignored when the
+# script started: a noninteractive shell starts a plain `cmd &` with SIGINT
+# ignored, and a script so started cannot trap it again (the script says so on
+# stderr; TERM still works). Start it from a shell with job control
+# (`bash -m`, as below) when INT matters.
 #
-#   E=$(mktemp -d) && scripts/reason-review-hardening.sh --fuzz-time 10m \
-#     --evidence-dir "$E/run" & S=$!; for i in $(seq 1 60); do
-#     [ -e "$E/run/fuzz.log" ] && break; sleep 1; done; kill -TERM "$S"
-#   wait "$S"; echo "exit=$? (TERM wants 143)"
+# active.pgid in the evidence directory holds the process group of the most
+# recent step, for survivor checks. Cancellation probes for the lead (run from
+# the checkout root; E is assigned in the parent; only the script's PID is
+# signalled):
+#
+#   E=$(mktemp -d)
+#   bash -m -c 'scripts/reason-review-hardening.sh --fuzz-time 10m --evidence-dir "$1/run" & S=$!; for i in $(seq 1 120); do [ -e "$1/run/fuzz.log" ] && break; sleep 1; done; kill -TERM "$S"; wait "$S"; echo "exit=$? (TERM wants 143)"' _ "$E"
 #   node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(r.result!=="incomplete")throw new Error("want incomplete")' "$E/run/evidence.json"
-#   ps -eo pid,ppid,args | grep -E 'go test|npm|vitest' | grep -v grep || echo "no owned survivors"
+#   ps -eo pid,pgid,args | awk -v g="$(cat "$E/run/active.pgid")" '$2==g {print; f=1} END {exit f}' && echo "no survivors in the step's group"
 #
-# Repeat with `kill -INT` (wants exit 130).
+# Repeat with `kill -INT` (wants exit 130). The same behavior is tested, with
+# stubbed go and npm, in account_erasure_reasons_envelope_test.go
+# (TestReasonHardening*).
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
@@ -130,8 +160,11 @@ if [[ -n $single_seed ]]; then
 	seed_base=$single_seed
 fi
 
-command -v go >/dev/null 2>&1 || die "go is not installed"
-command -v npm >/dev/null 2>&1 || die "npm is not installed (the web step needs it)"
+# Every tool the run depends on, checked before anything starts, so a missing
+# one is a clear refusal and not a failure halfway through a step or a cleanup.
+for tool in go npm node git sleep grep sed find comm sort cp mktemp tail uname date; do
+	command -v "$tool" >/dev/null 2>&1 || die "$tool is required and was not found"
+done
 [[ -d web/node_modules ]] || die "web/node_modules is missing: run 'cd web && npm ci' first"
 
 # The race detector needs cgo, so a C compiler. Check before anything runs, and
@@ -141,7 +174,8 @@ cc_word=${cc%% *}
 command -v "$cc_word" >/dev/null 2>&1 ||
 	die "the race step needs a C compiler and '$cc_word' was not found (install gcc, or set CC): without it the race detector cannot run, so this run would prove nothing"
 probe=$(mktemp -d)
-trap 'rm -rf "$probe"' EXIT
+ctl=$(mktemp -d) # the supervisor's ready and status files; never inside the evidence directory
+trap 'rm -rf "$probe" "$ctl"' EXIT # replaced by on_exit once steps can run
 printf 'module probe\n\ngo 1.21\n' >"$probe/go.mod"
 printf 'package main\n\nfunc main() {}\n' >"$probe/main.go"
 if ! (cd "$probe" && CGO_ENABLED=1 go build -race -o "$probe/probe" . >"$probe/out.log" 2>&1); then
@@ -197,7 +231,7 @@ write_evidence() {
 	done
 	local node_version
 	node_version=$(command -v node >/dev/null 2>&1 && node --version || echo none)
-	cat >"$evidence/evidence.json" <<EOF
+	cat >"$evidence/evidence.json.tmp" <<EOF
 {
   "schema": "fold/reason-review-hardening/v1",
   "issue": 296,
@@ -225,89 +259,70 @@ write_evidence() {
   "result": "$result"
 }
 EOF
+	mv "$evidence/evidence.json.tmp" "$evidence/evidence.json"
 }
 
-# Bounded cancellation: each step runs as this script's one owned background
-# child, so a trapped INT/TERM fires while the step runs instead of waiting
-# for it. The handler forwards the signal to the owned tree only (the step
-# root plus the descendants it still has, deepest first, so npm/node
-# grandchildren of the web step go before their parents), waits at most
-# about 5s, then KILLs stragglers, reaps the step root, and finalizes the
-# incomplete record. Only enumerated owned PIDs are signalled; the handler
-# blocks nested signals during its bounded cleanup and then exits with the
-# signal's status (INT 130, TERM 143).
-active_pid=
+# Cancellation and process ownership (see the header). Each step's command runs
+# under a supervisor, a background subshell that has a process group of its own
+# and stays alive until stop_step releases it. The group is signalled only
+# through bash's job table (kill %%), never by a number taken from a process
+# list, so a replacement process can never receive it. The supervisor is the
+# only background job, which run_step checks before every launch.
+set -m
+[[ $- == *m* ]] || die "bash job control (set -m) is not available here; the run cannot own its steps' processes"
+
+active_job=  # the supervisor's PID while a step is registered, else empty
+defer=0      # 1 while a signal must be held (launching a step, writing the final record)
+pending_sig=
+pending_code=
 cancelling=0
 
-# owned_tree ROOT prints ROOT plus its current descendants, deepest first.
-# shellcheck disable=SC2329 # reached only through cancel_run below
-owned_tree() {
-	local root=${1:-}
-	[[ -n $root ]] || return 0
-	local snap all queue
-	all=("$root")
-	queue=("$root")
-	snap=$(ps -eo pid=,ppid= 2>/dev/null) || return 0
-	local p pid ppid
-	while ((${#queue[@]} > 0)); do
-		p=${queue[0]}
-		queue=("${queue[@]:1}")
-		while read -r pid ppid; do
-			[[ ${pid:-} =~ ^[0-9]+$ ]] || continue
-			[[ $ppid == "$p" ]] || continue
-			[[ $pid == "$p" ]] && continue
-			all+=("$pid")
-			queue+=("$pid")
-		done <<<"$snap"
-	done
-	local i
-	for ((i = ${#all[@]} - 1; i >= 0; i--)); do
-		printf '%s\n' "${all[i]}"
-	done
-}
-
-# signal_owned SIGNAL ROOT sends SIGNAL to the owned tree, deepest first.
-# shellcheck disable=SC2329 # reached only through cancel_run below
-signal_owned() {
-	local sig=$1 root=$2 pid
-	while read -r pid; do
-		[[ -n ${pid:-} ]] || continue
-		kill -s "$sig" "$pid" 2>/dev/null || true
-	done < <(owned_tree "$root")
-}
-
-# owned_alive ROOT succeeds while any owned PID still exists.
-# shellcheck disable=SC2329 # reached only through cancel_run below
-owned_alive() {
-	local root=$1 pid
-	while read -r pid; do
-		[[ -n ${pid:-} ]] || continue
-		if kill -0 "$pid" 2>/dev/null; then
-			return 0
+# stop_step MODE ends the registered step's whole group and its supervisor.
+# MODE term first asks the command to leave; kill goes straight to KILL. It is
+# bounded (about 11s) and does not depend on any process being listable.
+# shellcheck disable=SC2329 # reached through cancel_run, run_step and the EXIT trap
+stop_step() {
+	[[ -n $active_job ]] || return 0
+	local mode=$1 i
+	{
+		# The supervisor installs its TERM handler first thing; signal it only
+		# after it says so, or the group TERM would end the holder too early.
+		for ((i = 0; i < 20; i++)); do
+			[[ -e $ctl/ready ]] && break
+			sleep 0.05
+		done
+		if [[ $mode == term ]]; then
+			kill -s TERM %% || true
+			for ((i = 0; i < 50; i++)); do
+				[[ -e $ctl/status ]] && break
+				sleep 0.1
+			done
+			sleep 0.5
 		fi
-	done < <(owned_tree "$root")
-	return 1
-}
-
-# shellcheck disable=SC2329 # reached only through on_int/on_term below
-cancel_run() { # SIGNAL EXIT_CODE
-	local sig=$1 code=$2
-	((cancelling == 0)) || exit "$code"
-	cancelling=1
-	trap '' INT TERM
-	if [[ -n ${active_pid:-} ]] && kill -0 "$active_pid" 2>/dev/null; then
-		signal_owned TERM "$active_pid"
-		local i
+		kill -s KILL %% || true
 		for ((i = 0; i < 50; i++)); do
-			owned_alive "$active_pid" || break
+			[[ -z $(jobs -rp) ]] && break
 			sleep 0.1
 		done
-		signal_owned KILL "$active_pid"
-		sleep 0.2
-		signal_owned KILL "$active_pid"
-		wait "$active_pid" 2>/dev/null || true
+		if [[ -z $(jobs -rp) ]]; then
+			wait "$active_job" || true
+		else
+			echo "reason-review-hardening: the step's process group $active_job did not exit after KILL" >&2
+		fi
+	} 2>/dev/null
+	active_job=
+}
+
+# shellcheck disable=SC2329 # reached only through the traps below
+cancel_run() { # SIGNAL EXIT_CODE
+	local sig=$1 code=$2
+	if ((defer)); then
+		pending_sig=$sig pending_code=$code
+		return 0
 	fi
-	active_pid=
+	((cancelling == 0)) || return 0
+	cancelling=1
+	stop_step term
 	write_evidence incomplete
 	echo "reason-review-hardening: interrupted by $sig; record: $evidence/evidence.json (incomplete)" >&2
 	exit "$code"
@@ -317,34 +332,74 @@ cancel_run() { # SIGNAL EXIT_CODE
 on_int() { cancel_run INT 130; }
 # shellcheck disable=SC2329 # reached only through the trap below
 on_term() { cancel_run TERM 143; }
+# shellcheck disable=SC2329 # reached only through the trap below
+on_hup() { cancel_run HUP 129; }
+# shellcheck disable=SC2329 # reached only through the trap below
+on_exit() {
+	stop_step kill
+	rm -rf "$probe" "$ctl"
+}
 trap on_int INT
 trap on_term TERM
+trap on_hup HUP
+trap on_exit EXIT
+[[ $(trap -p INT) == *on_int* ]] ||
+	echo "reason-review-hardening: warning: SIGINT was ignored when this script started (a plain \"cmd &\" from a shell without job control does that), so INT cannot stop it; send TERM, or start it with bash -m" >&2
 
 write_evidence incomplete
 
 # run_step NAME LOGFILE COMMAND...: runs the command with its output in the log
 # and leaves the outcome in the step_* variables. A failed step does not stop
 # the run, so the record is complete. The caller may then call check_step, and
-# must call record_step once. The step runs as the one owned background child
-# so the INT/TERM handler above can forward a signal to it; active_pid is set
-# immediately at fork and cleared right after the reap, so the handler never
-# touches an older step or an unrelated process.
+# must call record_step once.
 run_step() {
 	local name=$1 log=$2
 	shift 2
-	local s0 s1
+	local s0 s1 job
 	step_name=$name step_log=$log
 	step_cmd=$(printf '%q ' "$@")
 	step_begin=$(now)
 	s0=$SECONDS
 	echo "== $name: $step_cmd"
-	set +e
-	"$@" >"$evidence/$log" 2>&1 &
-	active_pid=$!
-	wait "$active_pid"
-	step_status=$?
-	active_pid=
-	set -e
+	[[ -z $(jobs -rp) ]] || die "a background job is already running; a step's group must be the only one"
+	rm -f "$ctl/ready" "$ctl/status" "$ctl/status.tmp"
+	# From the fork to the registration a signal is only recorded, so it cannot
+	# find a step that is running but not yet ours to stop.
+	defer=1
+	(
+		set +e +u
+		trap : TERM INT HUP # handled, not ignored: the command's own processes keep default dispositions
+		: >"$ctl/ready"
+		"$@" </dev/null >"$evidence/$log" 2>&1
+		rc=$?
+		printf '%s\n' "$rc" >"$ctl/status.tmp" && mv "$ctl/status.tmp" "$ctl/status"
+		# Hold the group's id until released; what the command left behind is in the group too.
+		{ while :; do sleep 1; done; } 2>/dev/null
+	) &
+	job=$!
+	[[ -z ${FOLD_HARDENING_TEST_LAUNCH_HOOK:-} ]] || "$FOLD_HARDENING_TEST_LAUNCH_HOOK" || true # test seam: runs inside the launch window
+	active_job=$job
+	defer=0
+	printf '%s\n' "$job" >"$evidence/active.pgid"
+	if [[ -n $pending_sig ]]; then
+		cancel_run "$pending_sig" "$pending_code"
+	fi
+	{
+		while [[ ! -e $ctl/status ]]; do
+			if [[ -z $(jobs -rp) ]]; then
+				break # the supervisor is gone without a status
+			fi
+			sleep 0.1
+		done
+	} 2>/dev/null # bash reports a job that died of a signal; the log and the record say it
+	if [[ -e $ctl/status ]]; then
+		step_status=$(<"$ctl/status")
+		[[ $step_status =~ ^[0-9]+$ ]] || step_status=125
+	else
+		step_status=125
+		echo "the step's supervisor ended without reporting a status" >>"$evidence/$log"
+	fi
+	stop_step kill
 	s1=$SECONDS
 	step_end=$(now)
 	step_secs=$((s1 - s0))
@@ -492,6 +547,7 @@ record_step
 # --- the record --------------------------------------------------------------
 result=pass
 ((overall == 0)) || result=fail
+defer=1 # a signal now must not turn the finished record back into an incomplete one
 write_evidence "$result"
 node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' "$evidence/evidence.json" ||
 	die "the completed evidence record is not valid JSON: $evidence/evidence.json"

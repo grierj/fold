@@ -6,13 +6,19 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // The shared digest vectors: this suite and web/src/lib/reasonSetDigest.test.ts
@@ -631,5 +637,473 @@ func TestReasonEnvelopeParseMemoryIsLinearInTheBody(t *testing.T) {
 	}
 	if pl > uint64(3.5*float64(large)) || sl > uint64(2.2*float64(large)) {
 		t.Errorf("absolute cost over the allowance: parse %d, scan %d", pl, sl)
+	}
+}
+
+// scripts/reason-review-hardening.sh: process ownership and cancellation. The
+// script is copied into a scratch git repository and run with stub go, npm and
+// node, whose steps misbehave on purpose: a command whose parent leaves before
+// its TERM-ignoring child, commands that ignore TERM themselves, a supervisor
+// killed from inside its group, a signal in the window between forking a step
+// and registering it. Real processes and real signals; bystanders (in the
+// test's own process group, and in the script's group beside it) must survive.
+
+const hardeningScriptPath = "scripts/reason-review-hardening.sh"
+
+// hardeningStubs are the stub tools, as shell. A step whose name is in
+// STUB_STEP acts as STUB_SCENARIO says; every other step passes and prints what
+// the script checks for.
+var hardeningStubs = map[string]string{
+	"go": `#!/bin/sh
+echo "go $*" >>"$STUB_DIR/calls"
+case "$1" in
+env) echo sh ;;
+version) echo "go version stub linux/amd64" ;;
+build) while [ $# -gt 0 ]; do if [ "$1" = -o ]; then : >"$2"; fi; shift; done ;;
+test) shift; exec "$STUB_BEHAVE" go "$@" ;;
+esac
+`,
+	"npm": `#!/bin/sh
+exec "$STUB_BEHAVE" npm "$@"
+`,
+	"node": `#!/bin/sh
+case "$1" in --version) echo v0.0.0 ;; esac
+exit 0
+`,
+	"behave.sh": `#!/bin/sh
+kind=$1
+shift
+step=web
+if [ "$kind" = go ]; then
+	step=normal
+	for a in "$@"; do
+		case "$a" in -fuzz) step=fuzz ;; -race) step=race ;; esac
+	done
+fi
+passes() {
+	run=
+	count=1
+	while [ $# -gt 0 ]; do
+		case "$1" in -run) run=$2; shift ;; -count=*) count=${1#-count=} ;; esac
+		shift
+	done
+	names=$(printf %s "$run" | sed 's/^^(//; s/)\$$//' | tr '|' ' ')
+	i=0
+	while [ $i -lt "$count" ]; do
+		for n in $names; do echo "--- PASS: $n (0.00s)"; done
+		i=$((i + 1))
+	done
+}
+stubborn() {
+	sh -c 'trap "" TERM; echo $$ >"$1"; while :; do sleep 0.2; done' sh "$STUB_DIR/grandchild.pid" &
+}
+if [ "$step" = "$STUB_STEP" ]; then
+	echo $$ >"$STUB_DIR/root.pid"
+	case "$STUB_SCENARIO" in
+	stray) stubborn; passes "$@"; : >"$STUB_DIR/started"; exit 0 ;;
+	termroot) stubborn; trap 'exit 0' TERM; : >"$STUB_DIR/started"; while :; do sleep 0.2; done ;;
+	deaf) trap '' TERM; stubborn; : >"$STUB_DIR/started"; while :; do sleep 0.2; done ;;
+	killgroup) : >"$STUB_DIR/started"; kill -KILL 0 ;;
+	esac
+fi
+case "$step" in
+normal | race) passes "$@" ;;
+web)
+	n=0
+	while [ $n -lt "$FOLD_REASON_RUNS" ]; do
+		echo "digest seed $((FOLD_REASON_SEED_BASE + n)) ok" >>"$FOLD_REASON_EVIDENCE"
+		echo "store seed $((FOLD_REASON_SEED_BASE + n)) ok" >>"$FOLD_REASON_EVIDENCE"
+		n=$((n + 1))
+	done
+	;;
+esac
+`,
+	"launch-hook.sh": `#!/bin/sh
+: >"$STUB_DIR/inwindow"
+i=0
+while [ ! -e "$STUB_DIR/started" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+sleep 1
+`,
+}
+
+type hardeningRig struct {
+	t        *testing.T
+	repo     string
+	stubs    string
+	state    string
+	evidence string
+	path     string
+}
+
+// newHardeningRig builds the scratch repository and the stub tools. withNode
+// false leaves node off the PATH altogether.
+func newHardeningRig(t *testing.T, withNode bool) *hardeningRig {
+	t.Helper()
+	dir := t.TempDir()
+	r := &hardeningRig{t: t, repo: filepath.Join(dir, "repo"), stubs: filepath.Join(dir, "stubs"), state: filepath.Join(dir, "state"), evidence: filepath.Join(dir, "evidence")}
+	for _, d := range []string{filepath.Join(r.repo, "scripts"), filepath.Join(r.repo, "web", "node_modules"), r.stubs, r.state} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	script, err := os.ReadFile(hardeningScriptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(r.repo, hardeningScriptPath), script, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range hardeningStubs {
+		if name == "node" && !withNode {
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(r.stubs, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The system tools the script needs, linked into one directory, so a test
+	// can leave one out; nothing else of the machine's PATH is visible.
+	tools := filepath.Join(dir, "tools")
+	if err := os.MkdirAll(tools, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"bash", "env", "sh", "git", "sleep", "grep", "sed", "find", "comm", "sort", "cp", "mv", "mktemp", "tail", "uname", "date", "cat", "rm", "mkdir", "ls", "dirname", "tr", "xargs", "sha256sum", "cut", "awk", "head"} {
+		p, err := exec.LookPath(name)
+		if err != nil {
+			t.Fatalf("the hardening script tests need %s on PATH: %v", name, err)
+		}
+		if err := os.Symlink(p, filepath.Join(tools, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r.path = r.stubs + string(os.PathListSeparator) + tools
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", r.repo, "-c", "user.name=test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false"}, args...)...)
+		cmd.Env = []string{"PATH=" + r.path, "HOME=" + dir}
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	git("init", "-q")
+	git("add", "-A")
+	git("commit", "-q", "-m", "scratch")
+	return r
+}
+
+type hardeningRun struct {
+	cmd  *exec.Cmd
+	done chan struct{}
+	err  error
+	out  string
+}
+
+// start runs the script in a process group of its own, so a signal to the
+// test's group and one to the script's cannot be confused. extraEnv is
+// STUB_STEP, STUB_SCENARIO and the like. A bystander in the script's own group
+// is started beside it when bystander is set (its PID goes to bystander.pid).
+func (r *hardeningRig) start(extraEnv []string, bystander bool, args ...string) *hardeningRun {
+	r.t.Helper()
+	script := filepath.Join(r.repo, hardeningScriptPath)
+	argv := append([]string{script, "--evidence-dir", r.evidence, "--fuzz-time", "1s", "--race-count", "1", "--seeds", "2"}, args...)
+	cmd := exec.Command("bash", argv...)
+	if bystander {
+		cmd = exec.Command("sh", append([]string{"-c", `sleep 300 & echo $! >"$STUB_DIR/bystander.pid"; exec "$@"`, "sh", "bash"}, argv...)...)
+	}
+	cmd.Dir = r.repo
+	cmd.Env = append([]string{"PATH=" + r.path, "HOME=" + r.state, "STUB_DIR=" + r.state, "STUB_BEHAVE=" + filepath.Join(r.stubs, "behave.sh")}, extraEnv...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// A file, not a pipe: a bystander that inherits a pipe would hold Wait open.
+	outPath := filepath.Join(r.state, "out.log")
+	outFile, err := os.Create(outPath)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	cmd.Stdout, cmd.Stderr = outFile, outFile
+	run := &hardeningRun{cmd: cmd, done: make(chan struct{})}
+	if err := cmd.Start(); err != nil {
+		r.t.Fatal(err)
+	}
+	r.t.Cleanup(func() {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		<-run.done
+		for _, f := range []string{"root.pid", "grandchild.pid", "bystander.pid"} {
+			if pid, ok := readHardeningPID(filepath.Join(r.state, f)); ok {
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
+		}
+	})
+	go func() {
+		run.err = cmd.Wait()
+		_ = outFile.Close()
+		b, _ := os.ReadFile(outPath)
+		run.out = string(b)
+		close(run.done)
+	}()
+	return run
+}
+
+func (run *hardeningRun) exitCode(t *testing.T, within time.Duration) int {
+	t.Helper()
+	select {
+	case <-run.done:
+	case <-time.After(within):
+		t.Fatalf("the script was still running after %v", within)
+	}
+	if run.err == nil {
+		return 0
+	}
+	var ee *exec.ExitError
+	if !errors.As(run.err, &ee) {
+		t.Fatalf("waiting for the script: %v", run.err)
+	}
+	return ee.ExitCode()
+}
+
+func readHardeningPID(path string) (int, bool) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	return pid, err == nil && pid > 1
+}
+
+func (r *hardeningRig) waitFor(name string, within time.Duration) {
+	r.t.Helper()
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(filepath.Join(r.state, name)); err == nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	r.t.Fatalf("%s never appeared", name)
+}
+
+func (r *hardeningRig) pid(name string) int {
+	r.t.Helper()
+	r.waitFor(name, 10*time.Second)
+	for i := 0; i < 50; i++ { // the file may be created before the number is written
+		if pid, ok := readHardeningPID(filepath.Join(r.state, name)); ok {
+			return pid
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	r.t.Fatalf("%s holds no PID", name)
+	return 0
+}
+
+// processEnded: gone, or a zombie nobody has reaped yet (a container's PID 1
+// may not reap), which can no longer run or be signalled to any effect.
+func processEnded(pid int) bool {
+	if b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat"); err == nil {
+		s := string(b)
+		if i := strings.LastIndexByte(s, ')'); i >= 0 && i+2 < len(s) {
+			return s[i+2] == 'Z' || s[i+2] == 'X'
+		}
+	}
+	return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
+}
+
+func (r *hardeningRig) expectEnded(what string, pid int) {
+	r.t.Helper()
+	for i := 0; i < 150; i++ {
+		if processEnded(pid) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	r.t.Errorf("%s (PID %d) is still running", what, pid)
+}
+
+func (r *hardeningRig) expectAlive(what string, pid int) {
+	r.t.Helper()
+	if processEnded(pid) {
+		r.t.Errorf("%s (PID %d) was signalled and ended; it was not the step's", what, pid)
+	}
+}
+
+// bystanderInTestGroup is a process in the test's own process group, which no
+// part of the script may signal.
+func bystanderInTestGroup(t *testing.T) int {
+	t.Helper()
+	cmd := exec.Command("sleep", "300")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	return cmd.Process.Pid
+}
+
+type hardeningEvidence struct {
+	Result string `json:"result"`
+	Steps  []struct {
+		Name    string `json:"name"`
+		Exit    int    `json:"exit"`
+		Verdict string `json:"verdict"`
+	} `json:"steps"`
+}
+
+func (r *hardeningRig) record() hardeningEvidence {
+	r.t.Helper()
+	b, err := os.ReadFile(filepath.Join(r.evidence, "evidence.json"))
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	var ev hardeningEvidence
+	if err := json.Unmarshal(b, &ev); err != nil {
+		r.t.Fatalf("evidence.json is not JSON: %v\n%s", err, b)
+	}
+	return ev
+}
+
+// A step whose command leaves a TERM-ignoring child behind and exits first is
+// the case a process-list snapshot loses: the child is reparented and no
+// longer found from the root. The group still owns it, and a run that
+// completes normally leaves nothing of any step behind.
+func TestReasonHardeningStepLeftoversDoNotOutliveTheStep(t *testing.T) {
+	r := newHardeningRig(t, true)
+	bystander := bystanderInTestGroup(t)
+	run := r.start([]string{"STUB_STEP=normal", "STUB_SCENARIO=stray"}, true)
+	if code := run.exitCode(t, 60*time.Second); code != 0 {
+		t.Fatalf("the script exited %d:\n%s", code, run.out)
+	}
+	r.expectEnded("the TERM-ignoring child the first step left behind", r.pid("grandchild.pid"))
+	r.expectAlive("a bystander in the test's process group", bystander)
+	r.expectAlive("a bystander in the script's own process group", r.pid("bystander.pid"))
+	ev := r.record()
+	if ev.Result != "pass" || len(ev.Steps) != 4 {
+		t.Fatalf("record: %+v", ev)
+	}
+	for _, s := range ev.Steps {
+		if s.Exit != 0 || s.Verdict != "pass" {
+			t.Errorf("step %+v", s)
+		}
+	}
+	if _, ok := readHardeningPID(filepath.Join(r.evidence, "active.pgid")); !ok {
+		t.Error("active.pgid was not written")
+	}
+}
+
+// TERM or INT to the script's PID alone: the command leaves on TERM but its
+// TERM-ignoring child does not, and the child is killed all the same; the
+// record is incomplete; the exit status is the signal's; the script's own group
+// and the caller's survive.
+func TestReasonHardeningCancellationKillsWhatTheParentLeft(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		sig  syscall.Signal
+		code int
+	}{{"TERM", syscall.SIGTERM, 143}, {"INT", syscall.SIGINT, 130}, {"HUP", syscall.SIGHUP, 129}} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.sig == syscall.SIGINT && signal.Ignored(syscall.SIGINT) {
+				t.Skip("this test process started with SIGINT ignored, which its children inherit and no shell script can undo")
+			}
+			r := newHardeningRig(t, true)
+			bystander := bystanderInTestGroup(t)
+			run := r.start([]string{"STUB_STEP=normal", "STUB_SCENARIO=termroot"}, true)
+			root, child := r.pid("root.pid"), r.pid("grandchild.pid")
+			r.waitFor("started", 10*time.Second)
+			if err := syscall.Kill(run.cmd.Process.Pid, tc.sig); err != nil { // the script's PID only
+				t.Fatal(err)
+			}
+			if code := run.exitCode(t, 30*time.Second); code != tc.code {
+				t.Fatalf("exit %d, want %d:\n%s", code, tc.code, run.out)
+			}
+			r.expectEnded("the step's command", root)
+			r.expectEnded("the TERM-ignoring child whose parent had already left", child)
+			r.expectAlive("a bystander in the test's process group", bystander)
+			r.expectAlive("a bystander in the script's own process group", r.pid("bystander.pid"))
+			if ev := r.record(); ev.Result != "incomplete" {
+				t.Errorf("result %q, want incomplete", ev.Result)
+			}
+		})
+	}
+}
+
+// A command and its child that both ignore TERM: the cleanup is still bounded,
+// ends with KILL, and does not wait on them.
+func TestReasonHardeningCancellationIsBoundedWhenTermIsIgnored(t *testing.T) {
+	r := newHardeningRig(t, true)
+	run := r.start([]string{"STUB_STEP=normal", "STUB_SCENARIO=deaf"}, false)
+	root, child := r.pid("root.pid"), r.pid("grandchild.pid")
+	r.waitFor("started", 10*time.Second)
+	began := time.Now()
+	if err := syscall.Kill(run.cmd.Process.Pid, syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if code := run.exitCode(t, 30*time.Second); code != 143 {
+		t.Fatalf("exit %d, want 143:\n%s", code, run.out)
+	}
+	if took := time.Since(began); took > 20*time.Second {
+		t.Errorf("cancellation took %v", took)
+	}
+	r.expectEnded("the TERM-ignoring command", root)
+	r.expectEnded("the TERM-ignoring child", child)
+	if ev := r.record(); ev.Result != "incomplete" {
+		t.Errorf("result %q, want incomplete", ev.Result)
+	}
+}
+
+// A signal in the window between forking the step and registering it is held,
+// then acted on: the step does not keep running behind an exited script. The
+// hook runs inside that window (FOLD_HARDENING_TEST_LAUNCH_HOOK) until the step
+// is up and the signal has had time to arrive.
+func TestReasonHardeningSignalDuringLaunchIsNotLost(t *testing.T) {
+	r := newHardeningRig(t, true)
+	run := r.start([]string{"STUB_STEP=normal", "STUB_SCENARIO=termroot", "FOLD_HARDENING_TEST_LAUNCH_HOOK=" + filepath.Join(r.stubs, "launch-hook.sh")}, false)
+	r.waitFor("inwindow", 10*time.Second)
+	r.waitFor("started", 10*time.Second)
+	if err := syscall.Kill(run.cmd.Process.Pid, syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	if code := run.exitCode(t, 30*time.Second); code != 143 {
+		t.Fatalf("exit %d, want 143:\n%s", code, run.out)
+	}
+	r.expectEnded("the step started in the launch window", r.pid("root.pid"))
+	r.expectEnded("the step's TERM-ignoring child", r.pid("grandchild.pid"))
+	if ev := r.record(); ev.Result != "incomplete" || len(ev.Steps) != 0 {
+		t.Errorf("record %+v, want incomplete with no finished step", ev)
+	}
+}
+
+// A supervisor lost without a status (here the command kills its whole group,
+// supervisor included) is a failed step, reported and recorded, not a hang or a
+// pass; the later steps still run.
+func TestReasonHardeningLostSupervisorFailsTheStep(t *testing.T) {
+	r := newHardeningRig(t, true)
+	bystander := bystanderInTestGroup(t)
+	run := r.start([]string{"STUB_STEP=normal", "STUB_SCENARIO=killgroup"}, false)
+	if code := run.exitCode(t, 60*time.Second); code != 1 {
+		t.Fatalf("exit %d, want 1:\n%s", code, run.out)
+	}
+	ev := r.record()
+	if ev.Result != "fail" || len(ev.Steps) != 4 || ev.Steps[0].Name != "normal" || ev.Steps[0].Exit != 125 || ev.Steps[0].Verdict != "fail" {
+		t.Errorf("record %+v", ev)
+	}
+	for _, s := range ev.Steps[1:] {
+		if s.Verdict != "pass" {
+			t.Errorf("a later step did not run to a pass: %+v", s)
+		}
+	}
+	r.expectAlive("a bystander in the test's process group", bystander)
+}
+
+// A missing tool is refused before anything runs, and nothing is written.
+func TestReasonHardeningRefusesWhenAToolIsMissing(t *testing.T) {
+	r := newHardeningRig(t, false)
+	run := r.start(nil, false)
+	if code := run.exitCode(t, 30*time.Second); code != 2 {
+		t.Fatalf("exit %d, want 2:\n%s", code, run.out)
+	}
+	if !strings.Contains(run.out, "node is required") {
+		t.Errorf("output does not name the missing tool:\n%s", run.out)
+	}
+	if _, err := os.Stat(r.evidence); err == nil {
+		t.Error("an evidence directory was created for a run that never started")
+	}
+	if _, err := os.Stat(filepath.Join(r.state, "calls")); err == nil {
+		t.Error("a tool ran before the dependencies were checked")
 	}
 }
