@@ -328,12 +328,18 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   ever selected: a probe shows that one borrowing the label with no or another run's marker
   survives; the exit trap reads the marker from the exported variable, so a temporary directory
   with spaces is handled, and ends whatever still carries the run's marker, also when a case
-  fails). The probes are owned through a FIFO whose write side only the test shell holds, and end
-  by themselves when it closes (also when the shell is interrupted), so no process is ever
-  signalled by a number recorded earlier: a recorder replacing `kill` shows that the lifecycle
-  sends exactly one signal, to the process the scan just found and before it is waited on, that
-  the exit reaper signals nothing when nothing carries its marker and otherwise only that
-  process, and that an unmarked stand-in for a reused number and the foreign probes survive. A
+  fails). The probes are owned through pipes, one FIFO each, whose only writer is a descriptor of
+  the test shell, and end by themselves when it closes (also when the shell is interrupted). A probe
+  has no timer, so it cannot end between a scan and the signal that follows, and no process is ever
+  signalled by a number recorded earlier: before each KILL the signal step looks again and signals
+  only a process that still carries the marker. The read end is opened before the fork and
+  inherited, so a probe never opens the FIFO by name. A signal log shows that the exit reaper
+  signals nothing when nothing carries its marker and otherwise only that process, that an
+  unmarked stand-in for a reused number and the foreign probes survive, and, in a delayed-scan case
+  (a hook between the scan and the signal ends the selected probe and puts the stand-in in its
+  place), that neither is signalled. An interruption case kills a shell holding two freshly forked
+  probes (one marked, one not) before they take a step and checks that they end by themselves once
+  released. A
   bystander survives, a budget the
   runner cannot use or one that does not fit the wrapper's grace is refused, a
   removal that stalls once is retried, one that never works names the container and fails the
