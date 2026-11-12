@@ -471,8 +471,20 @@ scripts/reason-review-matrix.sh --out $E/matrix.json \
 Each run takes hours, needs a **dedicated** Docker daemon (the nested runner makes one; a shared
 daemon makes the run a pilot) and starts from a clean commit. All four cells must be measured on
 one revision: the report refuses to call a matrix `FULL` when they differ. A pass-through argument
-makes the wrapper record that step `partial`; the cell's own `evidence-status.json` is what the
-matrix reads. `scripts/reason-review-matrix.sh --dry-run` lists the cells.
+makes the wrapper record that step `partial`, which the matrix accepts (it requires `pass` or
+`partial`, exit 0). `scripts/reason-review-matrix.sh --dry-run` lists the cells.
+
+The matrix takes nothing a cell says about itself on trust. For each cell it **recomputes** the
+evidence status from `measurements.jsonl` and `environment.json` with `qc1_evidence_status` (the
+function that wrote `evidence-status.json`) and judges by that; the saved file must equal the
+recomputed one, so a stale, edited or mismatched status is a gap. It also requires: the judge here to
+be the one the run recorded (the sha256 of `qc1/lib.sh` and `qc1/app-facts.json` in the
+environment record), a complete environment with no problem named, settings that name the full
+matrix, and the runner's own record (`evidence.json`, one directory above the cell) to show a clean
+tree, the same revision and one QC-1 step that exited 0 and was neither a failure nor an
+interruption, for this directory, with the summary the rows give. `COLLECTION-FAILED.txt` (what the
+nested runner could not bring out of the container) is a gap of its own even when every row is
+complete.
 
 - **`--charset multibyte`** replaces the reason text with a 21-rune unit of 1- to 4-byte UTF-8 runes
   (accented letters and Omega, the euro sign, CJK, a zero-width joiner, emoji and combining marks),
@@ -496,17 +508,28 @@ matrix reads. `scripts/reason-review-matrix.sh --dry-run` lists the cells.
   without it is invalid. The server's acceptance of the independent builder is the deletions'
   exact-outcome check. The browser's digest path (`crypto.subtle` or the bundled fallback) and its
   cost are recorded as before; `--browser-fallback-digest` adds the fallback case.
-- **On-screen text.** At the end of the browser run the harness compares each reason row still on
-  screen with the database's text, rune for rune (the one reason it changed behind the page is
-  skipped), and records how many rows it covered. A multibyte cell that covered none is invalid.
+- **On-screen text.** At the end of the browser run the page's final screen is captured as it is: the
+  pager line, and for each reason row its id, how many reason-text elements it holds (`reasonText` in
+  `app-facts.json`; it must be one) and that element's exact text. After the run the harness reads
+  the database's text for exactly the page the pager line names. The screen must be that page: the
+  line in its finished form (`Reasons A to B of N`, N the reasons the server issued, a whole page
+  starting on a page boundary), every expected row once and in order, no missing, unexpected or
+  duplicated row, and each reason's text equal to the database's, to the rune (nothing appended, no
+  mark dropped). The one reason the harness changed behind the page may show its old text or the new
+  one and nothing else. Anything short of that is `browser-text-disagrees`; a screen that could not
+  be captured, or a multibyte cell that compared no reason, is `browser-agreement-missing`. The rules
+  are `domTextAgreement` in `qc1/response-accounting.mjs`, run by `set-v1.mjs dom-ids` and `dom-text`.
 - **Calculated capacity and a history actually submitted are different things** and are recorded
   apart. `request.capacity` is computed from the format and never sent; `request.largest` is the
   biggest history the harness really submitted and deleted, and `request.overCap` is a body one
   reason over capacity that was really refused. A table holds at most the reasons it holds; the
   capacity is not claimed for a history nobody has.
-- **Status.** `FULL` only when every cell is present, on one revision, complete, coverage full and
-  with nothing missing, invalid or aborted. Anything else is `PILOT`, and `matrix.json` lists each
-  gap by name: an absent cell, a cell of another revision, a cell whose coverage is not full, and
+- **Status.** `FULL` only when every cell is present, on one revision, and the status recomputed from
+  its rows and environment is complete, coverage full and release evidence, with nothing missing,
+  pending, invalid or aborted, a runner record that finished cleanly and no collection failure.
+  Anything else is `PILOT`, and `matrix.json` lists each gap by name: an absent cell, a cell of
+  another revision, a saved status that differs from the recomputed one, a runner record that is
+  missing or failed, a `COLLECTION-FAILED.txt`, a cell whose coverage is not full, and
   the cases a cell reports as pending (the legacy discovery and legacy PUT cases are not built at
   the time of writing, so a real matrix is a `PILOT` until they are). If a 1M-row table cannot run on
   the available host, run the sizes that can and report the gap: a pilot, never `FULL`. A budget
@@ -515,10 +538,13 @@ matrix reads. `scripts/reason-review-matrix.sh --dry-run` lists the cells.
   the revision, environment, fixtures, timings, audits, WAL, memory, gaps and budget failures from
   `matrix.json`, with the sha256 of each artifact. The artifacts stay outside the checkout.
 - **Checks that run without Docker**: `qc1-fixtures.sh` (the judge's charset, shape, exactness and
-  agreement rules, the snapshot comparison and `set-v1.mjs agree`), `qc1-panel-fixtures.mjs` (the
-  on-screen comparison and the rune accounting) and `make reason-review-scale-test` (the matrix
-  report against stub evidence). `UPDATE_QC1_FACTS=1 go test -run TestQC1AppFacts .` is the only way
-  `qc1/app-facts.json` changes.
+  agreement rules, the snapshot comparison, `set-v1.mjs agree` and `dom-text`, and the matrix report
+  over four consistent full cells: the one FULL control and each way it is spoiled after the rows are
+  complete), `qc1-panel-fixtures.mjs` (the on-screen comparison rule by rule and the rune accounting)
+  and `make reason-review-scale-test` (the matrix report's own checks against stub evidence, none of
+  which can be FULL). The `go` section of `qc1/app-facts.json` changes only by
+  `UPDATE_QC1_FACTS=1 go test -run TestQC1AppFacts .`; its `web` section is held by
+  `ReasonReviewSection.test.tsx`.
 
 ### Source guards
 

@@ -8,6 +8,7 @@ export interface QC1WebFacts {
   displayPage: number;
   reasonRows: string;
   reasonsNav: string;
+  reasonText: string;
   reasonIdAttr: string;
   reasonHeadingAttr: string;
   progressSelector: string;

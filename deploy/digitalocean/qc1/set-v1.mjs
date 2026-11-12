@@ -28,10 +28,16 @@
 //   digest --items FILE --n N                     the set digest of the first N items
 //   agree --items FILE --review FILE              a browser's reasonReview ({format,count,digest,choices} as JSON) against this builder over the items:
 //                                                 {checked, equal, ...}; equal only when count, digest and choice vector all match byte for byte
+//   dom-ids --panel FILE --ids FILE --page N      the ids the panel's final screen should hold, from the pager line it shows (comma list; nothing when the line does not
+//                                                 name a whole page of the reasons the server issued, which dom-text then reports as a disagreement)
+//   dom-text --panel FILE --ids FILE --texts FILE --skip FILE --page N
+//                                                 the final screen against the database: domTextAgreement (response-accounting.mjs). --ids is the JSON array of every request id
+//                                                 in the order the server issued them; --texts is {id: text} from the database; --skip is {id, oldText} or null
 //   selftest --vectors FILE                       the shared vectors
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { domTextAgreement, expectedShownIds } from "./response-accounting.mjs";
 
 export const FORMAT = "set-v1";
 const PREFIX = "fold:erasure-reason-set:v1";
@@ -340,6 +346,15 @@ export function run(cmd, o) {
     }
     case "agree":
       return JSON.stringify(agree(readJson(o.items), readJson(o.review)));
+    case "dom-ids": {
+      const shown = expectedShownIds(readJson(o.panel).screen, readJson(o.ids), wholeNumber(o.page, "page"));
+      return shown.ok ? shown.ids.join(",") : "";
+    }
+    case "dom-text": {
+      const screen = readJson(o.panel).screen;
+      if (screen === null || typeof screen !== "object" || screen.captured !== true) return JSON.stringify({ checked: false, why: screen?.why ?? "the panel result holds no screen" });
+      return JSON.stringify(domTextAgreement(screen, { orderedIds: readJson(o.ids), displayPage: wholeNumber(o.page, "page"), texts: readJson(o.texts), skip: readJson(o.skip) }));
+    }
     case "selftest":
       return selftest(readJson(o.vectors));
     default:

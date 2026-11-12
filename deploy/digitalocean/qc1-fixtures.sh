@@ -232,6 +232,46 @@ jq -c '.count = "forty"' "$WORK/rv40.json" >"$WORK/rvtxt.json"
 jq -c '.choices = "AAAA"' "$WORK/rv40.json" >"$WORK/rvshort.json"
 [[ "$(qc1_digest_agreement "$WORK/real-items.json" "$WORK/rvshort.json" | jq -c '[.checked, .equal]')" == '[false,null]' ]]   # a vector that does not decode is unchecked, never equal
 
+# --- the final screen against the database (set-v1.mjs dom-ids and dom-text; the rule-by-rule cases are in qc1-panel-fixtures.mjs) -----------------------------------------------
+# Here only what the runner adds: files in, one JSON object out, a screen that is wrong reported as wrong (never as unchecked), and one that was never captured as unchecked (never as agreeing).
+DW="$WORK/domscreen"; mkdir -p "$DW"
+jq -nc '[range(101; 221) | tostring]' >"$DW/ids.json"                                   # 120 issued ids, listed in this order
+jq -nc '[range(101; 151) | {key: tostring, value: ("R\u00e9sum\u00e9 e\u0301 \ud83d\ude00 " + tostring)}] | from_entries' >"$DW/texts.json"
+jq -nc '{captured: true, nav: "Reasons 1 to 50 of 120", navCount: 1, rows: [range(101; 151) | {id: tostring, reasonElements: 1, text: ("R\u00e9sum\u00e9 e\u0301 \ud83d\ude00 " + tostring)}]}' | jq -c '{screen: .}' >"$DW/good.json"
+echo null >"$DW/skip.json"
+[[ "$(qc1_dom_ids "$DW/good.json" "$DW/ids.json")" == "$(jq -r '[range(101; 151) | tostring] | join(",")' <<<null)" ]]
+[[ "$(qc1_dom_text "$DW/good.json" "$DW/ids.json" "$DW/texts.json" "$DW/skip.json" | jq -c '[.checked, .membershipOk, .exact, .expectedRows, .rowsOnScreen, .rowsChecked, .mismatched]')" == '[true,true,true,50,50,50,0]' ]]
+# the review's case: one correct reason and 49 ids nobody issued
+jq -c '.screen.rows |= ([.[0]] + [range(900; 949) | {id: tostring, reasonElements: 1, text: "anything"}])' "$DW/good.json" >"$DW/foreign.json"
+[[ "$(qc1_dom_text "$DW/foreign.json" "$DW/ids.json" "$DW/texts.json" "$DW/skip.json" | jq -c '[.checked, .membershipOk, .exact, (.unexpectedIds | length)]')" == '[true,false,false,5]' ]]
+# appended text, one row out of fifty
+jq -c '.screen.rows[7].text += " x"' "$DW/good.json" >"$DW/appended.json"
+[[ "$(qc1_dom_text "$DW/appended.json" "$DW/ids.json" "$DW/texts.json" "$DW/skip.json" | jq -c '[.checked, .membershipOk, .exact, .mismatched, .firstMismatchId]')" == '[true,true,false,1,"108"]' ]]
+# the reason changed behind the page: its old text or the database's new one is the page, a third text is not
+jq -c '.["108"] = "changed"' "$DW/texts.json" >"$DW/texts-changed.json"
+jq -nc --arg old "$(jq -r '.["108"]' "$DW/texts.json")" '{id: "108", oldText: $old}' >"$DW/skip-108.json"
+[[ "$(qc1_dom_text "$DW/good.json" "$DW/ids.json" "$DW/texts-changed.json" "$DW/skip-108.json" | jq -c '[.exact, .rowsChecked, .skipped, .mismatched]')" == '[true,49,1,0]' ]]
+[[ "$(qc1_dom_text "$DW/good.json" "$DW/ids.json" "$DW/texts-changed.json" "$DW/skip.json" | jq -c '[.exact, .mismatched]')" == '[false,1]' ]]   # without the skip the old text is wrong
+jq -c '.screen.rows[7].text = "a third text"' "$DW/good.json" >"$DW/third.json"
+[[ "$(qc1_dom_text "$DW/third.json" "$DW/ids.json" "$DW/texts-changed.json" "$DW/skip-108.json" | jq -c '[.exact, .mismatched]')" == '[false,1]' ]]
+# a pager line that is not a whole page of the issued reasons: no ids to read, and the comparison says the screen is wrong
+for nav in 'Reasons 1 to 50 of at least 120' 'Reasons 2 to 51 of 120' 'Reasons 1 to 49 of 120' 'Reasons 1 to 50 of 121'; do
+  jq -c --arg n "$nav" '.screen.nav = $n' "$DW/good.json" >"$DW/nav.json"
+  [[ -z "$(qc1_dom_ids "$DW/nav.json" "$DW/ids.json")" ]] || { echo "dom-ids named ids for the pager line '$nav'" >&2; exit 1; }
+  echo '{}' >"$DW/none.json"
+  [[ "$(qc1_dom_text "$DW/nav.json" "$DW/ids.json" "$DW/none.json" "$DW/skip.json" | jq -c '[.checked, .membershipOk, .exact]')" == '[true,false,false]' ]] || { echo "the pager line '$nav' was not reported as wrong" >&2; exit 1; }
+done
+# a second page, and the short last page
+jq -c '.screen.nav = "Reasons 101 to 120 of 120" | .screen.rows = [range(201; 221) | {id: tostring, reasonElements: 1, text: "t"}]' "$DW/good.json" >"$DW/last.json"
+[[ "$(qc1_dom_ids "$DW/last.json" "$DW/ids.json")" == "$(jq -r '[range(201; 221) | tostring] | join(",")' <<<null)" ]]
+# a screen that was never captured, a result with no screen and a result that is not JSON are unchecked, and never agree
+jq -nc '{screen: {captured: false, why: "the final screen could not be read: gone"}}' >"$DW/gone.json"
+[[ "$(qc1_dom_text "$DW/gone.json" "$DW/ids.json" "$DW/texts.json" "$DW/skip.json" | jq -c '[.checked, .why]')" == '[false,"the final screen could not be read: gone"]' ]]
+echo '{}' >"$DW/noscreen.json"
+[[ "$(qc1_dom_text "$DW/noscreen.json" "$DW/ids.json" "$DW/texts.json" "$DW/skip.json" | jq -c '.checked')" == false ]]
+echo 'not json' >"$DW/garbage.json"
+[[ "$(qc1_dom_text "$DW/garbage.json" "$DW/ids.json" "$DW/texts.json" "$DW/skip.json" | jq -c '.checked')" == false ]]
+
 # --- the text of the reasons, byte for byte (#293) -----------------------------------------------------------------------------------------------------
 # A before snapshot is one line per reason, "id|sha256|runes|bytes", in ascending id order; the first `removed` lines must be blank afterwards and every other line unchanged.
 HB=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
@@ -1898,7 +1938,7 @@ MB='(.charset = "multibyte")
  | (if .item == 6 and ((.reasons // 0) > 0) and ((.outcome | type) == "object") then .outcome.textExact = true else . end)
  | (if .item == 5 and .case == "request-size" and ((.request.fitOutcome | type) == "object") then .request.fitOutcome.textExact = true else . end)
  | (if .item == 3 and ((.reasons // 0) > 0) then .traversal.responseBytes = (.reasons * 3000) else . end)
- | (if .item == 10 then .agreement = {digest: {checked: true, equal: true}, domText: {checked: true, rowsChecked: 50, mismatched: 0}} else . end)'
+ | (if .item == 10 then .agreement = {digest: {checked: true, equal: true}, domText: {checked: true, membershipOk: true, exact: true, nav: {from: 1, to: 50, total: 1000}, expectedRows: 50, rowsOnScreen: 50, rowsChecked: 49, skipped: 1, mismatched: 0}} else . end)'
 jq -c "$MB" "$WORK/e2.jsonl" >"$WORK/e2.mb"
 jq -c '.settings.charset = "multibyte"' "$WORK/env.json" >"$WORK/env.mb"
 mb_status() { qc1_evidence_status "$1" 10,100 0,10,100,1000,10000 "$WORK/env.mb" "$HEAD_FAKE" 6291456 ""; }
@@ -1935,14 +1975,129 @@ mbmut mb-dig-unchecked "$BP then .agreement.digest = {checked: false, equal: nul
 mbmut mb-dom-none "$BP then .agreement.domText.rowsChecked = 0 else . end"; mb_invalid mb-dom-none browser-agreement-missing
 mbmut mb-dom-unchecked "$BP then .agreement.domText = {checked: false} else . end"; mb_invalid mb-dom-unchecked browser-agreement-missing
 mbmut mb-dom-bad "$BP then .agreement.domText.mismatched = 1 else . end"; mb_invalid mb-dom-bad browser-text-disagrees
+# The screen is the page the pager line names, every row of it expected, once, and every one compared: anything short of that is a disagreement, however many rows matched.
+mbmut mb-dom-member "$BP then .agreement.domText.membershipOk = false else . end"; mb_invalid mb-dom-member browser-text-disagrees
+mbmut mb-dom-notexact "$BP then .agreement.domText.exact = false else . end"; mb_invalid mb-dom-notexact browser-text-disagrees
+mbmut mb-dom-fewer "$BP then .agreement.domText.rowsOnScreen = 49 else . end"; mb_invalid mb-dom-fewer browser-text-disagrees
+mbmut mb-dom-uncompared "$BP then .agreement.domText.rowsChecked = 30 else . end"; mb_invalid mb-dom-uncompared browser-text-disagrees
+mbmut mb-dom-noexpected "$BP then del(.agreement.domText.expectedRows) else . end"; mb_invalid mb-dom-noexpected browser-text-disagrees
+mbmut mb-dom-zeroexpected "$BP then .agreement.domText.expectedRows = 0 | .agreement.domText.rowsOnScreen = 0 else . end"; mb_invalid mb-dom-zeroexpected browser-text-disagrees
+mbmut mb-dom-oldshape "$BP then .agreement.domText = {checked: true, rowsChecked: 50, mismatched: 0} else . end"; mb_invalid mb-dom-oldshape browser-text-disagrees
 # A row of one charset in a run of another is a disagreement between the rows and the settings.
 mut cs-disagree 'if .item == 3 and .case == "discovery-requester-10" then .charset = "multibyte" else . end'; expect_invalid cs-disagree settings-disagreement
 # ASCII rows keep the checks that do not depend on the charset: a deletion that was not exact, a browser digest that differs, a shape that is not one byte a rune.
 mut asc-notexact "$DEL then .outcome.textExact = false else . end"; expect_invalid asc-notexact text-not-exact
 mut asc-dig "$BP then .agreement = {digest: {checked: true, equal: false}} else . end"; expect_invalid asc-dig browser-digest-disagrees
+mut asc-dom-member "$BP then .agreement = {digest: {checked: true, equal: true}, domText: {checked: true, membershipOk: false, exact: false, expectedRows: 50, rowsOnScreen: 50, rowsChecked: 1, skipped: 0, mismatched: 0}} else . end"; expect_invalid asc-dom-member browser-text-disagrees
+mut asc-dom-bad "$BP then .agreement = {digest: {checked: true, equal: true}, domText: {checked: true, membershipOk: true, exact: false, expectedRows: 50, rowsOnScreen: 50, rowsChecked: 49, skipped: 1, mismatched: 1}} else . end"; expect_invalid asc-dom-bad browser-text-disagrees
+mut asc-dom-good "$BP then .agreement = {digest: {checked: true, equal: true}, domText: {checked: true, membershipOk: true, exact: true, expectedRows: 50, rowsOnScreen: 50, rowsChecked: 49, skipped: 1, mismatched: 0}} else . end"
+st="$(status_of "$WORK/e2.asc-dom-good")"; [[ "$(jq -r '.invalid | length' <<<"$st")" == 0 ]]
 mut asc-shape "$SH1 then .textShape = {rows: 10, runesMin: 1000, runesMax: 1000, bytesMin: 2000, bytesMax: 2000} else . end"; expect_invalid asc-shape text-shape
 mut asc-shape-ok "$SH1 then .textShape = {rows: 10, runesMin: 1000, runesMax: 1000, bytesMin: 1000, bytesMax: 1000} else . end"
 st="$(status_of "$WORK/e2.asc-shape-ok")"; [[ "$(jq -r .complete <<<"$st")" == true && "$(jq -r '.invalid | length' <<<"$st")" == 0 ]]
+
+# --- the matrix report over cells that are really full (scripts/reason-review-matrix.sh) -----------------------------------------------------------------------------------------------
+# The matrix's own self-test (make reason-review-scale-test) has stub cells that cannot be full. The positive control, and every way a FULL matrix is spoiled AFTER its rows are complete, is here, where the
+# generators of the full rows are: four cells (three ASCII layouts and the multibyte one) of consistent rows, environment, status and runner record, joined once as they are and then with one thing wrong each.
+MX="$WORK/matrix"; mkdir -p "$MX/base"
+MX_LIB="$(sha256sum "$HERE/qc1/lib.sh" | cut -d' ' -f1)"; MX_FACTS="$(sha256sum "$HERE/qc1/app-facts.json" | cut -d' ' -f1)"
+MX_CELLS=(ascii-spread ascii-tail ascii-head multibyte-spread)
+mx_base_cell() { # name rows-file: a complete cell with a status that is true of its rows (the runner record is made per case)
+  local name="$1" d="$MX/base/$1/qc1"
+  mkdir -p "$d"; cp "$2" "$d/measurements.jsonl"
+  jq -c --arg ly "${name#*-}" --arg cs "${name%%-*}" --arg lib "$MX_LIB" --arg facts "$MX_FACTS" '.settings += {layout:$ly, charset:$cs} | .maxRequestBytes = 6291456 | .incomplete = false
+    | (.sources[] | select(.path == "deploy/digitalocean/qc1/lib.sh") | .sha256) = $lib | (.sources[] | select(.path == "deploy/digitalocean/qc1/app-facts.json") | .sha256) = $facts' "$WORK/env.full" >"$d/environment.json"
+  qc1_evidence_status "$d/measurements.jsonl" 10000,100000,1000000 0,10,100,1000,10000 "$d/environment.json" "$HEAD_FAKE" 6291456 100000 >"$d/evidence-status.json"
+  [[ "$(jq -c '[.coverage.kind, .complete, .releaseEvidence]' "$d/evidence-status.json")" == '["full",true,true]' ]] || { echo "the matrix fixture cell $name is not full: $(jq -c '[.coverage, .missing[:2], .pending[:2], .invalid[:2]]' "$d/evidence-status.json")" >&2; exit 1; }
+}
+jq -c "$MB" "$WORK/full.jsonl" >"$WORK/full.mb"
+for c in ascii-spread ascii-tail ascii-head; do mx_base_cell "$c" "$WORK/full.jsonl"; done
+mx_base_cell multibyte-spread "$WORK/full.mb"
+mx_runner() { # case-dir cell: the runner's record of a clean run of the cell, with the summary of the status the cell holds
+  local d="$1/$2/qc1"
+  jq -nc --arg dir "$d" --arg rev "$HEAD_FAKE" --slurpfile st "$d/evidence-status.json" '{schema:"fold/reason-review-scale/v1", revision:$rev, workingTreeClean:true, result:"partial",
+    steps:[{name:"qc1", exit:0, verdict:"pass", artifacts:$dir, summary:($st[0] | {complete, coverage:.coverage.kind, releaseEvidence, missing:(.missing | length), invalid:(.invalid | length), pending:(.pending | length), aborted:((.aborted // null) != null)})}]}' >"$1/$2/evidence.json"
+}
+MX_DIR=
+mx_case() { # name: a copy of the base cells with their runner records; MX_DIR is where it is
+  MX_DIR="$MX/case-$1"; rm -rf "$MX_DIR"; cp -a "$MX/base" "$MX_DIR"
+  local c; for c in "${MX_CELLS[@]}"; do mx_runner "$MX_DIR" "$c"; done
+}
+MX_RC=0
+mx_run() { # label: joins the cells of MX_DIR; MX_RC is the exit status, $MX/out-label.json the record
+  local a=() c; for c in "${MX_CELLS[@]}"; do a+=(--cell "$c=$MX_DIR/$c/qc1"); done
+  MX_RC=0; bash "$ROOT/scripts/reason-review-matrix.sh" --out "$MX/out-$1.json" --revision "$HEAD_FAKE" "${a[@]}" >"$MX/out-$1.txt" 2>&1 || MX_RC=$?
+}
+mx_pilot() { # label gap-pattern: PILOT (exit 10), and a gap matches the pattern
+  [[ "$MX_RC" == 10 && "$(jq -r .status "$MX/out-$1.json")" == PILOT ]] || { echo "matrix case $1: exit $MX_RC, status $(jq -r .status "$MX/out-$1.json" 2>/dev/null): $(cat "$MX/out-$1.txt")" >&2; exit 1; }
+  jq -e --arg p "$2" '.gaps | any(test($p))' "$MX/out-$1.json" >/dev/null || { echo "matrix case $1: no gap matches '$2': $(jq -c .gaps "$MX/out-$1.json")" >&2; exit 1; }
+}
+mx_edit() { # cell file jq-filter: rewrites a file of a cell of MX_DIR
+  local p="$MX_DIR/$1/qc1/$2"; jq -c "$3" "$p" >"$p.tmp" && mv "$p.tmp" "$p"
+}
+# The control: four consistent cells, a clean runner record each. This is the only way to FULL.
+mx_case control; mx_run control
+[[ "$MX_RC" == 0 && "$(jq -r .status "$MX/out-control.json")" == FULL && "$(jq -c .gaps "$MX/out-control.json")" == '[]' ]] || { echo "the control matrix is not FULL: exit $MX_RC: $(cat "$MX/out-control.json" | jq -c '.gaps' 2>/dev/null) $(cat "$MX/out-control.txt")" >&2; exit 1; }
+jq -e '.cells | length == 4 and all(.recompute.savedEqualsRecomputed == true and .evidence.releaseEvidence == true and .evidence.coverage == "full" and .judge.libMatchesRun and .judge.factsMatchRun and .settingsFull and .runner.step.summaryAgrees and .collectionFailed == null)' "$MX/out-control.json" >/dev/null
+jq -e '[.cells[] | select(.name == "multibyte-spread")] | .[0].exactness | (.deletionsChecked > 0 and .textExact == .deletionsChecked and .textNotExact == 0)' "$MX/out-control.json" >/dev/null
+# One case spoils each cell in a different way, so a joined record shows every way at once (each gap names its own cell and cause, and none can come from another cell's spoiling).
+# R1: complete inner records, and the nested run could not bring something out of the container (the wrapper rejects exactly this); a run the runner did not record, did not finish, or recorded as failed.
+mx_case outer
+printf '%s\n' '/work/prep (the browser runtime preparation) could not be copied out' 'the run inside could not be confirmed stopped before the copy' >"$MX_DIR/ascii-tail/qc1/COLLECTION-FAILED.txt"
+rm -f "$MX_DIR/ascii-head/evidence.json"
+jq -c '.steps[0].verdict = "fail" | .result = "fail"' "$MX_DIR/multibyte-spread/evidence.json" >"$MX_DIR/x.tmp" && mv "$MX_DIR/x.tmp" "$MX_DIR/multibyte-spread/evidence.json"
+jq -c '.steps[0].exit = 143 | .steps[0].verdict = "interrupted" | .result = "incomplete"' "$MX_DIR/ascii-spread/evidence.json" >"$MX_DIR/x.tmp" && mv "$MX_DIR/x.tmp" "$MX_DIR/ascii-spread/evidence.json"
+mx_run outer
+mx_pilot outer 'cell ascii-tail: the nested run left COLLECTION-FAILED.txt.*could not be copied out'
+mx_pilot outer 'cell ascii-head: no runner record'
+mx_pilot outer 'cell multibyte-spread: the runner recorded its QC-1 step as fail'
+mx_pilot outer 'cell ascii-spread: the runner recorded its QC-1 step as interrupted, exit 143'
+jq -e '[.gaps[] | select(test("ascii-tail"))] | length == 1' "$MX/out-outer.json" >/dev/null   # the rows of ascii-tail are complete, and the collection failure is the only thing named for it
+mx_case outer2
+jq -c '.workingTreeClean = false' "$MX_DIR/ascii-spread/evidence.json" >"$MX_DIR/x.tmp" && mv "$MX_DIR/x.tmp" "$MX_DIR/ascii-spread/evidence.json"
+jq -c '.steps[0].summary.collectionFailed = true' "$MX_DIR/ascii-head/evidence.json" >"$MX_DIR/x.tmp" && mv "$MX_DIR/x.tmp" "$MX_DIR/ascii-head/evidence.json"
+jq -c '.steps[0].summary.releaseEvidence = false' "$MX_DIR/ascii-tail/evidence.json" >"$MX_DIR/x.tmp" && mv "$MX_DIR/x.tmp" "$MX_DIR/ascii-tail/evidence.json"
+jq -c '.steps[0].artifacts = "/elsewhere/qc1"' "$MX_DIR/multibyte-spread/evidence.json" >"$MX_DIR/x.tmp" && mv "$MX_DIR/x.tmp" "$MX_DIR/multibyte-spread/evidence.json"
+mx_run outer2
+mx_pilot outer2 'cell ascii-spread: the runner record does not say the working tree was clean'
+mx_pilot outer2 'cell ascii-head: the runner recorded a collection failure'
+mx_pilot outer2 'cell ascii-tail: the runner.s summary of its QC-1 step differs'
+mx_pilot outer2 'cell multibyte-spread: the runner record.s qc1 step is for another directory'
+# R2: a status that was true of its rows, and the rows or the environment were changed or cut afterwards; a status of another run; an edited flag.
+mx_case status
+grep -v '"item":10,"case":"browser-panel-100000","size":1000000,' "$MX_DIR/ascii-head/qc1/measurements.jsonl" >"$MX_DIR/x.tmp" && mv "$MX_DIR/x.tmp" "$MX_DIR/ascii-head/qc1/measurements.jsonl"
+head -n "$(( $(wc -l <"$MX_DIR/ascii-tail/qc1/measurements.jsonl") / 2 ))" "$MX_DIR/ascii-tail/qc1/measurements.jsonl" >"$MX_DIR/x.tmp" && mv "$MX_DIR/x.tmp" "$MX_DIR/ascii-tail/qc1/measurements.jsonl"
+cp "$MX_DIR/multibyte-spread/qc1/evidence-status.json" "$MX_DIR/ascii-spread/qc1/evidence-status.json"
+mx_edit multibyte-spread evidence-status.json '.releaseEvidence = false'
+mx_run status
+mx_pilot status 'cell ascii-head: the saved evidence-status.json differs from the status recomputed'
+mx_pilot status 'cell ascii-head: 1 expected measurement.s. missing, first: item 10 size 1000000 browser-panel-100000'
+mx_pilot status 'cell ascii-head: coverage is pilot, not full'
+mx_pilot status 'cell ascii-tail: the saved evidence-status.json differs'
+mx_pilot status 'cell ascii-spread: the saved evidence-status.json differs'
+mx_pilot status 'cell multibyte-spread: the saved evidence-status.json differs.*releaseEvidence'
+mx_case environment
+mx_edit ascii-head environment.json '.settings.targetReasonLen = 200'
+mx_edit ascii-spread environment.json '.limitsApplied = false'
+mx_edit ascii-tail environment.json '.incomplete = true'
+mx_edit multibyte-spread environment.json '(.sources[] | select(.path | endswith("qc1/lib.sh")) | .sha256) = "'"$(printf '0%.0s' {1..64})"'"'
+mx_run environment
+mx_pilot environment 'cell ascii-head: the saved evidence-status.json differs'
+mx_pilot environment 'cell ascii-spread: the saved evidence-status.json differs'
+mx_pilot environment 'cell ascii-tail: its environment record is marked incomplete'
+mx_pilot environment 'cell multibyte-spread: qc1/lib.sh here is not the file the run recorded'
+# ... a status that is honest about rows that are not clean (the matrix names the finding, not only a disagreement), and settings that are not the full matrix's or are another cell's.
+mx_case rows
+mx_edit ascii-head measurements.jsonl 'if .item == 8 then .generic.source = "harness" else . end'
+qc1_evidence_status "$MX_DIR/ascii-head/qc1/measurements.jsonl" 10000,100000,1000000 0,10,100,1000,10000 "$MX_DIR/ascii-head/qc1/environment.json" "$HEAD_FAKE" 6291456 100000 >"$MX_DIR/ascii-head/qc1/evidence-status.json"; mx_runner "$MX_DIR" ascii-head
+mx_edit ascii-tail environment.json '.settings.sizes = "10000,100000"'
+mx_edit multibyte-spread environment.json '.settings.charset = "ascii"'
+mx_run rows
+mx_pilot rows 'cell ascii-head: [0-9]+ invalid finding.s., first:'
+jq -e '[.gaps[] | select(test("cell ascii-head: the saved evidence-status.json differs"))] | length == 0' "$MX/out-rows.json" >/dev/null   # an honest status is not called a mismatch
+mx_pilot rows 'cell ascii-tail: its settings do not name the full matrix'
+mx_pilot rows 'cell multibyte-spread: its settings name another layout or charset'
+mx_case revision; mx_edit ascii-tail environment.json '.revision = "2222222222222222222222222222222222222222"'; mx_run revision; mx_pilot revision 'more than one revision'
 mut asc-noagree-ok "$BP then .agreement = {digest: {checked: false, equal: null}} else . end"   # an ASCII run need not have compared; it must not have found a difference
 st="$(status_of "$WORK/e2.asc-noagree-ok")"; [[ "$(jq -r .complete <<<"$st")" == true ]]
 

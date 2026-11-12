@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { measurePanel, navLine, parseNavLine, parseUnchosen, percentile, summarize, summarizePages, DISPLAY_PAGE, FIRST_CLICK_MS } from "./qc1/panel-core.mjs";
 import { pageObserver } from "./qc1/page-observer.mjs";
-import { bodyRuneSummary, countRunes, domTextAgreement } from "./qc1/response-accounting.mjs";
+import { bodyRuneSummary, countRunes, domTextAgreement, expectedShownIds, shownRange } from "./qc1/response-accounting.mjs";
 
 let clock = 0;
 const now = () => clock;
@@ -596,16 +596,111 @@ clock = 0;
   assert.ok(done.bytes > done.runes, "multibyte text takes more bytes than runes");
   assert.deepEqual(bodyRuneSummary(obs.observations()), { responses: 1, bytes: done.bytes, runes: done.runes, bytesPerRune: Math.round((done.bytes / done.runes) * 1000) / 1000 });
 
-  // The text on screen against the database's: contained rune for rune; the reason changed behind the page is skipped; ids that were not asked about are not judged.
-  const rows = [{ id: "1", text: `Keep text ${unit} 1` }, { id: "3", text: "changed behind the page" }, { id: "5", text: "does not hold it" }, { id: "9", text: "not asked about" }];
-  const expected = { 1: `${unit} 1`, 3: "the old text", 5: unit };
-  assert.deepEqual(domTextAgreement(rows, expected, "3"), { checked: true, rowsOnScreen: 4, rowsChecked: 2, mismatched: 1, skipped: 1, runesChecked: 23 + 21, firstMismatchId: "5", expectedIds: 3 });
-  assert.equal(domTextAgreement(rows.filter((r) => r.id !== "5"), expected, "3").mismatched, 0);
-  assert.equal(domTextAgreement([{ id: "1", text: `Keep text ${unit.replaceAll(cp(0x301), "")} 1` }], { 1: `${unit} 1` }).mismatched, 1, "a missing combining mark is a mismatch");
-  assert.equal(domTextAgreement([], expected).rowsChecked, 0, "nothing on screen from the expected set checks nothing, which the judge refuses for a multibyte run");
-  assert.deepEqual(domTextAgreement(rows, null), { checked: false, why: "no expected reason text was given" });
-  assert.deepEqual(domTextAgreement(null, expected), { checked: false, why: "the rows on screen could not be read" });
-  assert.equal(domTextAgreement([{ id: "1", text: undefined }], { 1: "x" }).mismatched, 1, "a row with no text is a mismatch, never skipped");
+  // The final screen against the database (#293). 120 reasons were issued, ids 101 to 220, listed in that order, 50 to a page. Every case below changes ONE thing about a screen that
+  // is exactly right, and the right screen is first shown to pass, so a failing case fails for the thing it changed.
+  const ids = Array.from({ length: 120 }, (_, i) => String(101 + i));
+  const textOf = (id) => `${unit} reason ${id}`;
+  const dbTexts = (from, to) => Object.fromEntries(ids.slice(from - 1, to).map((id) => [id, textOf(id)]));
+  const rowOf = (id, text = textOf(id)) => ({ id, reasonElements: 1, text });
+  const screenOf = (from, to, over = {}) => ({ captured: true, nav: `Reasons ${from} to ${to} of 120`, navCount: 1, rows: ids.slice(from - 1, to).map((id) => rowOf(id)), ...over });
+  const check = (screen, over = {}) => domTextAgreement(screen, { orderedIds: ids, displayPage: 50, texts: dbTexts(1, 120), skip: null, ...over });
+  const good = check(screenOf(1, 50));
+  assert.deepEqual(good, { checked: true, membershipOk: true, exact: true, nav: { from: 1, to: 50, total: 120 }, expectedRows: 50, rowsOnScreen: 50, rowsChecked: 50, skipped: 0, mismatched: 0, runesChecked: 50 * Array.from(textOf("101")).length, firstMismatchId: null, missingIds: [], unexpectedIds: [], duplicateIds: [], badElements: 0 });
+  assert.equal(check(screenOf(101, 120)).exact, true, "the last, short page is a whole page");
+  assert.equal(check(screenOf(51, 100)).exact, true);
+  assert.deepEqual(expectedShownIds(screenOf(51, 100), ids, 50), { ok: true, from: 51, to: 100, total: 120, ids: ids.slice(50, 100) });
+  const bad = (why, screen, over, want) => {
+    const r = check(screen, over);
+    assert.equal(r.checked, true, `${why}: a screen that was read and is wrong is checked`);
+    assert.equal(r.exact, false, `${why}: not exact`);
+    for (const [k, v] of Object.entries(want)) assert.deepEqual(r[k], v, `${why}: ${k}`);
+    return r;
+  };
+  // The review's case: one correct reason and 49 unexpected ids. Nothing is ignored.
+  const unexpected = screenOf(1, 50);
+  unexpected.rows = [unexpected.rows[0], ...Array.from({ length: 49 }, (_, i) => rowOf(String(900 + i), "anything"))];
+  bad("49 unexpected ids", unexpected, {}, { membershipOk: false, rowsOnScreen: 50, expectedRows: 50, rowsChecked: 1 });
+  assert.equal(check(unexpected).unexpectedIds.length, 5, "the first five unexpected ids are named");
+  assert.equal(check(unexpected).missingIds.length, 5);
+  // A page that is another page of the same reasons than the pager line names.
+  bad("rows of page 2 under page 1's line", screenOf(1, 50, { rows: ids.slice(50, 100).map((id) => rowOf(id)) }), {}, { membershipOk: false });
+  // One row twice, one row less.
+  const dup = screenOf(1, 50);
+  dup.rows[49] = rowOf("101");
+  bad("a duplicated row", dup, {}, { membershipOk: false, duplicateIds: ["101"], missingIds: ["150"], rowsOnScreen: 50 });
+  const short = screenOf(1, 50);
+  short.rows.pop();
+  bad("a missing row", short, {}, { membershipOk: false, missingIds: ["150"], rowsOnScreen: 49, expectedRows: 50 });
+  const longer = screenOf(1, 50);
+  longer.rows.push(rowOf("151"));
+  bad("an extra row", longer, {}, { membershipOk: false, unexpectedIds: ["151"], rowsOnScreen: 51 });
+  const swapped = screenOf(1, 50);
+  [swapped.rows[3], swapped.rows[4]] = [swapped.rows[4], swapped.rows[3]];
+  bad("rows out of order", swapped, {}, { membershipOk: false, missingIds: [], unexpectedIds: [], duplicateIds: [] });
+  bad("no rows", screenOf(1, 50, { rows: [] }), {}, { membershipOk: false, rowsOnScreen: 0, rowsChecked: 0 });
+  bad("a row with no id", screenOf(1, 50, { rows: [{ reasonElements: 1, text: "x" }, ...screenOf(1, 50).rows.slice(1)] }), {}, { membershipOk: false });
+  // The text: exactly the database's, to the rune, with nothing appended.
+  const appended = screenOf(1, 50);
+  appended.rows[7] = rowOf("108", `${textOf("108")} extra`);
+  bad("appended text", appended, {}, { mismatched: 1, firstMismatchId: "108", membershipOk: true });
+  const prefixed = screenOf(1, 50);
+  prefixed.rows[7] = rowOf("108", `Keep text ${textOf("108")}`);
+  bad("text with something before it", prefixed, {}, { mismatched: 1, firstMismatchId: "108" });
+  const nocombining = screenOf(1, 50);
+  nocombining.rows[0] = rowOf("101", textOf("101").replaceAll(cp(0x301), ""));
+  bad("a missing combining mark", nocombining, {}, { mismatched: 1, firstMismatchId: "101" });
+  const two = screenOf(1, 50);
+  two.rows[2] = { id: "103", reasonElements: 2, text: null };
+  bad("two reason elements", two, {}, { badElements: 1, mismatched: 1, firstMismatchId: "103" });
+  const none = screenOf(1, 50);
+  none.rows[2] = { id: "103", reasonElements: 0, text: null };
+  bad("no reason element", none, {}, { badElements: 1, mismatched: 1 });
+  const notext = screenOf(1, 50);
+  notext.rows[2] = { id: "103", reasonElements: 1, text: undefined };
+  bad("a reason element with no text", notext, {}, { mismatched: 1 });
+  bad("no database text for a row", screenOf(1, 50), { texts: dbTexts(1, 49) }, { mismatched: 1, firstMismatchId: "150" });
+  assert.equal(check(screenOf(1, 50), { texts: { ...dbTexts(1, 50), 101: 5 } }).mismatched, 1, "a database text that is not a string cannot be agreed with");
+  // The reason the harness changed behind the page: the database's text now, or the one it held before, and nothing else.
+  const skip = { id: "117", oldText: textOf("117") };
+  const nowText = `${Array.from(textOf("117")).slice(0, -1).join("")}!`;
+  const changed = { ...dbTexts(1, 50), 117: nowText };
+  const withNow = screenOf(1, 50);
+  withNow.rows[16] = rowOf("117", nowText);
+  const withOld = screenOf(1, 50);
+  assert.deepEqual([check(withNow, { texts: changed, skip }), check(withOld, { texts: changed, skip })].map((r) => [r.exact, r.rowsChecked, r.skipped, r.mismatched]), [[true, 49, 1, 0], [true, 49, 1, 0]]);
+  const withThird = screenOf(1, 50);
+  withThird.rows[16] = rowOf("117", "something else");
+  bad("the changed reason shows a third text", withThird, { texts: changed, skip }, { mismatched: 1, skipped: 1, rowsChecked: 49, firstMismatchId: "117" });
+  assert.equal(check(withOld, { texts: changed, skip: null }).mismatched, 1, "without the skip, the changed reason's old text is a mismatch: the skip is what allows it");
+  // A skip id that is not on the page skips nothing.
+  const offPage = check(screenOf(1, 50), { skip: { id: "200", oldText: "x" } });
+  assert.deepEqual([offPage.exact, offPage.skipped, offPage.rowsChecked], [true, 0, 50]);
+  // The pager line decides what is expected, and it must be a whole page of the issued reasons, in its finished form.
+  const nav = (text, over = {}) => bad(`pager line '${text}'`, screenOf(1, 50, { nav: text, ...over }), {}, { membershipOk: false, nav: null });
+  nav("Reasons 1 to 50 of at least 120");
+  nav("Reasons 1 to 50 of 121");
+  nav("Reasons 1 to 49 of 120");
+  nav("Reasons 2 to 51 of 120");
+  nav("Reasons 51 to 120 of 120");
+  nav("Reasons 0 to 49 of 120");
+  nav("Reasons 101 to 150 of 120");
+  nav("Reasons 1 to 50");
+  nav("Reasons 1 to 50 of 120", { navCount: 2 });
+  nav("Reasons 1 to 50 of 120", { navCount: 0 });
+  nav(null);
+  assert.ok(check(screenOf(1, 50, { nav: "Reasons 1 to 50 of at least 120" })).why.includes("loading"));
+  assert.equal(check(screenOf(1, 50, { nav: "Reasons 1 to 50 of 120" })).exact, true);
+  assert.equal(expectedShownIds(screenOf(1, 50, { nav: "Reasons 3 to 52 of 120" }), ids, 50).ok, false);
+  assert.equal(expectedShownIds(null, ids, 50).ok, false);
+  assert.equal(shownRange("Reasons 1,001 to 1,050 of 1,200", 1, 1200, 50).ok, true, "the pager line groups thousands");
+  // What cannot be compared at all is unchecked, never agreement.
+  assert.deepEqual(check(null), { checked: false, why: "the rows on screen could not be read" });
+  assert.deepEqual(check({ captured: false }), { checked: false, why: "the rows on screen could not be read" });
+  assert.deepEqual(domTextAgreement(screenOf(1, 50), null), { checked: false, why: "no expected reason text was given" });
+  assert.deepEqual(domTextAgreement(screenOf(1, 50), { orderedIds: ids, displayPage: 50, texts: null }), { checked: false, why: "no expected reason text was given" });
+  // The judge's rule (qc1/lib.sh) is that rowsChecked + skipped is every row expected on the page, so a screen that skips what it should have compared is not exact.
+  const partial = check(screenOf(1, 50));
+  assert.equal(partial.rowsChecked + partial.skipped, partial.expectedRows);
 }
 
 console.log("qc1 panel fixtures: ok");

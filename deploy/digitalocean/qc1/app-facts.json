@@ -34,6 +34,7 @@
     "displayPage": 50,
     "reasonRows": "ul[aria-label=\"Contact-request reasons\"] > li[data-reason-id]",
     "reasonsNav": "nav[aria-label=\"Reasons pages\"] p",
+    "reasonText": "p.whitespace-pre-wrap",
     "reasonIdAttr": "data-reason-id",
     "reasonHeadingAttr": "data-reason-heading",
     "progressSelector": "p.text-text-muted",

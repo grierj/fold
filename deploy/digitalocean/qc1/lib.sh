@@ -770,7 +770,10 @@ qc1_judge_rules() { cat <<'JQ'
             elif $a.digest == null or $a.digest.checked != true then (if $mb then inv("browser-agreement-missing"; {digest:$a.digest}) else empty end)
             elif $a.digest.equal != true then inv("browser-digest-disagrees"; {digest:$a.digest})
             elif $mb and ($a.domText == null or $a.domText.checked != true or ($a.domText.rowsChecked // 0) < 1) then inv("browser-agreement-missing"; {domText:$a.domText})
-            elif $a.domText != null and $a.domText.checked == true and ($a.domText.mismatched // 0) > 0 then inv("browser-text-disagrees"; {domText:$a.domText})
+            elif $a.domText != null and $a.domText.checked == true
+                 and (($a.domText.mismatched // 0) > 0 or $a.domText.membershipOk != true or $a.domText.exact != true
+                      or (($a.domText.expectedRows | numz) == null) or $a.domText.expectedRows < 1 or $a.domText.rowsOnScreen != $a.domText.expectedRows
+                      or (($a.domText.rowsChecked // 0) + ($a.domText.skipped // 0)) != $a.domText.expectedRows) then inv("browser-text-disagrees"; {domText:$a.domText})
             else empty end
         else empty end ),
       ( if $m.item == 10 then browser_budgets($m) else empty end )
@@ -1369,6 +1372,16 @@ qc1_text_classes_sql() { # target
 # and equal null, when there is nothing comparable (the browser sent no set-v1 review).
 qc1_digest_agreement() { # items-file review-json-file
   qc1_setv1 agree --items "$1" --review "$2" || jq -nc '{checked:false, equal:null, why:"the comparison itself failed"}'
+}
+# The browser's final screen against the database (set-v1.mjs dom-ids and dom-text; the rules are domTextAgreement in response-accounting.mjs). panel-file is the panel's result
+# (its `screen`), ids-file the JSON array of every request id in the order the server issued them, texts-file {id: text} read from the database for the ids qc1_dom_ids names, skip-file
+# {id, oldText} for the one reason changed behind the page (or the word null). qc1_dom_ids prints nothing when the pager line does not name a whole page of those reasons; qc1_dom_text
+# then reports that page as not matching, and prints {checked:false} only when no screen was captured or the comparison itself failed.
+qc1_dom_ids() { # panel-file ids-file
+  qc1_setv1 dom-ids --panel "$1" --ids "$2" --page "$(qc1_fact .web.displayPage)"
+}
+qc1_dom_text() { # panel-file ids-file texts-file skip-file
+  qc1_setv1 dom-text --panel "$1" --ids "$2" --texts "$3" --skip "$4" --page "$(qc1_fact .web.displayPage)" || jq -nc '{checked:false, why:"the screen comparison itself failed"}'
 }
 
 # --- the app's peak memory over one operation --------------------------------------------------------------------------------

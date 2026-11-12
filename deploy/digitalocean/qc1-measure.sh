@@ -1163,39 +1163,57 @@ run_panel_measure() { # sets PANEL_RC
   PANEL_RC=0
   QC1_URL="$URL" QC1_WEB_DIR="$ROOT/web" QC1_ADMIN_EMAIL=admin@example.invalid QC1_ADMIN_PASSWORD=qc1-drill-password \
     QC1_TARGET_EMAIL="$USER_EMAIL" QC1_EXPECT="$PANEL_K" QC1_OUT="$PANEL_OUT" QC1_CHANGE_CMD="$PANEL_HOOK" QC1_PHASE_CMD="$PANEL_PHASE" \
-    QC1_NO_SUBTLE="${QC1_NO_SUBTLE:-0}" QC1_CLICKS="$QC1_CLICKS_PER_CASE" QC1_DOM_TEXT_FILE="$PANEL_DOM_TEXT" \
+    QC1_NO_SUBTLE="${QC1_NO_SUBTLE:-0}" QC1_CLICKS="$QC1_CLICKS_PER_CASE" \
     node "$HERE/qc1/panel-measure.mjs" || PANEL_RC=$?
 }
-# What the browser is held against (#293), read before it opens the panel and outside the instrument window: the items the server issues to this administrator for the account
-# (the digest the browser sends must be the one an independent builder makes over them, with the browser's own choices) and the exact text of the reasons on the screens the panel can
-# end on (the first, the one with the reason the harness changes, the middle, the last), so the text on screen can be held to the database's. The reason changed behind the page is
-# named, because its text on screen is the new one. Sets PANEL_ITEMS ("" when the walk could not be made: the agreement is then unchecked, never assumed) and PANEL_DOM_TEXT.
-browser_expectations() { # n k
-  local k="$2" ids skip
-  PANEL_ITEMS=""; PANEL_DOM_TEXT="$WORK/browser-dom-text-$1-$k${3:-}.json"
+# What the browser is held against (#293). Before it opens the panel and outside the instrument window: the items the server issues to this administrator for the account (the digest
+# the browser sends must be the one an independent builder makes over them, with the browser's own choices), their ids in the order the panel lists them (PANEL_IDS), and the reason the
+# harness will change behind the page, which is the one at ordinal k/3, with the text it holds now (PANEL_SKIP, {id, oldText}). After the run, browser_screen_texts reads the database's
+# text for exactly the ids the final screen should hold. Sets PANEL_ITEMS ("" when the walk could not be made: the agreement is then unchecked, never assumed).
+browser_expectations() { # n k [suffix]
+  local k="$2" skip
+  PANEL_ITEMS=""; PANEL_IDS="$WORK/browser-ids-$1-$k${3:-}.json"; PANEL_SKIP="$WORK/browser-skip-$1-$k${3:-}.json"; PANEL_DOM_DB="$WORK/browser-dom-db-$1-$k${3:-}.json"; PANEL_DOM_STATE=unread
+  rm -f "$PANEL_IDS" "$PANEL_SKIP" "$PANEL_DOM_DB"
   traverse "$USER_ID" "$WORK/browser-items-$1-$k.json"
   if [[ "$TR_STATUS" != 200 ]] || [[ "$(jq 'length' "$WORK/browser-items-$1-$k.json")" != "$k" ]]; then
     note "the browser's items for $k reasons could not be read before the panel opened (status $TR_STATUS): its digest cannot be compared"
-    jq -nc '{text:null, skipId:null}' >"$PANEL_DOM_TEXT"
     return 0
   fi
   PANEL_ITEMS="$WORK/browser-items-$1-$k.json"
-  ids="$(jq -r --argjson k "$k" '. as $items
-    | ([0, ($k / 3 | floor), ($k / 2 | floor), ($k - 1)] | map((. / 50 | floor) * 50) | unique) as $starts
-    | [ $starts[] as $s | range($s; ([$s + 50, $k] | min)) ] | unique | map($items[.].requestId) | join(",")' "$PANEL_ITEMS")"
-  skip="$(jq -r --argjson k "$k" '.[($k / 3 | floor)].requestId' "$PANEL_ITEMS")"
-  [[ "$ids" =~ ^[0-9]+(,[0-9]+)*$ && "$skip" =~ ^[0-9]+$ ]] || { echo "qc1: the browser's expected ids are not whole numbers" >&2; exit 1; }
-  printf "SELECT coalesce(json_object_agg(id::text, reason), '{}'::json) FROM contact_requests WHERE id IN (%s);\n" "$ids" | psql_stdin >"$WORK/browser-dom-map.tmp"
-  jq -n --slurpfile t "$WORK/browser-dom-map.tmp" --arg skip "$skip" '{text:$t[0], skipId:$skip}' >"$PANEL_DOM_TEXT"
+  # the ids stream out of the walk's own line file, so a dense history is never loaded whole to read them
+  jq -r '.requestId | tostring' "$WORK/items.jsonl" | jq -Rsc 'split("\n") | map(select(. != ""))' >"$PANEL_IDS"
+  skip="$(jq -r --argjson o "$((k / 3))" '.[$o]' "$PANEL_IDS")"
+  [[ "$(jq -r 'length' "$PANEL_IDS")" == "$k" && "$(jq -r 'all(test("^[0-9]+$"))' "$PANEL_IDS")" == true && "$skip" =~ ^[0-9]+$ ]] || { echo "qc1: the browser's expected ids are not $k whole numbers" >&2; exit 1; }
+  printf "SELECT json_build_object('id', '%s'::text, 'oldText', reason) FROM contact_requests WHERE id = %s;\n" "$skip" "$skip" | psql_stdin >"$PANEL_SKIP"
+  jq -e '.id == "'"$skip"'" and (.oldText | type) == "string"' "$PANEL_SKIP" >/dev/null || { echo "qc1: the reason that will be changed behind the page (id $skip) could not be read" >&2; exit 1; }
 }
-# The agreement of the browser with the server and the database, from the panel's result (its first DELETE's reasonReview and the text on screen) and the items read before it
+# After the run and before the scenario is dropped: the database's text for the ids the final screen should hold, by the pager line it shows (qc1_dom_ids). PANEL_DOM_STATE says what
+# happened: unread (no result or no items), noids (the screen is not a whole page of the issued reasons: the comparison reports that), dbfail (the database could not be read) or ok.
+browser_screen_texts() {
+  local ids
+  PANEL_DOM_STATE=unread
+  [[ -s "$PANEL_OUT" && -n "${PANEL_ITEMS:-}" && -s "$PANEL_IDS" ]] || return 0
+  ids="$(qc1_dom_ids "$PANEL_OUT" "$PANEL_IDS")" || ids=""
+  if [[ ! "$ids" =~ ^[0-9]+(,[0-9]+)*$ ]]; then PANEL_DOM_STATE=noids; return 0; fi
+  if printf "SELECT coalesce(json_object_agg(id::text, reason), '{}'::json) FROM contact_requests WHERE id IN (%s);\n" "$ids" | psql_stdin >"$PANEL_DOM_DB" && jq -e 'type == "object"' "$PANEL_DOM_DB" >/dev/null 2>&1; then
+    PANEL_DOM_STATE=ok
+  else
+    PANEL_DOM_STATE=dbfail
+  fi
+}
+# The agreement of the browser with the server and the database, from the panel's result (its first DELETE's reasonReview and the final screen) and the items read before it
 # opened. Sets AGREEMENT_JSON {digest, domText}; a part that could not be checked says so (checked:false) and is never reported as agreeing.
 browser_agreement() {
   local digest dom
   digest='{"checked":false,"equal":null,"why":"the items were not read before the browser opened the panel"}'
   dom='{"checked":false,"why":"the panel wrote no result"}'
   if [[ -s "$PANEL_OUT" ]]; then
-    dom="$(jq -c '.domText // {checked:false, why:"the panel result has no domText"}' "$PANEL_OUT" 2>/dev/null)" || dom='{"checked":false,"why":"the panel result could not be read"}'
+    case "${PANEL_DOM_STATE:-unread}" in
+    ok) dom="$(qc1_dom_text "$PANEL_OUT" "$PANEL_IDS" "$PANEL_DOM_DB" "$PANEL_SKIP")" ;;
+    noids) echo '{}' >"$PANEL_DOM_DB"; dom="$(qc1_dom_text "$PANEL_OUT" "$PANEL_IDS" "$PANEL_DOM_DB" "$PANEL_SKIP")" ;;
+    dbfail) dom='{"checked":false,"why":"the database text of the reasons on screen could not be read"}' ;;
+    *) dom='{"checked":false,"why":"the items were not read before the panel opened, or the panel wrote no result"}' ;;
+    esac
     if [[ -n "${PANEL_ITEMS:-}" ]]; then
       jq -c '.deleteReview // null' "$PANEL_OUT" >"$WORK/browser-review.json" 2>/dev/null || echo null >"$WORK/browser-review.json"
       digest="$(qc1_digest_agreement "$PANEL_ITEMS" "$WORK/browser-review.json")"
@@ -1224,6 +1242,7 @@ SH
   # The whole run is one window; the scheduler's edges are waited past for as long as the dense walk and the second walk can take.
   QC1_NEED_MS=$(( k >= 100000 ? 1500000 : 600000 )) instrumented run_panel_measure
   window="$(instr_json | jq -c --argjson ms "$((OP_END - OP_START))" '. + {ms:$ms, what:"the whole rendered-panel run: walk, clicks, navigation, the refused press and the second walk. The gate figures are SAMPLED, not a hold time"}')"
+  browser_screen_texts
   drop_scenarios
   if [[ ! -s "$PANEL_OUT" ]]; then
     # No result was written (the process broke), but every review page it saw was persisted as it completed: keep them as a PARTIAL row, so a slow page is not lost with the crash.
