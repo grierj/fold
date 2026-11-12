@@ -88,7 +88,9 @@
 # (kill %%), never by a pid read from a process list, so a bystander can never receive
 # it. On a signal the group gets TERM and the command up to FOLD_SCALE_STOP_GRACE
 # seconds (default 180) to finish its own cleanup, which for the nested runner is
-# stopping the run inside, copying the artifacts out and removing its container; then
+# stopping the run inside, copying the artifacts out and removing its container (each
+# Docker call in it has a deadline, and the runner's cleanup budget, FOLD_NESTED_CLEANUP_BUDGET,
+# defaults to this grace less ten seconds, so removal ends before the group is KILLed); then
 # the whole group is KILLed, and the step's record says which happened. A step that
 # ends by itself has its group KILLed as well, so nothing it leaves behind survives
 # it. A process that leaves the group on purpose (setsid, setpgid) is outside what
@@ -506,7 +508,7 @@ STUB
 	# group of its own with the run's marker in its environment (the stub turns `docker exec -e` into the workload's environment, as the
 	# daemon does), so a signal that reaches the docker client on this host does not reach it. The ownership scan the runner sends through
 	# `docker exec sh -c` is executed for real, on this host's /proc: it can only find, and signal, processes carrying the marker.
-	local nroot=$tmp/nrepo fake=$tmp/fake bin=$tmp/stubbin
+	local nroot=$tmp/nrepo fake=$tmp/fake bin=$tmp/stubbin n_want_removed=1
 	mkdir -p "$nroot/scripts" "$nroot/deploy/digitalocean" "$bin"
 	cp "$me" "$nroot/scripts/reason-review-scale.sh"
 	cp "$root/$nested_tool" "$nroot/$nested_tool"
@@ -526,15 +528,34 @@ writing() {
 	st=$(sed -E 's/^[0-9]+ \(.*\) (.) .*/\1/' "/proc/$1/stat" 2>/dev/null || true)
 	[[ -n $st && $st != Z && $st != T ]]
 }
+# hang: a stalled docker client (the daemon does not answer). It has a child of its own, so ending only its pid would leave that behind, it ignores TERM
+# when STUB_HANG_STUBBORN is set, and it records its pids so that the test can see that both are gone.
+hang() {
+	[[ -z ${STUB_HANG_STUBBORN:-} ]] || trap '' TERM INT HUP
+	sleep 600 &
+	printf '%s\n%s\n' "$$" "$!" >>"$STUB_FAKE/hung.pids"
+	wait
+	exit 1
+}
 case "$1" in
 run) printf 'c%.0s' {1..64}; echo ;;
 inspect) case "$*" in *NetworkMode*) echo bridge ;; *Mounts*) echo '/var/lib/docker /v' ;; esac ;;
+ps)
+	# The listing by id that removal uses to tell a gone container from one it could not remove.
+	[[ -e $STUB_FAKE/removed ]] || { printf 'c%.0s' {1..64}; echo; }
+	;;
 rm)
+	[[ -z ${STUB_RM_HANG:-} ]] || hang
+	if [[ -n ${STUB_RM_HANG_FIRST:-} && ! -e $STUB_FAKE/rm-tried ]]; then
+		: >"$STUB_FAKE/rm-tried"
+		hang
+	fi
 	# Removing the container ends every process in it.
 	for p in $(holders); do kill -KILL "$p" 2>/dev/null || true; done
 	: >"$STUB_FAKE/removed"
 	;;
 pause)
+	[[ -z ${STUB_PAUSE_HANG:-} ]] || hang
 	[[ -z ${STUB_PAUSE_FAIL:-} ]] || exit 1
 	for p in $(holders); do kill -STOP "$p" 2>/dev/null || true; done
 	: >"$STUB_FAKE/paused"
@@ -547,6 +568,7 @@ cp)
 		for p in $(holders); do ! writing "$p" || : >"$STUB_FAKE/cp-saw-writer"; done
 		src=${2#*:}
 		which=$(basename "$(dirname "$src")")
+		[[ ${STUB_CP_HANG:-} != "$which" ]] || hang
 		[[ ${STUB_CP_FAIL:-} != "$which" ]] || exit 1
 		[[ -d $STUB_FAKE${src%/.} ]] || exit 1
 		mkdir -p "$3"
@@ -564,6 +586,7 @@ exec)
 	shift # the container id
 	case "$*" in
 	*fold-owned-scan*)
+		[[ -z ${STUB_SCAN_HANG:-} ]] || hang
 		[[ -z ${STUB_SCAN_FAIL:-} ]] || exit 1
 		exec "$@"
 		;;
@@ -682,7 +705,7 @@ DESC
 	# n_signal NAME SIGNAL ENV... -- COMMAND...: runs COMMAND in the nested repository with the stub docker first on the
 	# path, sends SIGNAL to it once the workload is running in the container, and leaves rc.
 	n_signal() {
-		local name=$1 sig=$2 p
+		local name=$1 sig=$2 p wd
 		shift 2
 		local envs=()
 		while (($#)) && [[ $1 != -- ]]; do
@@ -693,6 +716,12 @@ DESC
 		n_reset
 		(cd "$nroot" && exec env "PATH=$bin:$PATH" "STUB_FAKE=$fake" "STUB_BIN=$bin" "STUB_LOG=$tmp/nlog" FOLD_SCALE_STOP_GRACE=60 FOLD_NESTED_STOP_GRACE=5 FOLD_NESTED_KILL_WAIT=5 "${envs[@]}" "$@") >"$tmp/$name.out" 2>&1 &
 		p=$!
+		# A runner that never returns must fail this test, not hang it: it is KILLed after 150s and then exits 137.
+		(
+			sleep 150
+			kill -KILL "$p" 2>/dev/null
+		) >/dev/null 2>&1 &
+		wd=$!
 		rc=0
 		if n_wait; then
 			# Before anything is cancelled: the runner's own ownership scan (the script it sends, run unchanged, with kill replaced by a recorder)
@@ -707,7 +736,9 @@ DESC
 			wait "$p" 2>/dev/null || true
 			rc=-1
 		fi
-		[[ -e $fake/removed ]] || t_fail "$name: the container was not removed"
+		kill "$wd" 2>/dev/null || true
+		wait "$wd" 2>/dev/null || true
+		[[ $n_want_removed == 0 || -e $fake/removed ]] || t_fail "$name: the container was not removed"
 	}
 	# n_run NAME ENV... -- COMMAND...: the same, without a signal (the run ends by itself).
 	n_run() {
@@ -722,7 +753,32 @@ DESC
 		n_reset
 		rc=0
 		(cd "$nroot" && env "PATH=$bin:$PATH" "STUB_FAKE=$fake" "STUB_BIN=$bin" "STUB_LOG=$tmp/nlog" "${envs[@]}" timeout 120 "$@") >"$tmp/$name.out" 2>&1 || rc=$?
-		[[ -e $fake/removed ]] || t_fail "$name: the container was not removed"
+		[[ $n_want_removed == 0 || -e $fake/removed ]] || t_fail "$name: the container was not removed"
+	}
+	# The hanging-call cases: how long the run took, whether the stalled docker clients (and their children) are gone, and that only the run's own container was
+	# ever named after setup. n_took NAME START LIMIT: the case, begun at START ($SECONDS), ended within LIMIT seconds.
+	n_took() {
+		(($3 >= SECONDS - $2)) || t_fail "$1: took $((SECONDS - $2))s, more than the $3s its cleanup window allows"
+	}
+	n_hung_gone() {
+		local p n=0
+		for p in $(cat "$fake/hung.pids" 2>/dev/null || true); do
+			n=$((n + 1))
+			if t_alive "$p"; then
+				t_fail "$1: the stalled docker client process $p was not ended"
+				kill -KILL "$p" 2>/dev/null || true
+			fi
+		done
+		((n >= 2)) || t_fail "$1: no stalled docker client was started (the case did not exercise a hang)"
+	}
+	n_only_ours() {
+		if grep -E '^(rm|ps|pause|unpause|cp c|exec) ' "$tmp/nlog" | grep -v 'c\{64\}' | grep -vq 'work.bundle\|^exec -e'; then t_fail "$1: a docker call named something but the run's own container"; fi
+		t_alive "$bystander" || t_fail "$1: a process that does not belong to the run was ended"
+	}
+	# n_clear_holders: end what a case that cannot remove the container leaves in it (the stub's removal is what normally ends them).
+	n_clear_holders() {
+		local p
+		for p in $(cat "$fake/workload.pid" "$fake/desc.pid" 2>/dev/null || true); do kill -KILL "$p" 2>/dev/null || true; done
 	}
 	# n_collected NAME DIR: what existed only in the container is in DIR, it was copied before the container was removed, and nothing
 	# in the container could still write when it was.
@@ -829,6 +885,94 @@ DESC
 		grep -q 'was killed' "$tmp/nest-sigexit-$sigrc/LEFTOVERS-STOPPED.txt" 2>/dev/null || t_fail "nest-sigexit-$sigrc: LEFTOVERS-STOPPED.txt does not say the writer was killed"
 	done
 
+	# Every docker call of the cleanup has a deadline. A docker client that stalls (the daemon does not answer) is ended with its whole process group, also when it
+	# ignores TERM; the failure is counted and recorded; the time reserved for removal is not spent on anything before it; and a container that cannot be shown to be
+	# gone is named. The small budgets below are the production ones in proportion (stop, copies, a reserve for removal, one call). Each case must return on its own.
+	local t0 timing='FOLD_NESTED_CALL_TIMEOUT=2 FOLD_NESTED_STOP_GRACE=2 FOLD_NESTED_KILL_WAIT=2'
+	# The lookup stalls and ignores TERM, signalled through the wrapper (the way a person cancels): the stop cannot be established, so the container is frozen
+	# before the copy, the copy is recorded as incomplete with the stalled lookups said, and the container is still removed within the budget.
+	t0=$SECONDS
+	# shellcheck disable=SC2086 # $timing is several NAME=value words
+	n_signal nest-hang-lookup TERM STUB_SCAN_HANG=1 STUB_HANG_STUBBORN=1 STUB_DESC=1 $timing FOLD_NESTED_CLEANUP_BUDGET=20 FOLD_NESTED_RM_RESERVE=6 -- bash scripts/reason-review-scale.sh --evidence-dir "$tmp/nest-hang-lookup" --only qc1
+	t_rc nest-hang-lookup 143
+	n_took nest-hang-lookup "$t0" 28
+	n_hung_gone nest-hang-lookup
+	n_only_ours nest-hang-lookup
+	n_before '^pause c\{64\}$' "$first_cp" || t_fail "nest-hang-lookup: the container was not frozen before the copy"
+	n_before '^cp c\{64\}:/work/out/\. ' '^rm -fv ' || t_fail "nest-hang-lookup: the container was removed before the copy"
+	grep -q 'could not be confirmed stopped' "$tmp/nest-hang-lookup/qc1/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-hang-lookup: the unestablished stop was not recorded"
+	grep -q 'stalled past their deadline' "$tmp/nest-hang-lookup/qc1/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-hang-lookup: the record does not say the lookups stalled"
+	[[ -s $tmp/nest-hang-lookup/qc1/measurements.jsonl ]] || t_fail "nest-hang-lookup: what could be copied was not"
+	t_check nest-hang-lookup "the wrapper's record says the collection failed" '.steps[0].summary.nestedCollectionFailed == true and .steps[0].verdict == "interrupted"'
+	# The same stall after a run that ended by itself, the client not ignoring TERM: the exit is a failure, not the run's 0, and the stalled client is gone.
+	t0=$SECONDS
+	# shellcheck disable=SC2086
+	n_run nest-hang-lookup-end STUB_QUICK=1 STUB_DESC=1 STUB_SCAN_HANG=1 $timing FOLD_NESTED_CLEANUP_BUDGET=20 FOLD_NESTED_RM_RESERVE=6 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-lookup-end" --qc1
+	[[ $rc == 1 ]] || t_fail "nest-hang-lookup-end: exit $rc, want 1 (124 means the runner never returned)"
+	n_took nest-hang-lookup-end "$t0" 28
+	n_hung_gone nest-hang-lookup-end
+	n_only_ours nest-hang-lookup-end
+	grep -q 'stalled past their deadline' "$tmp/nest-hang-lookup-end/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-hang-lookup-end: the stalled lookups were not recorded"
+	# A copy that stalls and ignores TERM: it is ended at the start of the removal reserve, recorded as stalled and partial, the other copy and the removal still happen.
+	t0=$SECONDS
+	# shellcheck disable=SC2086
+	n_signal nest-hang-cp TERM STUB_CP_HANG=out STUB_HANG_STUBBORN=1 $timing FOLD_NESTED_CLEANUP_BUDGET=16 FOLD_NESTED_RM_RESERVE=6 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-cp" --qc1
+	t_rc nest-hang-cp 143
+	n_took nest-hang-cp "$t0" 24
+	n_hung_gone nest-hang-cp
+	n_only_ours nest-hang-cp
+	grep -q 'work/out.*stalled past its deadline' "$tmp/nest-hang-cp/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-hang-cp: the stalled copy was not recorded as stalled"
+	[[ -s $tmp/nest-hang-cp/prep/browser-runtime.json ]] || t_fail "nest-hang-cp: the preparation that could be copied was not"
+	n_before '^cp c\{64\}:/work/out/\. ' '^rm -fv ' || t_fail "nest-hang-cp: the container was removed before the copy was tried"
+	# A stalled preparation copy (not ignoring TERM) after a normal end does not take the evidence's time: the run's evidence is still copied.
+	t0=$SECONDS
+	# shellcheck disable=SC2086
+	n_run nest-hang-cp-prep STUB_QUICK=1 STUB_CP_HANG=prep $timing FOLD_NESTED_CLEANUP_BUDGET=20 FOLD_NESTED_RM_RESERVE=6 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-cp-prep" --qc1
+	[[ $rc == 1 ]] || t_fail "nest-hang-cp-prep: exit $rc, want 1 for a run that exited 0 but could not be collected"
+	n_took nest-hang-cp-prep "$t0" 28
+	n_hung_gone nest-hang-cp-prep
+	grep -q 'work/prep.*stalled past its deadline' "$tmp/nest-hang-cp-prep/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-hang-cp-prep: the stalled copy was not recorded as stalled"
+	[[ -s $tmp/nest-hang-cp-prep/done ]] || t_fail "nest-hang-cp-prep: the evidence copy was starved by the stalled one"
+	# A pause that stalls: it is ended and the record says the freeze is unknown, not that it worked.
+	t0=$SECONDS
+	# shellcheck disable=SC2086
+	n_run nest-hang-pause STUB_QUICK=1 STUB_DESC=1 STUB_SCAN_FAIL=1 STUB_PAUSE_HANG=1 STUB_HANG_STUBBORN=1 $timing FOLD_NESTED_CLEANUP_BUDGET=20 FOLD_NESTED_RM_RESERVE=6 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-pause" --qc1
+	[[ $rc == 1 ]] || t_fail "nest-hang-pause: exit $rc, want 1"
+	n_took nest-hang-pause "$t0" 28
+	n_hung_gone nest-hang-pause
+	grep -q 'may NOT be frozen' "$tmp/nest-hang-pause/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-hang-pause: the record does not say the freeze is unknown"
+	# Removal that stalls and ignores TERM, every time: the run returns within its budget, names the container (its name and id, and the command to end it) on stderr
+	# and in COLLECTION-FAILED.txt, and a normal end does not stay a pass. What the run left in the container is ended by hand here, not by the runner.
+	n_want_removed=0
+	t0=$SECONDS
+	# shellcheck disable=SC2086
+	n_signal nest-hang-rm TERM STUB_RM_HANG=1 STUB_HANG_STUBBORN=1 $timing FOLD_NESTED_CLEANUP_BUDGET=12 FOLD_NESTED_RM_RESERVE=4 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-rm" --qc1
+	t_rc nest-hang-rm 143
+	n_took nest-hang-rm "$t0" 20
+	n_hung_gone nest-hang-rm
+	n_only_ours nest-hang-rm
+	grep -q 'fold-drill-[0-9a-f]* (c\{64\}) could not be removed.*docker rm -fv c\{64\}' "$tmp/nest-hang-rm.out" || t_fail "nest-hang-rm: stderr does not name the container and the command to remove it"
+	grep -q 'fold-drill-[0-9a-f]* (c\{64\}) could not be removed.*docker rm -fv c\{64\}' "$tmp/nest-hang-rm/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-hang-rm: COLLECTION-FAILED.txt does not name the container"
+	n_before '^cp c\{64\}:/work/out/\. ' '^rm -fv ' || t_fail "nest-hang-rm: the copy was not done before removal was tried"
+	n_clear_holders
+	t0=$SECONDS
+	# shellcheck disable=SC2086
+	n_run nest-hang-rm-end STUB_QUICK=1 STUB_RM_HANG=1 $timing FOLD_NESTED_CLEANUP_BUDGET=12 FOLD_NESTED_RM_RESERVE=4 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-rm-end" --qc1
+	[[ $rc == 1 ]] || t_fail "nest-hang-rm-end: exit $rc, want 1 for a run whose container could not be removed (124 means the runner never returned)"
+	n_took nest-hang-rm-end "$t0" 20
+	n_hung_gone nest-hang-rm-end
+	grep -q 'could not be removed' "$tmp/nest-hang-rm-end/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-hang-rm-end: the unremoved container was not recorded"
+	[[ -s $tmp/nest-hang-rm-end/done ]] || t_fail "nest-hang-rm-end: the evidence was not copied before removal"
+	n_want_removed=1
+	# A first removal that stalls is killed and tried again inside the reserve: the container goes, and nothing is recorded as a failure.
+	t0=$SECONDS
+	# shellcheck disable=SC2086
+	n_run nest-hang-rm-retry STUB_QUICK=1 STUB_RM_HANG_FIRST=1 STUB_HANG_STUBBORN=1 $timing FOLD_NESTED_CLEANUP_BUDGET=12 FOLD_NESTED_RM_RESERVE=6 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-hang-rm-retry" --qc1
+	[[ $rc == 0 ]] || t_fail "nest-hang-rm-retry: exit $rc, want 0 (the second removal worked)"
+	n_took nest-hang-rm-retry "$t0" 20
+	n_hung_gone nest-hang-rm-retry
+	[[ ! -e $tmp/nest-hang-rm-retry/COLLECTION-FAILED.txt ]] || t_fail "nest-hang-rm-retry: a removal that worked on the second try was recorded as a failure"
+
 	# The normal end with a copy that fails: a run that exited 0 and wrote its status must not stay a pass, through the launcher and the wrapper.
 	n_run nest-normal-cpfail STUB_QUICK=1 STUB_CP_FAIL=prep -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-normal-cpfail" --qc1
 	[[ $rc == 1 ]] || t_fail "nest-normal-cpfail: exit $rc, want 1 for a run that exited 0 but could not be collected"
@@ -895,6 +1039,15 @@ done
 for f in "$nested_tool" "$qc1_tool" "$drill_tool"; do
 	[[ -f $f ]] || die "$f is missing from this checkout"
 done
+
+# The nested runner's whole cleanup (stop, copies, removal; every Docker call in it has a deadline) must end before this wrapper's grace does, or the wrapper
+# KILLs it mid-removal and the container stays behind. Unless the person set a budget, it is the grace less ten seconds.
+if [[ -z ${FOLD_NESTED_CLEANUP_BUDGET:-} ]]; then
+	stop_grace=${FOLD_SCALE_STOP_GRACE:-180}
+	[[ $stop_grace =~ ^[0-9]+$ ]] || stop_grace=180
+	FOLD_NESTED_CLEANUP_BUDGET=$((stop_grace > 40 ? stop_grace - 10 : stop_grace * 3 / 4))
+	export FOLD_NESTED_CLEANUP_BUDGET
+fi
 
 revision=$(git rev-parse HEAD)
 tree=$(git rev-parse 'HEAD^{tree}')

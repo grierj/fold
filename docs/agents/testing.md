@@ -259,6 +259,15 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   A workload that ends 137 or 143 while no signal reached the runner (a killed docker client, an
   OOM kill) gets `FOLD_NESTED_SIGNAL_WAIT` seconds (default 5) for a pending signal, never an open-ended
   wait, then goes through the same bounded stop and collection and keeps its own status.
+  Every Docker call the cleanup makes (lookups, pause, unpause, both copies, removal) is a client
+  with an absolute deadline: one that has not answered is killed with its whole process group,
+  also when it ignores TERM, and counted (a stalled lookup, pause or copy is said in
+  `COLLECTION-FAILED.txt`). The whole cleanup has `FOLD_NESTED_CLEANUP_BUDGET` seconds (default 170; the
+  wrapper sets it to its grace less ten seconds unless you do), a single call
+  `FOLD_NESTED_CALL_TIMEOUT` (15), and the last `FOLD_NESTED_RM_RESERVE` seconds (30) are for removal
+  alone: stop and copies end before them. A container that cannot be shown to be gone (a
+  listing by its id that ran and came back empty) is named, with its id and
+  `docker rm -fv <id>`, on stderr and in `COLLECTION-FAILED.txt`, and the run exits 1 instead of 0.
   Limits: a KILL sent to either script cannot do any of this; a tool that replaces its whole
   environment would hide from the marker; the drill's own nested containers belong to the
   daemon and go with the container.
@@ -288,7 +297,12 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   incomplete, also when the freeze fails); that a docker exec ending 137 or 143 with no signal to
   the runner and a TERM-ignoring writer left behind finishes in bounded time, kills the writer
   before the copy and keeps the workload's status; that a leftover after a normal end is ended and
-  noted; and that a failed copy or an unestablished stop turns a run that exited 0 (or a
+  noted; that a lookup, a pause, a copy and a removal that stall (the stub's client has a child of
+  its own, and ignores TERM in some cases) are all ended, the run returns within its budget on its
+  own, the stall is recorded, the evidence copy is not starved by a stalled preparation copy, a
+  removal that stalls once is retried, one that never works names the container and fails the
+  run, and a process or container that is not the run's is untouched; and that a failed copy or an
+  unestablished stop turns a run that exited 0 (or a
   crossings-only 10) into exit 1, and fails the wrapper's step, with the reasons kept. Real runs
   on a droplet-class host are a hand check (`docs/FIRST-CHURCH-CHECKS.md`), not covered by this.
 
