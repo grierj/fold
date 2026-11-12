@@ -53,27 +53,34 @@
 #
 # Interruption (INT, TERM or HUP to this script's own PID) stops the running
 # step and everything it started, then finalizes the record as incomplete and
-# exits 130, 143 or 129. Each step runs under a supervisor: a background
-# subshell that bash gives a process group of its own (`set -m`), whose
-# command's processes all stay in that group. The supervisor stays alive after
-# the command exits, until this script releases it, so the group's id is held
-# by a live process of ours for as long as we may signal it: a TERM-ignoring
-# grandchild that outlives its parent is still in the group, and the number
-# cannot be given to an unrelated process in the meantime. Signals go to the
+# exits 130, 143 or 129. Each step is one background pipeline, so one job in
+# bash's table with a process group of its own (`set -m`): a holder, which
+# only keeps the group alive and notices when the supervisor is gone, piped to
+# the supervisor, which runs the command and reports its status. Both stay
+# alive after the command exits, until this script releases them, so the
+# group's id is held by live processes of ours for as long as we may signal it:
+# a TERM-ignoring grandchild that outlives its parent is still in the group, the
+# number cannot be given to an unrelated process in the meantime, and losing the
+# supervisor alone (or the holder alone) leaves the job, and with it the whole
+# group, still signalable: a lost supervisor is noticed within about a second,
+# its step fails with exit 125, and the group is ended. Signals go to the
 # group only through bash's job table (`kill %%`), which refuses a job that
 # has already ended; no process list, cached PID or kill -0 is consulted, so
 # nothing outside the group (this script, its caller, a bystander that happens
 # to share a PPID chain or a number) is ever signalled. Cleanup is TERM, up to
 # about 5s for the step's command to leave, half a second more for the rest of
-# the group, then KILL, then a bounded wait (5s) for the supervisor to be
-# reaped; the longest cleanup is about 11s whatever the processes do (a process
-# in uninterruptible sleep that outlives KILL is reported, not waited for).
+# the group, then KILL, then a bounded wait (5s) for the job to be reaped; the
+# longest cleanup is about 11s whatever the processes do. A group that outlives
+# KILL (uninterruptible sleep) is named on stderr with its id and fails the
+# step. Losing the supervisor and the holder together, with the command still
+# running, leaves nothing stable to signal: that is named on stderr, fails the
+# step and is not cleaned up, because a number could by then be anyone's.
 # After a step's command ends by itself the group is KILLed too, so nothing a
 # step leaves behind survives it. A process that leaves the group on purpose
-# (setsid, setpgid) is outside what this can own.
-# A signal that arrives between forking the supervisor and registering it is
+# (setsid, setpgid) is outside what this can own. A step's stdin is /dev/null.
+# A signal that arrives between forking the pipeline and registering it is
 # held (the handler records it, nothing is ignored, children keep default
-# dispositions) and acted on as soon as the supervisor is registered, so the
+# dispositions) and acted on as soon as the job is registered, so the
 # step cannot escape; a signal during the final record is held until the record
 # is written, which then stands.
 # Needs: bash with job control (`set -m` is verified before any work starts)
@@ -262,28 +269,37 @@ EOF
 	mv "$evidence/evidence.json.tmp" "$evidence/evidence.json"
 }
 
-# Cancellation and process ownership (see the header). Each step's command runs
-# under a supervisor, a background subshell that has a process group of its own
-# and stays alive until stop_step releases it. The group is signalled only
-# through bash's job table (kill %%), never by a number taken from a process
-# list, so a replacement process can never receive it. The supervisor is the
-# only background job, which run_step checks before every launch.
+# Cancellation and process ownership (see the header). Each step is one
+# background pipeline, so one job in bash's table with a process group of its
+# own: a holder, which only keeps the group alive and watches the supervisor,
+# piped to the supervisor, which runs the command and reports its status. Both
+# stay alive until stop_step releases them, and the job stays in the table while
+# either does, so losing the supervisor alone (or the holder alone) leaves the
+# group signalable. The group is signalled only through that job (kill %%),
+# never by a number taken from a process list, so a replacement process can
+# never receive it. The pipeline is the only background job, which run_step
+# checks before every launch. Losing both processes at once, with the command
+# still running, cannot be undone safely (nothing stable is left to signal); it
+# is reported and fails the step.
 set -m
 [[ $- == *m* ]] || die "bash job control (set -m) is not available here; the run cannot own its steps' processes"
 
-active_job=  # the supervisor's PID while a step is registered, else empty
+active_job=  # the supervisor's PID (the pipeline's last process) while a step is registered, else empty
+active_pgid= # the group's id, for messages only
 defer=0      # 1 while a signal must be held (launching a step, writing the final record)
 pending_sig=
 pending_code=
 cancelling=0
+stuck_group= # set when a group outlived KILL
 
-# stop_step MODE ends the registered step's whole group and its supervisor.
+# stop_step MODE ends the registered step's whole group and its job.
 # MODE term first asks the command to leave; kill goes straight to KILL. It is
-# bounded (about 11s) and does not depend on any process being listable.
+# bounded (about 11s) and does not depend on any process being listable. A
+# group that outlives KILL is named on stderr and left in stuck_group.
 # shellcheck disable=SC2329 # reached through cancel_run, run_step and the EXIT trap
 stop_step() {
 	[[ -n $active_job ]] || return 0
-	local mode=$1 i
+	local mode=$1 i stuck=0
 	{
 		# The supervisor installs its TERM handler first thing; signal it only
 		# after it says so, or the group TERM would end the holder too early.
@@ -307,9 +323,13 @@ stop_step() {
 		if [[ -z $(jobs -rp) ]]; then
 			wait "$active_job" || true
 		else
-			echo "reason-review-hardening: the step's process group $active_job did not exit after KILL" >&2
+			stuck=1
 		fi
-	} 2>/dev/null
+	} 2>/dev/null # only bash's job and kill notices; the diagnostic below is outside it
+	if ((stuck)); then
+		stuck_group=${active_pgid:-$active_job}
+		echo "reason-review-hardening: the step's process group $stuck_group did not exit after KILL; end it by hand" >&2
+	fi
 	active_job=
 }
 
@@ -355,39 +375,70 @@ write_evidence incomplete
 run_step() {
 	local name=$1 log=$2
 	shift 2
-	local s0 s1 job
+	local s0 s1 job i
 	step_name=$name step_log=$log
 	step_cmd=$(printf '%q ' "$@")
 	step_begin=$(now)
 	s0=$SECONDS
 	echo "== $name: $step_cmd"
 	[[ -z $(jobs -rp) ]] || die "a background job is already running; a step's group must be the only one"
-	rm -f "$ctl/ready" "$ctl/status" "$ctl/status.tmp"
+	rm -f "$ctl/ready" "$ctl/ready.holder" "$ctl/status" "$ctl/status.tmp" "$ctl/lost" "$ctl/pgid"
+	active_pgid=
 	# From the fork to the registration a signal is only recorded, so it cannot
 	# find a step that is running but not yet ours to stop.
 	defer=1
 	(
+		# The holder, first in the pipeline and so the group's leader. It writes a
+		# byte to the supervisor every second: if the supervisor is gone the write
+		# fails, and the holder says so (the lost file) while it goes on keeping the
+		# group in the job table until stop_step ends it.
+		set +e +u
+		trap '' PIPE
+		trap : TERM INT HUP
+		printf '%s\n' "$BASHPID" >"$ctl/pgid"
+		: >"$ctl/ready.holder"
+		while :; do
+			sleep 1
+			printf . 2>/dev/null || break
+		done
+		: >"$ctl/lost"
+		while :; do sleep 1; done
+	) 2>/dev/null | (
+		# The supervisor: runs the command, reports its status, then holds.
 		set +e +u
 		trap : TERM INT HUP # handled, not ignored: the command's own processes keep default dispositions
+		for ((i = 0; i < 50; i++)); do
+			[[ -e $ctl/ready.holder ]] && break
+			sleep 0.02
+		done
 		: >"$ctl/ready"
 		"$@" </dev/null >"$evidence/$log" 2>&1
 		rc=$?
 		printf '%s\n' "$rc" >"$ctl/status.tmp" && mv "$ctl/status.tmp" "$ctl/status"
-		# Hold the group's id until released; what the command left behind is in the group too.
-		{ while :; do sleep 1; done; } 2>/dev/null
+		{ while :; do sleep 1; done; } </dev/null 2>/dev/null
 	) &
 	job=$!
 	[[ -z ${FOLD_HARDENING_TEST_LAUNCH_HOOK:-} ]] || "$FOLD_HARDENING_TEST_LAUNCH_HOOK" || true # test seam: runs inside the launch window
 	active_job=$job
 	defer=0
-	printf '%s\n' "$job" >"$evidence/active.pgid"
 	if [[ -n $pending_sig ]]; then
 		cancel_run "$pending_sig" "$pending_code"
 	fi
+	for ((i = 0; i < 20; i++)); do
+		[[ -e $ctl/pgid && -s $ctl/pgid ]] && break
+		sleep 0.05
+	done
+	[[ -s $ctl/pgid ]] && active_pgid=$(<"$ctl/pgid")
+	printf '%s\n' "${active_pgid:-$job}" >"$evidence/active.pgid"
+	local lost=0
 	{
 		while [[ ! -e $ctl/status ]]; do
 			if [[ -z $(jobs -rp) ]]; then
-				break # the supervisor is gone without a status
+				break # the whole job is gone without a status
+			fi
+			if [[ -e $ctl/lost ]]; then
+				lost=1 # the supervisor is gone; the holder still holds the group
+				break
 			fi
 			sleep 0.1
 		done
@@ -397,9 +448,18 @@ run_step() {
 		[[ $step_status =~ ^[0-9]+$ ]] || step_status=125
 	else
 		step_status=125
-		echo "the step's supervisor ended without reporting a status" >>"$evidence/$log"
+		if ((lost)); then
+			echo "the step's supervisor ended without reporting a status; its group was ended" >>"$evidence/$log"
+		else
+			echo "the step's supervisor and holder both ended without a status; processes of group ${active_pgid:-$job} may remain" >>"$evidence/$log"
+			echo "reason-review-hardening: step $name: the supervisor and the holder of group ${active_pgid:-$job} both ended; nothing stable is left to signal, so anything the command started may still run" >&2
+		fi
 	fi
 	stop_step kill
+	if [[ -n $stuck_group ]]; then
+		step_status=125
+		echo "process group $stuck_group outlived KILL" >>"$evidence/$log"
+	fi
 	s1=$SECONDS
 	step_end=$(now)
 	step_secs=$((s1 - s0))

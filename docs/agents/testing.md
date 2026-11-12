@@ -176,7 +176,7 @@ that the script holds through a supervisor and signals only through bash's job t
 INT, TERM or HUP to the script ends the step, a child that outlived its parent and a TERM-ignoring
 process alike, within about 11 seconds and leaves an `incomplete` record; the header has the
 manual probes, and `TestReasonHardening*` (account_erasure_reasons_envelope_test.go) drives the
-script with stub tools, real signals and bystander processes. The race detector says nothing about PostgreSQL
+script with stub tools, real signals, a supervisor killed on its own with its command and a TERM-ignoring descendant still running, and bystander processes (the tests identify processes by PID and start time and end the script only through its handle, never a PID read back from a file). The race detector says nothing about PostgreSQL
 lock correctness: the deterministic lock tests in the normal checks decide that.
 
 ### Source guards

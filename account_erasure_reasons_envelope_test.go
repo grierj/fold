@@ -694,15 +694,20 @@ passes() {
 		i=$((i + 1))
 	done
 }
+idle() {
+	i=0
+	while [ $i -lt 600 ]; do sleep 0.2; i=$((i + 1)); done
+}
 stubborn() {
-	sh -c 'trap "" TERM; echo $$ >"$1"; while :; do sleep 0.2; done' sh "$STUB_DIR/grandchild.pid" &
+	sh -c 'trap "" TERM; echo $ >"$1"; i=0; while [ $i -lt 600 ]; do sleep 0.2; i=$((i+1)); done' sh "$STUB_DIR/grandchild.pid" &
 }
 if [ "$step" = "$STUB_STEP" ]; then
 	echo $$ >"$STUB_DIR/root.pid"
 	case "$STUB_SCENARIO" in
 	stray) stubborn; passes "$@"; : >"$STUB_DIR/started"; exit 0 ;;
-	termroot) stubborn; trap 'exit 0' TERM; : >"$STUB_DIR/started"; while :; do sleep 0.2; done ;;
-	deaf) trap '' TERM; stubborn; : >"$STUB_DIR/started"; while :; do sleep 0.2; done ;;
+	termroot) stubborn; trap 'exit 0' TERM; : >"$STUB_DIR/started"; idle ;;
+	deaf) trap '' TERM; stubborn; : >"$STUB_DIR/started"; idle ;;
+	lostsup) stubborn; : >"$STUB_DIR/started"; kill -KILL $PPID; idle ;;
 	killgroup) : >"$STUB_DIR/started"; kill -KILL 0 ;;
 	esac
 fi
@@ -739,6 +744,9 @@ type hardeningRig struct {
 // false leaves node off the PATH altogether.
 func newHardeningRig(t *testing.T, withNode bool) *hardeningRig {
 	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("these tests identify processes by their /proc start time")
+	}
 	dir := t.TempDir()
 	r := &hardeningRig{t: t, repo: filepath.Join(dir, "repo"), stubs: filepath.Join(dir, "stubs"), state: filepath.Join(dir, "state"), evidence: filepath.Join(dir, "evidence")}
 	for _, d := range []string{filepath.Join(r.repo, "scripts"), filepath.Join(r.repo, "web", "node_modules"), r.stubs, r.state} {
@@ -796,20 +804,63 @@ type hardeningRun struct {
 	done chan struct{}
 	err  error
 	out  string
+	// groupID is a process that shares the script's own process group (not a
+	// step's), when one was asked for: nothing the script does to a step may
+	// touch it.
+	groupID procID
+}
+
+// procID is a process's identity: its PID and the start time the kernel
+// recorded for it, so a later process that was given the same number is not
+// mistaken for it. The tests only observe processes by identity; the ones they
+// start are ended through their os/exec handles, and the stub processes only by
+// the script under test (they also give up on their own after a couple of
+// minutes), never by a PID read back from a file.
+type procID struct {
+	pid   int
+	start string
+}
+
+// procStat reads /proc/PID/stat as (state, start time).
+func procStat(pid int) (state, start string, ok bool) {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return "", "", false
+	}
+	s := string(b)
+	i := strings.LastIndexByte(s, ')')
+	if i < 0 {
+		return "", "", false
+	}
+	f := strings.Fields(s[i+1:]) // state is field 3 of the file, start time field 22
+	if len(f) < 20 {
+		return "", "", false
+	}
+	return f[0], f[19], true
+}
+
+func captureProc(pid int) (procID, bool) {
+	_, start, ok := procStat(pid)
+	return procID{pid, start}, ok
+}
+
+// ended: the process this identity names is gone, replaced by another process
+// with its number, or a zombie nobody has reaped (a container's PID 1 may not
+// reap), which can no longer run.
+func (p procID) ended() bool {
+	state, start, ok := procStat(p.pid)
+	return !ok || start != p.start || state == "Z" || state == "X"
 }
 
 // start runs the script in a process group of its own, so a signal to the
 // test's group and one to the script's cannot be confused. extraEnv is
-// STUB_STEP, STUB_SCENARIO and the like. A bystander in the script's own group
-// is started beside it when bystander is set (its PID goes to bystander.pid).
+// STUB_STEP, STUB_SCENARIO and the like. When bystander is set, a process is
+// put in the script's own group beside it.
 func (r *hardeningRig) start(extraEnv []string, bystander bool, args ...string) *hardeningRun {
 	r.t.Helper()
 	script := filepath.Join(r.repo, hardeningScriptPath)
 	argv := append([]string{script, "--evidence-dir", r.evidence, "--fuzz-time", "1s", "--race-count", "1", "--seeds", "2"}, args...)
 	cmd := exec.Command("bash", argv...)
-	if bystander {
-		cmd = exec.Command("sh", append([]string{"-c", `sleep 300 & echo $! >"$STUB_DIR/bystander.pid"; exec "$@"`, "sh", "bash"}, argv...)...)
-	}
 	cmd.Dir = r.repo
 	cmd.Env = append([]string{"PATH=" + r.path, "HOME=" + r.state, "STUB_DIR=" + r.state, "STUB_BEHAVE=" + filepath.Join(r.stubs, "behave.sh")}, extraEnv...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -824,15 +875,6 @@ func (r *hardeningRig) start(extraEnv []string, bystander bool, args ...string) 
 	if err := cmd.Start(); err != nil {
 		r.t.Fatal(err)
 	}
-	r.t.Cleanup(func() {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		<-run.done
-		for _, f := range []string{"root.pid", "grandchild.pid", "bystander.pid"} {
-			if pid, ok := readHardeningPID(filepath.Join(r.state, f)); ok {
-				_ = syscall.Kill(pid, syscall.SIGKILL)
-			}
-		}
-	})
 	go func() {
 		run.err = cmd.Wait()
 		_ = outFile.Close()
@@ -840,6 +882,35 @@ func (r *hardeningRig) start(extraEnv []string, bystander bool, args ...string) 
 		run.out = string(b)
 		close(run.done)
 	}()
+	if bystander {
+		b := exec.Command("sleep", "300")
+		b.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: cmd.Process.Pid}
+		if err := b.Start(); err != nil {
+			r.t.Fatalf("starting a bystander in the script's process group: %v", err)
+		}
+		var ok bool
+		if run.groupID, ok = captureProc(b.Process.Pid); !ok {
+			r.t.Fatal("the bystander is not running")
+		}
+		r.t.Cleanup(func() { _ = b.Process.Kill(); _ = b.Wait() })
+	}
+	// Cleanup holds the script's own handle: if the test failed with the script
+	// still running, ask it to stop, which ends the step it owns, and only then
+	// kill it. No PID read from a file and no saved group number is signalled.
+	r.t.Cleanup(func() {
+		select {
+		case <-run.done:
+			return
+		default:
+		}
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		select {
+		case <-run.done:
+		case <-time.After(30 * time.Second):
+			_ = cmd.Process.Kill()
+			<-run.done
+		}
+	})
 	return run
 }
 
@@ -860,15 +931,6 @@ func (run *hardeningRun) exitCode(t *testing.T, within time.Duration) int {
 	return ee.ExitCode()
 }
 
-func readHardeningPID(path string) (int, bool) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return 0, false
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
-	return pid, err == nil && pid > 1
-}
-
 func (r *hardeningRig) waitFor(name string, within time.Duration) {
 	r.t.Helper()
 	deadline := time.Now().Add(within)
@@ -881,59 +943,56 @@ func (r *hardeningRig) waitFor(name string, within time.Duration) {
 	r.t.Fatalf("%s never appeared", name)
 }
 
-func (r *hardeningRig) pid(name string) int {
+// proc waits for a stub to write its PID and captures its identity at once.
+func (r *hardeningRig) proc(name string) procID {
 	r.t.Helper()
 	r.waitFor(name, 10*time.Second)
-	for i := 0; i < 50; i++ { // the file may be created before the number is written
-		if pid, ok := readHardeningPID(filepath.Join(r.state, name)); ok {
-			return pid
+	for i := 0; i < 100; i++ { // the file may be created before the number is written
+		if b, err := os.ReadFile(filepath.Join(r.state, name)); err == nil {
+			if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 1 {
+				if id, ok := captureProc(pid); ok {
+					return id
+				}
+			}
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	r.t.Fatalf("%s holds no PID", name)
-	return 0
+	r.t.Fatalf("%s holds no running process", name)
+	return procID{}
 }
 
-// processEnded: gone, or a zombie nobody has reaped yet (a container's PID 1
-// may not reap), which can no longer run or be signalled to any effect.
-func processEnded(pid int) bool {
-	if b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat"); err == nil {
-		s := string(b)
-		if i := strings.LastIndexByte(s, ')'); i >= 0 && i+2 < len(s) {
-			return s[i+2] == 'Z' || s[i+2] == 'X'
-		}
-	}
-	return errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
-}
-
-func (r *hardeningRig) expectEnded(what string, pid int) {
+func (r *hardeningRig) expectEnded(what string, p procID) {
 	r.t.Helper()
 	for i := 0; i < 150; i++ {
-		if processEnded(pid) {
+		if p.ended() {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	r.t.Errorf("%s (PID %d) is still running", what, pid)
+	r.t.Errorf("%s (PID %d) is still running", what, p.pid)
 }
 
-func (r *hardeningRig) expectAlive(what string, pid int) {
+func (r *hardeningRig) expectAlive(what string, p procID) {
 	r.t.Helper()
-	if processEnded(pid) {
-		r.t.Errorf("%s (PID %d) was signalled and ended; it was not the step's", what, pid)
+	if p.ended() {
+		r.t.Errorf("%s (PID %d) ended; it was not the step's to end", what, p.pid)
 	}
 }
 
 // bystanderInTestGroup is a process in the test's own process group, which no
 // part of the script may signal.
-func bystanderInTestGroup(t *testing.T) int {
+func bystanderInTestGroup(t *testing.T) procID {
 	t.Helper()
 	cmd := exec.Command("sleep", "300")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
-	return cmd.Process.Pid
+	id, ok := captureProc(cmd.Process.Pid)
+	if !ok {
+		t.Fatal("the bystander is not running")
+	}
+	return id
 }
 
 type hardeningEvidence struct {
@@ -969,9 +1028,9 @@ func TestReasonHardeningStepLeftoversDoNotOutliveTheStep(t *testing.T) {
 	if code := run.exitCode(t, 60*time.Second); code != 0 {
 		t.Fatalf("the script exited %d:\n%s", code, run.out)
 	}
-	r.expectEnded("the TERM-ignoring child the first step left behind", r.pid("grandchild.pid"))
+	r.expectEnded("the TERM-ignoring child the first step left behind", r.proc("grandchild.pid"))
 	r.expectAlive("a bystander in the test's process group", bystander)
-	r.expectAlive("a bystander in the script's own process group", r.pid("bystander.pid"))
+	r.expectAlive("a bystander in the script's own process group", run.groupID)
 	ev := r.record()
 	if ev.Result != "pass" || len(ev.Steps) != 4 {
 		t.Fatalf("record: %+v", ev)
@@ -981,8 +1040,8 @@ func TestReasonHardeningStepLeftoversDoNotOutliveTheStep(t *testing.T) {
 			t.Errorf("step %+v", s)
 		}
 	}
-	if _, ok := readHardeningPID(filepath.Join(r.evidence, "active.pgid")); !ok {
-		t.Error("active.pgid was not written")
+	if b, err := os.ReadFile(filepath.Join(r.evidence, "active.pgid")); err != nil || strings.TrimSpace(string(b)) == "" {
+		t.Errorf("active.pgid was not written: %v", err)
 	}
 }
 
@@ -1003,9 +1062,9 @@ func TestReasonHardeningCancellationKillsWhatTheParentLeft(t *testing.T) {
 			r := newHardeningRig(t, true)
 			bystander := bystanderInTestGroup(t)
 			run := r.start([]string{"STUB_STEP=normal", "STUB_SCENARIO=termroot"}, true)
-			root, child := r.pid("root.pid"), r.pid("grandchild.pid")
+			root, child := r.proc("root.pid"), r.proc("grandchild.pid")
 			r.waitFor("started", 10*time.Second)
-			if err := syscall.Kill(run.cmd.Process.Pid, tc.sig); err != nil { // the script's PID only
+			if err := run.cmd.Process.Signal(tc.sig); err != nil { // the script alone, through its handle
 				t.Fatal(err)
 			}
 			if code := run.exitCode(t, 30*time.Second); code != tc.code {
@@ -1014,7 +1073,7 @@ func TestReasonHardeningCancellationKillsWhatTheParentLeft(t *testing.T) {
 			r.expectEnded("the step's command", root)
 			r.expectEnded("the TERM-ignoring child whose parent had already left", child)
 			r.expectAlive("a bystander in the test's process group", bystander)
-			r.expectAlive("a bystander in the script's own process group", r.pid("bystander.pid"))
+			r.expectAlive("a bystander in the script's own process group", run.groupID)
 			if ev := r.record(); ev.Result != "incomplete" {
 				t.Errorf("result %q, want incomplete", ev.Result)
 			}
@@ -1027,10 +1086,10 @@ func TestReasonHardeningCancellationKillsWhatTheParentLeft(t *testing.T) {
 func TestReasonHardeningCancellationIsBoundedWhenTermIsIgnored(t *testing.T) {
 	r := newHardeningRig(t, true)
 	run := r.start([]string{"STUB_STEP=normal", "STUB_SCENARIO=deaf"}, false)
-	root, child := r.pid("root.pid"), r.pid("grandchild.pid")
+	root, child := r.proc("root.pid"), r.proc("grandchild.pid")
 	r.waitFor("started", 10*time.Second)
 	began := time.Now()
-	if err := syscall.Kill(run.cmd.Process.Pid, syscall.SIGTERM); err != nil {
+	if err := run.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
 	if code := run.exitCode(t, 30*time.Second); code != 143 {
@@ -1055,23 +1114,58 @@ func TestReasonHardeningSignalDuringLaunchIsNotLost(t *testing.T) {
 	run := r.start([]string{"STUB_STEP=normal", "STUB_SCENARIO=termroot", "FOLD_HARDENING_TEST_LAUNCH_HOOK=" + filepath.Join(r.stubs, "launch-hook.sh")}, false)
 	r.waitFor("inwindow", 10*time.Second)
 	r.waitFor("started", 10*time.Second)
-	if err := syscall.Kill(run.cmd.Process.Pid, syscall.SIGTERM); err != nil {
+	root, child := r.proc("root.pid"), r.proc("grandchild.pid")
+	if err := run.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
 	if code := run.exitCode(t, 30*time.Second); code != 143 {
 		t.Fatalf("exit %d, want 143:\n%s", code, run.out)
 	}
-	r.expectEnded("the step started in the launch window", r.pid("root.pid"))
-	r.expectEnded("the step's TERM-ignoring child", r.pid("grandchild.pid"))
+	r.expectEnded("the step started in the launch window", root)
+	r.expectEnded("the step's TERM-ignoring child", child)
 	if ev := r.record(); ev.Result != "incomplete" || len(ev.Steps) != 0 {
 		t.Errorf("record %+v, want incomplete with no finished step", ev)
 	}
 }
 
-// A supervisor lost without a status (here the command kills its whole group,
-// supervisor included) is a failed step, reported and recorded, not a hang or a
-// pass; the later steps still run.
-func TestReasonHardeningLostSupervisorFailsTheStep(t *testing.T) {
+// Losing only the supervisor, the process that runs the command, while the
+// command and a TERM-ignoring descendant keep running: the holder that shares
+// the job notices, the step fails (125) and its whole group is ended, within a
+// bounded time, and the later steps still run. Bystanders in the test's group
+// and in the script's own group are untouched.
+func TestReasonHardeningLostSupervisorAloneLeavesNoSurvivors(t *testing.T) {
+	r := newHardeningRig(t, true)
+	bystander := bystanderInTestGroup(t)
+	run := r.start([]string{"STUB_STEP=normal", "STUB_SCENARIO=lostsup"}, true)
+	root, child := r.proc("root.pid"), r.proc("grandchild.pid")
+	r.waitFor("started", 10*time.Second)
+	if code := run.exitCode(t, 60*time.Second); code != 1 {
+		t.Fatalf("exit %d, want 1:\n%s", code, run.out)
+	}
+	r.expectEnded("the command whose supervisor was killed", root)
+	r.expectEnded("the TERM-ignoring descendant of that command", child)
+	r.expectAlive("a bystander in the test's process group", bystander)
+	r.expectAlive("a bystander in the script's own process group", run.groupID)
+	ev := r.record()
+	if ev.Result != "fail" || len(ev.Steps) != 4 || ev.Steps[0].Name != "normal" || ev.Steps[0].Exit != 125 || ev.Steps[0].Verdict != "fail" {
+		t.Fatalf("record %+v", ev)
+	}
+	for _, s := range ev.Steps[1:] {
+		if s.Verdict != "pass" {
+			t.Errorf("a later step did not run to a pass: %+v", s)
+		}
+	}
+	log, err := os.ReadFile(filepath.Join(r.evidence, "normal.log"))
+	if err != nil || !strings.Contains(string(log), "supervisor ended without reporting a status") {
+		t.Errorf("the step's log does not say the supervisor was lost: %v\n%s", err, log)
+	}
+}
+
+// The whole job gone at once (here the command kills its entire group,
+// supervisor and holder included) is a failed step, reported and recorded, not
+// a hang or a pass; the later steps still run. Nothing is left to signal, and
+// the script says so.
+func TestReasonHardeningLostJobFailsTheStep(t *testing.T) {
 	r := newHardeningRig(t, true)
 	bystander := bystanderInTestGroup(t)
 	run := r.start([]string{"STUB_STEP=normal", "STUB_SCENARIO=killgroup"}, false)
@@ -1086,6 +1180,9 @@ func TestReasonHardeningLostSupervisorFailsTheStep(t *testing.T) {
 		if s.Verdict != "pass" {
 			t.Errorf("a later step did not run to a pass: %+v", s)
 		}
+	}
+	if !strings.Contains(run.out, "both ended") {
+		t.Errorf("the script did not report that nothing stable was left to signal:\n%s", run.out)
 	}
 	r.expectAlive("a bystander in the test's process group", bystander)
 }
