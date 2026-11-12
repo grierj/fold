@@ -494,9 +494,10 @@ discovery's first query (`auditConversionRequestsSQL`, in `app-facts.json` as `a
 with the deleted account as its only argument and no second block of its kind in the log. One
 predicate (`audit_identity_ok` in `qc1/lib.sh`) sets `identity.proven` and its proof text when the
 evidence is collected and is rechecked by the judge, so `identityProven` in the status is the
-judge's verdict. If erasure changes what runs between the report and that query,
-`TestQC1PlanMarkersAreWhatTheApplicationSends` and `TestQC1AppFacts` fail; regenerate the facts as
-above and review the proof. `testdata/qc1-current-audit-retention.log` is a real log of the current
+judge's verdict. `TestQC1AppFacts` checks the source-derived query, and
+`TestQC1PlanMarkersAreWhatTheApplicationSends` checks its order after the report. Source review and
+the collector's first-same-backend-block check establish adjacency. If the query changes, regenerate
+the facts as above and review the proof. `testdata/qc1-current-audit-retention.log` is a real log of the current
 build for this check. Judging older evidence with a changed `lib.sh` makes a new, labelled
 diagnostic; the saved matrix and its recorded `lib.sh` hash are never rewritten.
 
