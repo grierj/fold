@@ -614,6 +614,11 @@ exec)
 	case "$*" in
 	*fold-owned-scan*)
 		[[ -z ${STUB_SCAN_HANG:-} ]] || hang
+		# Only the first lookup stalls: whatever else is left running afterwards is what the case is about.
+		if [[ -n ${STUB_SCAN_HANG_FIRST:-} && ! -e $STUB_FAKE/scan-hung ]]; then
+			: >"$STUB_FAKE/scan-hung"
+			hang
+		fi
 		[[ -z ${STUB_SCAN_FAIL:-} ]] || exit 1
 		# A client that answers and exits while a child of its own, one that ignores TERM, stays behind in its process group.
 		if [[ -n ${STUB_SCAN_LEAVE:-} ]]; then
@@ -959,6 +964,33 @@ DESC
 	n_hung_gone nest-hang-lookup-end
 	n_only_ours nest-hang-lookup-end
 	grep -q 'stalled past their deadline' "$tmp/nest-hang-lookup-end/COLLECTION-FAILED.txt" 2>/dev/null || t_fail "nest-hang-lookup-end: the stalled lookups were not recorded"
+	# A signal in the one interval a cleanup client cannot be found: after limited has started the client's group and before it has named it. BASH_ENV loads a
+	# DEBUG trap into the runner alone (functrace on, only the main shell of restore-drill-nested.sh) that sends TERM to the runner as the command that names the
+	# group, LIMITED_JOB=$!, is about to run: exactly that interval, every time. The first lookup is the client that stalls (it ignores TERM and has a child of its
+	# own). The signal must be taken as soon as the group is named: the run ends 143, the stalled client and its child are gone, the later lookups still work, and a
+	# process that is not the run's is left alone. Without the deferral the cleanup does not know the group and the stalled client outlives the run.
+	cat >"$tmp/signal-in-launch.sh" <<'HOOK'
+[[ ${0##*/} == restore-drill-nested.sh ]] || return 0
+set -T
+signal_in_launch() {
+	[[ $BASH_COMMAND == 'LIMITED_JOB=$!' && $BASHPID == "$$" && ! -e $LAUNCH_SIGNAL_MARK ]] || return 0
+	: >"$LAUNCH_SIGNAL_MARK"
+	kill -TERM "$$"
+}
+trap signal_in_launch DEBUG
+HOOK
+	rm -f "$tmp/launch-signal-sent"
+	t0=$SECONDS
+	# shellcheck disable=SC2086
+	n_run nest-launch-signal STUB_QUICK=1 STUB_SCAN_HANG_FIRST=1 STUB_HANG_STUBBORN=1 "BASH_ENV=$tmp/signal-in-launch.sh" "LAUNCH_SIGNAL_MARK=$tmp/launch-signal-sent" $timing FOLD_NESTED_CLEANUP_BUDGET=20 FOLD_NESTED_RM_RESERVE=6 -- bash deploy/digitalocean/restore-drill-nested.sh --out "$tmp/nest-launch-signal" --qc1
+	[[ -e $tmp/launch-signal-sent ]] || t_fail "nest-launch-signal: the signal was never sent while the client was being launched (the case did not exercise the interval)"
+	[[ $rc == 143 ]] || t_fail "nest-launch-signal: exit $rc, want 143 for a signal taken during the launch (124 means the runner never returned)"
+	n_took nest-launch-signal "$t0" 14
+	n_hung_gone nest-launch-signal
+	n_only_ours nest-launch-signal
+	grep -q 'interrupted by TERM' "$tmp/nest-launch-signal/INTERRUPTED.txt" 2>/dev/null || t_fail "nest-launch-signal: the signal was not recorded as the reason the run stopped"
+	[[ -s $tmp/nest-launch-signal/done ]] || t_fail "nest-launch-signal: the evidence was not copied after the signal"
+	n_before '^cp c\{64\}:/work/out/\. ' '^rm -fv ' || t_fail "nest-launch-signal: the container was removed before the evidence was copied"
 	# A copy that stalls and ignores TERM: it is ended at the start of the removal reserve, recorded as stalled and partial, the other copy and the removal still happen.
 	t0=$SECONDS
 	# shellcheck disable=SC2086

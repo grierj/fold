@@ -262,7 +262,10 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   Every Docker call the cleanup makes (lookups, pause, unpause, both copies, removal) is a client
   with an absolute deadline, in a process group the runner holds until it has ended it: one that
   has not answered is killed with its whole group, also when it ignores TERM, and so is a
-  descendant a client leaves behind after it exits; a stall is counted (a stalled lookup, pause or
+  descendant a client leaves behind after it exits. A signal between the launch of a client's
+  group and the moment the runner has named it (where cleanup could not yet find it) is held and
+  taken as soon as the group is named, and the client starts with default INT, TERM and HUP,
+  also when cleanup, which ignores them, launched it. A stall is counted (a stalled lookup, pause or
   copy is said in `COLLECTION-FAILED.txt`). The whole cleanup has `FOLD_NESTED_CLEANUP_BUDGET`
   seconds (default 170; a whole number of at least 3, otherwise the runner refuses to start), a
   single call `FOLD_NESTED_CALL_TIMEOUT` (15; the copy of `/work/out` may use its whole slice),
@@ -314,7 +317,10 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   its own, and ignores TERM in some cases) are all ended, the run returns within its budget on its
   own, the stall is recorded, the evidence copy is not starved by a stalled preparation copy (also
   with the default call timeout and a short budget), a stalled unpause still leaves a removal
-  attempt, a client that exits and leaves a TERM-ignoring child has that child ended, a budget the
+  attempt, a client that exits and leaves a TERM-ignoring child has that child ended, a TERM sent
+  to the runner exactly while a lookup's group is being launched (a DEBUG trap loaded through
+  `BASH_ENV` fires it just before `LIMITED_JOB` is assigned) ends the run with 143 and ends the
+  stalled client and its child while a bystander survives, a budget the
   runner cannot use or one that does not fit the wrapper's grace is refused, a
   removal that stalls once is retried, one that never works names the container and fails the
   run, and a process or container that is not the run's is untouched; and that a failed copy or an

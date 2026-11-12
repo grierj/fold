@@ -130,6 +130,8 @@ ARMED=0 COLLECTED=0 INTERRUPTED="" STOPPED_HOW="none" INNER_CLIENT=""
 STOP_VERIFIED=0 STOP_LOOKUP_ERRORS=0 FROZEN=0 OWNED_N=""
 COLLECT_FAILED=()
 TO_LOOKUP=0 TO_PAUSE=0 TO_UNPAUSE=0 TO_RM=0 LIMITED_JOB="" LIMITED_TIMED_OUT=0
+# While limited launches its client's group, a signal is only recorded here (on_signal), so it cannot reach cleanup before the group is named in LIMITED_JOB.
+LIMITED_DEFER=0 SIG_PENDING="" SIG_PENDING_RC=""
 CLEAN_END="" RM_AT="" MAIN_AT="" STOP_LIMIT="" STOP_END="" PHASE_END="" UNPAUSE_SKIPPED=0
 # The least a call that must be able to start is given: whole-second deadlines may fall up to a second early, so two seconds is the shortest interval that is sure to
 # hold one call. The cleanup's allocation is built from it (open_window).
@@ -188,15 +190,19 @@ set_phase() {
 # cannot be reused, until this function has ended it: the whole group is KILLed when the client has answered (a descendant it left behind, one that ignores TERM
 # included, goes with it) and when the absolute DEADLINE passes. It returns the client's status, or 137 with LIMITED_TIMED_OUT=1 when it was killed or had no time left
 # to start. LIMITED_JOB names the job while it runs so cleanup can end it if a signal cuts this short. Only that job's group is signalled; nothing is looked up by
-# name or read from a process list.
+# name or read from a process list. From the fork to the assignment of LIMITED_JOB the job is in a group of its own that cleanup cannot yet find, so a signal in that
+# interval is only recorded (LIMITED_DEFER, as scripts/reason-review-scale.sh does for its step) and taken the moment the group is named. The job is started with the
+# default dispositions of INT, TERM and HUP, also when cleanup, which ignores them, launched it.
 limited() {
   local deadline=$1 out=$2 rc=0
   shift 2
   LIMITED_TIMED_OUT=0
   if (( SECONDS >= deadline )); then LIMITED_TIMED_OUT=1; return 137; fi
   rm -f "$TMP/limited.rc"
+  LIMITED_DEFER=1
   set -m
   (
+    trap - INT TERM HUP
     local crc=0
     "$@" >"$out" 2>/dev/null </dev/null || crc=$?
     printf '%s\n' "$crc" >"$TMP/limited.tmp" && mv "$TMP/limited.tmp" "$TMP/limited.rc"
@@ -204,6 +210,8 @@ limited() {
   ) &
   LIMITED_JOB=$!
   set +m
+  LIMITED_DEFER=0
+  if [[ -n "$SIG_PENDING" ]]; then on_signal "$SIG_PENDING" "$SIG_PENDING_RC"; fi
   { # bash's own "Killed" notice for a job we killed goes to stderr when the job is reaped
     while [[ ! -e "$TMP/limited.rc" ]]; do
       if (( SECONDS >= deadline )); then LIMITED_TIMED_OUT=1; break; fi
@@ -473,7 +481,13 @@ cleanup() {
   exit "$rc"
 }
 # shellcheck disable=SC2329 # signal traps.
-on_signal() { trap '' INT TERM HUP; INTERRUPTED="$1"; CLEAN_END=""; exit "$2"; }
+on_signal() {
+  if (( LIMITED_DEFER )); then
+    [[ -n "$SIG_PENDING" ]] || { SIG_PENDING="$1"; SIG_PENDING_RC="$2"; }
+    return 0
+  fi
+  trap '' INT TERM HUP; INTERRUPTED="$1"; CLEAN_END=""; exit "$2"
+}
 trap cleanup EXIT
 trap 'on_signal INT 130' INT
 trap 'on_signal TERM 143' TERM
