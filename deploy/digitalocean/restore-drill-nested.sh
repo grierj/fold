@@ -282,25 +282,27 @@ SCAN
 # before that would end the leader itself. Nothing is signalled by the number of a process that may have ended: bash reaps a finished child
 # at once, and its number can then be handed to another process. The group is TERMed as a whole, so the command's own children are asked too. The supervisor returns the
 # command's status, 137 if the leader was ended by something else, and takes the leader down when the command is over. Job control (set -m) gives the group, and it keeps the
-# command's INT working (a plain background child ignores INT).
+# command's INT working (a plain background child ignores INT). The directory it works in is $FOLD_WRAP_ROOT, /work unless the self-test sets it: a path is read as data and
+# every reference to it is quoted, so a directory with blanks works. That directory is also a lease: the leader and the supervisor end by themselves when it is gone.
 # shellcheck disable=SC2016 # the script runs inside the container
 WRAP=$(cat <<'WRAP'
-if [ -f /work/prep/browser.env ]; then set -a; . /work/prep/browser.env; set +a; fi
-w=/work/wrap.$$
+wr=${FOLD_WRAP_ROOT:-/work}
+if [ -f "$wr/prep/browser.env" ]; then set -a; . "$wr/prep/browser.env"; set +a; fi
+w=$wr/wrap.$$
 rm -f "$w.rc" "$w.go" "$w.up"
 set -m
-( trap : TERM; : >"$w.up"; "$@"; echo $? >"$w.tmp"; mv "$w.tmp" "$w.rc"; while [ ! -e "$w.go" ] && [ -d /proc/$$ ]; do sleep 0.1; done ) &
+( trap : TERM; : >"$w.up"; "$@"; { echo $? >"$w.tmp"; mv "$w.tmp" "$w.rc"; } 2>/dev/null; while [ ! -e "$w.go" ] && [ -d /proc/$$ ] && [ -d "$wr" ]; do sleep 0.1; done ) &
 g=$!
 set +m
 a=
 while [ ! -e "$w.rc" ]; do
   case " $(jobs -rp | tr '\n' ' ') " in *" $g "*) ;; *) break ;; esac
-  if [ -z "$a" ] && [ -e "$w.up" ] && [ -e /work/stop-request ]; then kill -TERM -- "-$g"; a=1; fi
+  if [ -z "$a" ] && [ -e "$w.up" ] && [ -e "$wr/stop-request" ]; then kill -TERM -- "-$g"; a=1; fi
   sleep 0.2
 done
 r=137
 [ -s "$w.rc" ] && r=$(cat "$w.rc")
-: >"$w.go"
+{ : >"$w.go"; } 2>/dev/null
 wait "$g" 2>/dev/null
 rm -f "$w.rc" "$w.go" "$w.tmp" "$w.up"
 exit "$r"

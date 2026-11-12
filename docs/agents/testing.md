@@ -253,7 +253,9 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   group. The group is held by a leader process that ends only when the supervisor says so, so its
   number stays in use whenever the supervisor can send: the workload itself can end at any moment
   and no signal ever goes to the number of a process that has ended (bash reaps a finished child
-  at once, and its number can be handed to another). After a signal the runner writes that file
+  at once, and its number can be handed to another). The directory it works in is `$FOLD_WRAP_ROOT` (`/work` unless
+  the self-test sets it), read as data and always quoted, and it is a lease: the leader and the
+  supervisor end by themselves when it is gone. After a signal the runner writes that file
   (`FOLD_NESTED_STOP_GRACE` seconds, default 90). Then the container is killed (`docker kill`:
   every process in it, at once, by no number) and the daemon is asked whether it has stopped
   (`FOLD_NESTED_KILL_WAIT`, default 15). A stop is established only by that answer or by two
@@ -396,6 +398,9 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   holds the workload at that boundary and lets it go) keeps its own status, and the one signal
   goes to the held group, never to the number of the process that ended; a workload with no
   request gets no signal. Its files are gone and no process carrying the case's marker remains.
+  The case directory has a blank in its name, so a path is proved to be data. `n_wrap_interrupt` interrupts the self-test shell (TERM) with the real `WRAP` running a workload,
+  once after the workload started and before any request to stop was written, with the runner registered, and once before the runner was registered (so the exit knows nothing of it).
+  The exit removes the directory the workload lives in; the workload, the leader and the supervisor end because it is gone, and nothing carrying the case's marker remains.
   Every wait of
   the simulated container (the docker client's wait for the workload's readiness, the writer's
   wait to record itself) ends when the container's directory, the lease its processes hold, is
@@ -419,6 +424,10 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   unestablished stop turns a run that exited 0 (or a
   crossings-only 10) into exit 1, and fails the wrapper's step, with the reasons kept. Real runs
   on a droplet-class host are a hand check (`docs/FIRST-CHURCH-CHECKS.md`), not covered by this.
+- **The launcher fixtures** (`isolation-fixtures.sh`, `qc1-runtime-fixtures.sh`, `restore-drill-modes-fixtures.sh`, run by `make provision-dry-run`) log each Docker call as
+  one line with the arguments kept apart: a newline inside an argument is written as `\n`, so the supervisor script (`WRAP`, one multi-line argument) neither splits a call across lines nor
+  reads as calls of its own. They take `WRAP` out of `restore-drill-nested.sh` and require that the preparation and the run each carry exactly that text as the one `bash -c` argument,
+  and that it loads the prepared Chromium, polls for the stop request and TERMs the group, and does not exec the command in its place.
 
 ### Source guards
 

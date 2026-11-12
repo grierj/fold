@@ -286,7 +286,7 @@ if sed -n '/^while (( \$# )); do/,/^done/p' "$RDS" | grep -- '--no-browser' >/de
 mkdir "$WORK/stubbin"
 cat >"$WORK/stubbin/docker" <<'STUB'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >>"$STUB_LOG"
+line=; sep=; for a in "$@"; do line+="$sep${a//$'\n'/\\n}"; sep=" "; done; printf '%s\n' "$line" >>"$STUB_LOG"   # one line per call; a newline inside an argument is written as \n
 case "$1" in
   info) printf '{"Name":"x","ContainersRunning":0}\n' ;;
   run) printf 'c%.0s' {1..64}; echo ;;
@@ -301,6 +301,14 @@ git init -q "$LAUNCH"; git -C "$LAUNCH" config user.name fixture; git -C "$LAUNC
 git -C "$LAUNCH" config commit.gpgsign false; git -C "$LAUNCH" config core.hooksPath /dev/null
 git -C "$LAUNCH" add -A; git -C "$LAUNCH" commit -qm launcher
 launch() { STUB_LOG="$WORK/stub.log" PATH="$WORK/stubbin:$PATH" bash "$LAUNCH/deploy/digitalocean/restore-drill-nested.sh" "$@"; }
+# WRAP, the supervisor every docker exec runs the workload under, as the runner defines it (WRAP_ARG) and as the stub's log shows it: ONE argument whose newlines are written as \n
+# (WRAP_LOG), so that a call is still one line and the argument is neither split nor read as calls of its own. The supervisor's contract, read from the script itself: it loads the
+# Chromium the preparation found, polls for the stop request and TERMs the workload's group; it does not exec the command in its place.
+WRAP_ARG="$(sed -n "/^WRAP=\$(cat <<'WRAP'\$/,/^WRAP\$/p" "$HERE/restore-drill-nested.sh" | sed '1d;$d')"
+[[ -n "$WRAP_ARG" ]]
+WRAP_LOG="${WRAP_ARG//$'\n'/\\n}"
+grep -qF 'prep/browser.env' <<<"$WRAP_ARG"; grep -qF 'stop-request' <<<"$WRAP_ARG"; grep -qF 'kill -TERM -- "-$g"' <<<"$WRAP_ARG"
+if grep -qF 'exec "$@"' <<<"$WRAP_ARG"; then echo 'the supervisor execs the command in its place again' >&2; exit 1; fi
 # In EACH mode the browser is prepared once, after the clone and before the run, in the same container, and the run receives the Chromium the preparation found.
 check_mode() { # mode-name run-script label prepare-env-words
   local clone_l prep_l run_l run_line
@@ -312,7 +320,8 @@ check_mode() { # mode-name run-script label prepare-env-words
   grep -q "^exec -e FOLD_NESTED_RUN=[0-9a-f]\{12\} $4-w /work/fold c\{64\} bash -c .* _ bash deploy/digitalocean/qc1/browser-prepare.sh /work/prep\$" "$WORK/stub.log" || { echo "$1: the preparation does not run with the environment $4" >&2; cat "$WORK/stub.log" >&2; exit 1; }
   run_line="$(sed -n "${run_l}p" "$WORK/stub.log")"
   grep -q -- '-e FOLD_DRILL_ISOLATED_DAEMON=1 -e QC1_NO_SANDBOX=1 -e QC1_WEB_DIR=/work/fold/web -w /work/fold' <<<"$run_line" || { echo "$1: the run does not get the runner switches" >&2; exit 1; }
-  grep -q 'set -a; . /work/prep/browser.env; set +a; fi;' <<<"$run_line" || { echo "$1: the run does not load the prepared Chromium" >&2; exit 1; }
+  grep -qF -- " bash -c $WRAP_LOG _ bash " <<<"$run_line" || { echo "$1: the run is not under the supervisor, or its argument was split" >&2; exit 1; }   # the exact WRAP, loading the prepared Chromium among other things
+  [[ "$(grep -cF -- " bash -c $WRAP_LOG _ bash " "$WORK/stub.log")" == 2 ]] || { echo "$1: the preparation and the run are not both under the supervisor" >&2; exit 1; }
   grep -q "^cp c\{64\}:/work/prep/. $WORK/$3/prep/" "$WORK/stub.log"; grep -q "^cp c\{64\}:/work/out/. $WORK/$3/" "$WORK/stub.log"; grep -qE '^rm -fv c{64}$' "$WORK/stub.log"
 }
 : >"$WORK/stub.log"; launch --out "$WORK/m-drill" -- --keep >"$WORK/l.out" 2>&1; grep -q 'drill exit=0' "$WORK/l.out"

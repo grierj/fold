@@ -612,7 +612,9 @@ STUB
 	git -C "$nroot" -c user.name=scale-test -c user.email=scale-test@example.invalid -c commit.gpgsign=false commit -q -m nested
 	cat >"$bin/docker" <<'DOCKER'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >>"$STUB_LOG"
+# One line per call with every argument kept apart: a newline inside an argument (the supervisor script is one) is written as \n, so that the line a call makes starts with its
+# subcommand and a multi-line argument cannot be read as calls of its own.
+line=; sep=; for a in "$@"; do line+="$sep${a//$'\n'/\\n}"; sep=" "; done; printf '%s\n' "$line" >>"$STUB_LOG"
 # The container is a directory, and the processes in it are simulated by ones that watch it (stub-workload, stub-desc): removal is the flag `removed`, which ends
 # every one of them by itself; the freeze is the flag `paused`, which stops them writing; the request to stop is the flag `sig-term` (the workload shell runs its TERM
 # handling) and `docker kill` is the flag `sig-end` (every process ends) with the state `killed`; and what they write is the beat of the workload and the late.txt of the
@@ -1186,8 +1188,8 @@ OUTER
 		local name=$1 mode=$2 workload=$3 c=$dir/$1 i p
 		mkdir -p "$c/work"
 		cp "$dir/$workload" "$c/workload.sh"
-		(cd "$c" && bounded_exec 40 env "WRAP_FIXTURE=$dir" "WRAP_DIR=$c/work" "KILL_LOG=$c/kills" "BASH_ENV=$dir/hook.sh" "WRAP_MODE=$mode" \
-			bash -c "${wrap_src//\/work/$c/work}" _ bash "$c/workload.sh" "$c/work") >"$c/out" 2>&1 &
+		(cd "$c" && bounded_exec 40 env "WRAP_FIXTURE=$dir" "FOLD_WRAP_ROOT=$c/work" "KILL_LOG=$c/kills" "BASH_ENV=$dir/hook.sh" "WRAP_MODE=$mode" \
+			bash -c "$wrap_src" _ bash "$c/workload.sh" "$c/work") >"$c/out" 2>&1 &
 		p=$!
 		bg_runner "$p"
 		if [[ $mode == ask ]]; then
@@ -1213,12 +1215,57 @@ OUTER
 			[[ ${line##*-} != "$(cat "$c/work/wl.pid" 2>/dev/null)" ]] || t_fail "wrap $1: the signal went to the workload's own number"
 		done < <(cat "$c/kills" 2>/dev/null)
 	}
+	# n_wrap_interrupt MODE: the self-test is interrupted (TERM) while the real WRAP is running a workload, and its exit removes the directory the case lives in. The shell that plays
+	# the self-test has a run directory of its own and the same functions (bounded_exec, bg_runner, bg_done, drop_selftest, copied from this script) as the real one, and starts WRAP
+	# the way n_wrap_case does. MODE request: the signal comes after the workload has started and before any request to stop is written, with the runner registered, so the exit
+	# asks it to stop (a TERM to `timeout`, which passes it to the supervisor alone, and the supervisor has no handler: its leader and the workload are in groups of their own and
+	# are not reached). MODE registration: the signal comes after the fork and before the registration (the workload has started, so that nothing is being created while the exit removes the directory), so the exit does not know of the runner at all. Either way nothing may
+	# be left: the workload and the leader end by themselves because the directory they live in (the lease) is gone, and so does the supervisor. What is left is looked for by the
+	# marker of the case, which every process of it carries.
+	n_wrap_interrupt() {
+		local mode=$1 d="$dir/interrupt $1" outer orc=0 i
+		mkdir -p "$d/run/work"
+		cp "$dir/term.sh" "$d/run/workload.sh"
+		printf '%s\n' "$wrap_src" >"$d/wrap.sh"
+		{
+			declare -f bounded_exec bg_runner bg_done drop_selftest
+			cat <<'INTERRUPT'
+set -u
+RUNNERS=()
+export REASON_SCALE_SELFTEST="$1/run"
+trap drop_selftest EXIT
+trap 'exit 143' TERM
+(bounded_exec 40 env "FOLD_WRAP_ROOT=$1/run/work" bash -c "$(cat "$1/wrap.sh")" _ bash "$1/run/workload.sh" "$1/run/work") >"$1/wrap.out" 2>&1 &
+p=$!
+if [[ $2 == request ]]; then bg_runner "$p"; fi
+for ((i = 0; i < 200; i++)); do
+	[[ -s $1/run/work/wl.pid ]] && break
+	sleep 0.05
+done
+kill -TERM "$$"
+wait "$p"
+INTERRUPT
+		} >"$d/outer.sh"
+		env "WRAP_INTERRUPT=$d" bash "$d/outer.sh" "$d" "$mode" >"$d/outer.out" 2>&1 &
+		outer=$!
+		bg_runner "$outer"
+		wait "$outer" || orc=$?
+		bg_done "$outer"
+		[[ $orc == 143 ]] || t_fail "wrap interrupt $mode: the interrupted shell exited $orc, want 143"
+		[[ ! -e $d/run ]] || t_fail "wrap interrupt $mode: the run directory was not removed at the end"
+		for ((i = 0; i < 100; i++)); do
+			find_marked "WRAP_INTERRUPT=$d"
+			((${#FOUND[@]})) || break
+			sleep 0.1
+		done
+		((${#FOUND[@]} == 0)) || t_fail "wrap interrupt $mode: processes of the interrupted self-test remain (pids ${FOUND[*]}): the supervisor, its leader or its workload"
+	}
 	# n_wrap_group: the supervisor every docker exec runs the workload under (WRAP), run for real. The workload ends by TERM when asked (143, one TERM to the held group);
 	# ends by itself before the request is acted on (the case that matters: the child is gone between the look at it and the signal, so a signal by its number would go to
 	# a number that was released: here the one signal goes to the leader's group, which is alive, and the workload's own status is kept); and ends with no request at all
 	# (no signal, status kept). Nothing is left in its directory and no process of the case remains.
 	n_wrap_group() {
-		local dir=$tmp/wrapfix i wrap_src
+		local dir="$tmp/wrap fix" i wrap_src
 		mkdir -p "$dir"
 		wrap_src=$(sed -n "/^WRAP=\$(cat <<'WRAP'\$/,/^WRAP\$/p" "$nroot/$nested_tool" | sed '1d;$d')
 		if [[ -z $wrap_src ]]; then
@@ -1238,14 +1285,14 @@ kill() {
 }
 tr() {
 	local i
-	if [[ $WRAP_MODE == hold && ! -e $WRAP_DIR/hooked ]]; then
-		: >"$WRAP_DIR/hooked"
-		: >"$WRAP_DIR/release"
+	if [[ $WRAP_MODE == hold && ! -e $FOLD_WRAP_ROOT/hooked ]]; then
+		: >"$FOLD_WRAP_ROOT/hooked"
+		: >"$FOLD_WRAP_ROOT/release"
 		for ((i = 0; i < 250; i++)); do
-			compgen -G "$WRAP_DIR/wrap.*.rc" >/dev/null && break
+			compgen -G "$FOLD_WRAP_ROOT/wrap.*.rc" >/dev/null && break
 			sleep 0.02
 		done
-		: >"$WRAP_DIR/stop-request"
+		: >"$FOLD_WRAP_ROOT/stop-request"
 	fi
 	command tr "$@"
 }
@@ -1253,11 +1300,11 @@ HOOK
 		cat >"$dir/term.sh" <<'WLTERM'
 trap 'echo got >"$1/term"; exit 143' TERM
 echo $$ >"$1/wl.pid"
-while :; do sleep 0.1; done
+while [ -d "$1" ]; do sleep 0.1; done
 WLTERM
 		cat >"$dir/release.sh" <<'WLREL'
 echo $$ >"$1/wl.pid"
-while [ ! -e "$1/release" ]; do sleep 0.02; done
+while [ ! -e "$1/release" ] && [ -d "$1" ]; do sleep 0.02; done
 exit 5
 WLREL
 		cat >"$dir/quick.sh" <<'WLQUICK'
@@ -1275,6 +1322,8 @@ WLQUICK
 		n_wrap_case quiet none quick.sh
 		[[ $WRAP_RC == 7 ]] || t_fail "wrap quiet: the status was $WRAP_RC, want the workload's own 7"
 		n_wrap_kills quiet 0
+		n_wrap_interrupt request
+		n_wrap_interrupt registration
 		for i in ask hold quiet; do
 			! compgen -G "$dir/$i/work/wrap.*" >/dev/null || t_fail "wrap $i: the supervisor left its files behind"
 		done

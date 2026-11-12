@@ -104,7 +104,7 @@ grep -q '^source "\$ROOT/deploy/digitalocean/isolation.sh"' "$RD"
 mkdir "$WORK/stubbin"
 cat >"$WORK/stubbin/docker" <<'STUB'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >>"$STUB_LOG"
+line=; sep=; for a in "$@"; do line+="$sep${a//$'\n'/\\n}"; sep=" "; done; printf '%s\n' "$line" >>"$STUB_LOG"   # one line per call; a newline inside an argument is written as \n
 case "$1" in
   info) printf '{"Name":"%s","ContainersRunning":0}\n' "${STUB_NAME:-the-host}" ;;
   run) printf 'c%.0s' {1..64}; echo ;;
@@ -148,6 +148,14 @@ git init -q "$CLONE"; git -C "$CLONE" config user.name fixture; git -C "$CLONE" 
 git -C "$CLONE" config commit.gpgsign false; git -C "$CLONE" config core.hooksPath /dev/null
 git -C "$CLONE" add -A; git -C "$CLONE" commit -qm clone
 launch() { STUB_LOG="$WORK/stub.log" PATH="$WORK/stubbin:$PATH" bash "$CLONE/deploy/digitalocean/restore-drill-nested.sh" "$@"; }
+# WRAP, the supervisor every docker exec runs the workload under, as the runner defines it (WRAP_ARG) and as the stub's log shows it: ONE argument whose newlines are written as \n
+# (WRAP_LOG), so that a call is still one line and the argument is neither split nor read as calls of its own. The supervisor's contract, read from the script itself: it loads the
+# Chromium the preparation found, polls for the stop request and TERMs the workload's group; it does not exec the command in its place.
+WRAP_ARG="$(sed -n "/^WRAP=\$(cat <<'WRAP'\$/,/^WRAP\$/p" "$LA" | sed '1d;$d')"
+[[ -n "$WRAP_ARG" ]]
+WRAP_LOG="${WRAP_ARG//$'\n'/\\n}"
+grep -qF 'prep/browser.env' <<<"$WRAP_ARG"; grep -qF 'stop-request' <<<"$WRAP_ARG"; grep -qF 'kill -TERM -- "-$g"' <<<"$WRAP_ARG"
+if grep -qF 'exec "$@"' <<<"$WRAP_ARG"; then echo 'the supervisor execs the command in its place again' >&2; exit 1; fi
 : >"$WORK/stub.log"
 launch --out "$WORK/ev1" -- --keep >"$WORK/l1.out" 2>&1
 [[ -d "$WORK/ev1" ]] && grep -q 'drill exit=0' "$WORK/l1.out"
@@ -162,7 +170,7 @@ grep -q '^exec -e FOLD_NESTED_RUN=[0-9a-f]\{12\} -e FOLD_DRILL_ISOLATED_DAEMON=1
 # The drill's browser is prepared first, in the same container, and the Chromium it found is the one the run is given.
 prep_l="$(grep -n 'browser-prepare.sh /work/prep$' "$WORK/stub.log" | head -n 1 | cut -d: -f1)"; run_l="$(grep -n 'restore-drill.sh --dir /work/out' "$WORK/stub.log" | head -n 1 | cut -d: -f1)"
 [[ -n "$prep_l" && -n "$run_l" && "$prep_l" -lt "$run_l" ]]
-grep -q '/work/prep/browser.env' "$WORK/stub.log"
+grep -qF -- " bash -c $WRAP_LOG _ bash " "$WORK/stub.log"; [[ "$(grep -cF -- " bash -c $WRAP_LOG _ bash " "$WORK/stub.log")" == 2 ]]   # the preparation and the drill, both under the exact supervisor, which loads the prepared Chromium
 grep -qE '^rm -fv c{64}$' "$WORK/stub.log"
 # Refusals leave the container removed and the drill unrun.
 refuse_launch() { : >"$WORK/stub.log"; local rc=0; "$@" >"$WORK/lr.out" 2>&1 || rc=$?; [[ "$rc" == 1 ]]; }
@@ -181,7 +189,7 @@ git -C "$CLONE" checkout -q -- deploy/digitalocean/restore-drill-nested.sh
 # A drill that fails is reported with its exit code and its evidence still comes out.
 cat >"$WORK/stubbin/docker" <<'STUB'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >>"$STUB_LOG"
+line=; sep=; for a in "$@"; do line+="$sep${a//$'\n'/\\n}"; sep=" "; done; printf '%s\n' "$line" >>"$STUB_LOG"   # one line per call; a newline inside an argument is written as \n
 case "$1" in
   info) echo '{"Name":"x","ContainersRunning":0}' ;;
   run) printf 'c%.0s' {1..64}; echo ;;
