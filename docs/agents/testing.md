@@ -168,7 +168,8 @@ review (issue #296), outside CI: deterministic Go vectors and the fuzz seed corp
 `go test -fuzz FuzzReasonEnvelope` run, the in-memory attempt-ledger and restore-fence tests
 under `-race` (`CGO_ENABLED=1` for that command only; a missing C toolchain fails the run
 instead of skipping it), and the seeded browser digest and review-store suites. It writes a
-revision-bound record outside the checkout (a non-empty evidence directory is refused, the
+revision-bound record on Linux with GNU coreutils/findutils; macOS is unverified. It writes a
+record outside the checkout (a non-empty evidence directory is refused, the
 record starts as `incomplete` so an interrupted rerun cannot keep a previous pass, and the
 completed `evidence.json` is parsed before success is reported). `--seed` replays one seed the
 log names; see the script header for options. Each step runs in a process group of its own

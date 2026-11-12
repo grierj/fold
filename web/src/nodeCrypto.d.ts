@@ -16,4 +16,6 @@ declare module "node:fs" {
   export function appendFileSync(path: string, data: string): void;
 }
 
-declare var process: { env: Record<string, string | undefined> };
+declare module "node:process" {
+  export const env: Record<string, string | undefined>;
+}

@@ -659,7 +659,7 @@ echo "go $*" >>"$STUB_DIR/calls"
 case "$1" in
 env) echo sh ;;
 version) echo "go version stub linux/amd64" ;;
-build) while [ $# -gt 0 ]; do if [ "$1" = -o ]; then : >"$2"; fi; shift; done ;;
+build) [ "${STUB_RACE_BUILD_FAIL:-}" != 1 ] || exit 1; while [ $# -gt 0 ]; do if [ "$1" = -o ]; then : >"$2"; fi; shift; done ;;
 test) shift; exec "$STUB_BEHAVE" go "$@" ;;
 esac
 `,
@@ -1240,5 +1240,35 @@ func TestReasonHardeningRefusesWhenAToolIsMissing(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(r.state, "calls")); err == nil {
 		t.Error("a tool ran before the dependencies were checked")
+	}
+}
+
+func TestReasonHardeningRefusesWithoutRaceToolchain(t *testing.T) {
+	for _, tc := range []struct {
+		name, setting, message string
+	}{
+		{"missing compiler", "CC=/nonexistent-fold-compiler", "needs a C compiler"},
+		{"race build fails", "STUB_RACE_BUILD_FAIL=1", "the race detector cannot build here"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newHardeningRig(t, true)
+			run := r.start([]string{tc.setting}, false)
+			if code := run.exitCode(t, 30*time.Second); code != 2 {
+				t.Fatalf("exit %d, want 2:\n%s", code, run.out)
+			}
+			if !strings.Contains(run.out, tc.message) {
+				t.Errorf("missing refusal %q:\n%s", tc.message, run.out)
+			}
+			if _, err := os.Stat(r.evidence); !os.IsNotExist(err) {
+				t.Errorf("evidence directory exists or cannot be checked: %v", err)
+			}
+			calls, err := os.ReadFile(filepath.Join(r.state, "calls"))
+			if err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(calls), "go test") {
+				t.Errorf("test command ran after toolchain refusal: %s", calls)
+			}
+		})
 	}
 }

@@ -86,7 +86,8 @@
 # Needs: bash with job control (`set -m` is verified before any work starts)
 # and the tools checked at start (git, sleep, grep, sed, find, comm, sort, cp,
 # mktemp, tail, uname, date, node, go, npm). A missing tool is reported and
-# nothing runs. Linux or macOS. SIGINT must not have been ignored when the
+# nothing runs. The recorded runs use Linux and GNU coreutils/findutils; macOS
+# is unverified. SIGINT must not have been ignored when the
 # script started: a noninteractive shell starts a plain `cmd &` with SIGINT
 # ignored, and a script so started cannot trap it again (the script says so on
 # stderr; TERM still works). Start it from a shell with job control
@@ -169,7 +170,7 @@ fi
 
 # Every tool the run depends on, checked before anything starts, so a missing
 # one is a clear refusal and not a failure halfway through a step or a cleanup.
-for tool in go npm node git sleep grep sed find comm sort cp mktemp tail uname date; do
+for tool in go npm node git sleep grep sed find comm sort cp mktemp tail uname date xargs sha256sum cut; do
 	command -v "$tool" >/dev/null 2>&1 || die "$tool is required and was not found"
 done
 [[ -d web/node_modules ]] || die "web/node_modules is missing: run 'cd web && npm ci' first"

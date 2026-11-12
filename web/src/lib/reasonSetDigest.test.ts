@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync } from "node:fs";
+import { env } from "node:process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import vectors from "./reasonSetVectors.json";
 import {
@@ -347,17 +348,17 @@ function mulberry32(seed: number) {
 }
 
 function seedsFromEnv(): number[] {
-  const one = process.env.FOLD_REASON_SEED;
+  const one = env.FOLD_REASON_SEED;
   if (one) return [Number(one)];
-  const base = Number(process.env.FOLD_REASON_SEED_BASE ?? 20261111);
-  const runs = Number(process.env.FOLD_REASON_RUNS ?? 8);
+  const base = Number(env.FOLD_REASON_SEED_BASE ?? 20261111);
+  const runs = Number(env.FOLD_REASON_RUNS ?? 8);
   return Array.from({ length: runs }, (_, i) => base + i);
 }
 
 // FOLD_REASON_EVIDENCE names a file that scripts/reason-review-hardening.sh counts
 // to see that every seed it asked for really ran.
 function record(line: string) {
-  if (process.env.FOLD_REASON_EVIDENCE) appendFileSync(process.env.FOLD_REASON_EVIDENCE, line.replace(/\n/g, "\\n") + "\n");
+  if (env.FOLD_REASON_EVIDENCE) appendFileSync(env.FOLD_REASON_EVIDENCE, line.replace(/\n/g, "\\n") + "\n");
 }
 
 describe("random reviews, replayable by seed", () => {
