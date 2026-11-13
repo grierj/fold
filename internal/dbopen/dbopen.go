@@ -195,7 +195,7 @@ func init() {
 // logger does, so test files and application frames are kept while generated
 // files are skipped.
 func callerLocation() string {
-	const depth = 13
+	const depth = 32
 	pcs := make([]uintptr, depth)
 	// Skip Callers, callerLocation and the filter method that called it.
 	n := runtime.Callers(3, pcs)
@@ -209,7 +209,7 @@ func callerLocation() string {
 		if file == dbopenSourceFile || strings.HasSuffix(file, ".gen.go") {
 			continue
 		}
-		if strings.Contains(file, "gorm.io/gorm") && !strings.HasSuffix(file, "_test.go") {
+		if strings.Contains(file, "gorm.io/") && !strings.HasSuffix(file, "_test.go") {
 			continue
 		}
 		return fmt.Sprintf("%s:%d", frame.File, frame.Line)

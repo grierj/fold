@@ -14,6 +14,7 @@ import (
 	"fold/models"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 func TestDatabaseLoggerKeepsContactValuesOutOfSQL(t *testing.T) {
@@ -147,6 +148,35 @@ func TestProductionLoggerKeepsRealCallerLocations(t *testing.T) {
 			t.Fatal("missing-table query succeeded")
 		}
 		scopedLoc = location(t, logs.String(), "legacy_caller_other_missing_xyz")
+	})
+	t.Run("driver savepoint error", func(t *testing.T) {
+		var logs bytes.Buffer
+		tx := session(&logs).Begin()
+		if tx.Error != nil {
+			t.Fatal(tx.Error)
+		}
+		tx.SavePoint("invalid-name")
+		location(t, logs.String(), "SAVEPOINT invalid-name")
+		tx.Rollback()
+	})
+	t.Run("driver savepoint and nested transaction at info level", func(t *testing.T) {
+		var logs bytes.Buffer
+		db := f.app.DB.Session(&gorm.Session{Logger: dbopen.Logger(log.New(&logs, "\r\n", log.LstdFlags)).LogMode(logger.Info)})
+		tx := db.Begin()
+		if tx.Error != nil {
+			t.Fatal(tx.Error)
+		}
+		t.Cleanup(func() { tx.Rollback() })
+		tx.SavePoint("caller_check")
+		location(t, logs.String(), "SAVEPOINT caller_check")
+		logs.Reset()
+		tx.RollbackTo("caller_check")
+		location(t, logs.String(), "ROLLBACK TO SAVEPOINT caller_check")
+		logs.Reset()
+		if err := tx.Transaction(func(inner *gorm.DB) error { return inner.Exec("SELECT 1").Error }); err != nil {
+			t.Fatal(err)
+		}
+		location(t, logs.String(), "SAVEPOINT")
 	})
 	if errorLoc == "" || slowLoc == "" || scopedLoc == "" {
 		t.Fatal("a probe reported no caller location")
