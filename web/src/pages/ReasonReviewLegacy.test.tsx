@@ -411,6 +411,39 @@ describe("an account's reasons", () => {
     walk.mockResolvedValue(unit(null, account("52", "1"), account("63", "1")));
   });
 
+  it("continues past empty scanner units before showing reasons", async () => {
+    pageCall.mockResolvedValueOnce({ items: [], next: "10" }).mockResolvedValueOnce(pageOf(...three()));
+    mountAccount();
+    await screen.findByRole("group", { name: "Reason 1 of 3" });
+    expect(pageCall.mock.calls).toEqual([["52", null], ["52", "10"]]);
+    expect(screen.queryByText(ACCOUNT_EMPTY)).not.toBeInTheDocument();
+  });
+
+  it("only shows the empty state after the final scanner unit", async () => {
+    pageCall.mockResolvedValueOnce({ items: [], next: "10" }).mockResolvedValueOnce({ items: [], next: null });
+    mountAccount();
+    expect(await screen.findByText(ACCOUNT_EMPTY)).toBeInTheDocument();
+    expect(pageCall.mock.calls).toEqual([["52", null], ["52", "10"]]);
+  });
+
+  it("fails closed when an empty scanner unit repeats a cursor", async () => {
+    pageCall.mockResolvedValue({ items: [], next: "10" });
+    mountAccount();
+    expect(await screen.findByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(pageCall).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(ACCOUNT_EMPTY)).not.toBeInTheDocument();
+  });
+
+  it("does not continue scanning after the account view is left", async () => {
+    const pending = deferred<ErasureReasonPage>();
+    pageCall.mockReturnValueOnce(pending.promise);
+    const view = mountAccount();
+    await waitFor(() => expect(pageCall).toHaveBeenCalledTimes(1));
+    view.unmount();
+    await act(async () => pending.resolve({ items: [], next: "10" }));
+    expect(pageCall).toHaveBeenCalledTimes(1);
+  });
+
   it("asks for its page once, from the start, and shows every reason with nothing chosen and no bulk control", async () => {
     pageCall.mockResolvedValue(pageOf(...three()));
     mountAccount();

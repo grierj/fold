@@ -205,7 +205,18 @@ function checkedPage(page: ErasureReasonPage, account: string): ErasureReasonPag
 }
 
 function LegacyAccountView({ account, onEmpty }: { account: string; onEmpty: (userId: string) => void }) {
-  const load = useLoad(async () => checkedPage(await AdminUsers.legacyReasonsPage(account, null), account), [account]);
+  const load = useLoad(async () => {
+    const epoch = load.epoch();
+    const seen = new Set<string>();
+    let cursor: string | null = null;
+    for (;;) {
+      const page = checkedPage(await AdminUsers.legacyReasonsPage(account, cursor), account);
+      if (load.epoch() !== epoch || page.items.length > 0 || page.next === null) return page;
+      if (seen.has(page.next)) throw new ApiError(502, "repeated deleted-account reason cursor");
+      seen.add(page.next);
+      cursor = page.next;
+    }
+  }, [account]);
   const [choices, setChoices] = useState<Choices>({});
   const [changed, setChanged] = useState<ReadonlySet<string>>(() => new Set());
   const [phase, setPhase] = useState<Phase>(IDLE);
