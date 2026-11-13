@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +21,7 @@ import (
 	"time"
 
 	"fold/internal/audit"
+	"fold/internal/guardkit"
 	"fold/internal/testdb"
 	"fold/models"
 
@@ -37,11 +39,13 @@ type attemptScene struct {
 	// reaches the database through pgproxy (booted like a process), and direct
 	// is the shared handle straight to the server: the control and observer
 	// that a restore must also recycle. In a plain scene they are the same.
-	app      *App
-	direct   *gorm.DB
-	rig      *ctxRig
-	admin    *models.User
-	c        *apiClient
+	app    *App
+	direct *gorm.DB
+	rig    *ctxRig
+	admin  *models.User
+	c      *apiClient
+	// kind is the attempt kind mint, settle and state use; a legacy test sets it.
+	kind     string
 	restarts atomic.Int32
 	clock    atomic.Int64 // nanoseconds since the process "started"
 }
@@ -49,7 +53,7 @@ type attemptScene struct {
 func newAttemptScene(t *testing.T) *attemptScene {
 	t.Helper()
 	app := testApp(t)
-	s := &attemptScene{t: t, app: app, direct: app.DB}
+	s := &attemptScene{t: t, app: app, direct: app.DB, kind: attemptKindAccountDelete}
 	app.requestRestart = func() { s.restarts.Add(1) }
 	app.useAttemptClock(func() time.Duration { return time.Duration(s.clock.Load()) })
 	s.admin = newTestUser(t, app, "admin", "pw", models.RoleAdmin)
@@ -66,7 +70,7 @@ func newProxiedAttemptScene(t *testing.T) *attemptScene {
 	direct := testApp(t)
 	admin := newTestUser(t, direct, "admin", "pw", models.RoleAdmin)
 	rig := newCtxRigFor(t, direct)
-	s := &attemptScene{t: t, app: rig.papp, direct: direct.DB, rig: rig, admin: admin}
+	s := &attemptScene{t: t, app: rig.papp, direct: direct.DB, rig: rig, admin: admin, kind: attemptKindAccountDelete}
 	bootFence(t, rig.papp)
 	rig.papp.requestRestart = func() { s.restarts.Add(1) }
 	rig.papp.useAttemptClock(func() time.Duration { return time.Duration(s.clock.Load()) })
@@ -86,7 +90,7 @@ func (s *attemptScene) mintWith(c *apiClient, kind string, subject uint) *httpte
 
 func (s *attemptScene) mint(subject uint) string {
 	s.t.Helper()
-	w := s.mintWith(s.c, attemptKindAccountDelete, subject)
+	w := s.mintWith(s.c, s.kind, subject)
 	if w.Code != http.StatusOK {
 		s.t.Fatalf("mint: %d %s", w.Code, w.Body.String())
 	}
@@ -112,7 +116,7 @@ func (s *attemptScene) del(id string, target uint) *httptest.ResponseRecorder {
 
 func (s *attemptScene) settleAs(c *apiClient, id string, subject uint) *httptest.ResponseRecorder {
 	return c.do("POST", "/api/v1/admin/operation-attempts/settle",
-		map[string]any{"attemptId": id, "kind": attemptKindAccountDelete, "subjectUserId": subject}, true)
+		map[string]any{"attemptId": id, "kind": s.kind, "subjectUserId": subject}, true)
 }
 
 func (s *attemptScene) settle(id string, subject uint) *httptest.ResponseRecorder {
@@ -142,7 +146,7 @@ func codeOf(t *testing.T, w *httptest.ResponseRecorder) string {
 // state is the ledger entry of an id the scene minted for the subject.
 func (s *attemptScene) state(id string, subject uint) attemptState {
 	s.t.Helper()
-	nonce, _, ok := s.app.openAttempt(id, attemptKindAccountDelete, s.admin.ID, subject)
+	nonce, _, ok := s.app.openAttempt(id, s.kind, s.admin.ID, subject)
 	if !ok {
 		s.t.Fatal("the id does not open for the tuple it was minted for")
 	}
@@ -510,11 +514,18 @@ func TestAttemptLifecycle(t *testing.T) {
 			t.Fatalf("submission with another subject: %d %s, want 409 attempt_expired", w.Code, w.Body.String())
 		}
 		wantSettle(t, s.settled(id, b.ID), settleHistoryUnavailable, nil)
-		// Another kind never opens (the route refuses the kind itself).
+		// Another allowed kind never opens: the id is not this kind's, so settle
+		// answers history_unavailable and records nothing. A kind outside the
+		// allow-list is refused by the route itself.
 		w := s.c.do("POST", "/api/v1/admin/operation-attempts/settle",
-			map[string]any{"attemptId": id, "kind": "legacy_reason_save", "subjectUserId": a.ID}, true)
+			map[string]any{"attemptId": id, "kind": attemptKindLegacyReasonSave, "subjectUserId": a.ID}, true)
+		var other attemptSettleJSON
+		decodeJSON(t, w, &other)
+		wantSettle(t, other, settleHistoryUnavailable, nil)
+		w = s.c.do("POST", "/api/v1/admin/operation-attempts/settle",
+			map[string]any{"attemptId": id, "kind": "other_kind", "subjectUserId": a.ID}, true)
 		if w.Code != http.StatusBadRequest {
-			t.Fatalf("settle with another kind: %d, want 400", w.Code)
+			t.Fatalf("settle with an unknown kind: %d, want 400", w.Code)
 		}
 		// Another admin cannot submit or settle it.
 		newTestUser(t, s.app, "admin2", "pw", models.RoleAdmin)
@@ -1005,34 +1016,12 @@ func TestSettleAuthorization(t *testing.T) {
 		"disable":           "UPDATE users SET status = 'disabled' WHERE id = ?",
 		"soft deletion":     "UPDATE users SET deleted_at = now() WHERE id = ?",
 	}
-	for name, revoke := range revokers {
-		t.Run(name, func(t *testing.T) {
-			s := newAttemptScene(t)
-			a := s.target("a")
-			// A second admin keeps the system valid when the first loses power.
-			newTestUser(t, s.app, "admin2", "pw", models.RoleAdmin)
-			id := s.mint(a.ID)
-			// (a) committed after the middleware authenticated the request and
-			// before the settle transaction.
-			s.app.hooks.settleBeforeTx = func() {
-				if err := s.app.DB.Exec(revoke, s.admin.ID).Error; err != nil {
-					t.Errorf("revoke: %v", err)
-				}
-			}
-			w := s.settle(id, a.ID)
-			if w.Code != http.StatusUnauthorized && w.Code != http.StatusForbidden {
-				t.Fatalf("settle after %s: %d %s, want 401 or 403", name, w.Code, w.Body.String())
-			}
-			for _, field := range []string{"result", "subjectDeleted"} {
-				if strings.Contains(w.Body.String(), field) {
-					t.Errorf("a refused settle names %q: %s", field, w.Body.String())
-				}
-			}
-			nonce, _, _ := s.app.openAttempt(id, attemptKindAccountDelete, s.admin.ID, a.ID)
-			if st, _ := s.app.attempts.ledger.look(nonce); st != attemptAbsent {
-				t.Fatalf("a refused settle changed the ledger: %v", st)
-			}
-		})
+	for _, kind := range attemptKinds {
+		for name, revoke := range revokers {
+			t.Run(kind+"/"+name, func(t *testing.T) {
+				settleRevokedBeforeTx(t, kind, name, revoke)
+			})
+		}
 	}
 
 	t.Run("deletion refuses 401 after a logout between middleware and transaction", func(t *testing.T) {
@@ -1056,6 +1045,40 @@ func TestSettleAuthorization(t *testing.T) {
 			t.Fatal("nothing may be deleted and the id ends rolled back")
 		}
 	})
+}
+
+// attemptKinds is every kind mint and settle accept; a test of what the two
+// routes share runs once for each.
+var attemptKinds = []string{attemptKindAccountDelete, attemptKindLegacyReasonSave}
+
+// settleRevokedBeforeTx is (a): the revocation commits after the middleware
+// authenticated the request and before the settle transaction. The refusal
+// names no outcome field and leaves the ledger untouched.
+func settleRevokedBeforeTx(t *testing.T, kind, name, revoke string) {
+	s := newAttemptScene(t)
+	s.kind = kind
+	a := s.target("a")
+	// A second admin keeps the system valid when the first loses power.
+	newTestUser(t, s.app, "admin2", "pw", models.RoleAdmin)
+	id := s.mint(a.ID)
+	s.app.hooks.settleBeforeTx = func() {
+		if err := s.app.DB.Exec(revoke, s.admin.ID).Error; err != nil {
+			t.Errorf("revoke: %v", err)
+		}
+	}
+	w := s.settle(id, a.ID)
+	if w.Code != http.StatusUnauthorized && w.Code != http.StatusForbidden {
+		t.Fatalf("settle after %s: %d %s, want 401 or 403", name, w.Code, w.Body.String())
+	}
+	for _, field := range []string{"result", "subjectDeleted"} {
+		if strings.Contains(w.Body.String(), field) {
+			t.Errorf("a refused settle names %q: %s", field, w.Body.String())
+		}
+	}
+	nonce, _, _ := s.app.openAttempt(id, kind, s.admin.ID, a.ID)
+	if st, _ := s.app.attempts.ledger.look(nonce); st != attemptAbsent {
+		t.Fatalf("a refused settle changed the ledger: %v", st)
+	}
 }
 
 func TestAttemptReceiptSweep(t *testing.T) {
@@ -1200,41 +1223,54 @@ func advisoryWaiters(t testing.TB, db *gorm.DB) int64 {
 // is unchanged (absent stays absent), so a fresh session of a re-promoted actor
 // is not blocked by it.
 func TestSettleAuthorizationBehindAParkedHolder(t *testing.T) {
-	for name, revoke := range revocationKinds {
-		t.Run(name, func(t *testing.T) {
-			s := newAttemptScene(t)
-			a := s.target("a")
-			id := s.mint(a.ID)
-			release, _ := holdAdvisory(t, s.app.DB, contactLockID)
-			defer release()
-			s.c.holdNotices = true
-			done := make(chan *httptest.ResponseRecorder, 1)
-			go func() { done <- s.settle(id, a.ID) }()
-			testdb.WaitUntil(t, "settle waiting for the gate", 10*time.Second, func() bool { return advisoryWaiters(t, s.app.DB) == 1 })
-			if err := s.app.DB.Exec(revoke, s.admin.ID).Error; err != nil {
-				t.Fatal(err)
-			}
-			release()
-			w := awaitRec(t, done, "settle")
-			if w.Code != http.StatusUnauthorized && w.Code != http.StatusForbidden {
-				t.Fatalf("settle after %s: %d %s, want 401 or 403", name, w.Code, w.Body.String())
-			}
-			for _, field := range []string{"result", "subjectDeleted"} {
-				if strings.Contains(w.Body.String(), field) {
-					t.Errorf("a refused settle names %q: %s", field, w.Body.String())
+	for _, kind := range attemptKinds {
+		for name, revoke := range revocationKinds {
+			t.Run(kind+"/"+name, func(t *testing.T) {
+				s := newAttemptScene(t)
+				s.kind = kind
+				a := s.target("a")
+				id := s.mint(a.ID)
+				release, _ := holdAdvisory(t, s.app.DB, contactLockID)
+				defer release()
+				s.c.holdNotices = true
+				done := make(chan *httptest.ResponseRecorder, 1)
+				go func() { done <- s.settle(id, a.ID) }()
+				testdb.WaitUntil(t, "settle waiting for the gate", 10*time.Second, func() bool { return advisoryWaiters(t, s.app.DB) == 1 })
+				if err := s.app.DB.Exec(revoke, s.admin.ID).Error; err != nil {
+					t.Fatal(err)
 				}
-			}
-			if s.state(id, a.ID) != attemptAbsent {
-				t.Fatal("a refused settle changed the ledger")
-			}
-			if err := s.app.DB.Exec("UPDATE users SET role = 'admin', status = 'active', deleted_at = NULL WHERE id = ?", s.admin.ID).Error; err != nil {
-				t.Fatal(err)
-			}
-			fresh := loginAPI(t, s.app, "admin", "pw")
-			if w := s.deleteAs(fresh, id, a.ID); w.Code != http.StatusOK {
-				t.Fatalf("a fresh session of the re-promoted admin: %d %s, want 200 (the refused settle must not block the id)", w.Code, w.Body.String())
-			}
-		})
+				release()
+				w := awaitRec(t, done, "settle")
+				if w.Code != http.StatusUnauthorized && w.Code != http.StatusForbidden {
+					t.Fatalf("settle after %s: %d %s, want 401 or 403", name, w.Code, w.Body.String())
+				}
+				for _, field := range []string{"result", "subjectDeleted"} {
+					if strings.Contains(w.Body.String(), field) {
+						t.Errorf("a refused settle names %q: %s", field, w.Body.String())
+					}
+				}
+				if s.state(id, a.ID) != attemptAbsent {
+					t.Fatal("a refused settle changed the ledger")
+				}
+				if err := s.app.DB.Exec("UPDATE users SET role = 'admin', status = 'active', deleted_at = NULL WHERE id = ?", s.admin.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				if kind == attemptKindLegacyReasonSave {
+					// The legacy save has no route yet: the submission check it will start
+					// with is the same kind-agnostic ledger claim.
+					claim, r := s.app.submitAttempt(id, kind, s.admin.ID, a.ID)
+					if r != submitOK {
+						t.Fatalf("the refused settle blocked the id: submission = %v, want ok", r)
+					}
+					claim.end(attemptRolledBack)
+					return
+				}
+				fresh := loginAPI(t, s.app, "admin", "pw")
+				if w := s.deleteAs(fresh, id, a.ID); w.Code != http.StatusOK {
+					t.Fatalf("a fresh session of the re-promoted admin: %d %s, want 200 (the refused settle must not block the id)", w.Code, w.Body.String())
+				}
+			})
+		}
 	}
 }
 
@@ -1242,36 +1278,39 @@ func TestSettleAuthorizationBehindAParkedHolder(t *testing.T) {
 // is shown waiting behind settle's FOR SHARE until settle commits; settle
 // discloses its outcome; then the revocation commits.
 func TestSettleAuthorizationRevokedBeforeTheFence(t *testing.T) {
-	for name, revoke := range revocationKinds {
-		t.Run(name, func(t *testing.T) {
-			s := newAttemptScene(t)
-			a := s.target("a")
-			id := s.mint(a.ID)
-			revoked := make(chan error, 1)
-			var once atomic.Bool
-			s.app.hooks.settleBeforeFence = func(tx *gorm.DB) {
-				if once.Swap(true) {
-					return
+	for _, kind := range attemptKinds {
+		for name, revoke := range revocationKinds {
+			t.Run(kind+"/"+name, func(t *testing.T) {
+				s := newAttemptScene(t)
+				s.kind = kind
+				a := s.target("a")
+				id := s.mint(a.ID)
+				revoked := make(chan error, 1)
+				var once atomic.Bool
+				s.app.hooks.settleBeforeFence = func(tx *gorm.DB) {
+					if once.Swap(true) {
+						return
+					}
+					pid := backendPID(tx)
+					go func() { revoked <- s.app.DB.Exec(revoke, s.admin.ID).Error }()
+					waiterBlockedBy(t, s.app.DB, pid, "UPDATE")
+					select {
+					case <-revoked:
+						t.Error("the revocation finished while settle held the actor's row")
+					default:
+					}
 				}
-				pid := backendPID(tx)
-				go func() { revoked <- s.app.DB.Exec(revoke, s.admin.ID).Error }()
-				waiterBlockedBy(t, s.app.DB, pid, "UPDATE")
+				wantSettle(t, s.settled(id, a.ID), settleNotApplied, nil)
 				select {
-				case <-revoked:
-					t.Error("the revocation finished while settle held the actor's row")
-				default:
+				case err := <-revoked:
+					if err != nil {
+						t.Fatalf("the revocation: %v", err)
+					}
+				case <-time.After(10 * time.Second):
+					t.Fatal("the revocation never committed after settle did")
 				}
-			}
-			wantSettle(t, s.settled(id, a.ID), settleNotApplied, nil)
-			select {
-			case err := <-revoked:
-				if err != nil {
-					t.Fatalf("the revocation: %v", err)
-				}
-			case <-time.After(10 * time.Second):
-				t.Fatal("the revocation never committed after settle did")
-			}
-		})
+			})
+		}
 	}
 }
 
@@ -1279,42 +1318,47 @@ func TestSettleAuthorizationRevokedBeforeTheFence(t *testing.T) {
 // answer is checking with no outcome, and the ledger shows fenced (the stated
 // residual: it can stop only this admin's own unsubmitted id).
 func TestSettleBackendTerminatedAfterTheFence(t *testing.T) {
-	s := newAttemptScene(t)
-	a := s.target("a")
-	id := s.mint(a.ID)
-	var once atomic.Bool
-	s.app.hooks.settleAfterFence = func(tx *gorm.DB) {
-		if once.Swap(true) {
-			return
-		}
-		pid := backendPID(tx)
-		if err := s.app.DB.Exec("SELECT pg_terminate_backend(?)", pid).Error; err != nil {
-			t.Errorf("terminate: %v", err)
-			return
-		}
-		deadline := time.Now().Add(5 * time.Second)
-		for time.Now().Before(deadline) {
-			var n int64
-			if err := s.app.DB.Raw("SELECT count(*) FROM pg_stat_activity WHERE pid = ?", pid).Scan(&n).Error; err == nil && n == 0 {
-				return
+	for _, kind := range attemptKinds {
+		t.Run(kind, func(t *testing.T) {
+			s := newAttemptScene(t)
+			s.kind = kind
+			a := s.target("a")
+			id := s.mint(a.ID)
+			var once atomic.Bool
+			s.app.hooks.settleAfterFence = func(tx *gorm.DB) {
+				if once.Swap(true) {
+					return
+				}
+				pid := backendPID(tx)
+				if err := s.app.DB.Exec("SELECT pg_terminate_backend(?)", pid).Error; err != nil {
+					t.Errorf("terminate: %v", err)
+					return
+				}
+				deadline := time.Now().Add(5 * time.Second)
+				for time.Now().Before(deadline) {
+					var n int64
+					if err := s.app.DB.Raw("SELECT count(*) FROM pg_stat_activity WHERE pid = ?", pid).Scan(&n).Error; err == nil && n == 0 {
+						return
+					}
+					time.Sleep(5 * time.Millisecond)
+				}
+				t.Errorf("backend %d did not exit", pid)
 			}
-			time.Sleep(5 * time.Millisecond)
-		}
-		t.Errorf("backend %d did not exit", pid)
-	}
-	w := s.settle(id, a.ID)
-	if w.Code != http.StatusOK {
-		t.Fatalf("settle: %d %s", w.Code, w.Body.String())
-	}
-	var got attemptSettleJSON
-	decodeJSON(t, w, &got)
-	wantSettle(t, got, settleChecking, nil)
-	if s.state(id, a.ID) != attemptFenced {
-		t.Fatalf("ledger = %v, want fenced", s.state(id, a.ID))
-	}
-	wantSettle(t, s.settled(id, a.ID), settleNotApplied, nil)
-	if s.deleted(a.ID) {
-		t.Fatal("a settle deleted the account")
+			w := s.settle(id, a.ID)
+			if w.Code != http.StatusOK {
+				t.Fatalf("settle: %d %s", w.Code, w.Body.String())
+			}
+			var got attemptSettleJSON
+			decodeJSON(t, w, &got)
+			wantSettle(t, got, settleChecking, nil)
+			if s.state(id, a.ID) != attemptFenced {
+				t.Fatalf("ledger = %v, want fenced", s.state(id, a.ID))
+			}
+			wantSettle(t, s.settled(id, a.ID), settleNotApplied, nil)
+			if s.deleted(a.ID) {
+				t.Fatal("a settle deleted the account")
+			}
+		})
 	}
 }
 
@@ -1323,70 +1367,72 @@ func TestSettleBackendTerminatedAfterTheFence(t *testing.T) {
 // ledger change; after the revocation commits the retried seal refuses (401, or
 // 403 for a demotion), still with no fence and no outcome field.
 func TestSettleSealBusyThenRevoked(t *testing.T) {
-	for name, revoke := range revocationKinds {
-		t.Run(name, func(t *testing.T) {
-			app := testApp(t)
-			newTestUser(t, app, "admin", "pw", models.RoleAdmin)
-			target := newTestUser(t, app, "target", "pw", models.RoleMember)
-			r := newCtxRigFor(t, app)
-			c := loginAPI(t, r.papp, "admin", "pw")
-			var admin models.User
-			if err := app.DB.Where("email = ?", testEmail("admin")).First(&admin).Error; err != nil {
-				t.Fatal(err)
-			}
-			mint := c.do("POST", "/api/v1/admin/operation-attempts", map[string]any{"kind": attemptKindAccountDelete, "subjectUserId": target.ID}, true)
-			var minted attemptMintJSON
-			decodeJSON(t, mint, &minted)
-			hold, _ := beginOwnedTx(t, app.DB)
-			if err := hold.Exec(revoke, admin.ID).Error; err != nil {
-				t.Fatal(err)
-			}
-			var fenced atomic.Int32
-			r.papp.hooks.settleBeforeFence = func(*gorm.DB) { fenced.Add(1) }
-			commit := make(chan struct{})
-			go func() {
-				defer close(commit)
-				deadline := time.Now().Add(10 * time.Second)
-				for time.Now().Before(deadline) {
-					events := r.proxy.Events()
-					rolled := 0
-					for i, e := range events {
-						if e.Kind == testdb.KindStatement && strings.Contains(e.SQL, "FOR SHARE NOWAIT") {
-							for _, e2 := range events[i+1:] {
-								if e2.Conn == e.Conn {
-									if e2.Kind == testdb.KindRollback || strings.EqualFold(strings.TrimSpace(e2.SQL), "ROLLBACK") {
-										rolled++
+	for _, kind := range attemptKinds {
+		for name, revoke := range revocationKinds {
+			t.Run(kind+"/"+name, func(t *testing.T) {
+				app := testApp(t)
+				newTestUser(t, app, "admin", "pw", models.RoleAdmin)
+				target := newTestUser(t, app, "target", "pw", models.RoleMember)
+				r := newCtxRigFor(t, app)
+				c := loginAPI(t, r.papp, "admin", "pw")
+				var admin models.User
+				if err := app.DB.Where("email = ?", testEmail("admin")).First(&admin).Error; err != nil {
+					t.Fatal(err)
+				}
+				mint := c.do("POST", "/api/v1/admin/operation-attempts", map[string]any{"kind": kind, "subjectUserId": target.ID}, true)
+				var minted attemptMintJSON
+				decodeJSON(t, mint, &minted)
+				hold, _ := beginOwnedTx(t, app.DB)
+				if err := hold.Exec(revoke, admin.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				var fenced atomic.Int32
+				r.papp.hooks.settleBeforeFence = func(*gorm.DB) { fenced.Add(1) }
+				commit := make(chan struct{})
+				go func() {
+					defer close(commit)
+					deadline := time.Now().Add(10 * time.Second)
+					for time.Now().Before(deadline) {
+						events := r.proxy.Events()
+						rolled := 0
+						for i, e := range events {
+							if e.Kind == testdb.KindStatement && strings.Contains(e.SQL, "FOR SHARE NOWAIT") {
+								for _, e2 := range events[i+1:] {
+									if e2.Conn == e.Conn {
+										if e2.Kind == testdb.KindRollback || strings.EqualFold(strings.TrimSpace(e2.SQL), "ROLLBACK") {
+											rolled++
+										}
+										break
 									}
-									break
 								}
 							}
 						}
+						if rolled >= 1 {
+							break
+						}
+						time.Sleep(2 * time.Millisecond)
 					}
-					if rolled >= 1 {
-						break
+					if err := hold.Commit().Error; err != nil {
+						t.Errorf("commit the revocation: %v", err)
 					}
-					time.Sleep(2 * time.Millisecond)
+				}()
+				w := c.do("POST", "/api/v1/admin/operation-attempts/settle",
+					map[string]any{"attemptId": minted.AttemptID, "kind": kind, "subjectUserId": target.ID}, true)
+				<-commit
+				if w.Code != http.StatusUnauthorized && w.Code != http.StatusForbidden {
+					t.Fatalf("settle: %d %s, want 401 or 403 once the revocation committed", w.Code, w.Body.String())
 				}
-				if err := hold.Commit().Error; err != nil {
-					t.Errorf("commit the revocation: %v", err)
+				for _, field := range []string{"result", "subjectDeleted"} {
+					if strings.Contains(w.Body.String(), field) {
+						t.Errorf("a refused settle names %q: %s", field, w.Body.String())
+					}
 				}
-			}()
-			w := c.do("POST", "/api/v1/admin/operation-attempts/settle",
-				map[string]any{"attemptId": minted.AttemptID, "kind": attemptKindAccountDelete, "subjectUserId": target.ID}, true)
-			<-commit
-			if w.Code != http.StatusUnauthorized && w.Code != http.StatusForbidden {
-				t.Fatalf("settle: %d %s, want 401 or 403 once the revocation committed", w.Code, w.Body.String())
-			}
-			for _, field := range []string{"result", "subjectDeleted"} {
-				if strings.Contains(w.Body.String(), field) {
-					t.Errorf("a refused settle names %q: %s", field, w.Body.String())
+				nonce, _, _ := r.papp.openAttempt(minted.AttemptID, kind, admin.ID, target.ID)
+				if st, _ := r.papp.attempts.ledger.look(nonce); st != attemptAbsent || fenced.Load() != 0 {
+					t.Fatalf("ledger %v, fence seam entries %d: a busy then refused seal must leave both untouched", st, fenced.Load())
 				}
-			}
-			nonce, _, _ := r.papp.openAttempt(minted.AttemptID, attemptKindAccountDelete, admin.ID, target.ID)
-			if st, _ := r.papp.attempts.ledger.look(nonce); st != attemptAbsent || fenced.Load() != 0 {
-				t.Fatalf("ledger %v, fence seam entries %d: a busy then refused seal must leave both untouched", st, fenced.Load())
-			}
-		})
+			})
+		}
 	}
 }
 
@@ -1394,28 +1440,33 @@ func TestSettleSealBusyThenRevoked(t *testing.T) {
 // (settleBeforeTx) is refused 401 with the ledger unchanged and no outcome
 // field. A deletion's version of this is in TestCurrentAdminInOnTheRoutes.
 func TestSettleRefusesAPasswordRemovedAfterTheMiddleware(t *testing.T) {
-	s := newAttemptScene(t)
-	a := s.target("a")
-	id := s.mint(a.ID)
-	s.app.hooks.sealAttempts = &atomic.Int64{}
-	var fenced atomic.Int32
-	s.app.hooks.settleBeforeFence = func(*gorm.DB) { fenced.Add(1) }
-	s.app.hooks.settleBeforeTx = func() {
-		if err := s.app.DB.Exec("UPDATE users SET password_hash = NULL WHERE id = ?", s.admin.ID).Error; err != nil {
-			t.Errorf("clear the hash: %v", err)
-		}
-	}
-	w := s.settle(id, a.ID)
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("settle: %d %s, want 401", w.Code, w.Body.String())
-	}
-	for _, field := range []string{"result", "subjectDeleted"} {
-		if strings.Contains(w.Body.String(), field) {
-			t.Errorf("a refused settle names %q: %s", field, w.Body.String())
-		}
-	}
-	if s.state(id, a.ID) != attemptAbsent || fenced.Load() != 0 || s.app.hooks.sealAttempts.Load() != 1 {
-		t.Fatalf("ledger %v, fence entries %d, sealed %d: want absent, 0, 1", s.state(id, a.ID), fenced.Load(), s.app.hooks.sealAttempts.Load())
+	for _, kind := range attemptKinds {
+		t.Run(kind, func(t *testing.T) {
+			s := newAttemptScene(t)
+			s.kind = kind
+			a := s.target("a")
+			id := s.mint(a.ID)
+			s.app.hooks.sealAttempts = &atomic.Int64{}
+			var fenced atomic.Int32
+			s.app.hooks.settleBeforeFence = func(*gorm.DB) { fenced.Add(1) }
+			s.app.hooks.settleBeforeTx = func() {
+				if err := s.app.DB.Exec("UPDATE users SET password_hash = NULL WHERE id = ?", s.admin.ID).Error; err != nil {
+					t.Errorf("clear the hash: %v", err)
+				}
+			}
+			w := s.settle(id, a.ID)
+			if w.Code != http.StatusUnauthorized {
+				t.Fatalf("settle: %d %s, want 401", w.Code, w.Body.String())
+			}
+			for _, field := range []string{"result", "subjectDeleted"} {
+				if strings.Contains(w.Body.String(), field) {
+					t.Errorf("a refused settle names %q: %s", field, w.Body.String())
+				}
+			}
+			if s.state(id, a.ID) != attemptAbsent || fenced.Load() != 0 || s.app.hooks.sealAttempts.Load() != 1 {
+				t.Fatalf("ledger %v, fence entries %d, sealed %d: want absent, 0, 1", s.state(id, a.ID), fenced.Load(), s.app.hooks.sealAttempts.Load())
+			}
+		})
 	}
 }
 
@@ -2280,5 +2331,622 @@ func TestRaceAttemptLedgerPruneWhileInUse(t *testing.T) {
 	}
 	if st, _ := l.look(nonceOf(steps - 1)); st == attemptAbsent {
 		t.Error("an entry from minute 129.5 was pruned at minute 140")
+	}
+}
+
+// T-301 S3: the legacy_reason_save kind in mint and settle. The kind is part of
+// the id's mac, so what these tests pin is that the two kinds never open for
+// each other, that a kind outside the allow-list is refused before anything
+// runs, and that a legacy settle never carries subjectDeleted.
+
+// tombstone makes a member and deletes it through the real route, so its row is
+// what erasure leaves.
+func (s *attemptScene) tombstone(name string) *models.User {
+	s.t.Helper()
+	was := s.kind
+	s.kind = attemptKindAccountDelete
+	defer func() { s.kind = was }()
+	u := s.target(name)
+	if w := s.del(s.mint(u.ID), u.ID); w.Code != http.StatusOK {
+		s.t.Fatalf("delete %s: %d %s", name, w.Code, w.Body.String())
+	}
+	return u
+}
+
+// rawSettle is the settle answer's bytes, for a field that must be absent.
+func (s *attemptScene) rawSettle(id string, subject uint) string {
+	s.t.Helper()
+	w := s.settle(id, subject)
+	if w.Code != http.StatusOK {
+		s.t.Fatalf("settle: %d %s", w.Code, w.Body.String())
+	}
+	return strings.TrimSpace(w.Body.String())
+}
+
+// quiet fails the test when a refusal changed anything: the restore counter
+// (every fenced transaction takes a ticket) or the receipts.
+type quiet struct {
+	s                *attemptScene
+	counter, receipt int64
+}
+
+func (s *attemptScene) quiet() quiet { return quiet{s, s.counter(), s.receipts()} }
+
+func (q quiet) holds(t *testing.T, what string) {
+	t.Helper()
+	if q.s.counter() != q.counter || q.s.receipts() != q.receipt {
+		t.Errorf("%s moved the restore counter or the receipts", what)
+	}
+}
+
+func TestAttemptKindsMintAndOpen(t *testing.T) {
+	s := newAttemptScene(t)
+	a := s.target("a")
+	ids := map[string]string{}
+	for _, kind := range attemptKinds {
+		w := s.mintWith(s.c, kind, a.ID)
+		if w.Code != http.StatusOK {
+			t.Fatalf("mint %s: %d %s", kind, w.Code, w.Body.String())
+		}
+		var out attemptMintJSON
+		decodeJSON(t, w, &out)
+		if len(out.AttemptID) != 80 {
+			t.Fatalf("mint %s: id %q is not 80 characters", kind, out.AttemptID)
+		}
+		ids[kind] = out.AttemptID
+	}
+	if ids[attemptKindAccountDelete] == ids[attemptKindLegacyReasonSave] {
+		t.Fatal("two mints gave the same id")
+	}
+	for idKind, id := range ids {
+		for _, openKind := range append([]string{"", "legacy", "account_delete ", "ACCOUNT_DELETE"}, attemptKinds...) {
+			_, _, ok := s.app.openAttempt(id, openKind, s.admin.ID, a.ID)
+			if want := openKind == idKind; ok != want {
+				t.Errorf("an id minted for %q opens for %q = %v, want %v", idKind, openKind, ok, want)
+			}
+		}
+		// The kind is one of four bound values: the other three still refuse.
+		for name, ok := range map[string]bool{
+			"another actor":   func() bool { _, _, ok := s.app.openAttempt(id, idKind, s.admin.ID+1, a.ID); return ok }(),
+			"another subject": func() bool { _, _, ok := s.app.openAttempt(id, idKind, s.admin.ID, a.ID+1); return ok }(),
+		} {
+			if ok {
+				t.Errorf("a %s id opened for %s", idKind, name)
+			}
+		}
+	}
+	// Minting reads no database: a subject that does not exist, or is a live
+	// account, gets an id like any other (the save decides everything itself).
+	q := s.quiet()
+	for _, kind := range attemptKinds {
+		if w := s.mintWith(s.c, kind, 987654); w.Code != http.StatusOK {
+			t.Errorf("mint %s for an unknown subject: %d %s, want 200", kind, w.Code, w.Body.String())
+		}
+	}
+	q.holds(t, "minting")
+}
+
+func TestAttemptKindsRefusedBeforeAnythingRuns(t *testing.T) {
+	s := newAttemptScene(t)
+	a := s.target("a")
+	s.kind = attemptKindLegacyReasonSave
+	legacyID := s.mint(a.ID)
+	body := func(kind, subject any) map[string]any {
+		m := map[string]any{"attemptId": legacyID}
+		if kind != nil {
+			m["kind"] = kind
+		}
+		if subject != nil {
+			m["subjectUserId"] = subject
+		}
+		return m
+	}
+	for name, b := range map[string]any{
+		"an empty kind":           body("", a.ID),
+		"a missing kind":          body(nil, a.ID),
+		"a null kind":             rawJSON(`{"kind":null,"subjectUserId":` + itoa(a.ID) + `}`),
+		"a numeric kind":          body(7, a.ID),
+		"an unknown kind":         body("other_kind", a.ID),
+		"a prefix of a kind":      body("legacy", a.ID),
+		"a kind with a space":     body("legacy_reason_save ", a.ID),
+		"a kind with a newline":   body("account_delete\n", a.ID),
+		"another case":            body("Legacy_Reason_Save", a.ID),
+		"both kinds":              body("account_delete,legacy_reason_save", a.ID),
+		"a missing subject":       body(attemptKindLegacyReasonSave, nil),
+		"subject zero":            body(attemptKindLegacyReasonSave, 0),
+		"a negative subject":      body(attemptKindLegacyReasonSave, -1),
+		"a string subject":        body(attemptKindLegacyReasonSave, itoa(a.ID)),
+		"a fractional subject":    body(attemptKindLegacyReasonSave, 1.5),
+		"a subject past uint":     rawJSON(`{"kind":"legacy_reason_save","subjectUserId":18446744073709551616}`),
+		"a malformed body":        rawJSON(`{`),
+		"a list for the body":     rawJSON(`[]`),
+		"an empty body":           nil,
+		"a null body":             rawJSON(`null`),
+		"a scalar for the body":   rawJSON(`"legacy_reason_save"`),
+		"a kind in the wrong key": map[string]any{"attemptKind": attemptKindLegacyReasonSave, "subjectUserId": a.ID},
+	} {
+		t.Run(name, func(t *testing.T) {
+			q := s.quiet()
+			for _, path := range []string{"/api/v1/admin/operation-attempts", "/api/v1/admin/operation-attempts/settle"} {
+				w := s.c.do("POST", path, b, true)
+				if w.Code != http.StatusBadRequest {
+					t.Errorf("POST %s: %d %s, want 400", path, w.Code, w.Body.String())
+				}
+			}
+			q.holds(t, "a refused body")
+			// Nothing was fenced, claimed or settled: the id still opens and is absent.
+			if s.state(legacyID, a.ID) != attemptAbsent {
+				t.Fatal("a refused request recorded the id")
+			}
+		})
+	}
+	// The id that was never settled is still good.
+	wantSettle(t, s.settled(legacyID, a.ID), settleNotApplied, nil)
+}
+
+func TestAttemptKindsNeverCross(t *testing.T) {
+	s := newAttemptScene(t)
+	a, b := s.target("a"), s.target("b")
+	deleteID := s.mint(a.ID)
+	s.kind = attemptKindLegacyReasonSave
+	legacyID := s.mint(a.ID)
+	legacyOther := s.mint(b.ID)
+	q := s.quiet()
+
+	// A settle under the other kind is a well-formed id that does not open here:
+	// history_unavailable, before any transaction, so no ticket and no ledger entry.
+	s.kind = attemptKindAccountDelete
+	wantSettle(t, s.settled(legacyID, a.ID), settleHistoryUnavailable, nil)
+	s.kind = attemptKindLegacyReasonSave
+	wantSettle(t, s.settled(deleteID, a.ID), settleHistoryUnavailable, nil)
+	// A legacy id is bound to its own subject and its own admin as well.
+	wantSettle(t, s.settled(legacyOther, a.ID), settleHistoryUnavailable, nil)
+	newTestUser(t, s.app, "admin2", "pw", models.RoleAdmin)
+	var other attemptSettleJSON
+	decodeJSON(t, s.settleAs(loginAPI(t, s.app, "admin2", "pw"), legacyID, a.ID), &other)
+	wantSettle(t, other, settleHistoryUnavailable, nil)
+	// Ids that cannot be any kind's are history_unavailable too.
+	for _, bad := range []string{"", "0", legacyID[:79], legacyID + "0", "g" + legacyID[1:], strings.ToUpper(legacyID)} {
+		if bad == legacyID {
+			continue
+		}
+		wantSettle(t, s.settled(bad, a.ID), settleHistoryUnavailable, nil)
+	}
+	q.holds(t, "a settle of an id that does not open")
+	if st := func() attemptState {
+		nonce, _, _ := s.app.openAttempt(deleteID, attemptKindAccountDelete, s.admin.ID, a.ID)
+		st, _ := s.app.attempts.ledger.look(nonce)
+		return st
+	}(); st != attemptAbsent || s.state(legacyID, a.ID) != attemptAbsent {
+		t.Fatalf("a settle under the other kind left a ledger entry (delete id %v, legacy id %v)", st, s.state(legacyID, a.ID))
+	}
+
+	// The deletion route submits under account_delete: a legacy id is expired
+	// there, nothing is deleted or recorded, and the id is not burned.
+	if w := s.del(legacyID, a.ID); w.Code != http.StatusConflict || codeOf(t, w) != "attempt_expired" {
+		t.Fatalf("a legacy id sent to the deletion: %d %s, want 409 attempt_expired", w.Code, w.Body.String())
+	}
+	if s.deleted(a.ID) || s.state(legacyID, a.ID) != attemptAbsent {
+		t.Fatal("a legacy id ran or was claimed by the deletion route")
+	}
+	q.holds(t, "the deletion refusing a legacy id")
+	// Likewise at the ledger, where the legacy save will start: the other
+	// kind's tuple is expired and claims nothing.
+	if claim, r := s.app.submitAttempt(legacyID, attemptKindAccountDelete, s.admin.ID, a.ID); claim != nil || r != submitExpired {
+		t.Fatalf("submitting a legacy id as account_delete: %v, %v, want expired", claim, r)
+	}
+	if claim, r := s.app.submitAttempt(deleteID, attemptKindLegacyReasonSave, s.admin.ID, a.ID); claim != nil || r != submitExpired {
+		t.Fatalf("submitting a delete id as legacy_reason_save: %v, %v, want expired", claim, r)
+	}
+	// Each id still does its own work.
+	wantSettle(t, s.settled(legacyID, a.ID), settleNotApplied, nil)
+	if w := s.del(deleteID, a.ID); w.Code != http.StatusOK || !s.deleted(a.ID) {
+		t.Fatalf("the delete id after the legacy refusals: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestLegacySettleNeverCarriesSubjectDeleted(t *testing.T) {
+	t.Run("a deleted subject, unlike the deletion kind", func(t *testing.T) {
+		s := newAttemptScene(t)
+		a := s.tombstone("a")
+		s.kind = attemptKindLegacyReasonSave
+		id := s.mint(a.ID)
+		before := s.counter()
+		if got := s.rawSettle(id, a.ID); got != `{"result":"not_applied"}` {
+			t.Fatalf("legacy settle on a tombstone = %s, want exactly not_applied", got)
+		}
+		if s.state(id, a.ID) != attemptFenced || s.counter() != before+1 {
+			t.Fatalf("legacy settle must fence the id in a fenced transaction: state %v, counter %d -> %d", s.state(id, a.ID), before, s.counter())
+		}
+		if got := s.rawSettle(id, a.ID); got != `{"result":"not_applied"}` {
+			t.Fatalf("a second legacy settle = %s, want the same", got)
+		}
+		// The deletion kind keeps its field on the very same account.
+		s.kind = attemptKindAccountDelete
+		if got := s.rawSettle(s.mint(a.ID), a.ID); got != `{"result":"not_applied","subjectDeleted":true}` {
+			t.Fatalf("deletion settle on a tombstone = %s, want not_applied with subjectDeleted", got)
+		}
+	})
+
+	t.Run("a live subject and a subject that never existed", func(t *testing.T) {
+		s := newAttemptScene(t)
+		s.kind = attemptKindLegacyReasonSave
+		live := s.target("live")
+		for _, subject := range []uint{live.ID, 987654} {
+			if got := s.rawSettle(s.mint(subject), subject); got != `{"result":"not_applied"}` {
+				t.Errorf("legacy settle for subject %d = %s, want not_applied", subject, got)
+			}
+		}
+	})
+
+	t.Run("every ledger state, for both kinds", func(t *testing.T) {
+		cases := []struct {
+			name    string
+			end     attemptState // the claim's final state; attemptAbsent leaves it unclaimed
+			receipt bool
+			result  string
+		}{
+			{"unclaimed", attemptAbsent, false, settleNotApplied},
+			{"applied", attemptApplied, true, settleApplied},
+			{"rolled back", attemptRolledBack, false, settleNotApplied},
+			{"unknown with its receipt", attemptUnknown, true, settleApplied},
+			{"unknown without a receipt", attemptUnknown, false, settleHistoryUnavailable},
+		}
+		for _, kind := range attemptKinds {
+			for _, c := range cases {
+				t.Run(kind+"/"+c.name, func(t *testing.T) {
+					s := newAttemptScene(t)
+					a := s.tombstone("a")
+					s.kind = kind
+					id := s.mint(a.ID)
+					if c.end != attemptAbsent {
+						claim, r := s.app.submitAttempt(id, kind, s.admin.ID, a.ID)
+						if r != submitOK {
+							t.Fatalf("submit: %v", r)
+						}
+						if c.receipt {
+							if err := s.app.DB.Transaction(func(tx *gorm.DB) error { return insertAttemptReceipt(tx, claim.nonce) }); err != nil {
+								t.Fatal(err)
+							}
+						}
+						claim.end(c.end)
+					}
+					got := s.settled(id, a.ID)
+					// subjectDeleted only on a deletion's not_applied, and only
+					// because the subject is deleted.
+					var wantField *bool
+					if kind == attemptKindAccountDelete && c.result == settleNotApplied {
+						wantField = ptr(true)
+					}
+					wantSettle(t, got, c.result, wantField)
+				})
+			}
+		}
+	})
+
+	t.Run("a running legacy attempt is waited for, then answered", func(t *testing.T) {
+		s := newAttemptScene(t)
+		a := s.tombstone("a")
+		s.kind = attemptKindLegacyReasonSave
+		id := s.mint(a.ID)
+		claim, r := s.app.submitAttempt(id, attemptKindLegacyReasonSave, s.admin.ID, a.ID)
+		if r != submitOK {
+			t.Fatalf("submit: %v", r)
+		}
+		done := make(chan *httptest.ResponseRecorder, 1)
+		go func() { done <- s.settle(id, a.ID) }()
+		select {
+		case w := <-done:
+			t.Fatalf("settle answered %s while the attempt was running", w.Body.String())
+		case <-time.After(300 * time.Millisecond):
+		}
+		claim.end(attemptRolledBack)
+		w := awaitRec(t, done, "settle")
+		if got := strings.TrimSpace(w.Body.String()); got != `{"result":"not_applied"}` {
+			t.Fatalf("settle after the attempt rolled back = %s, want not_applied without subjectDeleted", got)
+		}
+	})
+
+	t.Run("windows are the deletion kind's", func(t *testing.T) {
+		s := newAttemptScene(t)
+		a := s.tombstone("a")
+		s.kind = attemptKindLegacyReasonSave
+		late := s.mint(a.ID)
+		s.advance(11 * time.Minute)
+		if claim, r := s.app.submitAttempt(late, attemptKindLegacyReasonSave, s.admin.ID, a.ID); claim != nil || r != submitExpired {
+			t.Fatalf("a legacy id first submitted at 11 minutes: %v, %v, want expired", claim, r)
+		}
+		if got := s.rawSettle(late, a.ID); got != `{"result":"not_applied"}` {
+			t.Fatalf("settle of the expired legacy id = %s, want not_applied", got)
+		}
+		s.advance(51 * time.Minute)
+		if got := s.rawSettle(late, a.ID); got != `{"result":"history_unavailable"}` {
+			t.Fatalf("settle after 62 minutes = %s, want history_unavailable", got)
+		}
+	})
+}
+
+// settleAnswer decides the field by kind and nothing else changes with it.
+func TestSettleAnswerByKind(t *testing.T) {
+	states := []attemptState{attemptAbsent, attemptRunning, attemptApplied, attemptRolledBack, attemptUnknown, attemptFenced}
+	for _, state := range states {
+		for _, receipt := range []bool{false, true} {
+			for _, deleted := range []bool{false, true} {
+				del := settleAnswer(settleFacts{kind: attemptKindAccountDelete, state: state, receipt: receipt, subjectDeleted: deleted})
+				leg := settleAnswer(settleFacts{kind: attemptKindLegacyReasonSave, state: state, receipt: receipt, subjectDeleted: deleted})
+				if del.Result != leg.Result {
+					t.Errorf("state %v receipt %v deleted %v: result %q for deletion, %q for legacy", state, receipt, deleted, del.Result, leg.Result)
+				}
+				if leg.SubjectDeleted != nil {
+					t.Errorf("state %v receipt %v deleted %v: the legacy answer carries subjectDeleted", state, receipt, deleted)
+				}
+				wantField := deleted && (state == attemptFenced || state == attemptRolledBack)
+				if (del.SubjectDeleted != nil) != wantField || (wantField && !*del.SubjectDeleted) {
+					t.Errorf("state %v receipt %v deleted %v: deletion subjectDeleted = %v, want present %v", state, receipt, deleted, del.SubjectDeleted, wantField)
+				}
+			}
+		}
+	}
+}
+
+// The authorization of mint and settle does not depend on the kind: the
+// middleware and the seal decide it, and a refusal records nothing.
+func TestLegacyKindAuthorization(t *testing.T) {
+	s := newAttemptScene(t)
+	s.kind = attemptKindLegacyReasonSave
+	a := s.tombstone("a")
+	id := s.mint(a.ID)
+	newTestUser(t, s.app, "member", "pw", models.RoleMember)
+	member := loginAPI(t, s.app, "member", "pw")
+	anon := newAPIClient(t, s.app)
+	anon.fetchCSRF()
+	q := s.quiet()
+
+	paths := map[string]any{
+		"/api/v1/admin/operation-attempts":        map[string]any{"kind": attemptKindLegacyReasonSave, "subjectUserId": a.ID},
+		"/api/v1/admin/operation-attempts/settle": map[string]any{"attemptId": id, "kind": attemptKindLegacyReasonSave, "subjectUserId": a.ID},
+	}
+	for path, body := range paths {
+		if w := member.do("POST", path, body, true); w.Code != http.StatusForbidden {
+			t.Errorf("a member POST %s: %d %s, want 403", path, w.Code, w.Body.String())
+		}
+		if w := anon.do("POST", path, body, true); w.Code != http.StatusUnauthorized {
+			t.Errorf("an anonymous POST %s: %d %s, want 401", path, w.Code, w.Body.String())
+		}
+		if w := s.c.do("POST", path, body, false); w.Code != http.StatusForbidden {
+			t.Errorf("an admin POST %s without a CSRF token: %d %s, want 403", path, w.Code, w.Body.String())
+		}
+		if w := s.c.do("GET", path, nil, false); w.Code != http.StatusNotFound && w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("GET %s: %d, want 404 or 405", path, w.Code)
+		}
+	}
+	q.holds(t, "a refused request")
+	if s.state(id, a.ID) != attemptAbsent {
+		t.Fatal("a refused request recorded the id")
+	}
+	// The admin who minted it may settle it, as ever.
+	wantSettle(t, s.settled(id, a.ID), settleNotApplied, nil)
+}
+
+// A restore detected in this process refuses mint and settle of either kind
+// before anything is read or recorded.
+func TestLegacyKindAfterARestoreIsDetected(t *testing.T) {
+	s := newAttemptScene(t)
+	s.kind = attemptKindLegacyReasonSave
+	a := s.tombstone("a")
+	id := s.mint(a.ID)
+	q := s.quiet()
+	s.app.noteRestoreDetected()
+	if w := s.mintWith(s.c, attemptKindLegacyReasonSave, a.ID); w.Code != http.StatusServiceUnavailable || codeOf(t, w) != "restore_detected" {
+		t.Fatalf("mint after a detected restore: %d %s, want 503 restore_detected", w.Code, w.Body.String())
+	}
+	if w := s.settle(id, a.ID); w.Code != http.StatusServiceUnavailable || codeOf(t, w) != "restore_detected" {
+		t.Fatalf("settle after a detected restore: %d %s, want 503 restore_detected", w.Code, w.Body.String())
+	}
+	q.holds(t, "a refusal after a detected restore")
+	if s.state(id, a.ID) != attemptAbsent {
+		t.Fatal("a refusal after a detected restore fenced the id")
+	}
+}
+
+// A legacy id fenced by a settle, a dump, a restore and a new App: the new App
+// cannot open the id, so a submission is expired and a settle history_unavailable,
+// before any transaction (the legacy twin of TestRestoreFenceFencedIdAcrossARestart).
+func TestLegacyKindFencedIdAcrossARestart(t *testing.T) {
+	fenceTools(t)
+	s := newAttemptScene(t)
+	a := s.tombstone("a")
+	s.kind = attemptKindLegacyReasonSave
+	id := s.mint(a.ID)
+	wantSettle(t, s.settled(id, a.ID), settleNotApplied, nil)
+	if s.state(id, a.ID) != attemptFenced {
+		t.Fatal("settle should leave the unclaimed legacy id fenced")
+	}
+	dump := fenceDump(t, s.app.DB)
+	fenceRestore(t, s.app.DB, dump, false, s.direct)
+	fresh := &App{DB: s.direct, Store: s.app.Store, Config: s.app.Config, Uploads: s.app.Uploads, Mailer: s.app.Mailer}
+	bootFence(t, fresh)
+	fc := loginAPI(t, fresh, "admin", "pw")
+	counter, receipts, floor := s.counter(), s.receipts(), fresh.restoreFenceFloor()
+	if claim, r := fresh.submitAttempt(id, attemptKindLegacyReasonSave, s.admin.ID, a.ID); claim != nil || r != submitExpired {
+		t.Fatalf("submission to the new App: %v, %v, want expired", claim, r)
+	}
+	sw := fc.do("POST", "/api/v1/admin/operation-attempts/settle",
+		map[string]any{"attemptId": id, "kind": attemptKindLegacyReasonSave, "subjectUserId": a.ID}, true)
+	var got attemptSettleJSON
+	decodeJSON(t, sw, &got)
+	wantSettle(t, got, settleHistoryUnavailable, nil)
+	if s.counter() != counter || s.receipts() != receipts || fresh.restoreFenceFloor() != floor {
+		t.Fatal("the new App's answers moved the counter, the receipts or the floor before any transaction")
+	}
+	// A restored tombstone is a tombstone again, and a fresh legacy id settles on it.
+	var gone int64
+	if err := s.direct.Raw("SELECT count(*) FROM users WHERE id = ? AND deleted_at IS NOT NULL", a.ID).Scan(&gone).Error; err != nil {
+		t.Fatal(err)
+	}
+	var minted attemptMintJSON
+	decodeJSON(t, fc.do("POST", "/api/v1/admin/operation-attempts", map[string]any{"kind": attemptKindLegacyReasonSave, "subjectUserId": a.ID}, true), &minted)
+	var fresh2 attemptSettleJSON
+	decodeJSON(t, fc.do("POST", "/api/v1/admin/operation-attempts/settle",
+		map[string]any{"attemptId": minted.AttemptID, "kind": attemptKindLegacyReasonSave, "subjectUserId": a.ID}, true), &fresh2)
+	wantSettle(t, fresh2, settleNotApplied, nil)
+	if gone > 1 {
+		t.Fatalf("the restored database has %d rows for the tombstone", gone)
+	}
+}
+
+// attemptKindProblems is the guard for the kind allow-list. A kind is one of
+// the values mint and settle accept, so: every attemptKind constant is in
+// attemptKindAllowed and nothing else is (no literal); no handler compares a
+// kind itself (only the allow-list and settleAnswer do); and settle's seal,
+// which decides the actor and the ledger, never reads the kind.
+func attemptKindProblems(files []*guardkit.File) []string {
+	var bad []string
+	consts := map[string]bool{}
+	// A kind constant is recognised everywhere; a .Kind field only in the file that
+	// holds the allow-list, where it is the request body's or the facts' kind.
+	allowedFile := ""
+	isKind := func(path string, e ast.Expr) bool {
+		switch x := guardkit.Unparen(e).(type) {
+		case *ast.Ident:
+			return strings.HasPrefix(x.Name, "attemptKind")
+		case *ast.SelectorExpr:
+			return path == allowedFile && (x.Sel.Name == "Kind" || x.Sel.Name == "kind")
+		}
+		return false
+	}
+	var allowed *ast.FuncDecl
+	for _, f := range files {
+		for _, d := range f.AST.Decls {
+			switch d := d.(type) {
+			case *ast.GenDecl:
+				for _, sp := range d.Specs {
+					if vs, ok := sp.(*ast.ValueSpec); ok && d.Tok == token.CONST {
+						for _, n := range vs.Names {
+							if strings.HasPrefix(n.Name, "attemptKind") {
+								consts[n.Name] = true
+							}
+						}
+					}
+				}
+			case *ast.FuncDecl:
+				if d.Name.Name == "attemptKindAllowed" {
+					allowed, allowedFile = d, f.Path
+				}
+			}
+		}
+	}
+	if allowed == nil {
+		return []string{"attemptKindAllowed is missing"}
+	}
+	seen := map[string]bool{}
+	ast.Inspect(allowed.Body, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.Ident:
+			if consts[x.Name] {
+				seen[x.Name] = true
+			}
+		case *ast.BasicLit:
+			bad = append(bad, "attemptKindAllowed names a kind by a literal: "+x.Value)
+		}
+		return true
+	})
+	for name := range consts {
+		if !seen[name] {
+			bad = append(bad, name+" is not in attemptKindAllowed")
+		}
+	}
+	for _, f := range files {
+		for _, d := range f.AST.Decls {
+			fd, ok := d.(*ast.FuncDecl)
+			if !ok || fd.Body == nil {
+				continue
+			}
+			if fd.Name.Name != "attemptKindAllowed" && fd.Name.Name != "settleAnswer" {
+				ast.Inspect(fd.Body, func(n ast.Node) bool {
+					switch x := n.(type) {
+					case *ast.BinaryExpr:
+						if (x.Op == token.EQL || x.Op == token.NEQ) && (isKind(f.Path, x.X) || isKind(f.Path, x.Y)) {
+							bad = append(bad, f.Path+": "+fd.Name.Name+" compares a kind; use attemptKindAllowed")
+						}
+					case *ast.SwitchStmt:
+						if x.Tag != nil && isKind(f.Path, x.Tag) {
+							bad = append(bad, f.Path+": "+fd.Name.Name+" switches on a kind; use attemptKindAllowed")
+						}
+					}
+					return true
+				})
+			}
+			if fd.Name.Name == "apiAdminSettleOperationAttempt" {
+				guardkit.InspectStack(fd.Body, func(n ast.Node, stack []ast.Node) bool {
+					lit, ok := n.(*ast.FuncLit)
+					if !ok || !sealRunLiteral(stack[:len(stack)-1], lit) {
+						return true
+					}
+					ast.Inspect(lit.Body, func(m ast.Node) bool {
+						if sel, ok := m.(*ast.SelectorExpr); ok && (sel.Sel.Name == "kind" || sel.Sel.Name == "Kind") {
+							bad = append(bad, "settle's seal reads the kind; the answer layer decides what a kind shows")
+						}
+						return true
+					})
+					return true
+				})
+			}
+		}
+	}
+	sort.Strings(bad)
+	return bad
+}
+
+// attemptKindFixture is a package that passes attemptKindProblems; each negative
+// fixture below is it with one change.
+const attemptKindFixture = `package main
+const (
+	attemptKindAccountDelete = "account_delete"
+	attemptKindLegacyReasonSave = "legacy_reason_save"
+)
+func attemptKindAllowed(kind string) bool {
+	return kind == attemptKindAccountDelete || kind == attemptKindLegacyReasonSave
+}
+func settleAnswer(f settleFacts) int {
+	if f.kind != attemptKindLegacyReasonSave { return 1 }
+	return 0
+}
+func apiAdminSettleOperationAttempt() {
+	seal := &contactSeal{run: func(tx *gorm.DB) error { return nil }}
+	_ = seal
+}
+`
+
+func TestAttemptKindsAreOneList(t *testing.T) {
+	parsed := guardkit.Production(t).Parse(0)
+	for _, p := range parsed.Problems {
+		t.Error(p)
+	}
+	if f := parsed.File("admin_operation_attempts.go"); f == nil || guardkit.FindFunc(f.AST, "apiAdminSettleOperationAttempt") == nil || guardkit.FindFunc(f.AST, "settleAnswer") == nil {
+		t.Fatal("the attempt handlers moved; this guard must keep reading them")
+	}
+	for _, v := range attemptKindProblems(parsed.Package("main")) {
+		t.Error(v)
+	}
+
+	files := func(src string) []*guardkit.File {
+		return guardkit.Sources{"fixture.go": src}.Parse(0).Files
+	}
+	if bad := attemptKindProblems(files(attemptKindFixture)); len(bad) != 0 {
+		t.Fatalf("the positive fixture failed: %v", bad)
+	}
+	for name, src := range map[string]string{
+		"a handler that compares the body's kind":   attemptKindFixture + "func h(body struct{ Kind string }) bool { return body.Kind != attemptKindAccountDelete }\n",
+		"a handler that compares a kind constant":   attemptKindFixture + "func h(k string) bool { return k == attemptKindLegacyReasonSave }\n",
+		"a handler that switches on the kind":       attemptKindFixture + "func h(body struct{ Kind string }) { switch body.Kind { case \"x\": } }\n",
+		"a kind missing from the allow-list":        attemptKindFixture + "const attemptKindOther = \"other\"\n",
+		"an allow-list that names a literal":        strings.Replace(attemptKindFixture, "return kind ==", "return kind == \"x\" || kind ==", 1),
+		"an allow-list lacking the legacy constant": strings.Replace(attemptKindFixture, " || kind == attemptKindLegacyReasonSave", "", 1),
+		"a settle seal that reads the kind":         strings.Replace(attemptKindFixture, "return nil }}", "return facts.kind }}", 1),
+	} {
+		if len(attemptKindProblems(files(src))) == 0 {
+			t.Errorf("%s: the guard accepted it", name)
+		}
 	}
 }

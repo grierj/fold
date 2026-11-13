@@ -46,6 +46,10 @@ import (
 
 const (
 	attemptKindAccountDelete = "account_delete"
+	// attemptKindLegacyReasonSave is the kind of the legacy erased-account reason
+	// save (T-301). Its subject is the tombstone the reasons belong to. The kind is
+	// in the id's mac, so an id minted for one kind never opens for the other.
+	attemptKindLegacyReasonSave = "legacy_reason_save"
 
 	attemptSubmitWindow = 10 * time.Minute
 	attemptSettleWindow = 60 * time.Minute
@@ -478,6 +482,13 @@ func (a *App) adminDeletionTarget(c *gin.Context, me *models.User, attemptID str
 	return u, true
 }
 
+// attemptKindAllowed is the one list of kinds mint and settle accept. A kind is
+// a capability binding, not a label: it is part of the id's mac, so adding one
+// here is what makes ids of that kind exist at all.
+func attemptKindAllowed(kind string) bool {
+	return kind == attemptKindAccountDelete || kind == attemptKindLegacyReasonSave
+}
+
 type attemptMintJSON struct {
 	AttemptID string `json:"attemptId"`
 }
@@ -501,7 +512,7 @@ func (a *App) apiAdminMintOperationAttempt(c *gin.Context) {
 		Kind          string `json:"kind"`
 		SubjectUserID uint   `json:"subjectUserId"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Kind != attemptKindAccountDelete || body.SubjectUserID == 0 {
+	if err := c.ShouldBindJSON(&body); err != nil || !attemptKindAllowed(body.Kind) || body.SubjectUserID == 0 {
 		jsonError(c, http.StatusBadRequest, "invalid request")
 		return
 	}
@@ -522,6 +533,7 @@ func answerRestoreDetected(c *gin.Context) {
 }
 
 type settleFacts struct {
+	kind           string
 	state          attemptState
 	receipt        bool
 	subjectDeleted bool
@@ -543,7 +555,7 @@ func (a *App) apiAdminSettleOperationAttempt(c *gin.Context) {
 		Kind          string `json:"kind"`
 		SubjectUserID uint   `json:"subjectUserId"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Kind != attemptKindAccountDelete || body.SubjectUserID == 0 {
+	if err := c.ShouldBindJSON(&body); err != nil || !attemptKindAllowed(body.Kind) || body.SubjectUserID == 0 {
 		jsonError(c, http.StatusBadRequest, "invalid request")
 		return
 	}
@@ -576,7 +588,7 @@ func (a *App) apiAdminSettleOperationAttempt(c *gin.Context) {
 			c.JSON(http.StatusOK, attemptSettleJSON{Result: settleChecking})
 			return
 		}
-		var facts settleFacts
+		facts := settleFacts{kind: body.Kind}
 		subject, nonceHex := body.SubjectUserID, hex.EncodeToString(nonce[:])
 		seal := &contactSeal{run: func(tx *gorm.DB) error {
 			if a.hooks.sealAttempts != nil {
@@ -649,9 +661,10 @@ func settleAnswer(f settleFacts) attemptSettleJSON {
 		// subjectDeleted is present, and true, only when the account is already
 		// deleted: "not applied, and it is gone anyway". An account that is still
 		// there answers plain not_applied (design R7-C01), so the panel can offer
-		// another press.
+		// another press. A legacy save's subject is a tombstone by definition, so
+		// "gone anyway" would say nothing: that kind never carries the field.
 		ans := attemptSettleJSON{Result: settleNotApplied}
-		if f.subjectDeleted {
+		if f.subjectDeleted && f.kind != attemptKindLegacyReasonSave {
 			yes := true
 			ans.SubjectDeleted = &yes
 		}
