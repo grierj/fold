@@ -79,8 +79,9 @@ lock's publication. **Never delete, rename or replace `ops.lock`, `recovery.lock
   count and recovery level 2 do not prove legacy decisions or removals survived:
   `--reopen-if-none` reopens without checking them, and an older same-level release
   may not serve the legacy review routes. After any restore or rollback, re-walk the
-  legacy list and each affected account's page (manual, through the API, until T-302
-  ships the review UI) with a release that serves those routes. Do not change
+  legacy list and each affected account's page (Admin → Users → Deleted accounts with
+  reasons to review, or the API) with a release that serves those routes. A "Needs
+  review" badge or an empty list is not proof either. Do not change
   automatic reopen or the recovery floor to cover this without a lead/Grier product
   decision; no real restore was run to prove this note.
 - A Droplet Backup restore is outside this protection. It does not restore uploads. Docs call the

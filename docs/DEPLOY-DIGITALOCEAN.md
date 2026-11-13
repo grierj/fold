@@ -484,12 +484,13 @@ dump, using the church's records. `restore.sh` printed how many; it saves no
 list of names or ids. A list view of previously deleted accounts is not built
 (it waits on an open owner question, R4-6e-R), so for an `unknown` count or a
 nonzero one the church's records are the only source. Then re-walk the legacy
-reason review list and each affected deleted account's page through the API and
-re-decide whatever the dump brought back: decisions made after the dump are gone
-and blanked text is back, and neither the count nor recovery level 2 says
-otherwise. A rollback target that predates the legacy review routes cannot do
-this walk; use a release that serves them (until T-302 ships the review UI this
-is manual). Stay in this state as
+reason review list and each affected deleted account's page, in Admin → Users →
+Deleted accounts with reasons to review (or through the API), and re-decide
+whatever the dump brought back: decisions made after the dump are gone and
+blanked text is back, and neither the count nor recovery level 2 says otherwise.
+The "Needs review" badge on that link is only a hint, so open the page and let it
+finish checking. A rollback target that predates the legacy review routes cannot
+do this walk; use a release that serves them. Stay in this state as
 long as you need while the public site stays closed. Background deliveries are paused, but some actions can send mail or push synchronously. Use this instance only for the account-deletion workflow described here; do not use email changes, composer test sends or push tests.
 
 **Reopen.** When every one is deleted again:

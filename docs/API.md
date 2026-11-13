@@ -1360,6 +1360,35 @@ means the save did not commit and cannot run later; reload and decide again with
 a new ID. `checking` means settle the same ID again. These are the answers of a
 deletion's settle, except that `subjectDeleted` is never sent.
 
+Admin page. Admin → Users links to `/admin/deleted-reasons` ("Deleted accounts
+with reasons to review"). The link carries a "Needs review" badge only while the
+probe answers `{found: true}`; a probe that fails or answers `false` shows no
+badge, which proves nothing about the list. The page walks the list from the
+first unit, follows an empty unit's `next`, keeps what it found when a unit
+fails, and shows a notice that the list may be incomplete if the admin presses
+Stop. An account opens at `?account=<userId>`. The page loads one account page
+(at most 100 items) and enables Save only when every loaded item has an explicit
+Keep or Blank choice. Each press mints one `legacy_reason_save` ID and sends the
+whole loaded page as one exact set. After a `reason_review_changed` answer or
+`not_applied`, the page reloads, keeps the choices whose `reviewHash` is
+unchanged and marks the rest. An answer that does not say what happened settles
+the same ID and never reads as "not saved". Limits:
+
+- A save covers only the loaded page. The next reasons appear on the next page
+  read, and an account leaves the list only when its page comes back empty. The
+  list is an aid, not proof that no reasons remain.
+- A readable 404 from an account page shows "This account no longer exists." with
+  no retry, because the server answers the same for a missing id and for a live
+  account. The page cannot tell which. Any other failed read, an unreadable 404
+  included, shows `reason_review_busy` copy and retries from the same cursor.
+- The page keeps every id as a decimal string. The attempt routes take
+  `subjectUserId` as a JSON number, so an account whose id is not a safe integer
+  (beyond 2^53 − 1) can be listed and read but not saved: Save sends nothing and
+  shows "That didn't work." No sequence in the schema is expected to reach such an
+  id.
+- After `history_unavailable` or `restore_detected` the page keeps no choices and
+  locks Save until a reload succeeds.
+
 Restore limits. The save runs in the same fenced transaction as a deletion, so
 the barrier and its limits are the deletion's: only an in-memory floor detects a
 restore, and only one that loses a commit this process saw acknowledged. A database
@@ -1379,8 +1408,8 @@ reopen a pre-save dump that republishes blanked text and drops later decisions.
 same level may predate the legacy review routes entirely, so it cannot list or
 re-decide those restored reasons. After any restore or rollback, re-walk the
 legacy list and each affected account's page with a release that serves the
-legacy routes; until T-302 ships its review UI this walk is manual, through the
-API, and whatever the dump brought back must be re-decided there.
+legacy routes, in the admin page below or through the API, and re-decide
+whatever the dump brought back.
 Changing automatic reopen or the recovery floor to cover this is a product decision
 for the lead/Grier, not taken here; no real restore was run to prove this text.
 

@@ -60,6 +60,13 @@ are in `docs/plan/M7.4-ERASURE-INVENTORY.md` (section numbers below point there)
   only, an account is "Deleted account" plus its id, and a refused admin is refused before any
   read, empty unit included. Decision audit metadata never holds text, a hash, a length or an
   attempt id.
+- The admin page for these routes is `web/src/pages/ReasonReviewLegacy.tsx` (`/admin/deleted-reasons`,
+  one account at `?account=<id>`); `web/src/lib/legacySaveOutcome.ts` decides every save answer
+  (table-tested), and `web/src/lib/legacyReview.ts` its read failures and copy. The page keeps ids as
+  strings, labels an account from its id alone (never the discovery `name`, never a former name),
+  saves one loaded page per press, and settles the same attempt id after any answer that does not
+  say what happened. `docs/API.md` lists its limits. Specs create a deleted account with undecided
+  reasons only through the e2e-only seed route (`docs/agents/testing.md`).
 - The two creation functions stay in `api_contact.go`: the contact-text guard pins them.
 - Enforced by `TestContactRequestTextChangesStayInTheirHelpers`,
   `TestContactRequestTextGuardCatchesBypasses`, `TestContactRequestTextGuardReadsTheRealTree`
