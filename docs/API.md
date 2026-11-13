@@ -1323,9 +1323,11 @@ PUT  /api/v1/admin/erasure-reasons/legacy/:userId          → 200 {kept, remove
   answer is `{kept, removed}`, counts only. The set is checked exactly under locks:
   each named request must still be this account's, still have text, still have no
   decision and still match its `reviewHash`, or the save answers 409
-  `reason_review_changed` with nothing written. Repeating a save whose decisions
-  already landed is refused the same way and never writes twice. After such a
-  refusal, reload the account's page and mint a new ID.
+  `reason_review_changed` with nothing written. Repeating the same ID after its
+  decisions landed is refused with 409 `attempt_closed` before the transaction,
+  so a fresh press needs a fresh ID minted for the reloaded page's decisions.
+  After a `reason_review_changed` refusal, reload the account's page and mint a
+  new ID.
 
 Order of save answers. Nothing is recorded, and the ID is not claimed, for a
 `:userId` that is not a canonical positive decimal (404 `user not found`) and for a
@@ -1353,10 +1355,10 @@ not resend a refused save with the same ID, and must not mint a new ID after a l
 reply, `legacy_save_outcome_unknown` or a response with no readable body: settle
 the same ID with `{kind: "legacy_reason_save", subjectUserId: <account>, attemptId}`.
 On `applied` or `history_unavailable`, reload the account's page: what was
-decided no longer lists, and anything still listed is undecided. `not_applied` means
-the save did not run and cannot run later; reload and decide again with a new ID.
-`checking` means settle the same ID again. These are the answers of a deletion's
-settle, except that `subjectDeleted` is never sent.
+decided no longer lists, and anything still listed is undecided. `not_applied`
+means the save did not commit and cannot run later; reload and decide again with
+a new ID. `checking` means settle the same ID again. These are the answers of a
+deletion's settle, except that `subjectDeleted` is never sent.
 
 Restore limits. The save runs in the same fenced transaction as a deletion, so
 the barrier and its limits are the deletion's: only an in-memory floor detects a
@@ -1367,6 +1369,20 @@ made after it is gone, and nothing says so unless the barrier fires. A restart o
 another process cannot recognize an ID, so `history_unavailable` is not evidence
 that nothing happened. Reading the page after any restore is how to know what is
 decided.
+
+A zero restore count and recovery level 2 do not prove those decisions survive.
+`restore.sh` counts only accounts that are deleted in the live database and active
+in the restored copy; a save on an already deleted account changes neither side,
+so `upgrade.sh --rollback` (which passes `--reopen-if-none`) can automatically
+reopen a pre-save dump that republishes blanked text and drops later decisions.
+`--reopen-if-none` does not check legacy decisions, and a rollback target at the
+same level may predate the legacy review routes entirely, so it cannot list or
+re-decide those restored reasons. After any restore or rollback, re-walk the
+legacy list and each affected account's page with a release that serves the
+legacy routes; until T-302 ships its review UI this walk is manual, through the
+API, and whatever the dump brought back must be re-decided there.
+Changing automatic reopen or the recovery floor to cover this is a product decision
+for the lead/Grier, not taken here; no real restore was run to prove this text.
 
 `emailSuppression` says Fold stopped mailing the person's address (DEC-112, DEC-113): `hard_bounce` and `manual` stop all mail, `complaint` stops optional mail while account mail still goes; with several open reasons the stronger one shows, and `since` is when the first began. Clearing ends every open suppression on the address (kept as history) and answers how many; clearing none is 200 `{cleared: 0}` with no audit row. Postmark keeps its own list, so a hard-bounced address may also need reactivating in Postmark.
 

@@ -130,9 +130,33 @@ describe("AdminUsers legacy reason review", () => {
       ["accounts that are not a list", json({ accounts: {}, next: null })],
       ["no cursor field", json({ accounts: [] })],
       ["a numeric cursor", json({ accounts: [], next: 5 })],
+      ["an empty cursor", json({ accounts: [], next: "" })],
+      ["a zero-padded cursor", json({ accounts: [], next: "007" })],
+      ["a fractional cursor", json({ accounts: [], next: "1.5" })],
+      ["an out-of-range cursor", json({ accounts: [], next: "9223372036854775808" })],
+      ["a null account", json({ accounts: [null], next: null })],
+      ["a numeric account id", json({ accounts: [{ userId: 41, name: "Deleted account", items: [] }], next: null })],
+      ["a zero-padded account id", json({ accounts: [{ userId: "041", name: "Deleted account", items: [] }], next: null })],
+      ["a zero account id", json({ accounts: [{ userId: "0", name: "Deleted account", items: [] }], next: null })],
+      ["a negative account id", json({ accounts: [{ userId: "-1", name: "Deleted account", items: [] }], next: null })],
+      ["an out-of-range account id", json({ accounts: [{ userId: "9223372036854775808", name: "Deleted account", items: [] }], next: null })],
+      ["an account id that is not a path id", json({ accounts: [{ userId: "4/../5?x=1", name: "Deleted account", items: [] }], next: null })],
+      ["an account with no name", json({ accounts: [{ userId: "41", items: [] }], next: null })],
+      ["an account with no items", json({ accounts: [{ userId: "41", name: "Deleted account" }], next: null })],
+      ["an empty discovery item", json({ accounts: [{ userId: "41", name: "Deleted account", items: [{}] }], next: null })],
+      ["a null discovery item", json({ accounts: [{ userId: "41", name: "Deleted account", items: [null] }], next: null })],
+      ["a numeric discovery request id", json({ accounts: [{ userId: "41", name: "Deleted account", items: [{ requestId: 5 }] }], next: null })],
+      ["a zero-padded discovery request id", json({ accounts: [{ userId: "41", name: "Deleted account", items: [{ requestId: "007" }] }], next: null })],
+      ["an out-of-range discovery request id", json({ accounts: [{ userId: "41", name: "Deleted account", items: [{ requestId: "-9223372036854775809" }] }], next: null })],
     ])("does not read %s as an empty list", async (_name, answer) => {
       stub(answer);
       await expect(AdminUsers.legacyReasons()).rejects.toBeInstanceOf(ApiError);
+    });
+
+    it("keeps signed boundary ids as strings", async () => {
+      const unit = { accounts: [{ userId: "9223372036854775807", name: "Deleted account", items: [{ requestId: "-9223372036854775808" }] }], next: "-9223372036854775808" };
+      stub(json(unit));
+      await expect(AdminUsers.legacyReasons()).resolves.toEqual(unit);
     });
   });
 
@@ -176,10 +200,28 @@ describe("AdminUsers legacy reason review", () => {
       expect(calls.map((c) => bodyOf(c))).toEqual([{ after: null }, { after: "-5" }]);
     });
 
-    it("keeps an id with a slash or a query inside one path segment", async () => {
+    it.each(["4/../5?x=1", "041", "0", "-1", "", "abc", "1.5", "1e3", " 41", "41 ", "+41", "9223372036854775808"])(
+      "never reads another account for %j: no HTTP request is sent",
+      async (id) => {
+        const fetcher = stub(json({ items: [], next: null }));
+        await expect(AdminUsers.legacyReasonsPage(id, null)).rejects.toThrow("not a usable account id");
+        expect(fetcher).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53])(
+      "never reads another account for the number %s: no HTTP request is sent",
+      async (id) => {
+        const fetcher = stub(json({ items: [], next: null }));
+        await expect(AdminUsers.legacyReasonsPage(id, null)).rejects.toThrow("not a usable account id");
+        expect(fetcher).not.toHaveBeenCalled();
+      },
+    );
+
+    it("keeps a full-width account id as the exact string in the path", async () => {
       const fetcher = stub(json({ items: [], next: null }));
-      await AdminUsers.legacyReasonsPage("4/../5?x=1", null);
-      expect(String(sent(fetcher)[0][0])).toBe("/api/v1/admin/erasure-reasons/legacy/4%2F..%2F5%3Fx%3D1/page");
+      await AdminUsers.legacyReasonsPage("9223372036854775807", null);
+      expect(String(sent(fetcher)[0][0])).toBe("/api/v1/admin/erasure-reasons/legacy/9223372036854775807/page");
     });
 
     it("accepts an empty page that omits reviewRequired", async () => {
@@ -187,10 +229,36 @@ describe("AdminUsers legacy reason review", () => {
       await expect(AdminUsers.legacyReasonsPage(41, null)).resolves.toEqual({ items: [], next: null });
     });
 
+    it("accepts reviewRequired with no items: a found unit whose reasons blanked since", async () => {
+      stub(json({ reviewRequired: true, items: [], next: "7" }));
+      await expect(AdminUsers.legacyReasonsPage(41, null)).resolves.toEqual({ reviewRequired: true, items: [], next: "7" });
+    });
+
     it.each([
       ["an empty body", () => new Response("", { status: 200 })],
       ["JSON with no items", json({ next: null })],
       ["no cursor field", json({ items: [] })],
+      ["an empty cursor", json({ items: [], next: "" })],
+      ["a zero-padded cursor", json({ items: [], next: "007" })],
+      ["a fractional cursor", json({ items: [], next: "1.5" })],
+      ["an out-of-range cursor", json({ items: [], next: "9223372036854775808" })],
+      ["an empty item", json({ items: [{}], next: null })],
+      ["a null item", json({ items: [null], next: null })],
+      ["a numeric request id", json({ items: [{ ...item, requestId: 5 }], next: null })],
+      ["a zero-padded request id", json({ items: [{ ...item, requestId: "007" }], next: null })],
+      ["an out-of-range request id", json({ items: [{ ...item, requestId: "9223372036854775808" }], next: null })],
+      ["no review hash", json({ items: [{ ...item, reviewHash: undefined }], next: null })],
+      ["a short hash", json({ items: [{ ...item, reviewHash: "abc" }], next: null })],
+      ["an uppercase hash", json({ items: [{ ...item, reviewHash: "A".repeat(64) }], next: null })],
+      ["an unknown role", json({ items: [{ ...item, role: "admin" }], next: null })],
+      ["a numeric purpose", json({ items: [{ ...item, purpose: 5 }], next: null })],
+      ["no counterpartDeleted flag", json({ items: [{ ...item, counterpartDeleted: undefined }], next: null })],
+      ["no reviewerIsParty flag", json({ items: [{ ...item, reviewerIsParty: undefined }], next: null })],
+      ["no partyRef", json({ items: [{ ...item, partyRef: undefined }], next: null })],
+      ["a numeric partyRef", json({ items: [{ ...item, partyRef: 41 }], next: null })],
+      ["a zero partyRef", json({ items: [{ ...item, partyRef: "0" }], next: null })],
+      ["a malformed counterpartRef", json({ items: [{ ...item, counterpartDeleted: true, counterpartRef: "abc" }], next: null })],
+      ["a non-boolean reviewRequired", json({ reviewRequired: "yes", items: [], next: null })],
     ])("does not read %s as an empty page", async (_name, answer) => {
       stub(answer);
       await expect(AdminUsers.legacyReasonsPage(41, null)).rejects.toBeInstanceOf(ApiError);
@@ -235,6 +303,30 @@ describe("AdminUsers legacy reason review", () => {
       // A plain Error, not an ApiError: the caller cannot tell it from a lost
       // answer, so it settles the id instead of saying nothing was saved.
       expect(err).not.toBeInstanceOf(ApiError);
+    });
+
+    it.each(["4/../5?x=1", "041", "0", "-1", "", "abc", "1.5", "1e3", " 41", "41 ", "+41", "9223372036854775808"])(
+      "never saves for %j: no HTTP request is sent",
+      async (id) => {
+        const fetcher = stub(json({ kept: 1, removed: 1 }));
+        await expect(AdminUsers.saveLegacyReasons(id, ID, decisions)).rejects.toThrow("not a usable account id");
+        expect(fetcher).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 53])(
+      "never saves for the number %s: no HTTP request is sent",
+      async (id) => {
+        const fetcher = stub(json({ kept: 1, removed: 1 }));
+        await expect(AdminUsers.saveLegacyReasons(id, ID, decisions)).rejects.toThrow("not a usable account id");
+        expect(fetcher).not.toHaveBeenCalled();
+      },
+    );
+
+    it("keeps a full-width account id as the exact string in the save path", async () => {
+      const fetcher = stub(json({ kept: 0, removed: 1 }));
+      await AdminUsers.saveLegacyReasons("9223372036854775807", ID, decisions);
+      expect(String(sent(fetcher)[0][0])).toBe("/api/v1/admin/erasure-reasons/legacy/9223372036854775807");
     });
 
     it.each([

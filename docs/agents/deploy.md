@@ -74,6 +74,15 @@ lock's publication. **Never delete, rename or replace `ops.lock`, `recovery.lock
   the swap; only `--abort` finishes an interrupted abort; `--resume` after an interrupted reopen
   closes the site and returns to private recovery; `reconcile-needed` writes nothing and is only
   rechecked.
+- The count covers only accounts deleted live and active in the restored copy. A
+  legacy reason save on an already deleted account changes neither side, so a zero
+  count and recovery level 2 do not prove legacy decisions or removals survived:
+  `--reopen-if-none` reopens without checking them, and an older same-level release
+  may not serve the legacy review routes. After any restore or rollback, re-walk the
+  legacy list and each affected account's page (manual, through the API, until T-302
+  ships the review UI) with a release that serves those routes. Do not change
+  automatic reopen or the recovery floor to cover this without a lead/Grier product
+  decision; no real restore was run to prove this note.
 - A Droplet Backup restore is outside this protection. It does not restore uploads. Docs call the
   procedure "recommended" and make no support promise.
 
