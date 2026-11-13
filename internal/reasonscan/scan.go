@@ -216,8 +216,9 @@ type PartyUnit struct {
 // bound are Scan's: the cursor is that request's id, else the last id read when
 // the unit budget is spent, else nil when the table ended. The only difference
 // is that rows after the stopping request in the same batch were already read
-// and qualified (their lookups are spent and their result dropped); they are
-// not consumed again because the next page starts after the cursor.
+// and qualified, but their results are dropped: the next page starts after
+// the stopping request's id, so it reads those rows again and reconsiders
+// them.
 //
 // BatchEvent.Consumed is every row of the batch and Stopped is decided after qb
 // ran, so After fires once the batch's lookups are done.

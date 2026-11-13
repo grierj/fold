@@ -23,6 +23,7 @@ import (
 	"fold/internal/audit"
 	"fold/internal/policy"
 	"fold/internal/reasonscan"
+	"fold/internal/testdb"
 	"fold/models"
 
 	"gorm.io/gorm"
@@ -1077,6 +1078,93 @@ func TestLegacyReadSealBusy(t *testing.T) {
 				t.Fatalf("%d attempts after the release, want 1", n)
 			}
 		})
+	}
+}
+
+// A busy seal whose ROLLBACK is never acknowledged ends the read with busy
+// and starts no second attempt: the server may still hold the locks. The
+// proxy drops the attempt's ROLLBACK, so reasonPageTx keeps the
+// contactRollbackError and every legacy read answers 503 reason_review_busy
+// after exactly one seal. The shared helper also serves the live page, so it
+// is covered here too; the acknowledged-rollback retry stays covered by
+// TestLegacyReadSealBusy.
+func TestLegacyReadBusySealRollbackNotAcknowledged(t *testing.T) {
+	s := newLegacyScene(t, 2)
+	s.bury(t, s.users[0])
+	s.ask(t, s.users[0], s.users[1], 1)
+	s.request(t, s.other, 1)
+	// The seal finds the admin row busy on a direct connection, which never
+	// goes through the proxy and cannot claim the fault.
+	hold, _ := beginOwnedTx(t, s.app.DB)
+	if err := hold.Exec("SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE", s.admin.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	rig := newCtxRigFor(t, s.app)
+	var name string
+	if err := s.app.DB.Raw("SELECT current_database()").Scan(&name).Error; err != nil {
+		t.Fatal(err)
+	}
+	proxyDB, states := tracedProxyDB(t, rig.proxy, name)
+	rig.papp.DB = proxyDB
+	pc := loginAPI(t, rig.papp, "erase-admin", erasurePW)
+	var attempts atomic.Int64
+	rig.papp.hooks.readBeforeSeal = func(*gorm.DB) { attempts.Add(1) }
+	shape := func(mark int) string {
+		var out strings.Builder
+		for _, e := range rig.proxy.Events()[mark:] {
+			switch {
+			case e.Kind == testdb.KindRollback:
+				out.WriteString("R")
+			case e.Kind == testdb.KindCommit:
+				out.WriteString("C")
+			case e.Kind == testdb.KindStatement && strings.HasPrefix(strings.ToLower(strings.TrimSpace(e.SQL)), "begin"):
+				out.WriteString("B")
+			}
+		}
+		return out.String()
+	}
+	call := func(method, path string, body any) (int, string) {
+		attempts.Store(0)
+		mark := len(rig.proxy.Events())
+		refusals := states.Count("55P03")
+		// The seal's statement claims the fault for this attempt's connection;
+		// its ROLLBACK is then dropped, so the acknowledgment is lost.
+		rig.proxy.Arm(testdb.Faults{Match: "FOR SHARE NOWAIT", Rollback: testdb.RollbackCloseUnforwarded})
+		w := pc.do(method, path, body, method != "GET")
+		if n := attempts.Load(); n != 1 {
+			t.Fatalf("%s %s: %d seal attempts, want 1: nothing may begin after an unacknowledged rollback", method, path, n)
+		}
+		if n := states.Count("55P03") - refusals; n != 1 {
+			t.Fatalf("%s %s: %d lock refusals, want the one busy seal", method, path, n)
+		}
+		if got := shape(mark); got != "BR" {
+			t.Fatalf("%s %s: transactions %q, want one BEGIN and its lost ROLLBACK", method, path, got)
+		}
+		return w.Code, w.Body.String()
+	}
+	livePath := "/api/v1/admin/users/" + itoa(s.target.ID) + "/erasure-reasons/page"
+	for _, r := range []struct {
+		method, path string
+		body         any
+		leak         string
+	}{
+		{"GET", legacyDiscoveryPath, nil, "accounts"},
+		{"GET", legacyProbePath, nil, "found"},
+		{"POST", livePath, map[string]any{"after": nil}, "items"},
+	} {
+		code, body := call(r.method, r.path, r.body)
+		if code != http.StatusServiceUnavailable || codeOf2(t, body) != "reason_review_busy" || strings.Contains(body, r.leak) {
+			t.Fatalf("%s %s: %d %s, want 503 reason_review_busy and no answer", r.method, r.path, code, body)
+		}
+	}
+	// Once the holder lets go the same reads work: the refused attempts stored
+	// nothing and broke nothing.
+	if err := hold.Rollback().Error; err != nil {
+		t.Fatal(err)
+	}
+	w := pc.do("GET", legacyDiscoveryPath, nil, false)
+	if w.Code != http.StatusOK {
+		t.Fatalf("after the release: %d %s, want 200", w.Code, w.Body.String())
 	}
 }
 

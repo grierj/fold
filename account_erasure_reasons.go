@@ -443,14 +443,41 @@ type reasonPageStep struct {
 }
 
 // reasonPageTx runs fn in one transaction on ctx whose statements the server
-// also bounds (R4-CTX): a client deadline is not server cancellation.
+// also bounds (R4-CTX): a client deadline is not server cancellation. The
+// ending is explicit so a ROLLBACK the server never acknowledged keeps its
+// contactRollbackError: the locks may still be held, so rollbackConfirmed is
+// false and no caller starts another attempt on them. It stays ungated: the
+// seal is the last statement and these reads take no contact gate.
 func (a *App) reasonPageTx(ctx context.Context, fn func(tx *gorm.DB) error) error {
-	return a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Exec("SELECT set_config('statement_timeout', ?, true)", fmt.Sprintf("%dms", ceilMillis(reasonStatementTimeout))).Error; err != nil {
-			return err
+	tx := a.DB.WithContext(ctx).Begin()
+	if tx.Error != nil {
+		return tx.Error
+	}
+	defer func() {
+		if p := recover(); p != nil {
+			_ = tx.Rollback().Error
+			panic(p)
 		}
-		return fn(tx)
-	})
+	}()
+	if err := tx.Exec("SELECT set_config('statement_timeout', ?, true)", fmt.Sprintf("%dms", ceilMillis(reasonStatementTimeout))).Error; err != nil {
+		return rollbackReasonPage(tx, err)
+	}
+	if err := fn(tx); err != nil {
+		return rollbackReasonPage(tx, err)
+	}
+	if err := tx.Commit().Error; err != nil {
+		return err
+	}
+	return nil
+}
+
+// rollbackReasonPage ends tx after a failed reason-page attempt. A failed
+// ROLLBACK wraps the cause so the busy retry treats the locks as still held.
+func rollbackReasonPage(tx *gorm.DB, cause error) error {
+	if rerr := tx.Rollback().Error; rerr != nil {
+		return &contactRollbackError{Cause: cause, Rollback: rerr}
+	}
+	return cause
 }
 
 // reasonPageAttempt reads one scanner unit as the signed-in admin, writes the
