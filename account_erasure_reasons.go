@@ -740,6 +740,11 @@ type reasonPlan struct {
 	Decisions []reasonDecision
 	ActorID   uint
 	IP        string
+	// Source is the audit meta source of every decision: empty is the account
+	// deletion (reasonSourceDeletion), reasonSourceLegacy the deleted-accounts
+	// save. It is the only thing the two callers of eraseContactRequestReasonsIn
+	// differ in.
+	Source string
 	// mayReview is what the deletion's seal decides again on the locked actor
 	// row (reasonReviewRule.allows); nil when the account has no reasons.
 	mayReview func(*models.User) bool
@@ -960,8 +965,9 @@ func (r reasonReviewRule) allows(u *models.User) bool {
 
 // eraseContactRequestReasonsIn writes the decisions and blanks the removed
 // reasons. It is the only writer of contact_requests.reason (the guard in
-// guards_contact_text_test.go allows its one UPDATE literal here and its one call in
-// eraseAccountIn, directly after eraseContactRequestTextIn).
+// guards_contact_text_test.go allows its one UPDATE literal here and its two
+// calls: eraseAccountIn, directly after eraseContactRequestTextIn, and the
+// fenced callback of apiAdminLegacyReasonSave).
 // Decisions go in batches of reasonBlankBatch inside the same transaction: for
 // each batch the signed audit rows are written first, then that batch's removes
 // are blanked in one UPDATE whose RowsAffected must equal the batch's remove
@@ -978,6 +984,10 @@ func eraseContactRequestReasonsIn(tx *gorm.DB, s erasureSubject, plan reasonPlan
 		return nil
 	}
 	actor := plan.ActorID
+	source := plan.Source
+	if source == "" {
+		source = reasonSourceDeletion
+	}
 	size := max(reasonBlankBatch, 1)
 	entries := make([]audit.SignedEntry, 0, min(size, len(plan.Decisions)))
 	remove := make([]int64, 0, min(size, len(plan.Decisions)))
@@ -1003,7 +1013,7 @@ func eraseContactRequestReasonsIn(tx *gorm.DB, s erasureSubject, plan reasonPlan
 				Actor: &actor, Action: action, TargetType: target, TargetID: d.RequestID, IP: plan.IP,
 				Meta: map[string]any{
 					"erasedUserId": s.ID, "erasedRole": d.Role, "purpose": d.Purpose, "status": d.Status,
-					"reviewerIsParty": d.ReviewerIsParty, "source": reasonSourceDeletion, "reviewVersion": reasonReviewVersion,
+					"reviewerIsParty": d.ReviewerIsParty, "source": source, "reviewVersion": reasonReviewVersion,
 				},
 			})
 			if d.Remove {

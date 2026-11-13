@@ -25,7 +25,11 @@ type testHooks struct {
 	// in acceptHouseholdConversion right after its users statement.
 	// readBeforeSeal runs in a reason-review page transaction between its view
 	// audit and the actor seal, given the open transaction (T07B-2b).
-	// sealAttempts counts seal entries of the deletion and settle.
+	// legacySaveBeforeSeal runs in the deleted-accounts save's seal just before
+	// currentAdminIn, given the open transaction; legacySaveBeforeRetry runs
+	// between a busy attempt's acknowledged rollback and the next attempt, with
+	// no transaction open (T-301).
+	// sealAttempts counts seal entries of the deletion, settle and the save.
 	restoreAckPause          func()
 	settleBeforeTx           func()
 	settleBeforeFence        func(*gorm.DB)
@@ -33,6 +37,8 @@ type testHooks struct {
 	deleteBeforeSeal         func(*gorm.DB)
 	deleteBeforeRetry        func()
 	readBeforeSeal           func(*gorm.DB)
+	legacySaveBeforeSeal     func(*gorm.DB)
+	legacySaveBeforeRetry    func()
 	conversionAfterUserLocks func(*gorm.DB)
 	sealAttempts             *atomic.Int64
 	// messageLimitAfterCount runs inside the schedule, scheduled-edit and

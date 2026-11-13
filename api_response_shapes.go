@@ -448,3 +448,11 @@ type legacyReasonDiscoveryJSON struct {
 type legacyReasonProbeJSON struct {
 	Found bool `json:"found"`
 }
+
+// legacyReasonSaveJSON answers PUT /admin/erasure-reasons/legacy/:userId: how
+// many of the sent decisions kept and how many removed their reason. Counts
+// only, no ids and no text.
+type legacyReasonSaveJSON struct {
+	Kept    int `json:"kept"`
+	Removed int `json:"removed"`
+}

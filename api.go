@@ -347,6 +347,7 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	// One deleted account's undecided reasons with their text. A POST: it writes
 	// a view audit row.
 	v1.POST("/admin/erasure-reasons/legacy/:userId/page", a.apiAuth(), a.apiAdmin(), a.apiAdminLegacyReasonPage)
+	v1.PUT("/admin/erasure-reasons/legacy/:userId", a.apiAuth(), a.apiAdmin(), a.apiAdminLegacyReasonSave)
 	// Attempt ids for the deletion and settling a lost reply (T07B-1b). Both
 	// are CSRF-protected POSTs; the id travels in the body, never the path.
 	v1.POST("/admin/operation-attempts", a.apiAuth(), a.apiAdmin(), a.apiAdminMintOperationAttempt)

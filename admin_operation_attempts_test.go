@@ -22,6 +22,7 @@ import (
 
 	"fold/internal/audit"
 	"fold/internal/guardkit"
+	"fold/internal/policy"
 	"fold/internal/testdb"
 	"fold/models"
 
@@ -1255,17 +1256,25 @@ func TestSettleAuthorizationBehindAParkedHolder(t *testing.T) {
 				if err := s.app.DB.Exec("UPDATE users SET role = 'admin', status = 'active', deleted_at = NULL WHERE id = ?", s.admin.ID).Error; err != nil {
 					t.Fatal(err)
 				}
+				fresh := loginAPI(t, s.app, "admin", "pw")
 				if kind == attemptKindLegacyReasonSave {
-					// The legacy save has no route yet: the submission check it will start
-					// with is the same kind-agnostic ledger claim.
-					claim, r := s.app.submitAttempt(id, kind, s.admin.ID, a.ID)
-					if r != submitOK {
-						t.Fatalf("the refused settle blocked the id: submission = %v, want ok", r)
+					// The real save route: a tombstone with one reason, decided with the
+					// id the refused settle must not have used up.
+					b := s.target("b")
+					erasureMakeRequest(t, s.direct, policy.RequestContact, policy.ContactWithdrawn, a.ID, b.ID, 1, 0, 0, 1, "")
+					if err := s.direct.Exec("UPDATE users SET deleted_at = now() WHERE id = ?", a.ID).Error; err != nil {
+						t.Fatal(err)
 					}
-					claim.end(attemptRolledBack)
+					code, page, body := accountPage(t, fresh, a.ID, nil)
+					if code != http.StatusOK || len(page.Items) != 1 {
+						t.Fatalf("the tombstone's page: %d %s", code, body)
+					}
+					w := fresh.do("PUT", legacySavePath(a.ID), map[string]any{"attemptId": id, "decisions": choose(page.Items, "keep")}, true)
+					if w.Code != http.StatusOK {
+						t.Fatalf("a fresh session of the re-promoted admin: %d %s, want 200 (the refused settle must not block the id)", w.Code, w.Body.String())
+					}
 					return
 				}
-				fresh := loginAPI(t, s.app, "admin", "pw")
 				if w := s.deleteAs(fresh, id, a.ID); w.Code != http.StatusOK {
 					t.Fatalf("a fresh session of the re-promoted admin: %d %s, want 200 (the refused settle must not block the id)", w.Code, w.Body.String())
 				}

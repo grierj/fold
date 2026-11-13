@@ -175,6 +175,9 @@ type topKeys struct {
 	// reviewAmbiguous: reasonReview appeared twice or in another case; the
 	// envelope step refuses it.
 	reviewAmbiguous bool
+	// decisionsAmbiguous: decisions (the deleted-accounts save) appeared twice or
+	// in another case, so no single list of choices exists.
+	decisionsAmbiguous bool
 }
 
 // scanTopKeys walks the top-level keys of the first JSON value of raw. A value
@@ -186,7 +189,7 @@ func scanTopKeys(raw []byte) topKeys {
 	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
 		return out
 	}
-	var attempts, reviews int
+	var attempts, reviews, decisions int
 	for dec.More() {
 		kt, err := dec.Token()
 		key, isString := kt.(string)
@@ -202,6 +205,10 @@ func scanTopKeys(raw []byte) topKeys {
 			reviews++
 		case strings.EqualFold(key, "reasonReview"):
 			out.reviewAmbiguous = true
+		case key == "decisions":
+			decisions++
+		case strings.EqualFold(key, "decisions"):
+			out.decisionsAmbiguous = true
 		}
 		var skip json.RawMessage
 		if err := dec.Decode(&skip); err != nil {
@@ -210,5 +217,6 @@ func scanTopKeys(raw []byte) topKeys {
 	}
 	out.attemptAmbiguous = out.attemptAmbiguous || attempts > 1
 	out.reviewAmbiguous = out.reviewAmbiguous || reviews > 1
+	out.decisionsAmbiguous = out.decisionsAmbiguous || decisions > 1
 	return out
 }

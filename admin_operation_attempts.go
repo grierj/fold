@@ -443,6 +443,21 @@ func (a *App) deletionSeal(me *models.User, pred func(*models.User) bool) *conta
 	}}
 }
 
+// legacySaveSeal is the seal of the deleted-accounts reason save: the actor is
+// decided on the locked row, with the save's rule, as the last locking
+// statement before COMMIT. pred is passed by value, as the deletion's is.
+func (a *App) legacySaveSeal(me *models.User, pred func(*models.User) bool) *contactSeal {
+	return &contactSeal{run: func(tx *gorm.DB) error {
+		if a.hooks.sealAttempts != nil {
+			a.hooks.sealAttempts.Add(1)
+		}
+		if a.hooks.legacySaveBeforeSeal != nil {
+			a.hooks.legacySaveBeforeSeal(tx)
+		}
+		return currentAdminIn(tx, me, pred)
+	}}
+}
+
 // adminDeletionTarget is adminTargetUser for the deletion route, with one
 // difference: a target that is already gone answers attempt_closed, not 404,
 // when the request carries an id the ledger already holds, and

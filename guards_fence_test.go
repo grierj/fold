@@ -37,6 +37,7 @@ var fenceTicketFuncs = map[string]bool{"takeRestoreTicket": true, "acknowledgeRe
 var fenceNamed = []struct{ file, fn string }{
 	{"api_admin.go", "apiAdminDeleteUser"},
 	{"admin_operation_attempts.go", "apiAdminSettleOperationAttempt"},
+	{"api_admin_reasons_legacy.go", "apiAdminLegacyReasonSave"},
 }
 
 func fenceIsSel(e ast.Expr, name string) (*ast.SelectorExpr, bool) {
@@ -474,7 +475,7 @@ func (a *App) acknowledgeRestoreTicket(tk *restoreTicket, err error) {}
 func (a *App) abandonRestoreTicket(tk *restoreTicket) {}
 `
 
-// fenceRoutesBase holds both fenced routes.
+// fenceRoutesBase holds the three fenced routes.
 const fenceRoutesBase = `package main
 
 func (a *App) apiAdminDeleteUser(c *gin.Context) {
@@ -493,15 +494,35 @@ func (a *App) apiAdminSettleOperationAttempt(c *gin.Context) {
 	})
 	_ = err
 }
+
+func (a *App) apiAdminLegacyReasonSave(c *gin.Context) {
+	var err error
+	for {
+		err = a.fencedContactMutation(ctx, contactChange{UserID: 1}, func(tx *gorm.DB) (*contactSeal, error) {
+			return seal, nil
+		})
+	}
+	_ = err
+}
 `
 
 func fenceSources(wrapper, routes string) map[string]string {
-	// Both named routes live in the one fixture; each file entry parses it,
-	// so only one of the two entries keeps a route that the other also holds.
+	// All three named routes live in the one fixture; each file entry parses it,
+	// so each entry keeps only its own route and renames the others.
+	only := func(keep string) string {
+		out := routes
+		for _, name := range []string{"apiAdminDeleteUser", "apiAdminSettleOperationAttempt", "apiAdminLegacyReasonSave"} {
+			if name != keep {
+				out = strings.Replace(out, "func (a *App) "+name+"(", "func (a *App) "+name+"Copy(", 1)
+			}
+		}
+		return out
+	}
 	return map[string]string{
 		fenceWrapperFile:              wrapper,
-		"api_admin.go":                strings.Replace(routes, "func (a *App) apiAdminSettleOperationAttempt", "func (a *App) settleCopy", 1),
-		"admin_operation_attempts.go": strings.Replace(routes, "func (a *App) apiAdminDeleteUser", "func (a *App) deleteCopy", 1),
+		"api_admin.go":                only("apiAdminDeleteUser"),
+		"admin_operation_attempts.go": only("apiAdminSettleOperationAttempt"),
+		"api_admin_reasons_legacy.go": only("apiAdminLegacyReasonSave"),
 	}
 }
 
@@ -567,6 +588,10 @@ func TestFencedTransactionsGuardCatchesBypasses(t *testing.T) {
 		{"a fenced route calling contactMutationCtx", route("a.fencedContactMutation(ctx, contactChange{UserID: 1}, ", "a.contactMutationCtx(ctx, contactChange{UserID: 1}, ")},
 		{"a fenced route that also calls contactMutation", route("\t_ = err\n}", "\t_ = a.contactMutation(contactChange{}, nil)\n\t_ = err\n}")},
 		{"listed function gone", fenceSources(fenceWrapperBase, strings.ReplaceAll(fenceRoutesBase, "apiAdminSettleOperationAttempt", "renamed"))},
+		{"the legacy save gone", fenceSources(fenceWrapperBase, strings.ReplaceAll(fenceRoutesBase, "apiAdminLegacyReasonSave", "renamed"))},
+		{"the legacy save calling contactMutationCtx", fenceSources(fenceWrapperBase, strings.Replace(fenceRoutesBase, "func (a *App) apiAdminLegacyReasonSave(c *gin.Context) {\n\tvar err error\n\tfor {\n\t\terr = a.fencedContactMutation(", "func (a *App) apiAdminLegacyReasonSave(c *gin.Context) {\n\tvar err error\n\tfor {\n\t\terr = a.contactMutationCtx(", 1))},
+		{"the legacy save taking a ticket itself", fenceSources(fenceWrapperBase, strings.Replace(fenceRoutesBase, "func (a *App) apiAdminLegacyReasonSave(c *gin.Context) {\n\tvar err error\n", "func (a *App) apiAdminLegacyReasonSave(c *gin.Context) {\n\tvar err error\n\ttk, err := a.takeRestoreTicket(nil)\n\t_ = tk\n", 1))},
+		{"the legacy save setting its own seal", fenceSources(fenceWrapperBase, strings.Replace(fenceRoutesBase, "func (a *App) apiAdminLegacyReasonSave(c *gin.Context) {\n\tvar err error\n\tfor {\n\t\terr = a.fencedContactMutation(ctx, contactChange{UserID: 1}, ", "func (a *App) apiAdminLegacyReasonSave(c *gin.Context) {\n\tvar err error\n\tfor {\n\t\terr = a.fencedContactMutation(ctx, contactChange{UserID: 1, Seal: seal}, ", 1))},
 	}
 	for _, tc := range cases {
 		if bad := fenceProblems(tc.sources); len(bad) == 0 {

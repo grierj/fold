@@ -1912,3 +1912,9 @@ export interface LegacyReasonDiscovery {
 export interface LegacyReasonProbe {
   found: boolean;
 }
+
+/** @public Used by the legacy review page (T-302) once it lands. Counts only: no ids and no text. */
+export interface LegacyReasonSaveResponse {
+  kept: number;
+  removed: number;
+}

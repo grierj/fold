@@ -11,6 +11,8 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
+	"net/http/httptest"
+	"os"
 	"reflect"
 	"sort"
 	"strconv"
@@ -2041,5 +2043,1424 @@ func TestLegacyAccountPageFailureIsNeverAnEmptyPage(t *testing.T) {
 				t.Errorf("%d view audits after a failed page, want none", n)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The save (T-301 S4): PUT /admin/erasure-reasons/legacy/:userId.
+//
+// The rig is an attemptScene (admin "admin", the test attempt clock, mint,
+// settle, ledger and receipts) whose kind is legacy_reason_save, with a deleted
+// account's requests made straight in the database.
+// ---------------------------------------------------------------------------
+
+func legacySavePath(id uint) string { return "/api/v1/admin/erasure-reasons/legacy/" + itoa(id) }
+
+type saveRig struct{ *attemptScene }
+
+func newSaveRig(t *testing.T) *saveRig {
+	t.Helper()
+	s := newAttemptScene(t)
+	s.kind = attemptKindLegacyReasonSave
+	return &saveRig{s}
+}
+
+// newProxiedSaveRig serves the routes through pgproxy, like newProxiedAttemptScene.
+func newProxiedSaveRig(t *testing.T) *saveRig {
+	t.Helper()
+	s := newProxiedAttemptScene(t)
+	s.kind = attemptKindLegacyReasonSave
+	return &saveRig{s}
+}
+
+func (r *saveRig) bury(users ...*models.User) {
+	r.t.Helper()
+	for _, u := range users {
+		if err := r.direct.Exec("UPDATE users SET deleted_at = now() WHERE id = ?", u.ID).Error; err != nil {
+			r.t.Fatal(err)
+		}
+	}
+}
+
+// ask makes a terminal contact request with a reason between two people.
+func (r *saveRig) ask(requester, subject *models.User, n int) models.ContactRequest {
+	r.t.Helper()
+	return erasureMakeRequest(r.t, r.direct, policy.RequestContact, policy.ContactWithdrawn, requester.ID, subject.ID, 1, 0, 0, n, "")
+}
+
+// askAdd makes a terminal group_add request with a reason.
+func (r *saveRig) askAdd(requester, subject *models.User, n int) models.ContactRequest {
+	r.t.Helper()
+	return erasureMakeRequest(r.t, r.direct, policy.RequestGroupAdd, policy.ContactWithdrawn, requester.ID, subject.ID, 1, 0, 0, n, "")
+}
+
+// itemsAs is the deleted account's whole listing for c: every page from the start.
+func (r *saveRig) itemsAs(c *apiClient, account uint) []reasonItemJSON {
+	r.t.Helper()
+	var out []reasonItemJSON
+	var after *string
+	for {
+		code, page, body := accountPage(r.t, c, account, after)
+		if code != http.StatusOK {
+			r.t.Fatalf("page: %d %s", code, body)
+		}
+		out = append(out, page.Items...)
+		if page.Next == nil {
+			return out
+		}
+		after = page.Next
+	}
+}
+
+func (r *saveRig) items(account uint) []reasonItemJSON { return r.itemsAs(r.c, account) }
+
+// choose pairs each item, in order, with its choice; "" leaves the item out.
+func choose(items []reasonItemJSON, choices ...string) []map[string]string {
+	out := []map[string]string{}
+	for i, it := range items {
+		if i < len(choices) && choices[i] != "" {
+			out = append(out, map[string]string{"requestId": it.RequestID, "reviewHash": it.ReviewHash, "choice": choices[i]})
+		}
+	}
+	return out
+}
+
+func (r *saveRig) putAs(c *apiClient, account uint, body any) *httptest.ResponseRecorder {
+	return c.do("PUT", legacySavePath(account), body, true)
+}
+
+func (r *saveRig) send(account uint, id string, decisions any) *httptest.ResponseRecorder {
+	return r.putAs(r.c, account, map[string]any{"attemptId": id, "decisions": decisions})
+}
+
+// save mints an id for the account and sends the decisions with it.
+func (r *saveRig) save(account uint, decisions any) (string, *httptest.ResponseRecorder) {
+	r.t.Helper()
+	id := r.mint(account)
+	return id, r.send(account, id, decisions)
+}
+
+type decisionRow struct {
+	ID         int64
+	ActorID    *int64
+	Action     string
+	TargetType string
+	TargetID   int64
+	Meta       map[string]any
+	Raw        string
+}
+
+// decisionRows are the decision audit rows (kept and removed, both kinds), in
+// the order they were written. Request ids are signed, so no uint model is used.
+func (r *saveRig) decisionRows() []decisionRow {
+	r.t.Helper()
+	rows, err := r.direct.Raw(`SELECT id, actor_id, action, target_type, target_id, meta_json::text FROM audit_logs WHERE action IN (?, ?, ?, ?) ORDER BY id`,
+		audit.ContactReasonKept, audit.ContactReasonRemoved, audit.AddReasonKept, audit.AddReasonRemoved).Rows()
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []decisionRow
+	for rows.Next() {
+		var d decisionRow
+		if err := rows.Scan(&d.ID, &d.ActorID, &d.Action, &d.TargetType, &d.TargetID, &d.Raw); err != nil {
+			r.t.Fatal(err)
+		}
+		if err := json.Unmarshal([]byte(d.Raw), &d.Meta); err != nil {
+			r.t.Fatal(err)
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+// decisionsFor are the rows that name this request and tombstone.
+func (r *saveRig) decisionsFor(request int64, party uint) []decisionRow {
+	var out []decisionRow
+	for _, d := range r.decisionRows() {
+		if d.TargetID == request && d.Meta["erasedUserId"] == float64(party) {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+func (r *saveRig) reasonOf(request int64) string {
+	r.t.Helper()
+	var reason string
+	if err := r.direct.Raw("SELECT reason FROM contact_requests WHERE id = ?", request).Scan(&reason).Error; err != nil {
+		r.t.Fatal(err)
+	}
+	return reason
+}
+
+// written is everything a save can change, as one string: every request row,
+// every audit row but the page views, the receipts and the restore counter.
+func (r *saveRig) written() string {
+	r.t.Helper()
+	return dumpRows(r.t, r.direct, "contact_requests", "id", "true") + "\n" +
+		dumpRows(r.t, r.direct, "audit_logs", "id", "action <> ?", audit.UserErasureReasonsViewed) + "\n" +
+		fmt.Sprintf("receipts=%d counter=%d", r.receipts(), r.counter())
+}
+
+func wantSaveCode(t *testing.T, w *httptest.ResponseRecorder, status int, code string) {
+	t.Helper()
+	if w.Code != status || codeOf2(t, w.Body.String()) != code {
+		t.Fatalf("%d %s, want %d %q", w.Code, w.Body.String(), status, code)
+	}
+}
+
+// wantUnchanged fails when a refused save changed anything or left the id in a
+// state other than want.
+func (r *saveRig) wantUnchanged(before string, id string, account uint, want attemptState) {
+	r.t.Helper()
+	if got := r.written(); got != before {
+		r.t.Fatalf("a refused save wrote something:\nbefore: %s\nafter:  %s", before, got)
+	}
+	if got := r.state(id, account); got != want {
+		r.t.Fatalf("the attempt id is in state %v, want %v", got, want)
+	}
+}
+
+// The deletion's budget is the save's: 40 seconds, one value on one name.
+func TestLegacySaveBudgetIsTheDeletionBudget(t *testing.T) {
+	if legacySaveBudget != 40*time.Second || adminDeleteBudget != 40*time.Second {
+		t.Fatalf("legacySaveBudget = %v, adminDeleteBudget = %v, want both 40s", legacySaveBudget, adminDeleteBudget)
+	}
+	if legacySaveMaxDecisions != reasonPageRequests {
+		t.Fatalf("a save takes %d decisions and a page holds %d", legacySaveMaxDecisions, reasonPageRequests)
+	}
+}
+
+// A save decides each named reason as it was told: kept ones stay, removed ones
+// are blanked, every decision writes one signed audit row of exactly the
+// documented shape, and the pair leaves the list. The id ends applied with one
+// receipt, and a resend is refused.
+func TestLegacySaveDecidesEachReason(t *testing.T) {
+	r := newSaveRig(t)
+	gone, live, other := r.target("gone"), r.target("live"), r.target("other")
+	c1 := r.ask(gone, live, 1)         // the account as requester
+	a1 := r.askAdd(live, gone, 2)      // the account as subject, an add request
+	c2 := r.ask(r.admin, gone, 3)      // the admin is a party
+	c3 := r.ask(gone, other, 4)        // kept
+	untouched := r.ask(live, other, 5) // someone else's request
+	r.bury(gone)
+	items := r.items(gone.ID)
+	if got, want := strings.Join(requestIDs(items), ","), fmt.Sprintf("%d,%d,%d,%d", c1.ID, a1.ID, c2.ID, c3.ID); got != want {
+		t.Fatalf("listing = %s, want %s", got, want)
+	}
+	var seals atomic.Int64
+	r.app.hooks.sealAttempts = &seals
+	floor := r.app.restoreFenceFloor()
+	counter := r.counter()
+	id, w := r.save(gone.ID, choose(items, "keep", "remove", "remove", "keep"))
+	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"kept":2,"removed":2}` {
+		t.Fatalf("save: %d %s, want 200 {kept:2, removed:2}", w.Code, w.Body.String())
+	}
+	if got := seals.Load(); got != 1 {
+		t.Fatalf("%d seals, want 1", got)
+	}
+	for _, c := range []struct {
+		id     int64
+		remove bool
+	}{{int64(c1.ID), false}, {int64(a1.ID), true}, {int64(c2.ID), true}, {int64(c3.ID), false}} {
+		if blank := r.reasonOf(c.id) == ""; blank != c.remove {
+			t.Errorf("request %d: blank = %v, want %v", c.id, blank, c.remove)
+		}
+	}
+	if r.reasonOf(int64(untouched.ID)) == "" {
+		t.Error("someone else's request was blanked")
+	}
+	want := []struct {
+		req             uint
+		action, target  string
+		role            string
+		reviewerIsParty bool
+	}{
+		{c1.ID, audit.ContactReasonKept, "contact_request", "requester", false},
+		{a1.ID, audit.AddReasonRemoved, "add_request", "subject", false},
+		{c2.ID, audit.ContactReasonRemoved, "contact_request", "subject", true},
+		{c3.ID, audit.ContactReasonKept, "contact_request", "requester", false},
+	}
+	rows := r.decisionRows()
+	if len(rows) != len(want) {
+		t.Fatalf("%d decision rows, want %d: %+v", len(rows), len(want), rows)
+	}
+	for i, wnt := range want {
+		d := rows[i]
+		expected := map[string]any{"erasedUserId": float64(gone.ID), "erasedRole": wnt.role, "purpose": "contact", "status": policy.ContactWithdrawn,
+			"reviewerIsParty": wnt.reviewerIsParty, "source": reasonSourceLegacy, "reviewVersion": float64(1)}
+		if wnt.target == "add_request" {
+			expected["purpose"] = policy.RequestGroupAdd
+		}
+		if d.Action != wnt.action || d.TargetType != wnt.target || d.TargetID != int64(wnt.req) || d.ActorID == nil || *d.ActorID != int64(r.admin.ID) || !reflect.DeepEqual(d.Meta, expected) {
+			t.Errorf("decision %d = %+v\nwant action %s on %s %d by %d with meta %v", i, d, wnt.action, wnt.target, wnt.req, r.admin.ID, expected)
+		}
+		for _, leak := range []string{"identifying", id, items[i].ReviewHash} {
+			if strings.Contains(d.Raw, leak) {
+				t.Errorf("decision %d's meta carries %q: %s", i, leak, d.Raw)
+			}
+		}
+	}
+	if r.state(id, gone.ID) != attemptApplied || r.receipts() != 1 || r.counter() != counter+1 || r.app.restoreFenceFloor() <= floor {
+		t.Errorf("state %v, receipts %d, counter %d (was %d), floor %d (was %d): want applied, one receipt and the ticket raised", r.state(id, gone.ID), r.receipts(), r.counter(), counter, r.app.restoreFenceFloor(), floor)
+	}
+	if got := r.items(gone.ID); len(got) != 0 {
+		t.Errorf("%d reasons are still listed after every one was decided", len(got))
+	}
+	if w := r.c.do("GET", legacyDiscoveryPath, nil, false); w.Code != http.StatusOK || strings.Contains(w.Body.String(), itoa(gone.ID)) {
+		t.Errorf("discovery after the save: %d %s", w.Code, w.Body.String())
+	}
+	// The same id is used up: nothing runs twice.
+	before := r.written()
+	wantSaveCode(t, r.send(gone.ID, id, choose(items, "keep", "keep", "keep", "keep")), http.StatusConflict, "attempt_closed")
+	if r.written() != before {
+		t.Error("a resent id changed something")
+	}
+	wantSettle(t, r.settled(id, gone.ID), settleApplied, nil)
+}
+
+// A request between two deleted accounts is two decisions: the first Keep or
+// Remove leaves the other account's side listed, a decided side cannot be
+// decided again, and a Remove blanks the one reason for both.
+func TestLegacySaveTwoTombstones(t *testing.T) {
+	setup := func(t *testing.T) (*saveRig, *models.User, *models.User, models.ContactRequest) {
+		r := newSaveRig(t)
+		a, b := r.target("gone-a"), r.target("gone-b")
+		req := r.ask(a, b, 1)
+		r.bury(a, b)
+		return r, a, b, req
+	}
+	t.Run("keep then keep", func(t *testing.T) {
+		r, a, b, req := setup(t)
+		itemsA, itemsB := r.items(a.ID), r.items(b.ID)
+		if _, w := r.save(a.ID, choose(itemsA, "keep")); w.Code != http.StatusOK {
+			t.Fatalf("keep for a: %d %s", w.Code, w.Body.String())
+		}
+		if got := r.items(a.ID); len(got) != 0 {
+			t.Errorf("a's side is still listed: %v", requestIDs(got))
+		}
+		if got := r.items(b.ID); len(got) != 1 {
+			t.Fatalf("b's side after a's keep: %v, want the request still listed", requestIDs(got))
+		}
+		// b's hash from before a's keep is still the row's hash: a keep changes no column.
+		if _, w := r.save(b.ID, choose(itemsB, "keep")); w.Code != http.StatusOK {
+			t.Fatalf("keep for b: %d %s", w.Code, w.Body.String())
+		}
+		if len(r.items(a.ID))+len(r.items(b.ID)) != 0 || r.reasonOf(int64(req.ID)) == "" {
+			t.Error("two keeps must list nothing and blank nothing")
+		}
+		if n, m := len(r.decisionsFor(int64(req.ID), a.ID)), len(r.decisionsFor(int64(req.ID), b.ID)); n != 1 || m != 1 {
+			t.Errorf("markers for a: %d, for b: %d, want one each with their own erasedUserId", n, m)
+		}
+	})
+	t.Run("keep then keep again", func(t *testing.T) {
+		r, a, _, req := setup(t)
+		itemsA := r.items(a.ID)
+		if _, w := r.save(a.ID, choose(itemsA, "keep")); w.Code != http.StatusOK {
+			t.Fatal(w.Body.String())
+		}
+		before := r.written()
+		id, w := r.save(a.ID, choose(itemsA, "keep"))
+		wantSaveCode(t, w, http.StatusConflict, "reason_review_changed")
+		r.wantUnchanged(before, id, a.ID, attemptRolledBack)
+		if n := len(r.decisionsFor(int64(req.ID), a.ID)); n != 1 {
+			t.Errorf("%d markers for a, want exactly the first", n)
+		}
+	})
+	t.Run("keep then remove", func(t *testing.T) {
+		r, a, b, req := setup(t)
+		itemsA, itemsB := r.items(a.ID), r.items(b.ID)
+		if _, w := r.save(a.ID, choose(itemsA, "keep")); w.Code != http.StatusOK {
+			t.Fatal(w.Body.String())
+		}
+		if _, w := r.save(b.ID, choose(itemsB, "remove")); w.Code != http.StatusOK {
+			t.Fatalf("remove for b: %d %s", w.Code, w.Body.String())
+		}
+		if r.reasonOf(int64(req.ID)) != "" {
+			t.Error("the removed reason is still there")
+		}
+		rows := r.decisionRows()
+		if len(rows) != 2 || rows[0].Action != audit.ContactReasonKept || rows[1].Action != audit.ContactReasonRemoved ||
+			rows[0].Meta["erasedUserId"] != float64(a.ID) || rows[1].Meta["erasedUserId"] != float64(b.ID) {
+			t.Errorf("decisions = %+v, want a kept then b removed", rows)
+		}
+	})
+	t.Run("remove then keep", func(t *testing.T) {
+		r, a, b, req := setup(t)
+		itemsA, itemsB := r.items(a.ID), r.items(b.ID)
+		if _, w := r.save(a.ID, choose(itemsA, "remove")); w.Code != http.StatusOK {
+			t.Fatal(w.Body.String())
+		}
+		if got := r.items(b.ID); len(got) != 0 {
+			t.Errorf("a blank reason is still listed for b: %v", requestIDs(got))
+		}
+		before := r.written()
+		id, w := r.save(b.ID, choose(itemsB, "keep"))
+		wantSaveCode(t, w, http.StatusConflict, "reason_review_changed")
+		r.wantUnchanged(before, id, b.ID, attemptRolledBack)
+		if n := len(r.decisionsFor(int64(req.ID), b.ID)); n != 0 {
+			t.Errorf("%d decisions for b after the blank, want none", n)
+		}
+	})
+	t.Run("a marker for the other account does not decide this one", func(t *testing.T) {
+		r, a, b, req := setup(t)
+		items := r.items(a.ID)
+		legacyMark(t, r.direct, int64(req.ID), b.ID, policy.RequestContact, true)
+		if _, w := r.save(a.ID, choose(items, "keep")); w.Code != http.StatusOK {
+			t.Fatalf("a's own decision after b's marker: %d %s", w.Code, w.Body.String())
+		}
+	})
+}
+
+// A set that is not the one the admin was served is refused whole: nothing is
+// written, no named request is touched and the id ends rolled back.
+func TestLegacySaveRefusesAStaleSet(t *testing.T) {
+	type env struct {
+		r              *saveRig
+		gone, live     *models.User
+		gone2          *models.User
+		items          []reasonItemJSON
+		reqs           []models.ContactRequest
+		otherAdminHash map[string]string
+		wrongParty     map[string]string
+	}
+	setup := func(t *testing.T) env {
+		r := newSaveRig(t)
+		e := env{r: r, gone: r.target("gone"), live: r.target("live"), gone2: r.target("gone2")}
+		e.reqs = []models.ContactRequest{r.ask(e.gone, e.live, 1), r.ask(e.live, e.gone, 2), r.ask(e.gone, e.live, 3)}
+		both := r.ask(e.gone, e.gone2, 4) // for a hash made for another party
+		r.bury(e.gone, e.gone2)
+		e.items = r.items(e.gone.ID)
+		// A second admin's hashes and the other tombstone's hash of the shared request.
+		admin2 := newTestUser(t, r.app, "admin2", "pw", models.RoleAdmin)
+		_ = admin2
+		c2 := loginAPI(t, r.app, "admin2", "pw")
+		e.otherAdminHash, e.wrongParty = map[string]string{}, map[string]string{}
+		for _, it := range r.itemsAs(c2, e.gone.ID) {
+			e.otherAdminHash[it.RequestID] = it.ReviewHash
+		}
+		for _, it := range r.items(e.gone2.ID) {
+			e.wrongParty[it.RequestID] = it.ReviewHash
+		}
+		if e.wrongParty[strconv.FormatUint(uint64(both.ID), 10)] == "" {
+			t.Fatal("the shared request is not in the other tombstone's listing")
+		}
+		e.items = append([]reasonItemJSON(nil), e.items...)
+		return e
+	}
+	refuse := func(t *testing.T, e env, decisions any) {
+		t.Helper()
+		before := e.r.written()
+		id, w := e.r.save(e.gone.ID, decisions)
+		wantSaveCode(t, w, http.StatusConflict, "reason_review_changed")
+		e.r.wantUnchanged(before, id, e.gone.ID, attemptRolledBack)
+		// The refusal says nothing about which item changed or why.
+		for _, leak := range []string{"identifying", "requestId", id} {
+			if strings.Contains(w.Body.String(), leak) {
+				t.Errorf("the refusal carries %q: %s", leak, w.Body.String())
+			}
+		}
+	}
+	// the three contact items of gone (the fourth, shared with gone2, is another case)
+	own := func(e env) []reasonItemJSON {
+		var out []reasonItemJSON
+		for _, it := range e.items {
+			if it.CounterpartDeleted {
+				continue
+			}
+			out = append(out, it)
+		}
+		return out
+	}
+	t.Run("a reason blanked since it was served", func(t *testing.T) {
+		e := setup(t)
+		if err := e.r.direct.Exec("UPDATE contact_requests SET reason = '' WHERE id = ?", e.reqs[1].ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		refuse(t, e, choose(own(e), "keep", "remove", "keep"))
+	})
+	t.Run("a reason edited since it was served", func(t *testing.T) {
+		e := setup(t)
+		if err := e.r.direct.Exec("UPDATE contact_requests SET reason = 'edited' WHERE id = ?", e.reqs[2].ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		refuse(t, e, choose(own(e), "keep", "keep", "keep"))
+	})
+	t.Run("a marker added since it was served", func(t *testing.T) {
+		e := setup(t)
+		legacyMark(t, e.r.direct, int64(e.reqs[0].ID), e.gone.ID, policy.RequestContact, true)
+		refuse(t, e, choose(own(e), "remove", "keep", "keep"))
+	})
+	t.Run("a hash made for another admin", func(t *testing.T) {
+		e := setup(t)
+		items := own(e)
+		items[1].ReviewHash = e.otherAdminHash[items[1].RequestID]
+		refuse(t, e, choose(items, "keep", "keep", "keep"))
+	})
+	t.Run("a hash made for another account's page", func(t *testing.T) {
+		e := setup(t)
+		var shared reasonItemJSON
+		for _, it := range e.items {
+			if it.CounterpartDeleted {
+				shared = it
+			}
+		}
+		shared.ReviewHash = e.wrongParty[shared.RequestID]
+		refuse(t, e, choose([]reasonItemJSON{shared}, "keep"))
+	})
+	t.Run("a tampered hash", func(t *testing.T) {
+		e := setup(t)
+		items := own(e)
+		h := []byte(items[2].ReviewHash)
+		if h[0] == '0' {
+			h[0] = '1'
+		} else {
+			h[0] = '0'
+		}
+		items[2].ReviewHash = string(h)
+		refuse(t, e, choose(items, "keep", "keep", "keep"))
+	})
+	t.Run("a request that does not exist", func(t *testing.T) {
+		e := setup(t)
+		d := choose(own(e), "keep", "keep", "keep")
+		d = append(d, map[string]string{"requestId": "987654321", "reviewHash": e.items[0].ReviewHash, "choice": "keep"})
+		refuse(t, e, d)
+	})
+	t.Run("a request of someone else", func(t *testing.T) {
+		e := setup(t)
+		elsewhere := e.r.ask(e.live, e.r.target("third"), 9)
+		d := choose(own(e), "keep", "keep", "keep")
+		d = append(d, map[string]string{"requestId": strconv.FormatUint(uint64(elsewhere.ID), 10), "reviewHash": e.items[0].ReviewHash, "choice": "remove"})
+		refuse(t, e, d)
+		if e.r.reasonOf(int64(elsewhere.ID)) == "" {
+			t.Error("someone else's request was blanked")
+		}
+	})
+	t.Run("an unrelated marker does not make a set stale", func(t *testing.T) {
+		e := setup(t)
+		// A decision for the same request about another account, one of another
+		// purpose's vocabulary, and one with the wrong version are not markers.
+		legacyMark(t, e.r.direct, int64(e.reqs[0].ID), e.live.ID, policy.RequestContact, true)
+		legacyMarkRaw(t, e.r.direct, audit.AddReasonKept, "add_request", int64(e.reqs[1].ID), fmt.Sprintf(`{"erasedUserId": %d, "reviewVersion": 1}`, e.gone.ID))
+		legacyMarkRaw(t, e.r.direct, audit.ContactReasonKept, "contact_request", int64(e.reqs[2].ID), fmt.Sprintf(`{"erasedUserId": %d, "reviewVersion": 2}`, e.gone.ID))
+		if _, w := e.r.save(e.gone.ID, choose(own(e), "keep", "remove", "keep")); w.Code != http.StatusOK {
+			t.Fatalf("%d %s, want 200: none of those is a marker for this pair", w.Code, w.Body.String())
+		}
+	})
+	t.Run("a subset is allowed and decides only what it names", func(t *testing.T) {
+		e := setup(t)
+		items := own(e)
+		if _, w := e.r.save(e.gone.ID, choose(items, "", "remove", "")); w.Code != http.StatusOK {
+			t.Fatalf("%d %s", w.Code, w.Body.String())
+		}
+		if e.r.reasonOf(int64(e.reqs[0].ID)) == "" || e.r.reasonOf(int64(e.reqs[1].ID)) != "" || e.r.reasonOf(int64(e.reqs[2].ID)) == "" {
+			t.Error("a save decided something it did not name")
+		}
+		if got := e.r.items(e.gone.ID); len(got) != 3 { // two undecided contact requests and the shared one
+			t.Errorf("%d reasons listed after a one-item save, want the other three", len(got))
+		}
+	})
+}
+
+// Everything wrong with a request that is not about the choices: before the
+// claim nothing is recorded and the id stays usable; after it the id ends rolled
+// back and cannot be sent again.
+func TestLegacySaveValidation(t *testing.T) {
+	r := newSaveRig(t)
+	gone, live := r.target("gone"), r.target("live")
+	r.ask(gone, live, 1)
+	r.ask(live, gone, 2)
+	r.bury(gone)
+	items := r.items(gone.ID)
+	if len(items) != 2 {
+		t.Fatalf("%d items", len(items))
+	}
+	good := choose(items, "keep", "remove")
+
+	t.Run("before the claim nothing is recorded", func(t *testing.T) {
+		id := r.mint(gone.ID)
+		quoted := func(v any) string { b, _ := json.Marshal(v); return string(b) }
+		dec := quoted(good)
+		idj := quoted(id)
+		for name, tc := range map[string]struct {
+			path   string
+			body   any
+			status int
+		}{
+			"a user id of 0":                   {legacySavePath(0), map[string]any{"attemptId": id, "decisions": good}, 404},
+			"a negative user id":               {"/api/v1/admin/erasure-reasons/legacy/-1", map[string]any{"attemptId": id, "decisions": good}, 404},
+			"a leading zero":                   {"/api/v1/admin/erasure-reasons/legacy/0" + itoa(gone.ID), map[string]any{"attemptId": id, "decisions": good}, 404},
+			"a plus sign":                      {"/api/v1/admin/erasure-reasons/legacy/+" + itoa(gone.ID), map[string]any{"attemptId": id, "decisions": good}, 404},
+			"a fraction":                       {"/api/v1/admin/erasure-reasons/legacy/" + itoa(gone.ID) + ".0", map[string]any{"attemptId": id, "decisions": good}, 404},
+			"letters":                          {"/api/v1/admin/erasure-reasons/legacy/abc", map[string]any{"attemptId": id, "decisions": good}, 404},
+			"a user id past 63 bits":           {"/api/v1/admin/erasure-reasons/legacy/9223372036854775808", map[string]any{"attemptId": id, "decisions": good}, 404},
+			"an empty body":                    {legacySavePath(gone.ID), rawJSON(``), 400},
+			"a body that is not json":          {legacySavePath(gone.ID), rawJSON(`{`), 400},
+			"a body that is not an object":     {legacySavePath(gone.ID), rawJSON(`[]`), 400},
+			"no attempt id":                    {legacySavePath(gone.ID), map[string]any{"decisions": good}, 400},
+			"an empty attempt id":              {legacySavePath(gone.ID), map[string]any{"attemptId": "", "decisions": good}, 400},
+			"an attempt id that is not a text": {legacySavePath(gone.ID), rawJSON(`{"attemptId": 5, "decisions": ` + dec + `}`), 400},
+			"the attempt id twice":             {legacySavePath(gone.ID), rawJSON(`{"attemptId": ` + idj + `, "attemptId": ` + idj + `, "decisions": ` + dec + `}`), 400},
+			"the attempt id in another case":   {legacySavePath(gone.ID), rawJSON(`{"AttemptID": ` + idj + `, "decisions": ` + dec + `}`), 400},
+			"the decisions twice":              {legacySavePath(gone.ID), rawJSON(`{"attemptId": ` + idj + `, "decisions": ` + dec + `, "decisions": ` + dec + `}`), 400},
+			"the decisions in another case":    {legacySavePath(gone.ID), rawJSON(`{"attemptId": ` + idj + `, "Decisions": ` + dec + `}`), 400},
+			"a request id that is a number":    {legacySavePath(gone.ID), rawJSON(`{"attemptId": ` + idj + `, "decisions": [{"requestId": 5, "reviewHash": "x", "choice": "keep"}]}`), 400},
+		} {
+			before := r.written()
+			w := r.c.do("PUT", tc.path, tc.body, true)
+			if w.Code != tc.status {
+				t.Errorf("%s: %d %s, want %d", name, w.Code, w.Body.String(), tc.status)
+			}
+			r.wantUnchanged(before, id, gone.ID, attemptAbsent)
+		}
+		// The id was never claimed, so it still works once.
+		if w := r.send(gone.ID, id, good); w.Code != http.StatusOK {
+			t.Fatalf("the unclaimed id: %d %s", w.Code, w.Body.String())
+		}
+	})
+	// Fresh requests for the post-claim shapes.
+	r2 := newSaveRig(t)
+	gone2, live2 := r2.target("gone"), r2.target("live")
+	r2.ask(gone2, live2, 1)
+	r2.ask(live2, gone2, 2)
+	r2.bury(gone2)
+	items2 := r2.items(gone2.ID)
+	one := items2[0]
+	t.Run("after the claim the id ends rolled back", func(t *testing.T) {
+		many := make([]map[string]string, 101)
+		for i := range many {
+			many[i] = map[string]string{"requestId": strconv.Itoa(i + 1), "reviewHash": one.ReviewHash, "choice": "keep"}
+		}
+		withID := func(id string) map[string]string {
+			return map[string]string{"requestId": id, "reviewHash": one.ReviewHash, "choice": "keep"}
+		}
+		withHash := func(h string) map[string]string {
+			return map[string]string{"requestId": one.RequestID, "reviewHash": h, "choice": "keep"}
+		}
+		withChoice := func(c string) map[string]string {
+			return map[string]string{"requestId": one.RequestID, "reviewHash": one.ReviewHash, "choice": c}
+		}
+		for name, decisions := range map[string]any{
+			"no decisions at all":                  nil,
+			"an empty list":                        []map[string]string{},
+			"101 decisions":                        many,
+			"a request id with a leading zero":     []map[string]string{withID("0" + one.RequestID)},
+			"a request id with a plus sign":        []map[string]string{withID("+" + one.RequestID)},
+			"a negative zero":                      []map[string]string{withID("-0")},
+			"a fractional request id":              []map[string]string{withID(one.RequestID + ".0")},
+			"an empty request id":                  []map[string]string{withID("")},
+			"a request id past 64 bits":            []map[string]string{withID("9223372036854775808")},
+			"a request id with a space":            []map[string]string{withID(" " + one.RequestID)},
+			"a hash in capitals":                   []map[string]string{withHash(strings.ToUpper(one.ReviewHash))},
+			"a short hash":                         []map[string]string{withHash(one.ReviewHash[:63])},
+			"a long hash":                          []map[string]string{withHash(one.ReviewHash + "0")},
+			"a hash that is not hex":               []map[string]string{withHash("g" + one.ReviewHash[1:])},
+			"no hash":                              []map[string]string{withHash("")},
+			"no choice":                            []map[string]string{withChoice("")},
+			"a choice in capitals":                 []map[string]string{withChoice("Keep")},
+			"a choice that is not keep or remove":  []map[string]string{withChoice("delete")},
+			"a choice of skip":                     []map[string]string{withChoice("skip")},
+			"the same request twice":               []map[string]string{withChoice("keep"), withChoice("remove")},
+			"one good decision and one bad choice": []map[string]string{withChoice("keep"), {"requestId": items2[1].RequestID, "reviewHash": items2[1].ReviewHash, "choice": "maybe"}},
+		} {
+			before := r2.written()
+			id, w := r2.save(gone2.ID, decisions)
+			wantSaveCode(t, w, http.StatusBadRequest, "invalid")
+			r2.wantUnchanged(before, id, gone2.ID, attemptRolledBack)
+			wantSaveCode(t, r2.send(gone2.ID, id, choose(items2, "keep", "keep")), http.StatusConflict, "attempt_closed")
+			if t.Failed() {
+				t.Fatalf("(%s)", name)
+			}
+		}
+	})
+	t.Run("an account that is not deleted, or not there, answers 404 after the claim", func(t *testing.T) {
+		for name, account := range map[string]uint{"a live account": live2.ID, "no such account": 987654} {
+			before := r2.written()
+			id, w := r2.save(account, choose(items2, "keep", "keep"))
+			wantSaveCode(t, w, http.StatusNotFound, "not_found")
+			r2.wantUnchanged(before, id, account, attemptRolledBack)
+			if t.Failed() {
+				t.Fatalf("(%s)", name)
+			}
+		}
+		for _, it := range r2.items(gone2.ID) {
+			if r2.reasonOf(mustInt64(t, it.RequestID)) == "" {
+				t.Error("a refused save blanked a reason")
+			}
+		}
+	})
+	t.Run("an id that does not belong to this save is expired and runs nothing", func(t *testing.T) {
+		admin2 := newTestUser(t, r2.app, "admin2", "pw", models.RoleAdmin)
+		_ = admin2
+		c2 := loginAPI(t, r2.app, "admin2", "pw")
+		other := r2.target("other")
+		before := r2.written()
+		wrongKind := r2.mintWith(r2.c, attemptKindAccountDelete, gone2.ID)
+		var minted attemptMintJSON
+		decodeJSON(t, wrongKind, &minted)
+		for name, id := range map[string]string{
+			"an id of the deletion kind": minted.AttemptID,
+			"an id for another account":  r2.mint(other.ID),
+			"an id another admin minted": func() string {
+				var m attemptMintJSON
+				decodeJSON(t, r2.mintWith(c2, attemptKindLegacyReasonSave, gone2.ID), &m)
+				return m.AttemptID
+			}(),
+			"an id that is not hex":           strings.Repeat("z", 80),
+			"an id that is too short":         "abcd",
+			"an id with the wrong key":        strings.Repeat("0", 80),
+			"an attempt id that is not valid": "not an id",
+		} {
+			w := r2.send(gone2.ID, id, choose(items2, "keep", "keep"))
+			if w.Code != http.StatusConflict || codeOf2(t, w.Body.String()) != "attempt_expired" {
+				t.Errorf("%s: %d %s, want 409 attempt_expired", name, w.Code, w.Body.String())
+			}
+		}
+		if r2.written() != before {
+			t.Error("an expired id changed something")
+		}
+	})
+	t.Run("a restore the process saw ends the id rolled back", func(t *testing.T) {
+		id := r2.mint(gone2.ID)
+		before := r2.written()
+		r2.app.noteRestoreDetected()
+		w := r2.send(gone2.ID, id, choose(items2, "keep", "keep"))
+		wantSaveCode(t, w, http.StatusServiceUnavailable, "restore_detected")
+		r2.wantUnchanged(before, id, gone2.ID, attemptRolledBack)
+	})
+}
+
+func mustInt64(t *testing.T, s string) int64 {
+	t.Helper()
+	v, ok := parseRequestID(s)
+	if !ok {
+		t.Fatalf("%q is not a request id", s)
+	}
+	return v
+}
+
+// Who may save: the same people who may read, decided on the early read and again
+// at the seal. A refusal after the claim ends the id rolled back and writes nothing.
+func TestLegacySaveAuthorization(t *testing.T) {
+	setup := func(t *testing.T) (*saveRig, *models.User, []map[string]string) {
+		r := newSaveRig(t)
+		gone, live := r.target("gone"), r.target("live")
+		r.ask(gone, live, 1)
+		r.bury(gone)
+		return r, gone, choose(r.items(gone.ID), "remove")
+	}
+	for name, tc := range map[string]struct {
+		set    string
+		args   []any
+		status int
+		code   string
+	}{
+		"a known-17 admin": {"birth_date = ?", []any{time.Now().AddDate(-17, 0, 0)}, http.StatusForbidden, "reason_review_not_allowed"},
+		"a teen admin":     {"account_type = 'teen', birth_date = ?", []any{time.Now().AddDate(-15, 0, 0)}, http.StatusForbidden, "reason_review_not_allowed"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, gone, decisions := setup(t)
+			if err := r.direct.Exec("UPDATE users SET "+tc.set+" WHERE id = ?", append(tc.args, r.admin.ID)...).Error; err != nil {
+				t.Fatal(err)
+			}
+			before := r.written()
+			id, w := r.save(gone.ID, decisions)
+			wantSaveCode(t, w, tc.status, tc.code)
+			r.wantUnchanged(before, id, gone.ID, attemptRolledBack)
+			for _, leak := range []string{"identifying", "reviewHash"} {
+				if strings.Contains(w.Body.String(), leak) {
+					t.Errorf("the refusal carries %q", leak)
+				}
+			}
+		})
+	}
+	t.Run("an adult admin of unknown age", func(t *testing.T) {
+		r, gone, decisions := setup(t)
+		if err := r.direct.Exec("UPDATE users SET birth_date = NULL WHERE id = ?", r.admin.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if _, w := r.save(gone.ID, decisions); w.Code != http.StatusOK {
+			t.Fatalf("%d %s, want 200: an unknown age is not under 18", w.Code, w.Body.String())
+		}
+	})
+	t.Run("a disabled admin is signed out before the claim", func(t *testing.T) {
+		r, gone, decisions := setup(t)
+		if err := r.direct.Exec("UPDATE users SET status = 'disabled' WHERE id = ?", r.admin.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		before := r.written()
+		w := r.putAs(r.c, gone.ID, map[string]any{"attemptId": strings.Repeat("0", 80), "decisions": decisions})
+		wantSaveCode(t, w, http.StatusUnauthorized, "signed_out")
+		if r.written() != before {
+			t.Error("a signed-out request wrote something")
+		}
+	})
+	t.Run("a non-admin", func(t *testing.T) {
+		r, gone, decisions := setup(t)
+		newTestUser(t, r.app, "legacy-member", "pw", models.RoleMember)
+		mc := loginAPI(t, r.app, "legacy-member", "pw")
+		before := r.written()
+		w := r.putAs(mc, gone.ID, map[string]any{"attemptId": strings.Repeat("0", 80), "decisions": decisions})
+		if w.Code != http.StatusForbidden || codeOf2(t, w.Body.String()) == "reason_review_not_allowed" {
+			t.Fatalf("%d %s, want a plain 403", w.Code, w.Body.String())
+		}
+		if r.written() != before {
+			t.Error("a non-admin wrote something")
+		}
+	})
+	t.Run("a signed-out client", func(t *testing.T) {
+		r, gone, decisions := setup(t)
+		w := newAPIClient(t, r.app).do("PUT", legacySavePath(gone.ID), map[string]any{"attemptId": strings.Repeat("0", 80), "decisions": decisions}, false)
+		if w.Code != http.StatusUnauthorized && w.Code != http.StatusForbidden {
+			t.Fatalf("%d %s, want 401 or 403", w.Code, w.Body.String())
+		}
+	})
+	t.Run("a put without the csrf token", func(t *testing.T) {
+		r, gone, decisions := setup(t)
+		id := r.mint(gone.ID)
+		before := r.written()
+		w := r.c.do("PUT", legacySavePath(gone.ID), map[string]any{"attemptId": id, "decisions": decisions}, false)
+		wantSaveCode(t, w, http.StatusForbidden, "session_expired")
+		r.wantUnchanged(before, id, gone.ID, attemptAbsent)
+	})
+	t.Run("only a put saves", func(t *testing.T) {
+		r, gone, decisions := setup(t)
+		id := r.mint(gone.ID)
+		before := r.written()
+		for _, method := range []string{"POST", "PATCH", "DELETE"} {
+			w := r.c.do(method, legacySavePath(gone.ID), map[string]any{"attemptId": id, "decisions": decisions}, true)
+			if w.Code == http.StatusOK {
+				t.Errorf("%s answered 200", method)
+			}
+		}
+		r.wantUnchanged(before, id, gone.ID, attemptAbsent)
+	})
+}
+
+// The seal decides the actor on the locked row last: a session that went stale or
+// an admin who stopped qualifying after the early read saves nothing.
+func TestLegacySaveSealDecides(t *testing.T) {
+	for name, tc := range map[string]struct {
+		code   int
+		reason string
+		sql    string
+		args   []any
+	}{
+		"a stale session":                    {http.StatusUnauthorized, "signed_out", "session_version = session_version + 1", nil},
+		"a logout":                           {http.StatusUnauthorized, "signed_out", "logout_version = logout_version + 1", nil},
+		"a cleared password":                 {http.StatusUnauthorized, "signed_out", "password_hash = NULL", nil},
+		"an admin who became a member":       {http.StatusUnauthorized, "signed_out", "role = 'member', session_version = session_version + 1", nil},
+		"an admin who became known to be 17": {http.StatusForbidden, "reason_review_not_allowed", "birth_date = ?", []any{time.Now().AddDate(-17, 0, 0)}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newSaveRig(t)
+			gone, live := r.target("gone"), r.target("live")
+			r.ask(gone, live, 1)
+			r.bury(gone)
+			decisions := choose(r.items(gone.ID), "remove")
+			var seals atomic.Int64
+			r.app.hooks.sealAttempts = &seals
+			r.app.hooks.legacySaveBeforeSeal = func(*gorm.DB) {
+				if err := r.direct.Exec("UPDATE users SET "+tc.sql+" WHERE id = ?", append(tc.args, r.admin.ID)...).Error; err != nil {
+					t.Error(err)
+				}
+			}
+			// Everything the save did is inside the transaction the seal rolls back.
+			reasons := r.reasonOf(mustInt64(t, decisions[0]["requestId"]))
+			id := r.mint(gone.ID)
+			receipts, counter := r.receipts(), r.counter()
+			w := r.send(gone.ID, id, decisions)
+			wantSaveCode(t, w, tc.code, tc.reason)
+			if seals.Load() != 1 {
+				t.Errorf("%d seals, want 1", seals.Load())
+			}
+			if got := r.reasonOf(mustInt64(t, decisions[0]["requestId"])); got != reasons {
+				t.Errorf("the reason changed from %q to %q under a refused seal", reasons, got)
+			}
+			if n := len(r.decisionRows()); n != 0 || r.receipts() != receipts || r.counter() != counter {
+				t.Errorf("%d decisions, receipts %d (was %d), counter %d (was %d): a refused seal must commit nothing", n, r.receipts(), receipts, r.counter(), counter)
+			}
+			if got := r.state(id, gone.ID); got != attemptRolledBack {
+				t.Errorf("state %v, want rolled back", got)
+			}
+		})
+	}
+}
+
+// A busy actor row, a busy other deleted account and a rollback nobody
+// acknowledged each answer for themselves, retrying only what is safe to retry.
+func TestLegacySaveBusy(t *testing.T) {
+	old := busyRetryWindow
+	busyRetryWindow = 30 * time.Second
+	t.Cleanup(func() { busyRetryWindow = old })
+
+	t.Run("the admin's own row is busy", func(t *testing.T) {
+		r := newSaveRig(t)
+		gone, live := r.target("gone"), r.target("live")
+		r.ask(gone, live, 1)
+		r.bury(gone)
+		decisions := choose(r.items(gone.ID), "remove")
+		var seals, retries atomic.Int64
+		r.app.hooks.sealAttempts = &seals
+		r.app.hooks.legacySaveBeforeRetry = func() { retries.Add(1) }
+		hold, _ := beginOwnedTx(t, r.direct)
+		if err := hold.Exec("SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE", r.admin.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		before := r.written()
+		id, w := r.save(gone.ID, decisions)
+		wantSaveCode(t, w, http.StatusConflict, "admin_account_busy")
+		if seals.Load() != 3 || retries.Load() != 2 {
+			t.Errorf("%d seals and %d retries, want 3 and 2", seals.Load(), retries.Load())
+		}
+		r.wantUnchanged(before, id, gone.ID, attemptRolledBack)
+		if err := hold.Rollback().Error; err != nil {
+			t.Fatal(err)
+		}
+		seals.Store(0)
+		if _, w := r.save(gone.ID, decisions); w.Code != http.StatusOK || seals.Load() != 1 {
+			t.Fatalf("after the release: %d %s with %d seals, want 200 and 1", w.Code, w.Body.String(), seals.Load())
+		}
+	})
+
+	t.Run("the other deleted account is busy", func(t *testing.T) {
+		r := newSaveRig(t)
+		a, b := r.target("gone-a"), r.target("gone-b")
+		// An add request: migration 00007's share lock on the deleted parties is
+		// for non-contact rows only.
+		req := r.askAdd(a, b, 1)
+		r.bury(a, b)
+		itemsA := r.items(a.ID)
+		var seals, retries atomic.Int64
+		r.app.hooks.sealAttempts = &seals
+		r.app.hooks.legacySaveBeforeRetry = func() { retries.Add(1) }
+		hold, _ := beginOwnedTx(t, r.direct)
+		if err := hold.Exec("SELECT id FROM users WHERE id = ? FOR UPDATE", b.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		before := r.written()
+		id, w := r.save(a.ID, choose(itemsA, "remove"))
+		wantSaveCode(t, w, http.StatusConflict, "legacy_save_busy")
+		if strings.Contains(w.Body.String(), "delete_reason_busy") || strings.Contains(w.Body.String(), "deleted") {
+			t.Errorf("the answer speaks of a deletion: %s", w.Body.String())
+		}
+		if retries.Load() != 2 || seals.Load() != 0 {
+			t.Errorf("%d retries and %d seals, want 2 and none (the blank never got to the seal)", retries.Load(), seals.Load())
+		}
+		r.wantUnchanged(before, id, a.ID, attemptRolledBack)
+		// A keep blanks nothing, so it never needs the other account's row.
+		if _, w := r.save(a.ID, choose(itemsA, "keep")); w.Code != http.StatusOK {
+			t.Fatalf("a keep while the other account is held: %d %s", w.Code, w.Body.String())
+		}
+		if err := hold.Rollback().Error; err != nil {
+			t.Fatal(err)
+		}
+		if n := len(r.decisionsFor(int64(req.ID), a.ID)); n != 1 {
+			t.Errorf("%d decisions for a, want the keep", n)
+		}
+	})
+
+	t.Run("an unacknowledged rollback starts no second attempt", func(t *testing.T) {
+		for name, tc := range map[string]struct {
+			match string
+			code  string
+			hold  func(r *saveRig, a, b *models.User) *gorm.DB
+		}{
+			"at the seal": {"FOR SHARE NOWAIT", "admin_account_busy", func(r *saveRig, a, b *models.User) *gorm.DB {
+				hold, _ := beginOwnedTx(t, r.direct)
+				if err := hold.Exec("SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE", r.admin.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				return hold
+			}},
+			"at the blank": {"UPDATE contact_requests SET reason", "legacy_save_busy", func(r *saveRig, a, b *models.User) *gorm.DB {
+				hold, _ := beginOwnedTx(t, r.direct)
+				if err := hold.Exec("SELECT id FROM users WHERE id = ? FOR UPDATE", b.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				return hold
+			}},
+		} {
+			t.Run(name, func(t *testing.T) {
+				r := newProxiedSaveRig(t)
+				a, b := r.target("gone-a"), r.target("gone-b")
+				r.askAdd(a, b, 1)
+				r.bury(a, b)
+				decisions := choose(r.items(a.ID), "remove")
+				var seals, retries atomic.Int64
+				r.app.hooks.sealAttempts = &seals
+				r.app.hooks.legacySaveBeforeRetry = func() { retries.Add(1) }
+				hold := tc.hold(r, a, b)
+				before := r.written()
+				id := r.mint(a.ID)
+				mark := len(r.rig.proxy.Events())
+				r.rig.proxy.Arm(testdb.Faults{Match: tc.match, Rollback: testdb.RollbackCloseUnforwarded})
+				w := r.send(a.ID, id, decisions)
+				wantSaveCode(t, w, http.StatusConflict, tc.code)
+				begins := 0
+				for _, e := range r.rig.proxy.Events()[mark:] {
+					if e.Kind == testdb.KindStatement && strings.HasPrefix(strings.ToLower(strings.TrimSpace(e.SQL)), "begin") {
+						begins++
+					}
+				}
+				if begins != 1 || retries.Load() != 0 {
+					t.Errorf("%d transactions and %d retries, want one and none after a rollback nobody acknowledged", begins, retries.Load())
+				}
+				if err := hold.Rollback().Error; err != nil {
+					t.Fatal(err)
+				}
+				r.rig.awaitReleased(r.rig.pidOf(tc.match), 10*time.Second)
+				r.wantUnchanged(before, id, a.ID, attemptRolledBack)
+				wantSettle(t, r.settled(id, a.ID), settleNotApplied, nil)
+			})
+		}
+	})
+}
+
+// A save that runs out of time or whose COMMIT is lost answers for itself: timed
+// out says nothing was saved, unknown never does, and settle decides which it was.
+func TestLegacySaveOutcomes(t *testing.T) {
+	t.Run("the budget leaves no time to commit", func(t *testing.T) {
+		old := legacySaveBudget
+		legacySaveBudget = contactCommitReserve - 500*time.Millisecond
+		t.Cleanup(func() { legacySaveBudget = old })
+		r := newSaveRig(t)
+		gone, live := r.target("gone"), r.target("live")
+		r.ask(gone, live, 1)
+		r.bury(gone)
+		decisions := choose(r.items(gone.ID), "remove")
+		before := r.written()
+		id, w := r.save(gone.ID, decisions)
+		wantSaveCode(t, w, http.StatusServiceUnavailable, "legacy_save_timed_out")
+		r.wantUnchanged(before, id, gone.ID, attemptRolledBack)
+		wantSettle(t, r.settled(id, gone.ID), settleNotApplied, nil)
+	})
+	t.Run("the budget runs out before the commit", func(t *testing.T) {
+		old := legacySaveBudget
+		legacySaveBudget = contactCommitReserve + time.Second
+		t.Cleanup(func() { legacySaveBudget = old })
+		r := newSaveRig(t)
+		gone, live := r.target("gone"), r.target("live")
+		r.ask(gone, live, 1)
+		r.bury(gone)
+		decisions := choose(r.items(gone.ID), "remove")
+		r.app.hooks.legacySaveBeforeSeal = func(*gorm.DB) { time.Sleep(time.Second + 200*time.Millisecond) }
+		before := r.written()
+		id, w := r.save(gone.ID, decisions)
+		wantSaveCode(t, w, http.StatusServiceUnavailable, "legacy_save_timed_out")
+		if strings.Contains(w.Body.String(), "unknown") {
+			t.Errorf("a rolled-back save answered as unknown: %s", w.Body.String())
+		}
+		r.wantUnchanged(before, id, gone.ID, attemptRolledBack)
+	})
+	for name, fault := range map[string]testdb.CommitFault{
+		"the commit reached the server and its reply was lost": testdb.CommitForwardThenClose,
+		"the commit never reached the server":                  testdb.CommitCloseUnforwarded,
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newProxiedSaveRig(t)
+			gone, live := r.target("gone"), r.target("live")
+			req := r.ask(gone, live, 1)
+			r.bury(gone)
+			decisions := choose(r.items(gone.ID), "remove")
+			id := r.mint(gone.ID)
+			floor := r.app.restoreFenceFloor()
+			r.rig.proxy.Arm(testdb.Faults{Match: "idle_in_transaction_session_timeout", Commit: fault})
+			w := r.send(gone.ID, id, decisions)
+			wantSaveCode(t, w, http.StatusInternalServerError, "legacy_save_outcome_unknown")
+			if strings.Contains(strings.ToLower(w.Body.String()), "nothing was saved") {
+				t.Errorf("an unknown outcome says nothing was saved: %s", w.Body.String())
+			}
+			if got := r.state(id, gone.ID); got != attemptUnknown {
+				t.Fatalf("state %v, want unknown", got)
+			}
+			if r.app.restoreFenceFloor() != floor {
+				t.Error("an unknown commit raised the restore floor")
+			}
+			if fault == testdb.CommitCloseUnforwarded {
+				r.rig.awaitReleased(r.rig.pidOf("idle_in_transaction_session_timeout"), 10*time.Second)
+				if r.reasonOf(int64(req.ID)) == "" || len(r.decisionRows()) != 0 {
+					t.Error("a commit that never arrived saved something")
+				}
+				wantSettle(t, r.settled(id, gone.ID), settleHistoryUnavailable, nil)
+				return
+			}
+			if r.reasonOf(int64(req.ID)) != "" || len(r.decisionRows()) != 1 || r.receipts() != 1 {
+				t.Error("a commit the server received was not saved")
+			}
+			wantSettle(t, r.settled(id, gone.ID), settleApplied, nil)
+			// Unknown or not, the id is spent.
+			wantSaveCode(t, r.send(gone.ID, id, decisions), http.StatusConflict, "attempt_closed")
+		})
+	}
+}
+
+// An id applies at most once and settles to what happened: the lifecycle on
+// the real route.
+func TestLegacySaveAttemptLifecycle(t *testing.T) {
+	setup := func(t *testing.T) (*saveRig, *models.User, []map[string]string) {
+		r := newSaveRig(t)
+		gone, live := r.target("gone"), r.target("live")
+		r.ask(gone, live, 1)
+		r.bury(gone)
+		return r, gone, choose(r.items(gone.ID), "remove")
+	}
+	t.Run("settled before it was sent, an id never runs", func(t *testing.T) {
+		r, gone, decisions := setup(t)
+		id := r.mint(gone.ID)
+		raw := r.rawSettle(id, gone.ID)
+		if raw != `{"result":"not_applied"}` {
+			t.Fatalf("settle = %s, want not_applied with no subjectDeleted for a tombstone", raw)
+		}
+		before := r.written()
+		wantSaveCode(t, r.send(gone.ID, id, decisions), http.StatusConflict, "attempt_closed")
+		r.wantUnchanged(before, id, gone.ID, attemptFenced)
+	})
+	t.Run("an id older than ten minutes is expired and fenced", func(t *testing.T) {
+		r, gone, decisions := setup(t)
+		id := r.mint(gone.ID)
+		r.advance(11 * time.Minute)
+		before := r.written()
+		wantSaveCode(t, r.send(gone.ID, id, decisions), http.StatusConflict, "attempt_expired")
+		if r.written() != before {
+			t.Error("an expired id ran")
+		}
+		wantSettle(t, r.settled(id, gone.ID), settleNotApplied, nil)
+	})
+	t.Run("a refused set settles not applied", func(t *testing.T) {
+		r, gone, decisions := setup(t)
+		if err := r.direct.Exec("UPDATE contact_requests SET reason = 'edited'").Error; err != nil {
+			t.Fatal(err)
+		}
+		id, w := r.save(gone.ID, decisions)
+		wantSaveCode(t, w, http.StatusConflict, "reason_review_changed")
+		if got := r.rawSettle(id, gone.ID); got != `{"result":"not_applied"}` {
+			t.Fatalf("settle = %s", got)
+		}
+		wantSaveCode(t, r.send(gone.ID, id, decisions), http.StatusConflict, "attempt_closed")
+	})
+	t.Run("a saved id settles applied and resends are closed", func(t *testing.T) {
+		r, gone, decisions := setup(t)
+		id, w := r.save(gone.ID, decisions)
+		if w.Code != http.StatusOK {
+			t.Fatal(w.Body.String())
+		}
+		wantSettle(t, r.settled(id, gone.ID), settleApplied, nil)
+		wantSaveCode(t, r.send(gone.ID, id, decisions), http.StatusConflict, "attempt_closed")
+	})
+	t.Run("two sends of one id at once run one", func(t *testing.T) {
+		r, gone, decisions := setup(t)
+		c2 := loginAPI(t, r.app, "admin", "pw")
+		id := r.mint(gone.ID)
+		results := make(chan *httptest.ResponseRecorder, 2)
+		start := make(chan struct{})
+		for _, c := range []*apiClient{r.c, c2} {
+			go func(c *apiClient) {
+				<-start
+				results <- r.putAs(c, gone.ID, map[string]any{"attemptId": id, "decisions": decisions})
+			}(c)
+		}
+		close(start)
+		var ok, closed int
+		for i := 0; i < 2; i++ {
+			w := <-results
+			switch {
+			case w.Code == http.StatusOK:
+				ok++
+			case w.Code == http.StatusConflict && codeOf2(t, w.Body.String()) == "attempt_closed":
+				closed++
+			default:
+				t.Errorf("%d %s", w.Code, w.Body.String())
+			}
+		}
+		if ok != 1 || closed != 1 || len(r.decisionRows()) != 1 || r.receipts() != 1 {
+			t.Errorf("%d ok, %d closed, %d decisions, %d receipts, want one of each kind and one decision", ok, closed, len(r.decisionRows()), r.receipts())
+		}
+	})
+}
+
+// Request ids are signed 64-bit and are never read into an unsigned field: the
+// save decides exactly the named ids, at the edges of the range, and only those
+// pairs leave the list.
+func TestLegacySaveSignedRequestIDs(t *testing.T) {
+	r := newSaveRig(t)
+	gone, live := r.target("gone"), r.target("live")
+	ids := []int64{math.MinInt64, -1, 0, 1, math.MaxInt64}
+	for i := range ids {
+		made := r.ask(gone, live, i+1)
+		r.setID2(made.ID, ids[i])
+	}
+	r.bury(gone)
+	items := r.items(gone.ID)
+	if got, want := strings.Join(requestIDs(items), ","), "-9223372036854775808,-1,0,1,9223372036854775807"; got != want {
+		t.Fatalf("listing = %s, want %s", got, want)
+	}
+	choices := []string{"remove", "keep", "remove", "", "keep"} // 1 is left undecided
+	_, w := r.save(gone.ID, choose(items, choices...))
+	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"kept":2,"removed":2}` {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	rows := r.decisionRows()
+	if len(rows) != 4 {
+		t.Fatalf("%d decisions, want 4", len(rows))
+	}
+	for i, wantID := range []int64{math.MinInt64, -1, 0, math.MaxInt64} {
+		if rows[i].TargetID != wantID || rows[i].Meta["erasedUserId"] != float64(gone.ID) {
+			t.Errorf("decision %d targets %d for %v, want %d for %d", i, rows[i].TargetID, rows[i].Meta["erasedUserId"], wantID, gone.ID)
+		}
+	}
+	for _, c := range []struct {
+		id    int64
+		blank bool
+	}{{math.MinInt64, true}, {-1, false}, {0, true}, {1, false}, {math.MaxInt64, false}} {
+		if blank := r.reasonOf(c.id) == ""; blank != c.blank {
+			t.Errorf("request %d: blank = %v, want %v", c.id, blank, c.blank)
+		}
+	}
+	// Only the decided pairs left: the undecided one (id 1) is the whole listing.
+	left := legacyReference(t, r.direct)
+	if len(left) != 1 || left[0].Request != 1 || left[0].Party != int64(gone.ID) {
+		t.Errorf("the reference listing after the save = %v, want only request 1", left)
+	}
+	if got := r.items(gone.ID); len(got) != 1 || got[0].RequestID != "1" {
+		t.Errorf("the page after the save = %v, want only request 1", requestIDs(got))
+	}
+}
+
+// setID2 gives a request an exact id.
+func (r *saveRig) setID2(from uint, to int64) {
+	r.t.Helper()
+	if err := r.direct.Exec("UPDATE contact_requests SET id = ? WHERE id = ?", to, from).Error; err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// One save carries at most a page: 100 decisions are applied in one transaction,
+// 101 are refused.
+func TestLegacySaveTakesAPageOfDecisions(t *testing.T) {
+	r := newSaveRig(t)
+	gone, live := r.target("gone"), r.target("live")
+	for i := 1; i <= 101; i++ {
+		r.ask(gone, live, i)
+	}
+	r.bury(gone)
+	all := r.items(gone.ID)
+	if len(all) != 101 {
+		t.Fatalf("%d items", len(all))
+	}
+	choices := make([]string, 101)
+	for i := range choices {
+		choices[i] = "keep"
+		if i%3 == 0 {
+			choices[i] = "remove"
+		}
+	}
+	before := r.written()
+	id, w := r.save(gone.ID, choose(all, choices...))
+	wantSaveCode(t, w, http.StatusBadRequest, "invalid")
+	r.wantUnchanged(before, id, gone.ID, attemptRolledBack)
+	reasonBlankBatchWas := reasonBlankBatch
+	reasonBlankBatch = 7 // several batches inside the one transaction
+	t.Cleanup(func() { reasonBlankBatch = reasonBlankBatchWas })
+	_, w = r.save(gone.ID, choose(all[:100], choices[:100]...))
+	removed := 0
+	for i := 0; i < 100; i++ {
+		if i%3 == 0 {
+			removed++
+		}
+	}
+	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != fmt.Sprintf(`{"kept":%d,"removed":%d}`, 100-removed, removed) {
+		t.Fatalf("%d %s, want %d kept and %d removed", w.Code, w.Body.String(), 100-removed, removed)
+	}
+	if n := len(r.decisionRows()); n != 100 || len(r.items(gone.ID)) != 1 {
+		t.Errorf("%d decisions and %d reasons left listed, want 100 and 1", n, len(r.items(gone.ID)))
+	}
+}
+
+// A failure anywhere in the save leaves nothing behind: no audit row, no
+// blanked reason, no receipt, no ticket, and an id that ended rolled back with
+// an answer that names no cause.
+func TestLegacySaveFailureLeavesNothing(t *testing.T) {
+	fails := map[string]struct {
+		match func(sql string) bool
+		batch int
+	}{
+		"the request lock": {func(sql string) bool {
+			return strings.Contains(sql, "FROM contact_requests WHERE id = ANY") && strings.Contains(sql, "FOR UPDATE")
+		}, 0},
+		"the marker lookup":        {func(sql string) bool { return strings.Contains(sql, "unnest(") }, 0},
+		"the audit insert":         {func(sql string) bool { return strings.Contains(sql, "jsonb_to_recordset") }, 0},
+		"the blank":                {func(sql string) bool { return strings.Contains(sql, "UPDATE contact_requests SET reason") }, 0},
+		"the second blanked batch": {nil, 2},
+	}
+	for name, tc := range fails {
+		t.Run(name, func(t *testing.T) {
+			r := newSaveRig(t)
+			gone, live := r.target("gone"), r.target("live")
+			for i := 1; i <= 3; i++ {
+				r.ask(gone, live, i)
+			}
+			r.bury(gone)
+			decisions := choose(r.items(gone.ID), "remove", "remove", "remove")
+			match := tc.match
+			if tc.batch > 0 {
+				old := reasonBlankBatch
+				reasonBlankBatch = 1
+				t.Cleanup(func() { reasonBlankBatch = old })
+				var seen atomic.Int64
+				match = func(sql string) bool {
+					return strings.Contains(sql, "UPDATE contact_requests SET reason") && seen.Add(1) == int64(tc.batch)
+				}
+			}
+			failStatements(t, r.app.DB, match)
+			before := r.written()
+			id, w := r.save(gone.ID, decisions)
+			if w.Code != http.StatusInternalServerError || codeOf2(t, w.Body.String()) != "server_error" || strings.Contains(w.Body.String(), "injected") {
+				t.Fatalf("%d %s, want a plain 500 with no cause", w.Code, w.Body.String())
+			}
+			r.wantUnchanged(before, id, gone.ID, attemptRolledBack)
+			for _, it := range r.itemsAfterFailure(gone.ID) {
+				if it == "" {
+					t.Error("a reason was blanked by a failed save")
+				}
+			}
+		})
+	}
+}
+
+func (r *saveRig) itemsAfterFailure(account uint) []string {
+	r.t.Helper()
+	var out []string
+	rows, err := r.direct.Raw("SELECT reason FROM contact_requests WHERE requester_id = ? OR subject_user_id = ? ORDER BY id", account, account).Rows()
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			r.t.Fatal(err)
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// The save's statements run in the order the contract names: the ticket, the
+// receipt, the plain actor read, the account, the requests ascending, the markers,
+// the audit rows, the blank and, last, the seal.
+func TestLegacySaveStatementOrder(t *testing.T) {
+	r := newSaveRig(t)
+	gone, live := r.target("gone"), r.target("live")
+	r.ask(gone, live, 1)
+	r.bury(gone)
+	decisions := choose(r.items(gone.ID), "remove")
+	id := r.mint(gone.ID)
+	read := recordTxStatements(t, r.app.DB)
+	if w := r.send(gone.ID, id, decisions); w.Code != http.StatusOK {
+		t.Fatal(w.Body.String())
+	}
+	var tx []txStatement
+	for _, st := range read() {
+		if strings.Contains(st.sql, "admin_operation_attempts") {
+			for _, s := range read() {
+				if s.pool == st.pool {
+					tx = append(tx, s)
+				}
+			}
+			break
+		}
+	}
+	if len(tx) == 0 {
+		t.Fatal("no statements of the save's transaction")
+	}
+	index := func(substr string) int {
+		for i, s := range tx {
+			if strings.Contains(s.sql, substr) {
+				return i
+			}
+		}
+		t.Fatalf("no statement contains %q: %v", substr, tx)
+		return -1
+	}
+	steps := []string{
+		"pg_advisory_xact_lock", "UPDATE settings SET value", "INSERT INTO admin_operation_attempts", "FROM \"users\" WHERE \"users\".\"id\" = $1", "FROM users WHERE id = $1 FOR UPDATE",
+		"FROM contact_requests WHERE id = ANY", "unnest(", "jsonb_to_recordset", "UPDATE contact_requests SET reason", "FOR SHARE NOWAIT",
+	}
+	last := -1
+	for _, step := range steps {
+		i := index(step)
+		if i <= last {
+			t.Errorf("%q is statement %d, after statement %d: the order must be %v", step, i, last, steps)
+		}
+		last = i
+	}
+	if seal := index("FOR SHARE NOWAIT"); seal != len(tx)-1 {
+		t.Errorf("the seal is statement %d of %d: it must be the last", seal, len(tx))
+	}
+}
+
+// A restored database brings back what its dump held: a tombstone decided
+// before the dump stays decided, one decided after it is listed again with its
+// reason, and a counterpart with no marker of its own is still listed.
+func TestLegacySaveRestorePopulations(t *testing.T) {
+	fenceTools(t)
+	r := newSaveRig(t)
+	decidedBefore, decidedAfter := r.target("decided-before"), r.target("decided-after")
+	c, d := r.target("gone-c"), r.target("gone-d")
+	reqBefore := r.ask(decidedBefore, r.target("live1"), 1)
+	reqAfter := r.ask(decidedAfter, r.target("live2"), 2)
+	reqBoth := r.ask(c, d, 3)
+	r.bury(decidedBefore, decidedAfter, c, d)
+	if _, w := r.save(decidedBefore.ID, choose(r.items(decidedBefore.ID), "remove")); w.Code != http.StatusOK {
+		t.Fatal(w.Body.String())
+	}
+	if _, w := r.save(c.ID, choose(r.items(c.ID), "keep")); w.Code != http.StatusOK {
+		t.Fatal(w.Body.String())
+	}
+	dump := fenceDump(t, r.app.DB)
+	if _, w := r.save(decidedAfter.ID, choose(r.items(decidedAfter.ID), "remove")); w.Code != http.StatusOK {
+		t.Fatal(w.Body.String())
+	}
+	if r.reasonOf(int64(reqAfter.ID)) != "" {
+		t.Fatal("the removal after the dump did not blank")
+	}
+	fenceRestore(t, r.app.DB, dump, false, r.direct)
+	fresh := &App{DB: r.direct, Store: r.app.Store, Config: r.app.Config, Uploads: r.app.Uploads, Mailer: r.app.Mailer}
+	bootFence(t, fresh)
+	fc := loginAPI(t, fresh, "admin", "pw")
+	listed := func(account uint) []string { return requestIDs(r.itemsAs(fc, account)) }
+	if got := listed(decidedBefore.ID); len(got) != 0 {
+		t.Errorf("a tombstone decided before the dump is listed: %v", got)
+	}
+	if got := listed(decidedAfter.ID); len(got) != 1 || got[0] != itoa(reqAfter.ID) {
+		t.Errorf("a tombstone decided after the dump = %v, want its request listed again", got)
+	}
+	if r.reasonOf(int64(reqAfter.ID)) == "" || r.reasonOf(int64(reqBefore.ID)) != "" {
+		t.Error("the restored reasons are not the dump's: the later removal is back and the earlier one is not")
+	}
+	if got := listed(c.ID); len(got) != 0 {
+		t.Errorf("the decided side of the shared request is listed: %v", got)
+	}
+	if got := listed(d.ID); len(got) != 1 || got[0] != itoa(reqBoth.ID) {
+		t.Errorf("the counterpart with no marker of its own = %v, want the shared request still listed", got)
+	}
+}
+
+// Nothing the save or its scanner reads goes through an unsigned request id
+// (R4-C04): neither a model with a uint id nor a uint-typed id variable.
+func TestLegacyCensusHasNoUnsignedRequestID(t *testing.T) {
+	for _, file := range []string{"api_admin_reasons_legacy.go", "account_erasure_reasons_scan.go"} {
+		b, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		src := string(b)
+		for _, bad := range []string{"models.ContactRequest", "models.AuditLog", "[]uint{", "ids []uint", "requestID uint", "request uint"} {
+			if strings.Contains(src, bad) {
+				t.Errorf("%s names %q; request ids are int64 end to end", file, bad)
+			}
+		}
 	}
 }

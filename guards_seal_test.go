@@ -238,18 +238,34 @@ func sealProblems(sources map[string]string) []string {
 		return true
 	})
 
-	// deletionSeal takes the reason plan's predicate as a value: the seal
-	// decides on what the attempt handed it, never on a variable the
-	// callback can still reassign.
-	if ds := guardkit.FindFunc(attempts, "deletionSeal"); ds == nil {
-		bad = append(bad, "admin_operation_attempts.go: deletionSeal is gone")
-	} else {
+	// deletionSeal and legacySaveSeal take the predicate as a value: the seal
+	// decides on what the attempt handed it, never on a variable the callback
+	// can still reassign. The save's seal is the last statement of its fenced
+	// callback (the text guard pins that), so it is held to the same shape.
+	for _, name := range []string{"deletionSeal", "legacySaveSeal"} {
+		ds := guardkit.FindFunc(attempts, name)
+		if ds == nil {
+			bad = append(bad, "admin_operation_attempts.go: "+name+" is gone")
+			continue
+		}
 		for _, p := range ds.Type.Params.List {
 			if _, ok := p.Type.(*ast.StarExpr); ok {
 				if _, fn := p.Type.(*ast.StarExpr).X.(*ast.FuncType); fn {
-					bad = append(bad, "deletionSeal takes a pointer to a predicate; pass the predicate value")
+					bad = append(bad, name+" takes a pointer to a predicate; pass the predicate value")
 				}
 			}
+		}
+		calls := 0
+		ast.Inspect(ds.Body, func(m ast.Node) bool {
+			if c, ok := m.(*ast.CallExpr); ok {
+				if id, ok := c.Fun.(*ast.Ident); ok && id.Name == "currentAdminIn" {
+					calls++
+				}
+			}
+			return true
+		})
+		if calls != 1 {
+			bad = append(bad, fmt.Sprintf("%s must call currentAdminIn exactly once, found %d", name, calls))
 		}
 	}
 
@@ -377,8 +393,14 @@ func TestActorSealIsLast(t *testing.T) {
 		{"a hand-written sign-in check", with(aops, "!sessionCurrent(&actor, me)", "!actor.CanSignIn()")},
 		{"a currentAdminIn call outside a seal", with(aops, "func (a *App) apiAdminMintOperationAttempt(", "func (a *App) notASeal(tx *gorm.DB, me *models.User) error { return currentAdminIn(tx, me, nil) }\n\nfunc (a *App) apiAdminMintOperationAttempt(")},
 		{"a statement after the seal in contactMutationOn", with("contact_lifecycle.go", "\tif _, ok := commitReserveLeft(deadline); ctx.Err() != nil || (bounded && !ok) {", "\t_ = tx\n\tif _, ok := commitReserveLeft(deadline); ctx.Err() != nil || (bounded && !ok) {")},
-		{"an Update in a seal", with(aops, "\t\treturn currentAdminIn(tx, me, pred)\n\t}}", "\t\ttx.Exec(\"UPDATE users SET name = name\")\n\t\treturn currentAdminIn(tx, me, pred)\n\t}}")},
-		{"a seal predicate shared through a pointer", with(aops, "pred func(*models.User) bool) *contactSeal", "pred *func(*models.User) bool) *contactSeal")},
+		{"an Update in a seal", with(aops, "\t\t\ta.hooks.deleteBeforeSeal(tx)\n\t\t}\n\t\treturn currentAdminIn(tx, me, pred)", "\t\t\ta.hooks.deleteBeforeSeal(tx)\n\t\t}\n\t\ttx.Exec(\"UPDATE users SET name = name\")\n\t\treturn currentAdminIn(tx, me, pred)")},
+		{"an Update in the legacy save's seal", with(aops, "\t\t\ta.hooks.legacySaveBeforeSeal(tx)\n\t\t}\n\t\treturn currentAdminIn(tx, me, pred)", "\t\t\ta.hooks.legacySaveBeforeSeal(tx)\n\t\t}\n\t\ttx.Exec(\"UPDATE users SET name = name\")\n\t\treturn currentAdminIn(tx, me, pred)")},
+		{"a locking read in the legacy save's seal", with(aops, "\t\t\ta.hooks.legacySaveBeforeSeal(tx)\n\t\t}\n\t\treturn currentAdminIn(tx, me, pred)", "\t\t\ta.hooks.legacySaveBeforeSeal(tx)\n\t\t}\n\t\ttx.Raw(\"SELECT id FROM users WHERE id = 1 FOR UPDATE\")\n\t\treturn currentAdminIn(tx, me, pred)")},
+		{"a seal predicate shared through a pointer", with(aops, "deletionSeal(me *models.User, pred func(*models.User) bool) *contactSeal", "deletionSeal(me *models.User, pred *func(*models.User) bool) *contactSeal")},
+		{"the legacy save's predicate shared through a pointer", with(aops, "legacySaveSeal(me *models.User, pred func(*models.User) bool) *contactSeal", "legacySaveSeal(me *models.User, pred *func(*models.User) bool) *contactSeal")},
+		{"the legacy save's seal gone", with(aops, "func (a *App) legacySaveSeal(", "func (a *App) otherSeal(")},
+		{"the legacy save's seal deciding without currentAdminIn", with(aops, "\t\t\ta.hooks.legacySaveBeforeSeal(tx)\n\t\t}\n\t\treturn currentAdminIn(tx, me, pred)", "\t\t\ta.hooks.legacySaveBeforeSeal(tx)\n\t\t}\n\t\treturn nil")},
+		{"the legacy save's seal deciding twice", with(aops, "\t\t\ta.hooks.legacySaveBeforeSeal(tx)\n\t\t}\n\t\treturn currentAdminIn(tx, me, pred)", "\t\t\ta.hooks.legacySaveBeforeSeal(tx)\n\t\t}\n\t\t_ = currentAdminIn(tx, me, pred)\n\t\treturn currentAdminIn(tx, me, pred)")},
 		{"a locking read after the ledger transition", with(aops, "\t\t\tfacts.state = st\n", "\t\t\tfacts.state = st\n\t\t\ttx.Raw(\"SELECT id FROM users WHERE id = 1 FOR UPDATE\")\n")},
 		{"a locked mode on deletionHostPlan's actor read", with("api_host_handoff.go", "lockAdminIn(tx, me, actorRead)", "lockAdminIn(tx, me, actorShare)")},
 	}

@@ -86,6 +86,7 @@ var tsContracts = []struct {
 	{legacyDiscoveryAccountJSON{}, "LegacyDiscoveryAccount"},
 	{legacyReasonDiscoveryJSON{}, "LegacyReasonDiscovery"},
 	{legacyReasonProbeJSON{}, "LegacyReasonProbe"},
+	{legacyReasonSaveJSON{}, "LegacyReasonSaveResponse"},
 	{guardianNominationJSON{}, "GuardianNomination"},
 	{guardianTeenJSON{}, "GuardianTeen"},
 	{guardianEmailPreviewJSON{}, "GuardianEmailPreview"},
