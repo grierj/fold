@@ -371,7 +371,7 @@ qc1_environment_problems() { # environment.json head
       then (.settings.legacy.smoke // null) as $sm
            | if ($sm | type) != "object" or $sm.ok != true then "legacy-only smoke did not pass (settings.legacy.smoke.ok is not true)"
              elif ($sm.pairs // null) != $smokePairs then "legacy-only smoke names \($sm.pairs) pairs, not \($smokePairs)"
-             elif (($sm.checks // null) | type) != "array" or ([($sm.checks // [])[] | select(type == "string")] | sort) != ($smokeChecks | sort) then "legacy-only smoke does not carry the defined check set" else empty end
+             elif (($sm.checks // null) | type) != "array" or (($sm.checks // []) | sort) != ($smokeChecks | sort) then "legacy-only smoke does not carry the defined check set" else empty end
       else empty end )' "$1"
 }
 
@@ -648,7 +648,7 @@ qc1_judge_rules() { cat <<'JQ'
       # The decided history: every background request names one deleted account and has a marker, so the walk lists none (expect.items is 0, held against traversal.items by the generic count rule) and the
       # probe finds none; the oracle counts, the forged key set and the table the walks saw bind it to the declared size.
       ( if $m.item == 4 and $m.case == "legacy-decided-discovery"
-            and (($m.expect.items // -1) != 0 or ($m.probe | type) != "object" or $m.probe.status != "200" or $m.probe.found != false or ($m.probe.route | type) != "string" or ($m.probe.route | length) == 0
+            and (($m.expect.items // -1) != 0 or ($m.probe | type) != "object" or ($m.probe.ms | type) != "number" or $m.probe.ms < 0 or $m.probe.status != "200" or $m.probe.found != false or ($m.probe.route | type) != "string" or ($m.probe.route | length) == 0
                  or $m.legacy.candidatePairs != $m.size or $m.legacy.markersSeeded != $m.size or $m.legacy.forgedMarkers.keysMatch != true
                  or $m.traversal.tableRowsBefore != $m.size or $m.probe.tableRowsBefore != $m.size or ($m.legacy.tombstoneId | type) != "number"
                  or $m.legacy.source != "T07B-3a" or ($m.legacy.route | type) != "string" or ($m.legacy.route | length) == 0)

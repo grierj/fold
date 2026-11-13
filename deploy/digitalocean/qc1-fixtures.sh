@@ -2807,6 +2807,9 @@ lo_prov smoke-missing 'del(.settings.legacy.smoke)' 'did not pass'
 lo_prov smoke-fail '.settings.legacy.smoke.ok = false' 'did not pass'
 lo_prov smoke-checks '.settings.legacy.smoke.checks |= .[1:]' 'defined check set'
 lo_prov smoke-bogus '.settings.legacy.smoke.checks += ["not-a-check"]' 'defined check set'
+lo_prov smoke-null-entry '.settings.legacy.smoke.checks += [null]' 'defined check set'
+lo_prov smoke-number-entry '.settings.legacy.smoke.checks += [42]' 'defined check set'
+lo_prov smoke-object-entry '.settings.legacy.smoke.checks += [{}]' 'defined check set'
 lo_prov smoke-pairs '.settings.legacy.smoke.pairs = 100' 'pairs, not'
 lo_prov sha-wrong '.settings.legacy.markersSha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' 'does not match'
 lo_prov sha-bad '.settings.legacy.markersSha256 = "x"' 'no markersSha256'
@@ -2849,6 +2852,10 @@ lo_mut dprobeslow "if $DEC then .probe.ms = 10001 | .probe.gateTicks = 120 | .pr
 dpslow="$(lo_status "$WORK/lo.dprobeslow")"
 [[ "$(jq -r .complete <<<"$dpslow")" == true && "$(jq -c '[.budgetFailures[] | .failure]' <<<"$dpslow")" == '["probe"]' ]]
 lo_mut p503 "if $PRB then .probe.status = \"503\" else . end"; lo_bad p503 legacy-no-metrics
+lo_mut dec-ms-missing "if $DEC then del(.probe.ms) else . end"; lo_bad dec-ms-missing legacy-decided
+lo_mut dec-ms-null "if $DEC then .probe.ms = null else . end"; lo_bad dec-ms-null legacy-decided
+lo_mut dec-ms-string "if $DEC then .probe.ms = \"bad\" else . end"; lo_bad dec-ms-string legacy-decided
+lo_mut dec-ms-negative "if $DEC then .probe.ms = -1 else . end"; lo_bad dec-ms-negative legacy-decided
 lo_mut pairs "if $D10K then .legacy.pairSetExact = false else . end"; lo_bad pairs legacy-pairs-inexact
 lo_mut pairs-missing "if $D100 then del(.legacy.pairSetExact) else . end"; lo_bad pairs-missing legacy-pairs-inexact
 lo_mut dup "if $D100 then .legacy.duplicates = 1 else . end"; lo_bad dup legacy-pairs-inexact
