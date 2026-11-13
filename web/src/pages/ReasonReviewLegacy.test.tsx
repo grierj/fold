@@ -426,6 +426,26 @@ describe("an account's reasons", () => {
     expect(pageCall.mock.calls).toEqual([["52", null], ["52", "10"]]);
   });
 
+  it("retries a failed continuation from the last accepted cursor and saves only that page", async () => {
+    const items = three();
+    pageCall.mockResolvedValueOnce({ items: [], next: "10" })
+      .mockResolvedValueOnce({ items: [], next: "20" })
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(pageOf(...items));
+    mountAccount();
+    await userEvent.click(await screen.findByRole("button", { name: "Try again" }));
+    await screen.findByRole("group", { name: "Reason 1 of 3" });
+    expect(pageCall.mock.calls).toEqual([["52", null], ["52", "10"], ["52", "20"], ["52", "20"]]);
+    expect(screen.queryByText(ACCOUNT_EMPTY)).not.toBeInTheDocument();
+    await chooseAll(3);
+    mint.mockResolvedValueOnce({ attemptId: X1 });
+    put.mockResolvedValueOnce({ kept: 3, removed: 0 });
+    pageCall.mockResolvedValueOnce(pageOf());
+    await pressSave();
+    await waitFor(() => expect(put).toHaveBeenCalledWith("52", X1, expectedDecisions(items)));
+    await waitFor(() => expect(pageCall.mock.calls[4]).toEqual(["52", null]));
+  });
+
   it("fails closed when an empty scanner unit repeats a cursor", async () => {
     pageCall.mockResolvedValue({ items: [], next: "10" });
     mountAccount();

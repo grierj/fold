@@ -205,16 +205,19 @@ function checkedPage(page: ErasureReasonPage, account: string): ErasureReasonPag
 }
 
 function LegacyAccountView({ account, onEmpty }: { account: string; onEmpty: (userId: string) => void }) {
+  const progress = useRef<{ cursor: string | null; seen: Set<string> }>({ cursor: null, seen: new Set() });
   const load = useLoad(async () => {
     const epoch = load.epoch();
-    const seen = new Set<string>();
-    let cursor: string | null = null;
     for (;;) {
-      const page = checkedPage(await AdminUsers.legacyReasonsPage(account, cursor), account);
-      if (load.epoch() !== epoch || page.items.length > 0 || page.next === null) return page;
-      if (seen.has(page.next)) throw new ApiError(502, "repeated deleted-account reason cursor");
-      seen.add(page.next);
-      cursor = page.next;
+      const page = checkedPage(await AdminUsers.legacyReasonsPage(account, progress.current.cursor), account);
+      if (load.epoch() !== epoch) return page;
+      if (page.items.length > 0 || page.next === null) {
+        progress.current = { cursor: null, seen: new Set() };
+        return page;
+      }
+      if (progress.current.seen.has(page.next)) throw new ApiError(502, "repeated deleted-account reason cursor");
+      progress.current.seen.add(page.next);
+      progress.current.cursor = page.next;
     }
   }, [account]);
   const [choices, setChoices] = useState<Choices>({});
@@ -294,14 +297,17 @@ function LegacyAccountView({ account, onEmpty }: { account: string; onEmpty: (us
   // Asks for the page again, failing closed. `prior` undefined keeps the carry
   // already set (a retry of a reload that failed); null keeps nothing.
   function reload(prior?: Prior | null) {
-    if (prior !== undefined) carry.current = prior;
+    if (prior !== undefined) {
+      carry.current = prior;
+      progress.current = { cursor: null, seen: new Set() };
+    }
     setChoices({});
     setChanged(new Set());
     return load.retry();
   }
 
-  async function unlock() {
-    const outcome = await reload(null);
+  async function unlock(resume = false) {
+    const outcome = await reload(resume ? undefined : null);
     if (outcome !== "loaded" || !mounted.current) return;
     setPhase(IDLE);
     setNote(null);
@@ -435,7 +441,7 @@ function LegacyAccountView({ account, onEmpty }: { account: string; onEmpty: (us
         {failure?.kind === "gone" && <p>{failure.text}</p>}
         {(failure?.kind === "locked" || failure?.kind === "retry") && <FormError>{failure.text}</FormError>}
         {failure?.kind === "retry" && (
-          <Button variant="secondary" onClick={() => void (unlocksOnReload ? unlock() : reload())}>Try again</Button>
+          <Button variant="secondary" onClick={() => void (unlocksOnReload ? unlock(true) : reload())}>Try again</Button>
         )}
         {phase.kind === "still" && <Button variant="secondary" onClick={checkAgain}>Check again</Button>}
         {unlocksOnReload && !load.loading && failure === null && <Button variant="secondary" onClick={() => void unlock()}>Reload</Button>}
