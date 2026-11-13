@@ -7,6 +7,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -38,14 +40,13 @@ func Open(url string, log logger.Interface) (*gorm.DB, error) {
 // values: even successful slow writes can contain private contact details and
 // request reasons.
 func Logger(writer logger.Writer) logger.Interface {
-	base := logger.New(writer, logger.Config{
+	return newLegacyBusyFilter(writer, logger.Config{
 		SlowThreshold:             200 * time.Millisecond,
 		LogLevel:                  logger.Warn,
 		IgnoreRecordNotFoundError: false,
 		Colorful:                  true,
 		ParameterizedQueries:      true,
 	})
-	return &legacyBusyFilter{base: base}
 }
 
 // legacySaveBusyKey marks the context of one legacy reason save's fenced
@@ -74,45 +75,146 @@ func legacySaveBusyScope(ctx context.Context) bool {
 // UPDATE both fail with 55P03 while another transaction holds the row, and
 // the route retries the save and answers a busy refusal without that
 // SQLSTATE. The same failure anywhere else, and every other error, still
-// reaches the base logger with redaction unchanged.
-type legacyBusyFilter struct{ base logger.Interface }
+// reaches the log with redaction unchanged.
+//
+// The filter formats diagnostics itself instead of delegating to GORM's
+// logger: a delegating wrapper adds an external stack frame, so GORM's
+// FileWithLineNum would report this package rather than the real query
+// caller on every unrelated error and slow trace (T301-S4-R2). The level,
+// slow-query, record-not-found and redaction behavior below mirrors the
+// default logger at the pinned GORM version.
+type legacyBusyFilter struct {
+	writer                              logger.Writer
+	config                              logger.Config
+	infoStr, warnStr, errStr            string
+	traceStr, traceErrStr, traceWarnStr string
+}
+
+func newLegacyBusyFilter(writer logger.Writer, config logger.Config) *legacyBusyFilter {
+	l := &legacyBusyFilter{writer: writer, config: config}
+	if config.Colorful {
+		l.infoStr = logger.Green + "%s\n" + logger.Reset + logger.Green + "[info] " + logger.Reset
+		l.warnStr = logger.BlueBold + "%s\n" + logger.Reset + logger.Magenta + "[warn] " + logger.Reset
+		l.errStr = logger.Magenta + "%s\n" + logger.Reset + logger.Red + "[error] " + logger.Reset
+		l.traceStr = logger.Green + "%s\n" + logger.Reset + logger.Yellow + "[%.3fms] " + logger.BlueBold + "[rows:%v]" + logger.Reset + " %s"
+		l.traceWarnStr = logger.Green + "%s " + logger.Yellow + "%s\n" + logger.Reset + logger.RedBold + "[%.3fms] " + logger.Yellow + "[rows:%v]" + logger.Magenta + " %s" + logger.Reset
+		l.traceErrStr = logger.RedBold + "%s " + logger.MagentaBold + "%s\n" + logger.Reset + logger.Yellow + "[%.3fms] " + logger.BlueBold + "[rows:%v]" + logger.Reset + " %s"
+	} else {
+		l.infoStr = "%s\n[info] "
+		l.warnStr = "%s\n[warn] "
+		l.errStr = "%s\n[error] "
+		l.traceStr = "%s\n[%.3fms] [rows:%v] %s"
+		l.traceWarnStr = "%s %s\n[%.3fms] [rows:%v] %s"
+		l.traceErrStr = "%s %s\n[%.3fms] [rows:%v] %s"
+	}
+	return l
+}
 
 func (l *legacyBusyFilter) LogMode(level logger.LogLevel) logger.Interface {
-	return &legacyBusyFilter{base: l.base.LogMode(level)}
+	cp := *l
+	cp.config.LogLevel = level
+	return &cp
 }
 
 func (l *legacyBusyFilter) Info(ctx context.Context, msg string, data ...interface{}) {
-	l.base.Info(ctx, msg, data...)
+	if l.config.LogLevel >= logger.Info {
+		l.writer.Printf(l.infoStr+msg, append([]interface{}{callerLocation()}, data...)...)
+	}
 }
 
 func (l *legacyBusyFilter) Warn(ctx context.Context, msg string, data ...interface{}) {
-	l.base.Warn(ctx, msg, data...)
+	if l.config.LogLevel >= logger.Warn {
+		l.writer.Printf(l.warnStr+msg, append([]interface{}{callerLocation()}, data...)...)
+	}
 }
 
 func (l *legacyBusyFilter) Error(ctx context.Context, msg string, data ...interface{}) {
-	l.base.Error(ctx, msg, data...)
+	if l.config.LogLevel >= logger.Error {
+		l.writer.Printf(l.errStr+msg, append([]interface{}{callerLocation()}, data...)...)
+	}
 }
 
 // Trace keeps every diagnostic except the two expected busy failures inside
 // a legacy save's own transactions, which the route retries and answers
 // without the SQLSTATE.
 func (l *legacyBusyFilter) Trace(ctx context.Context, begin time.Time, fc func() (string, int64), err error) {
-	if err != nil {
+	if l.config.LogLevel <= logger.Silent {
+		return
+	}
+	elapsed := time.Since(begin)
+	switch {
+	case err != nil && l.config.LogLevel >= logger.Error && (!errors.Is(err, logger.ErrRecordNotFound) || !l.config.IgnoreRecordNotFoundError):
 		sql, rows := fc()
 		if legacySaveBusyScope(ctx) && isExpectedLegacyBusy(err, sql) {
 			return
 		}
-		l.base.Trace(ctx, begin, func() (string, int64) { return sql, rows }, err)
-		return
+		caller := callerLocation()
+		if rows == -1 {
+			l.writer.Printf(l.traceErrStr, caller, err, float64(elapsed.Nanoseconds())/1e6, "-", sql)
+		} else {
+			l.writer.Printf(l.traceErrStr, caller, err, float64(elapsed.Nanoseconds())/1e6, rows, sql)
+		}
+	case elapsed > l.config.SlowThreshold && l.config.SlowThreshold != 0 && l.config.LogLevel >= logger.Warn:
+		sql, rows := fc()
+		slowLog := fmt.Sprintf("SLOW SQL >= %v", l.config.SlowThreshold)
+		caller := callerLocation()
+		if rows == -1 {
+			l.writer.Printf(l.traceWarnStr, caller, slowLog, float64(elapsed.Nanoseconds())/1e6, "-", sql)
+		} else {
+			l.writer.Printf(l.traceWarnStr, caller, slowLog, float64(elapsed.Nanoseconds())/1e6, rows, sql)
+		}
+	case l.config.LogLevel == logger.Info:
+		sql, rows := fc()
+		caller := callerLocation()
+		if rows == -1 {
+			l.writer.Printf(l.traceStr, caller, float64(elapsed.Nanoseconds())/1e6, "-", sql)
+		} else {
+			l.writer.Printf(l.traceStr, caller, float64(elapsed.Nanoseconds())/1e6, rows, sql)
+		}
 	}
-	l.base.Trace(ctx, begin, fc, err)
 }
 
 func (l *legacyBusyFilter) ParamsFilter(ctx context.Context, sql string, params ...interface{}) (string, []interface{}) {
-	if f, ok := l.base.(gorm.ParamsFilter); ok {
-		return f.ParamsFilter(ctx, sql, params...)
+	if l.config.ParameterizedQueries {
+		return sql, nil
 	}
 	return sql, params
+}
+
+// dbopenSourceFile is this file, whose frames the caller lookup skips along
+// with GORM's internals.
+var dbopenSourceFile string
+
+func init() {
+	_, file, _, _ := runtime.Caller(0)
+	dbopenSourceFile = filepath.ToSlash(file)
+}
+
+// callerLocation reports the application file:line for a diagnostic. It walks
+// out past this filter's own frames and GORM's internals the way GORM's
+// logger does, so test files and application frames are kept while generated
+// files are skipped.
+func callerLocation() string {
+	const depth = 13
+	pcs := make([]uintptr, depth)
+	// Skip Callers, callerLocation and the filter method that called it.
+	n := runtime.Callers(3, pcs)
+	frames := runtime.CallersFrames(pcs[:n])
+	for i := 0; i < n; i++ {
+		frame, _ := frames.Next()
+		if frame.PC == 0 {
+			break
+		}
+		file := filepath.ToSlash(frame.File)
+		if file == dbopenSourceFile || strings.HasSuffix(file, ".gen.go") {
+			continue
+		}
+		if strings.Contains(file, "gorm.io/gorm") && !strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		return fmt.Sprintf("%s:%d", frame.File, frame.Line)
+	}
+	return ""
 }
 
 // isExpectedLegacyBusy reports whether err is lock-not-available from one of
