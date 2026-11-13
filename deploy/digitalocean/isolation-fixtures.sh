@@ -28,7 +28,7 @@ start_owned_runner() {
   if (( fixture_pending )); then exit "$fixture_pending"; fi
 }
 # shellcheck disable=SC2329 # EXIT trap.
-finish() { local rc=$?; trap '' INT TERM HUP; if [[ -n "${OWNER_FINISH:-}" ]]; then : >"$OWNER_FINISH" || true; fi; if [[ -n "$active_runner" ]]; then wait "$active_runner" 2>/dev/null || true; fi; rm -rf -- "$WORK"; exit "$rc"; }
+finish() { local rc=$?; trap '' INT TERM HUP; if [[ -n "$active_runner" ]]; then wait "$active_runner" 2>/dev/null || true; fi; rm -rf -- "$WORK"; exit "$rc"; }
 trap finish EXIT
 trap 'fixture_signal 130' INT
 trap 'fixture_signal 143' TERM
@@ -56,6 +56,7 @@ cat >"$WORK/fixture-owner.sh" <<'OWNER'
 set -Eeuo pipefail
 source "$OWNER_FUNCTIONS"
 WORK=$OWNER_DIR; active_runner=""; fixture_launching=0; fixture_pending=0
+wait() { : >"$OWNER_FINISH"; builtin wait "$@"; }
 trap finish EXIT
 trap 'fixture_signal 143' TERM
 start_owned_runner bash -c 'for ((i=0; i<500; i++)); do [[ ! -e $3 ]] || break; sleep 0.02; done; [[ -e $3 && -f $1/tool ]] && : >"$2"' _ "$WORK" "$OWNER_SETTLED" "$OWNER_RELEASE"
