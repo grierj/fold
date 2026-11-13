@@ -1759,7 +1759,7 @@ RECORDER
 [[ ${0##*/} == restore-drill-nested.sh ]] || return 0
 set -T
 signal_in_launch() {
-	[[ $BASH_COMMAND == 'LIMITED_JOB=$!' && $BASHPID == "$$" && -e $STUB_FAKE/workload.pid && ! -e $LAUNCH_SIGNAL_MARK ]] || return 0
+	[[ $BASH_COMMAND == 'LIMITED_JOB=$!' && $BASHPID == "$$" && -e $STUB_FAKE/work/out/done && ! -e $LAUNCH_SIGNAL_MARK ]] || return 0
 	: >"$LAUNCH_SIGNAL_MARK"
 	kill -TERM "$$"
 }

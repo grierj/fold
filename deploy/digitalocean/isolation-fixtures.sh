@@ -28,7 +28,7 @@ start_owned_runner() {
   if (( fixture_pending )); then exit "$fixture_pending"; fi
 }
 # shellcheck disable=SC2329 # EXIT trap.
-finish() { local rc=$?; trap '' INT TERM HUP; if [[ -n "$active_runner" ]]; then wait "$active_runner" 2>/dev/null || true; fi; rm -rf -- "$WORK"; exit "$rc"; }
+finish() { local rc=$?; trap '' INT TERM HUP; if [[ -n "${OWNER_FINISH:-}" ]]; then : >"$OWNER_FINISH" || true; fi; if [[ -n "$active_runner" ]]; then wait "$active_runner" 2>/dev/null || true; fi; rm -rf -- "$WORK"; exit "$rc"; }
 trap finish EXIT
 trap 'fixture_signal 130' INT
 trap 'fixture_signal 143' TERM
@@ -58,15 +58,18 @@ source "$OWNER_FUNCTIONS"
 WORK=$OWNER_DIR; active_runner=""; fixture_launching=0; fixture_pending=0
 trap finish EXIT
 trap 'fixture_signal 143' TERM
-start_owned_runner bash -c 'sleep 0.5; [[ -f $1/tool ]] && : >"$2"' _ "$WORK" "$OWNER_SETTLED"
+start_owned_runner bash -c 'for ((i=0; i<500; i++)); do [[ ! -e $3 ]] || break; sleep 0.02; done; [[ -e $3 && -f $1/tool ]] && : >"$2"' _ "$WORK" "$OWNER_SETTLED" "$OWNER_RELEASE"
 wait "$active_runner"
 active_runner=""
 OWNER
 for owner_mode in launch registered; do
   owner_dir="$WORK/owner-$owner_mode"; mkdir "$owner_dir"; : >"$owner_dir/tool"
-  owner_rc=0
-  timeout --foreground -s KILL 10 env BASH_ENV="$WORK/owner-hook" OWNER_MODE="$owner_mode" OWNER_FUNCTIONS="$WORK/owner-functions" OWNER_DIR="$owner_dir" OWNER_SIGNAL="$WORK/owner-$owner_mode.signal" OWNER_SETTLED="$WORK/owner-$owner_mode.settled" \
-    bash "$WORK/fixture-owner.sh" || owner_rc=$?
+  start_owned_runner timeout --foreground -s KILL 15 env BASH_ENV="$WORK/owner-hook" OWNER_MODE="$owner_mode" OWNER_FUNCTIONS="$WORK/owner-functions" OWNER_DIR="$owner_dir" OWNER_SIGNAL="$WORK/owner-$owner_mode.signal" OWNER_SETTLED="$WORK/owner-$owner_mode.settled" OWNER_FINISH="$WORK/owner-$owner_mode.finish" OWNER_RELEASE="$WORK/owner-$owner_mode.release" \
+    bash "$WORK/fixture-owner.sh"
+  for ((i=0; i<500; i++)); do [[ ! -e "$WORK/owner-$owner_mode.finish" ]] || break; sleep 0.02; done
+  [[ -e "$WORK/owner-$owner_mode.finish" && ! -e "$WORK/owner-$owner_mode.settled" && -e "$owner_dir/tool" ]] || { echo "isolation: owner did not hold its child at $owner_mode" >&2; exit 1; }
+  : >"$WORK/owner-$owner_mode.release"
+  owner_rc=0; wait "$active_runner" || owner_rc=$?; active_runner=""
   [[ "$owner_rc" == 143 && -e "$WORK/owner-$owner_mode.signal" && -e "$WORK/owner-$owner_mode.settled" && ! -e "$owner_dir" ]] || { echo "isolation: owner interruption failed at $owner_mode" >&2; exit 1; }
 done
 
