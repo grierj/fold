@@ -14,7 +14,9 @@ export const LEGACY_SEARCH_LIMIT =
 
 // The server decides who may review (adults); the page repeats no age rule, so
 // the copy names the role the server asks for.
-const LEGACY_NOT_ALLOWED = "Only an adult admin can review these reasons. Ask another adult admin to review them.";
+export const LEGACY_NOT_ALLOWED = "Only an adult admin can review these reasons. Ask another adult admin to review them.";
+
+export const LEGACY_NO_ACCOUNT = "This account no longer exists.";
 
 // What a failed read means. "locked" cannot be fixed by asking again; "retry"
 // is every other failure, whatever its status, code or body.
@@ -29,4 +31,13 @@ export function legacyReadFailure(e: unknown): LegacyReadFailure {
   // The busy line also covers a malformed answer (ApiError 502 from the client)
   // and a dropped connection: never the wrapper's or the server's own message.
   return { kind: "retry", text: ERROR_COPY.reason_review_busy };
+}
+
+// The account page's read. A 404 is the server's settled answer that the id is
+// not a deleted account, so asking again would never help.
+export type LegacyPageFailure = LegacyReadFailure | { kind: "gone"; text: string };
+
+export function legacyPageFailure(e: unknown): LegacyPageFailure {
+  if (e instanceof ApiError && !e.unreadable && e.status === 404) return { kind: "gone", text: LEGACY_NO_ACCOUNT };
+  return legacyReadFailure(e);
 }
