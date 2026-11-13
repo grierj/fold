@@ -259,7 +259,8 @@ grep -q -- ' bash deploy/digitalocean/restore-drill.sh --dir /work/out --crossin
 grep -q 'browser-prepare.sh' "$WORK/stub.log"   # the Chromium preparation and its preflight still run
 [[ "$(grep '^run ' "$WORK/stub.log" | sed 's/fold-drill-[0-9a-f]*/NAME/g')" == "$(grep '^run ' "$WORK/stub.default" | sed 's/fold-drill-[0-9a-f]*/NAME/g')" ]]          # the same container, flags and image
 [[ "$(grep -c '^run ' "$WORK/stub.log")" == 1 ]]
-if grep '^run ' "$WORK/stub.log" | grep -E -- ' -v |--volume|--mount|--network|docker\.sock|--cap-add' >/dev/null; then echo 'the diagnostic gives the runner more than the default does' >&2; exit 1; fi
+if grep '^run ' "$WORK/stub.log" | grep -E -- ' -v |--volume|--mount|--network|--cap-add' >/dev/null; then echo 'the diagnostic gives the runner more than the default does' >&2; exit 1; fi
+grep '^run ' "$WORK/stub.log" | grep -qF -- 'dockerd --host=unix:///var/run/docker.sock'
 wrapped_call "$WORK/stub.log.argv" deploy/digitalocean/qc1/browser-prepare.sh /work/prep; wrapped_call "$WORK/stub.log.argv" deploy/digitalocean/restore-drill.sh --dir /work/out --crossings-only --keep; grep -qE '^rm -fv c{64}$' "$WORK/stub.log"          # the preparation and the diagnostic, both under the exact supervisor (which loads the prepared Chromium); cleanup: the container is removed by id
 grep -q "^cp c\{64\}:/work/prep/. $WORK/L2/prep/" "$WORK/stub.log"; grep -q "^cp c\{64\}:/work/out/. $WORK/L2/" "$WORK/stub.log"
 grep -q 'NOT full-drill evidence and NOT acceptance' "$WORK/L2/PARTIAL-NOT-FULL-ACCEPTANCE.txt"

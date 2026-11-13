@@ -11,9 +11,13 @@ HERE="$ROOT/deploy/digitalocean"
 # shellcheck source=deploy/digitalocean/isolation.sh
 source "$HERE/isolation.sh"
 WORK="$(mktemp -d /tmp/fold-isolation-fixture.XXXXXX)"
+active_runner=""
 # shellcheck disable=SC2329 # EXIT trap.
-finish() { local rc=$?; rm -rf -- "$WORK"; exit "$rc"; }
+finish() { local rc=$?; trap '' INT TERM HUP; if [[ -n "$active_runner" ]]; then wait "$active_runner" 2>/dev/null || true; fi; rm -rf -- "$WORK"; exit "$rc"; }
 trap finish EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 trap 'printf "isolation fixture failed at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 refused() { local needle="$1" rc=0; shift; "$@" >"$WORK/out" 2>&1 || rc=$?; [[ "$rc" != 0 ]]; [[ -z "$needle" ]] || grep -qF -- "$needle" "$WORK/out"; }
 
@@ -259,16 +263,27 @@ refuse_tcp odd 'checked 3'
 refuse_tcp noise $'warning\nchecked ipv4 ipv6'
 refuse_tcp failed 'checked ipv4 ipv6' 1
 # A stalled client and its child must not outlive the call or cancellation of the runner alone.
+cat >"$WORK/signal-probe.sh" <<'HOOK'
+[[ ${0##*/} == restore-drill-nested.sh ]] || return 0
+set -T
+signal_probe() {
+  [[ $BASHPID == "$$" && -s $STUB_PIDS && ! -e $SIGNAL_MARK ]] || return 0
+  : >"$SIGNAL_MARK"
+  sleep 0.3
+  builtin kill -TERM "$$"
+}
+trap signal_probe DEBUG
+HOOK
 for mode in timeout term; do
-  : >"$WORK/stub.log"; rm -f "$WORK/probe-pids"
+  : >"$WORK/stub.log"; rm -f "$WORK/probe-pids" "$WORK/probe-signalled"
   start=$SECONDS
-  env STUB_LOG="$WORK/stub.log" STUB_PIDS="$WORK/probe-pids" STUB_LISTEN_HANG=1 FOLD_NESTED_CALL_TIMEOUT=2 FOLD_NESTED_CLEANUP_BUDGET=12 PATH="$WORK/stubbin:$PATH" \
-    bash "$CLONE/deploy/digitalocean/restore-drill-nested.sh" --out "$WORK/ev-hang-$mode" >"$WORK/hang-$mode.out" 2>&1 & runner=$!
-  for ((i=0; i<100; i++)); do [[ ! -s "$WORK/probe-pids" ]] || break; sleep 0.1; done
+  hook=""; call_timeout=2
+  if [[ "$mode" == term ]]; then hook="$WORK/signal-probe.sh"; call_timeout=15; fi
+  timeout --foreground -s KILL 30 env STUB_LOG="$WORK/stub.log" STUB_PIDS="$WORK/probe-pids" SIGNAL_MARK="$WORK/probe-signalled" BASH_ENV="$hook" STUB_LISTEN_HANG=1 FOLD_NESTED_CALL_TIMEOUT="$call_timeout" FOLD_NESTED_CLEANUP_BUDGET=12 PATH="$WORK/stubbin:$PATH" \
+    bash "$CLONE/deploy/digitalocean/restore-drill-nested.sh" --out "$WORK/ev-hang-$mode" >"$WORK/hang-$mode.out" 2>&1 & active_runner=$!
+  rc=0; wait "$active_runner" || rc=$?; active_runner=""
   [[ -s "$WORK/probe-pids" ]] || { echo 'isolation: listener probe did not start' >&2; exit 1; }
-  [[ "$mode" != term ]] || kill -TERM "$runner"
-  rc=0; wait "$runner" || rc=$?
-  if [[ "$mode" == term ]]; then [[ "$rc" == 143 ]]; else [[ "$rc" == 1 ]]; fi
+  if [[ "$mode" == term ]]; then [[ "$rc" == 143 && -e "$WORK/probe-signalled" ]]; else [[ "$rc" == 1 && ! -e "$WORK/probe-signalled" ]]; fi
   (( SECONDS - start < 20 ))
   grep -qE '^rm -fv c{64}$' "$WORK/stub.log"
   if grep -qE 'apk add|restore-drill.sh|qc1-measure.sh|browser-prepare.sh|^cp .*fold.bundle' "$WORK/stub.log"; then echo "isolation: $mode continued after a stalled probe" >&2; exit 1; fi
