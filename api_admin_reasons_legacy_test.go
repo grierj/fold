@@ -28,6 +28,7 @@ import (
 
 	"fold/internal/audit"
 	"fold/internal/dbopen"
+	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/internal/reasonscan"
 	"fold/internal/testdb"
@@ -3319,61 +3320,222 @@ func TestLegacySaveOutcomes(t *testing.T) {
 	}
 }
 
-// An id applies at most once and settles to what happened: the lifecycle on
-// the real route.
-func TestLegacySaveAttemptLifecycle(t *testing.T) {
-	setup := func(t *testing.T) (*saveRig, *models.User, []map[string]string) {
+// legacyAttemptLifecycle is TestAttemptLifecycle's s1-s5 on the real PUT, plus
+// the outcomes only a save has: an id applies at most once and settles to what
+// happened (no wrong not_applied, no second run), and no answer carries a raw
+// lock error. TestAttemptLifecycle runs it as its legacy_reason_save group.
+func legacyAttemptLifecycle(t *testing.T) {
+	setup := func(t *testing.T) (*saveRig, *models.User, models.ContactRequest, []map[string]string) {
 		r := newSaveRig(t)
 		gone, live := r.target("gone"), r.target("live")
-		r.ask(gone, live, 1)
+		req := r.ask(gone, live, 1)
 		r.bury(gone)
-		return r, gone, choose(r.items(gone.ID), "remove")
+		return r, gone, req, choose(r.items(gone.ID), "remove")
 	}
-	t.Run("settled before it was sent, an id never runs", func(t *testing.T) {
-		r, gone, decisions := setup(t)
-		id := r.mint(gone.ID)
-		raw := r.rawSettle(id, gone.ID)
-		if raw != `{"result":"not_applied"}` {
-			t.Fatalf("settle = %s, want not_applied with no subjectDeleted for a tombstone", raw)
+	// put answers PUT and checks that no body names a database lock error.
+	put := func(t *testing.T, r *saveRig, c *apiClient, account uint, id string, decisions any) *httptest.ResponseRecorder {
+		t.Helper()
+		w := r.putAs(c, account, map[string]any{"attemptId": id, "decisions": decisions})
+		for _, leak := range []string{"40P01", "55P03", "NOWAIT", "deadlock"} {
+			if strings.Contains(w.Body.String(), leak) {
+				t.Errorf("a response carries %q: %s", leak, w.Body.String())
+			}
 		}
-		before := r.written()
-		wantSaveCode(t, r.send(gone.ID, id, decisions), http.StatusConflict, "attempt_closed")
-		r.wantUnchanged(before, id, gone.ID, attemptFenced)
-	})
-	t.Run("an id older than ten minutes is expired and fenced", func(t *testing.T) {
-		r, gone, decisions := setup(t)
+		return w
+	}
+	const notApplied, applied = `{"result":"not_applied"}`, `{"result":"applied"}`
+
+	t.Run("s1 commit and acknowledgment, replay, receipt deleted, after 60 minutes", func(t *testing.T) {
+		r, gone, req, decisions := setup(t)
 		id := r.mint(gone.ID)
-		r.advance(11 * time.Minute)
-		before := r.written()
-		wantSaveCode(t, r.send(gone.ID, id, decisions), http.StatusConflict, "attempt_expired")
-		if r.written() != before {
-			t.Error("an expired id ran")
+		before := r.counter()
+		w := put(t, r, r.c, gone.ID, id, decisions)
+		if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"kept":0,"removed":1}` {
+			t.Fatalf("save: %d %s", w.Code, w.Body.String())
 		}
-		wantSettle(t, r.settled(id, gone.ID), settleNotApplied, nil)
-	})
-	t.Run("a refused set settles not applied", func(t *testing.T) {
-		r, gone, decisions := setup(t)
-		if err := r.direct.Exec("UPDATE contact_requests SET reason = 'edited'").Error; err != nil {
+		if r.reasonOf(int64(req.ID)) != "" || len(r.decisionRows()) != 1 || r.receipts() != 1 || r.state(id, gone.ID) != attemptApplied {
+			t.Fatal("a committed save leaves one decision, a blanked reason, one receipt and an applied entry")
+		}
+		after := r.counter()
+		if after != before+1 || r.app.restoreFenceFloor() != after {
+			t.Fatalf("the ticket: counter %d -> %d, floor %d; want one ticket and the floor on it", before, after, r.app.restoreFenceFloor())
+		}
+		wantSaveCode(t, put(t, r, r.c, gone.ID, id, decisions), http.StatusConflict, "attempt_closed")
+		if r.counter() != after || r.receipts() != 1 || len(r.decisionRows()) != 1 {
+			t.Error("a replay changed the counter, the receipts or the decisions")
+		}
+		if got := r.rawSettle(id, gone.ID); got != applied {
+			t.Fatalf("settle = %s, want applied", got)
+		}
+		if err := r.app.DB.Exec("DELETE FROM admin_operation_attempts").Error; err != nil {
 			t.Fatal(err)
 		}
-		id, w := r.save(gone.ID, decisions)
-		wantSaveCode(t, w, http.StatusConflict, "reason_review_changed")
-		if got := r.rawSettle(id, gone.ID); got != `{"result":"not_applied"}` {
-			t.Fatalf("settle = %s", got)
+		if got := r.rawSettle(id, gone.ID); got != applied {
+			t.Fatalf("settle after the receipt was deleted = %s, want applied from the ledger", got)
 		}
-		wantSaveCode(t, r.send(gone.ID, id, decisions), http.StatusConflict, "attempt_closed")
+		r.advance(61 * time.Minute)
+		wantSettle(t, r.settled(id, gone.ID), settleHistoryUnavailable, nil)
 	})
-	t.Run("a saved id settles applied and resends are closed", func(t *testing.T) {
-		r, gone, decisions := setup(t)
-		id, w := r.save(gone.ID, decisions)
-		if w.Code != http.StatusOK {
-			t.Fatal(w.Body.String())
+
+	t.Run("a well-formed id for another tuple", func(t *testing.T) {
+		r, gone, req, decisions := setup(t)
+		other := r.target("other")
+		id := r.mint(gone.ID)
+		before := r.written()
+		wantSaveCode(t, put(t, r, r.c, other.ID, id, decisions), http.StatusConflict, "attempt_expired")
+		wantSettle(t, r.settled(id, other.ID), settleHistoryUnavailable, nil)
+		// Another allowed kind never opens: settle says history_unavailable and
+		// records nothing; a kind outside the list is refused by the route.
+		w := r.c.do("POST", "/api/v1/admin/operation-attempts/settle",
+			map[string]any{"attemptId": id, "kind": attemptKindAccountDelete, "subjectUserId": gone.ID}, true)
+		var cross attemptSettleJSON
+		decodeJSON(t, w, &cross)
+		wantSettle(t, cross, settleHistoryUnavailable, nil)
+		w = r.c.do("POST", "/api/v1/admin/operation-attempts/settle",
+			map[string]any{"attemptId": id, "kind": "other_kind", "subjectUserId": gone.ID}, true)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("settle with an unknown kind: %d, want 400", w.Code)
 		}
-		wantSettle(t, r.settled(id, gone.ID), settleApplied, nil)
-		wantSaveCode(t, r.send(gone.ID, id, decisions), http.StatusConflict, "attempt_closed")
+		// Another admin cannot submit or settle it.
+		newTestUser(t, r.app, "admin2", "pw", models.RoleAdmin)
+		c2 := loginAPI(t, r.app, "admin2", "pw")
+		wantSaveCode(t, put(t, r, c2, gone.ID, id, decisions), http.StatusConflict, "attempt_expired")
+		var got attemptSettleJSON
+		decodeJSON(t, r.settleAs(c2, id, gone.ID), &got)
+		wantSettle(t, got, settleHistoryUnavailable, nil)
+		if r.written() != before || r.reasonOf(int64(req.ID)) == "" || r.state(id, gone.ID) != attemptAbsent {
+			t.Fatal("a refused tuple ran something or recorded the id")
+		}
 	})
+
+	t.Run("a new process cannot open an old id", func(t *testing.T) {
+		r, gone, req, decisions := setup(t)
+		id := r.mint(gone.ID)
+		restarted := &App{DB: r.app.DB, Store: r.app.Store, Config: r.app.Config, Uploads: r.app.Uploads, Mailer: r.app.Mailer}
+		bootFence(t, restarted)
+		c := loginAPI(t, restarted, "admin", "pw")
+		before := r.counter()
+		wantSaveCode(t, put(t, r, c, gone.ID, id, decisions), http.StatusConflict, "attempt_expired")
+		w := c.do("POST", "/api/v1/admin/operation-attempts/settle",
+			map[string]any{"attemptId": id, "kind": attemptKindLegacyReasonSave, "subjectUserId": gone.ID}, true)
+		var got attemptSettleJSON
+		decodeJSON(t, w, &got)
+		wantSettle(t, got, settleHistoryUnavailable, nil)
+		if r.counter() != before || r.reasonOf(int64(req.ID)) == "" {
+			t.Error("a new process ran or ticketed an old id")
+		}
+	})
+
+	t.Run("s2/s3 settle before submission fences the id", func(t *testing.T) {
+		r, gone, req, decisions := setup(t)
+		id := r.mint(gone.ID)
+		before := r.counter()
+		if got := r.rawSettle(id, gone.ID); got != notApplied {
+			t.Fatalf("settle = %s, want not_applied with no subjectDeleted for a tombstone", got)
+		}
+		if r.state(id, gone.ID) != attemptFenced {
+			t.Fatal("settle should leave the unclaimed id fenced")
+		}
+		if r.counter() != before+1 {
+			t.Fatalf("settle is a fenced transaction: counter %d -> %d, want one ticket", before, r.counter())
+		}
+		for _, wait := range []time.Duration{5 * time.Minute, 25 * time.Minute} {
+			r.advance(wait)
+			wantSaveCode(t, put(t, r, r.c, gone.ID, id, decisions), http.StatusConflict, "attempt_closed")
+		}
+		if r.reasonOf(int64(req.ID)) == "" || len(r.decisionRows()) != 0 {
+			t.Fatal("a fenced id saved")
+		}
+		// After pruning (mint + 61 minutes) the id is expired and settles as history_unavailable.
+		r.advance(40 * time.Minute)
+		wantSaveCode(t, put(t, r, r.c, gone.ID, id, decisions), http.StatusConflict, "attempt_expired")
+		wantSettle(t, r.settled(id, gone.ID), settleHistoryUnavailable, nil)
+	})
+
+	t.Run("s4 an id first submitted late", func(t *testing.T) {
+		r, gone, req, decisions := setup(t)
+		id := r.mint(gone.ID)
+		r.advance(11 * time.Minute)
+		wantSaveCode(t, put(t, r, r.c, gone.ID, id, decisions), http.StatusConflict, "attempt_expired")
+		if r.reasonOf(int64(req.ID)) == "" || r.receipts() != 0 || len(r.decisionRows()) != 0 {
+			t.Fatal("an expired id ran")
+		}
+		if got := r.rawSettle(id, gone.ID); got != notApplied {
+			t.Fatalf("settle = %s, want not_applied", got)
+		}
+	})
+
+	t.Run("s4 resubmitted after 10 minutes", func(t *testing.T) {
+		r, gone, _, decisions := setup(t)
+		id := r.mint(gone.ID)
+		if w := put(t, r, r.c, gone.ID, id, decisions); w.Code != http.StatusOK {
+			t.Fatalf("save: %d %s", w.Code, w.Body.String())
+		}
+		r.advance(11 * time.Minute)
+		wantSaveCode(t, put(t, r, r.c, gone.ID, id, decisions), http.StatusConflict, "attempt_closed")
+		if got := r.rawSettle(id, gone.ID); got != applied {
+			t.Fatalf("settle = %s, want applied", got)
+		}
+	})
+
+	t.Run("a rolled-back attempt settles as not applied", func(t *testing.T) {
+		for name, tc := range map[string]struct {
+			prepare func(r *saveRig)
+			send    func(decisions []map[string]string) any
+			status  int
+			code    string
+		}{
+			"a list the shape rules refuse": {func(*saveRig) {}, func([]map[string]string) any { return []map[string]string{} }, http.StatusBadRequest, "invalid"},
+			"a set that changed since it was served": {func(r *saveRig) {
+				if err := r.direct.Exec("UPDATE contact_requests SET reason = 'edited'").Error; err != nil {
+					t.Fatal(err)
+				}
+			}, func(d []map[string]string) any { return d }, http.StatusConflict, "reason_review_changed"},
+		} {
+			t.Run(name, func(t *testing.T) {
+				r, gone, _, decisions := setup(t)
+				tc.prepare(r)
+				before := r.written()
+				id := r.mint(gone.ID)
+				wantSaveCode(t, put(t, r, r.c, gone.ID, id, tc.send(decisions)), tc.status, tc.code)
+				r.wantUnchanged(before, id, gone.ID, attemptRolledBack)
+				wantSaveCode(t, put(t, r, r.c, gone.ID, id, decisions), http.StatusConflict, "attempt_closed")
+				if got := r.rawSettle(id, gone.ID); got != notApplied {
+					t.Fatalf("settle = %s, want not_applied", got)
+				}
+			})
+		}
+	})
+
+	t.Run("s5 two presses, one admin", func(t *testing.T) {
+		r, gone, _, decisions := setup(t)
+		first, second := r.mint(gone.ID), r.mint(gone.ID)
+		if w := put(t, r, r.c, gone.ID, first, decisions); w.Code != http.StatusOK {
+			t.Fatalf("first save: %d %s", w.Code, w.Body.String())
+		}
+		// The second press arrives after the reason was decided: the set is no
+		// longer the one it was served, the id ends rolled back, and one
+		// decision stands.
+		wantSaveCode(t, put(t, r, r.c, gone.ID, second, decisions), http.StatusConflict, "reason_review_changed")
+		if len(r.decisionRows()) != 1 || r.receipts() != 1 {
+			t.Fatalf("%d decisions and %d receipts after two presses, want one of each", len(r.decisionRows()), r.receipts())
+		}
+		raw := r.rawSettle(second, gone.ID)
+		if raw != notApplied {
+			t.Fatalf("settle of the second press = %s, want not_applied with no subjectDeleted", raw)
+		}
+		for _, leak := range []string{"actor", "attempt", "deletedBy", "attribution", "subjectDeleted"} {
+			if strings.Contains(raw, leak) {
+				t.Errorf("settle answer %s names %q", raw, leak)
+			}
+		}
+		if got := r.rawSettle(first, gone.ID); got != applied {
+			t.Fatalf("settle of the first press = %s, want applied", got)
+		}
+	})
+
 	t.Run("two sends of one id at once run one", func(t *testing.T) {
-		r, gone, decisions := setup(t)
+		r, gone, _, decisions := setup(t)
 		c2 := loginAPI(t, r.app, "admin", "pw")
 		id := r.mint(gone.ID)
 		results := make(chan *httptest.ResponseRecorder, 2)
@@ -3399,6 +3561,63 @@ func TestLegacySaveAttemptLifecycle(t *testing.T) {
 		}
 		if ok != 1 || closed != 1 || len(r.decisionRows()) != 1 || r.receipts() != 1 {
 			t.Errorf("%d ok, %d closed, %d decisions, %d receipts, want one of each kind and one decision", ok, closed, len(r.decisionRows()), r.receipts())
+		}
+	})
+
+	// The acknowledgment is lost: the answer is "unknown", never "nothing was
+	// saved", and settle then says what the database holds.
+	t.Run("the commit reached the server and its reply was lost", func(t *testing.T) {
+		r := newProxiedSaveRig(t)
+		gone, live := r.target("gone"), r.target("live")
+		req := r.ask(gone, live, 1)
+		r.bury(gone)
+		decisions := choose(r.items(gone.ID), "remove")
+		id := r.mint(gone.ID)
+		r.rig.proxy.Arm(testdb.Faults{Match: "idle_in_transaction_session_timeout", Commit: testdb.CommitForwardThenClose})
+		wantSaveCode(t, r.send(gone.ID, id, decisions), http.StatusInternalServerError, "legacy_save_outcome_unknown")
+		if got := r.state(id, gone.ID); got != attemptUnknown {
+			t.Fatalf("state %v, want unknown", got)
+		}
+		if r.reasonOf(int64(req.ID)) != "" || len(r.decisionRows()) != 1 || r.receipts() != 1 {
+			t.Fatal("the commit the server received was not saved exactly once")
+		}
+		if got := r.rawSettle(id, gone.ID); got != applied {
+			t.Fatalf("settle = %s, want applied", got)
+		}
+		wantSaveCode(t, r.send(gone.ID, id, decisions), http.StatusConflict, "attempt_closed")
+		if len(r.decisionRows()) != 1 {
+			t.Error("a resend after an unknown outcome decided again")
+		}
+	})
+
+	// The rollback is not acknowledged: no second attempt starts, the id ends
+	// rolled back and settle says not applied.
+	t.Run("a rollback nobody acknowledged settles as not applied", func(t *testing.T) {
+		r := newProxiedSaveRig(t)
+		gone, live := r.target("gone"), r.target("live")
+		r.ask(gone, live, 1)
+		r.bury(gone)
+		decisions := choose(r.items(gone.ID), "remove")
+		var retries atomic.Int64
+		r.app.hooks.legacySaveBeforeRetry = func() { retries.Add(1) }
+		hold, _ := beginOwnedTx(t, r.direct)
+		if err := hold.Exec("SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE", r.admin.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		before := r.written()
+		id := r.mint(gone.ID)
+		r.rig.proxy.Arm(testdb.Faults{Match: "FOR SHARE NOWAIT", Rollback: testdb.RollbackCloseUnforwarded})
+		wantSaveCode(t, r.send(gone.ID, id, decisions), http.StatusConflict, "admin_account_busy")
+		if retries.Load() != 0 {
+			t.Errorf("%d retries after a rollback nobody acknowledged, want none", retries.Load())
+		}
+		if err := hold.Rollback().Error; err != nil {
+			t.Fatal(err)
+		}
+		r.rig.awaitReleased(r.rig.pidOf("FOR SHARE NOWAIT"), 10*time.Second)
+		r.wantUnchanged(before, id, gone.ID, attemptRolledBack)
+		if got := r.rawSettle(id, gone.ID); got != notApplied {
+			t.Fatalf("settle = %s, want not_applied", got)
 		}
 	})
 }
@@ -3686,4 +3905,470 @@ func TestLegacyCensusHasNoUnsignedRequestID(t *testing.T) {
 			}
 		}
 	}
+}
+
+// The legacy save against household conversion (T07B-3a: L1, L2, L2r), on the
+// real PUT and the real invitation-acceptance route. They use TestActorSealVsConversion's
+// scene, seams and evidence rules (E1 the unique waiter, E2 a parked backend
+// waits on nothing, E3 NOWAIT probes on a third connection, E4 later seam
+// entries re-run E2 and the probe on A). The tombstone is B, the acting admin
+// is A (the household's only account and the inviter), and C is a live admin
+// outside every conversionLockIDs source who made the one reason's request.
+// The save holds the contact gate, B and the request row; the conversion holds
+// A and, in L1, waits for B.
+
+type legacyConv struct {
+	*sealScene
+	decisions []map[string]string
+	dbLog     *logCapture
+}
+
+// newLegacyConv buries B, gives it the one reason C wrote about it, and reads
+// the page as A before any route is parked, so the save carries the hash it
+// was served.
+func newLegacyConv(t *testing.T, o sealOpts) *legacyConv {
+	t.Helper()
+	// Always served through the proxy: the database logger below is replaced on
+	// the serving App only, so the control handle's NOWAIT probes (which fail
+	// on purpose) never reach the log under test.
+	o.proxied = true
+	s := newSealScene(t, o)
+	lc := &legacyConv{sealScene: s, dbLog: &logCapture{}}
+	// The database's own diagnostics are the second place a lock failure could
+	// leak to; the scene's log capture only sees the application's.
+	s.serve.DB = s.serve.DB.Session(&gorm.Session{Logger: dbopen.Logger(log.New(lc.dbLog, "\r\n", log.LstdFlags))})
+	s.reasonID = erasureMakeRequest(t, s.app.DB, policy.RequestGroupAdd, policy.ContactWithdrawn, s.c.ID, s.b.ID, 1, 0, 0, 1, "").ID
+	if err := s.app.DB.Exec("UPDATE users SET deleted_at = now() WHERE id = ?", s.b.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	code, page, body := accountPage(t, s.aClient, s.b.ID, nil)
+	if code != http.StatusOK || len(page.Items) != 1 {
+		t.Fatalf("the deleted account's page: %d %s, want its one reason", code, body)
+	}
+	lc.decisions = choose(page.Items, "remove")
+	return lc
+}
+
+func (s *legacyConv) mintSave(c *apiClient) string {
+	s.t.Helper()
+	w := c.do("POST", "/api/v1/admin/operation-attempts", map[string]any{"kind": attemptKindLegacyReasonSave, "subjectUserId": s.b.ID}, true)
+	if w.Code != http.StatusOK {
+		s.t.Fatalf("mint: %d %s", w.Code, w.Body.String())
+	}
+	var out attemptMintJSON
+	decodeJSON(s.t, w, &out)
+	return out.AttemptID
+}
+
+// startSave sends the PUT on c in the background; one client per request.
+func (s *legacyConv) startSave(c *apiClient, id string, decisions any) <-chan *httptest.ResponseRecorder {
+	ch := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		ch <- c.do("PUT", legacySavePath(s.b.ID), map[string]any{"attemptId": id, "decisions": decisions}, true)
+	}()
+	return ch
+}
+
+// settleSave is settle for the legacy kind: the status, the raw body and its parse.
+func (s *legacyConv) settleSave(c *apiClient, id string) (int, string, attemptSettleJSON) {
+	s.t.Helper()
+	w := c.do("POST", "/api/v1/admin/operation-attempts/settle",
+		map[string]any{"attemptId": id, "kind": attemptKindLegacyReasonSave, "subjectUserId": s.b.ID}, true)
+	var out attemptSettleJSON
+	_ = json.Unmarshal(w.Body.Bytes(), &out)
+	return w.Code, strings.TrimSpace(w.Body.String()), out
+}
+
+func (s *legacyConv) saveLedger(id string) attemptState {
+	s.t.Helper()
+	nonce, _, ok := s.serve.openAttempt(id, attemptKindLegacyReasonSave, s.a.ID, s.b.ID)
+	if !ok {
+		s.t.Fatal("the id does not open for A and B")
+	}
+	st, _ := s.serve.attempts.ledger.look(nonce)
+	return st
+}
+
+// written is everything a refused save must leave alone: every request row,
+// every audit row but the page views, the receipts and the restore counter.
+// A parked conversion has written nothing anybody can read, so it can sit
+// inside the window this brackets.
+func (s *legacyConv) written() string {
+	s.t.Helper()
+	var counter int64
+	if err := s.app.DB.Raw("SELECT value::bigint FROM settings WHERE key = 'restore_fence'").Scan(&counter).Error; err != nil {
+		s.t.Fatal(err)
+	}
+	return dumpRows(s.t, s.app.DB, "contact_requests", "id", "true") + "\n" +
+		dumpRows(s.t, s.app.DB, "audit_logs", "id", "action <> ?", audit.UserErasureReasonsViewed) + "\n" +
+		fmt.Sprintf("receipts=%d counter=%d", s.count(&models.AdminOperationAttempt{}, "true"), counter)
+}
+
+// wantReasonUntouched: the reason is whole, with no decision and no receipt.
+func (s *legacyConv) wantReasonUntouched() {
+	s.t.Helper()
+	if text := s.reasonText(); text == "" {
+		s.t.Errorf("reason %d is blank, want it kept whole", s.reasonID)
+	}
+	if n := s.count(&models.AuditLog{}, "action IN ?", decisionActions); n != 0 {
+		s.t.Errorf("%d decision audit rows, want none", n)
+	}
+	if n := s.count(&models.AdminOperationAttempt{}, "true"); n != 0 {
+		s.t.Errorf("%d receipts, want none", n)
+	}
+}
+
+// noLockErrorsIn: no response, and neither log, carries a raw lock SQLSTATE.
+// busyLogged excuses only the lock-not-available pair (a settle's busy seal is
+// not a legacy save's, so the production logger keeps it).
+func (s *legacyConv) noLockErrorsIn(what string, busyLogged bool, bodies ...string) {
+	s.t.Helper()
+	s.noErrorsInBodies(what, bodies...)
+	for name, out := range map[string]string{"application": s.logs.String(), "database": s.dbLog.String()} {
+		leaks := []string{"40P01", "deadlock detected"}
+		if !busyLogged {
+			leaks = append(leaks, "55P03", "NOWAIT")
+		}
+		for _, leak := range leaks {
+			if strings.Contains(strings.ToUpper(out), strings.ToUpper(leak)) {
+				s.t.Errorf("%s: the %s log carries %q:\n%s", what, name, leak, out)
+			}
+		}
+	}
+}
+
+// savePasses is a legacySaveBeforeSeal seam asserting E2 and the probes on
+// each entry. aHeld says whether the conversion should still hold A.
+func (s *legacyConv) savePasses(entries *atomic.Int32, convPID int, aHeld func(entry int32) bool) func(*gorm.DB) {
+	return func(tx *gorm.DB) {
+		n := entries.Add(1)
+		assertWaitsOnNothing(s.t, s.app.DB, backendPID(tx), "the save")
+		if probeNoWait(s.t, s.app.DB, s.b.ID, "KEY SHARE") {
+			s.t.Errorf("entry %d: the save should hold the deleted account FOR UPDATE", n)
+		}
+		if convPID != 0 && aHeld(n) {
+			assertWaitsOnNothing(s.t, s.app.DB, convPID, "the conversion")
+		}
+		if probeNoWait(s.t, s.app.DB, s.a.ID, "SHARE") == aHeld(n) {
+			s.t.Errorf("entry %d: FOR SHARE on A free = %v, want %v", n, aHeld(n), !aHeld(n))
+		}
+	}
+}
+
+func (s *legacyConv) wantConversionRefused(w *httptest.ResponseRecorder) {
+	s.t.Helper()
+	var body struct {
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &body)
+	if w.Code != http.StatusConflict || body.Error != errConversionHolder.Error() {
+		s.t.Fatalf("conversion: %d %s, want 409 %q", w.Code, w.Body.String(), errConversionHolder.Error())
+	}
+	if s.count(&models.AccountRequest{}, "source = ?", models.RequestHouseholdConversion) != 0 ||
+		s.count(&models.AuditLog{}, "action IN (?, ?)", audit.AccountRequested, audit.InvitationAccepted) != 0 ||
+		s.count(&models.Invitation{}, "accepted_at IS NOT NULL OR revoked_at IS NOT NULL") != 0 {
+		s.t.Error("a refused conversion left a request, an audit row or a changed invitation")
+	}
+}
+
+// wantDecidedOnce: the reason is blanked and exactly one decision audit names
+// the request and the tombstone.
+func (s *legacyConv) wantDecidedOnce() {
+	s.t.Helper()
+	if text := s.reasonText(); text != "" {
+		s.t.Errorf("reason %d = %q, want blanked", s.reasonID, text)
+	}
+	if n := s.count(&models.AuditLog{}, "action IN ?", decisionActions); n != 1 {
+		s.t.Errorf("%d decision audit rows, want 1", n)
+	}
+	if n := s.count(&models.AuditLog{}, "action = ? AND target_id = ? AND meta_json ->> 'erasedUserId' = ?", audit.AddReasonRemoved, s.reasonID, itoa(s.b.ID)); n != 1 {
+		s.t.Errorf("%d add.reason_removed rows for request %d and account %d, want 1", n, s.reasonID, s.b.ID)
+	}
+}
+
+func (s *legacyConv) reasonText() string {
+	s.t.Helper()
+	var text string
+	if err := s.app.DB.Raw("SELECT reason FROM contact_requests WHERE id = ?", s.reasonID).Scan(&text).Error; err != nil {
+		s.t.Fatal(err)
+	}
+	return text
+}
+
+// wantSavedOnce: the one reason is blanked by exactly one decision audit and
+// one receipt, and the id ended applied; settle agrees, in one sealed
+// transaction because no conversion holds A any more.
+func (s *legacyConv) wantSavedOnce(id string, sealed int64, counter *atomic.Int64) {
+	s.t.Helper()
+	if got := counter.Load(); got != sealed {
+		s.t.Errorf("sealAttempts = %d, want %d", got, sealed)
+	}
+	s.wantDecidedOnce()
+	if n := s.count(&models.AdminOperationAttempt{}, "true"); n != 1 {
+		s.t.Errorf("%d receipts, want 1", n)
+	}
+	if s.saveLedger(id) != attemptApplied {
+		s.t.Errorf("ledger = %v, want applied", s.saveLedger(id))
+	}
+	counter.Store(0)
+	code, raw, _ := s.settleSave(s.client(), id)
+	if code != http.StatusOK || raw != `{"result":"applied"}` || counter.Load() != 1 {
+		s.t.Errorf("settle of the saved id: %d %s sealed %d, want applied in one sealed transaction", code, raw, counter.Load())
+	}
+}
+
+func wantSaved200(t *testing.T, w *httptest.ResponseRecorder) {
+	t.Helper()
+	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"kept":0,"removed":1}` {
+		t.Fatalf("the save: %d %s, want 200 {kept:0, removed:1}", w.Code, w.Body.String())
+	}
+}
+
+func TestLegacySaveVsConversion(t *testing.T) {
+	withWindow := func(t *testing.T, d time.Duration) {
+		old := busyRetryWindow
+		busyRetryWindow = d
+		t.Cleanup(func() { busyRetryWindow = old })
+	}
+	wantConvNotices := func(s *legacyConv) {
+		t.Helper()
+		// B is deleted: the notice goes to the live admin C only.
+		for u, want := range map[*models.User]int64{s.a: 0, s.b: 0, s.c: 1} {
+			if got := countOf(t, s.app, u.ID, notify.AccountRequested); got != want {
+				t.Errorf("user %d has %d account.requested notices, want %d", u.ID, got, want)
+			}
+		}
+	}
+
+	// L2 (P2): the conversion is parked at conversionAfterUserLocks holding A;
+	// the save of B's reason reaches its seal three times and answers
+	// admin_account_busy; settle during the park answers checking; after the
+	// conversion's 200 the same id settles not_applied, and only then does a
+	// fresh id save, sealed once.
+	t.Run("L2 conversion parked, save busy three times", func(t *testing.T) {
+		s := newLegacyConv(t, sealOpts{})
+		id := s.mintSave(s.aClient)
+		counter := &atomic.Int64{}
+		s.serve.hooks.sealAttempts = counter
+		convPark := newParkPoint(t)
+		s.serve.hooks.conversionAfterUserLocks = convPark.seam()
+		conv := s.startConversion()
+		cpid := convPark.await(t)
+		assertWaitsOnNothing(t, s.app.DB, cpid, "the conversion")
+		if probeNoWait(t, s.app.DB, s.a.ID, "SHARE") || !probeNoWait(t, s.app.DB, s.a.ID, "KEY SHARE") || !probeNoWait(t, s.app.DB, s.b.ID, "SHARE") {
+			t.Fatal("the conversion should hold A FOR NO KEY UPDATE and nobody should hold the deleted account")
+		}
+		before := s.written()
+		var entries, retries atomic.Int32
+		s.serve.hooks.legacySaveBeforeSeal = s.savePasses(&entries, cpid, func(int32) bool { return true })
+		s.serve.hooks.legacySaveBeforeRetry = func() { retries.Add(1) }
+		sw := awaitRec(t, s.startSave(s.client(), id, s.decisions), "the save")
+		wantSaveCode(t, sw, http.StatusConflict, "admin_account_busy")
+		if counter.Load() != 3 || entries.Load() != 3 || retries.Load() != 2 {
+			t.Fatalf("sealed attempts %d, seam entries %d, retries %d, want 3, 3 and 2", counter.Load(), entries.Load(), retries.Load())
+		}
+		s.noLockErrorsIn("L2 save", false, sw.Body.String())
+		if after := s.written(); after != before {
+			t.Errorf("a busy save changed the database:\nbefore: %s\nafter:  %s", before, after)
+		}
+		s.wantReasonUntouched()
+		if s.saveLedger(id) != attemptRolledBack {
+			t.Errorf("ledger = %v, want rolled back", s.saveLedger(id))
+		}
+		wantSaveCode(t, awaitRec(t, s.startSave(s.client(), id, s.decisions), "the resubmission"), http.StatusConflict, "attempt_closed")
+
+		// SETTLE DURING THE PARK: three busy sealed transactions, no fence.
+		var fenceEntries atomic.Int32
+		s.serve.hooks.settleBeforeFence = func(*gorm.DB) { fenceEntries.Add(1) }
+		s.serve.hooks.settleAfterFence = func(*gorm.DB) { fenceEntries.Add(1) }
+		s.serve.hooks.legacySaveBeforeSeal = nil
+		sc := s.client()
+		assertWaitsOnNothing(t, s.app.DB, cpid, "the conversion")
+		counter.Store(0)
+		mark := len(s.rig.proxy.Events())
+		started := time.Now()
+		code, raw, got := s.settleSave(sc, id)
+		if code != http.StatusOK || raw != `{"result":"checking"}` || got.Result != settleChecking {
+			t.Fatalf("settle during the park: %d %s, want checking with no other field", code, raw)
+		}
+		if took := time.Since(started); took > 2*time.Second {
+			t.Errorf("settle took %s, want its three sealed transactions inside 2 s", took)
+		}
+		if probeNoWait(t, s.app.DB, s.a.ID, "SHARE") {
+			t.Fatal("A should still be held by the conversion after the settle")
+		}
+		if counter.Load() != 3 || fenceEntries.Load() != 0 || s.saveLedger(id) != attemptRolledBack {
+			t.Fatalf("settle during the park: sealed %d (want 3), fence seam entries %d (want 0), ledger %v (want rolled back)", counter.Load(), fenceEntries.Load(), s.saveLedger(id))
+		}
+		assertSealedAndRolledBack(t, s.rig.proxy.Events()[mark:], 3)
+		s.wantReasonUntouched()
+
+		// The conversion is released; its 200 is awaited.
+		convPark.open()
+		cw := awaitRec(t, conv, "the conversion")
+		s.wantPending(cw)
+		s.wantConversionRowsOnce()
+		wantConvNotices(s)
+		counter.Store(0)
+		code, raw, _ = s.settleSave(sc, id)
+		if code != http.StatusOK || raw != `{"result":"not_applied"}` || counter.Load() != 1 {
+			t.Fatalf("settle after the conversion: %d %s sealed %d, want not_applied (no subjectDeleted) in one sealed transaction", code, raw, counter.Load())
+		}
+		if s.saveLedger(id) != attemptRolledBack {
+			t.Error("settle changed the ledger")
+		}
+		// The items reload, and only then a fresh id saves them.
+		code, page, body := accountPage(t, s.aClient, s.b.ID, nil)
+		if code != http.StatusOK || len(page.Items) != 1 || page.Items[0].RequestID != s.decisions[0]["requestId"] {
+			t.Fatalf("the reloaded page: %d %s, want the same one reason still undecided", code, body)
+		}
+		fresh := s.mintSave(sc)
+		counter.Store(0)
+		dw := awaitRec(t, s.startSave(sc, fresh, choose(page.Items, "remove")), "the fresh save")
+		wantSaved200(t, dw)
+		s.noLockErrorsIn("L2 fresh save", true, cw.Body.String(), dw.Body.String())
+		s.wantSavedOnce(fresh, 1, counter)
+		if _, raw, _ := s.settleSave(sc, id); raw != `{"result":"not_applied"}` {
+			t.Errorf("the first id settles %s after another id saved, want not_applied", raw)
+		}
+	})
+
+	// L2r: the same population, but the conversion is released at
+	// legacySaveBeforeRetry after the first busy seal and the retry is held
+	// until the conversion's response arrives: attempt 2 saves.
+	t.Run("L2r conversion released between attempts", func(t *testing.T) {
+		withWindow(t, 30*time.Second)
+		s := newLegacyConv(t, sealOpts{})
+		id := s.mintSave(s.aClient)
+		counter := &atomic.Int64{}
+		s.serve.hooks.sealAttempts = counter
+		convPark := newParkPoint(t)
+		s.serve.hooks.conversionAfterUserLocks = convPark.seam()
+		conv := s.startConversion()
+		cpid := convPark.await(t)
+		if probeNoWait(t, s.app.DB, s.a.ID, "SHARE") || !probeNoWait(t, s.app.DB, s.b.ID, "SHARE") {
+			t.Fatal("the conversion should hold A and nobody the deleted account")
+		}
+		var entries, retries atomic.Int32
+		s.serve.hooks.legacySaveBeforeSeal = s.savePasses(&entries, cpid, func(n int32) bool { return n == 1 })
+		retried, convDone := make(chan struct{}, 1), make(chan struct{})
+		s.serve.hooks.legacySaveBeforeRetry = func() {
+			retries.Add(1)
+			retried <- struct{}{}
+			<-convDone
+		}
+		save := s.startSave(s.client(), id, s.decisions)
+		select {
+		case <-retried:
+		case <-time.After(20 * time.Second):
+			t.Fatal("the save never reached its retry")
+		}
+		// No transaction of the save is open: it holds nothing.
+		if !probeNoWait(t, s.app.DB, s.b.ID, "KEY SHARE") {
+			t.Fatal("the save should hold nothing while it waits to retry")
+		}
+		s.wantReasonUntouched()
+		convPark.open()
+		cw := awaitRec(t, conv, "the conversion")
+		s.wantPending(cw)
+		close(convDone)
+		sw := awaitRec(t, save, "the save")
+		wantSaved200(t, sw)
+		if entries.Load() != 2 || retries.Load() != 1 {
+			t.Errorf("seam entries %d and retries %d, want 2 and 1", entries.Load(), retries.Load())
+		}
+		s.noLockErrorsIn("L2r", false, cw.Body.String(), sw.Body.String())
+		s.wantConversionRowsOnce()
+		wantConvNotices(s)
+		s.wantSavedOnce(id, 2, counter)
+	})
+
+	// L1: erasure left B, the registrar of the household's person, in the
+	// conversion's lock set (registrations.registered_by), so the conversion
+	// can wait on a tombstone the save holds. A.id < B.id: it holds A and waits
+	// for B, the save's seal finds A held and answers busy (never waits), the
+	// rollback releases B, the conversion is refused for its deleted holder
+	// (errConversionHolder) and the retry saves.
+	t.Run("L1 conversion holds A and waits on the tombstone", func(t *testing.T) {
+		withWindow(t, 30*time.Second)
+		s := newLegacyConv(t, sealOpts{registration: true})
+		if s.a.ID >= s.b.ID {
+			t.Fatalf("user ids: A %d B %d, want A before B", s.a.ID, s.b.ID)
+		}
+		id := s.mintSave(s.aClient)
+		counter := &atomic.Int64{}
+		s.serve.hooks.sealAttempts = counter
+		park := newParkPoint(t)
+		park.later = s.laterEntry(true) // the conversion has ended before attempt 2
+		s.serve.hooks.legacySaveBeforeSeal = park.seam()
+		convDone := make(chan struct{})
+		var retries atomic.Int32
+		s.serve.hooks.legacySaveBeforeRetry = func() {
+			retries.Add(1)
+			<-convDone
+		}
+		save := s.startSave(s.client(), id, s.decisions)
+		spid := park.await(t)
+		if probeNoWait(t, s.app.DB, s.b.ID, "KEY SHARE") {
+			t.Fatal("the save should hold the deleted account FOR UPDATE")
+		}
+		conv := s.startConversion()
+		waiterBlockedBy(t, s.app.DB, spid, "FOR NO KEY UPDATE")
+		if probeNoWait(t, s.app.DB, s.a.ID, "SHARE") || !probeNoWait(t, s.app.DB, s.a.ID, "KEY SHARE") {
+			t.Fatal("the conversion should hold A FOR NO KEY UPDATE while it waits for the deleted account")
+		}
+		assertWaitsOnNothing(t, s.app.DB, spid, "the save")
+		park.open()
+
+		cw := awaitRec(t, conv, "the conversion")
+		s.wantConversionRefused(cw)
+		close(convDone)
+		sw := awaitRec(t, save, "the save")
+		wantSaved200(t, sw)
+		if park.n.Load() != 2 || retries.Load() != 1 {
+			t.Errorf("legacySaveBeforeSeal entered %d times and %d retries, want 2 and 1", park.n.Load(), retries.Load())
+		}
+		s.noLockErrorsIn("L1", false, cw.Body.String(), sw.Body.String())
+		var registeredBy uint
+		if err := s.app.DB.Raw("SELECT registered_by FROM registrations WHERE household_person_id = ?", s.person.ID).Scan(&registeredBy).Error; err != nil || registeredBy != s.b.ID {
+			t.Errorf("the registration keeps registered_by = %d, got %d (%v)", s.b.ID, registeredBy, err)
+		}
+		s.wantSavedOnce(id, 2, counter)
+	})
+
+	// L1, the other order: B.id < A.id. The conversion waits for B before it
+	// holds any users row, so the seal finds A free and the save commits first.
+	t.Run("L1 conversion waits on the tombstone before it holds A", func(t *testing.T) {
+		withWindow(t, 30*time.Second)
+		s := newLegacyConv(t, sealOpts{registration: true, bInHousehold: true, bFirst: true})
+		id := s.mintSave(s.aClient)
+		counter := &atomic.Int64{}
+		s.serve.hooks.sealAttempts = counter
+		var entries atomic.Int32
+		s.serve.hooks.conversionAfterUserLocks = func(*gorm.DB) { entries.Add(1) }
+		park := newParkPoint(t)
+		s.serve.hooks.legacySaveBeforeSeal = park.seam()
+		save := s.startSave(s.client(), id, s.decisions)
+		spid := park.await(t)
+		if probeNoWait(t, s.app.DB, s.b.ID, "KEY SHARE") {
+			t.Fatal("the save should hold the deleted account FOR UPDATE")
+		}
+		conv := s.startConversion()
+		waiterBlockedBy(t, s.app.DB, spid, "FOR NO KEY UPDATE")
+		if !probeNoWait(t, s.app.DB, s.a.ID, "SHARE") || !probeNoWait(t, s.app.DB, s.c.ID, "SHARE") {
+			t.Fatal("the conversion holds no users row yet: FOR SHARE on A and C should succeed")
+		}
+		assertWaitsOnNothing(t, s.app.DB, spid, "the save")
+		park.open()
+
+		sw := awaitRec(t, save, "the save")
+		cw := awaitRec(t, conv, "the conversion")
+		wantSaved200(t, sw)
+		s.wantConversionRefused(cw)
+		s.noLockErrorsIn("L1 B first", false, cw.Body.String(), sw.Body.String())
+		if park.n.Load() != 1 || entries.Load() != 1 {
+			t.Errorf("save seam entries %d, conversion seam entries %d, want 1 and 1", park.n.Load(), entries.Load())
+		}
+		s.wantSavedOnce(id, 1, counter)
+	})
 }

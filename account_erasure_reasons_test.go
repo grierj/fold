@@ -1883,7 +1883,9 @@ func TestReasonReviewCensus(t *testing.T) {
 // requestWriters by literal or inline model: the ages-note blank and the reason
 // blank, each guarded by TestContactRequestTextChangesStayInTheirHelpers. The
 // creation and decision writers go through variables the guard binds; this
-// census does not see them.
+// census does not see them. internal/dbopen's isExpectedLegacyBusy is a false
+// positive by literal: it only compares a failed statement's text, to keep one
+// expected busy retry out of the database log, and writes no row.
 //
 // auditReaders, each shown not to read the new decision rows (targets
 // contact_request and add_request, actions contact.reason_* and add.reason_*)
@@ -1921,6 +1923,7 @@ var reasonCensusPinned = map[string][]string{
 	"requestWriters": {
 		"account_erasure.go:eraseContactRequestTextIn",
 		"account_erasure_reasons.go:eraseContactRequestReasonsIn",
+		"internal/dbopen/dbopen.go:isExpectedLegacyBusy",
 	},
 	"auditReaders": {
 		"account_erasure.go:captureErasureSetsIn",
@@ -2438,6 +2441,8 @@ var reasonReviewRepeatSet = []string{
 	"TestAgesNoteErasureRaceReasonedLifecycleFirst",
 	"TestAgesNoteErasureRaceReasonedErasureFirst",
 	"TestActorSealVsConversion",
+	"TestLegacySaveVsConversion",
+	"TestAttemptLifecycle",
 	"TestActorSealBusy",
 	"TestSettleBusyWindowClosesAfterBackoff",
 }

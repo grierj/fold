@@ -663,6 +663,9 @@ func TestAttemptLifecycle(t *testing.T) {
 			}
 		}
 	})
+
+	// The same lifecycle on the real legacy save (PUT), for its own kind.
+	t.Run("legacy_reason_save", legacyAttemptLifecycle)
 }
 
 // A deletion that fails inside its transaction ends the id rolled back, and the
