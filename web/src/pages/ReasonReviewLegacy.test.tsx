@@ -312,6 +312,7 @@ describe("opening one account", () => {
       expect(screen.getByRole("heading", { level: 1, name: "Deleted account" })).toBeInTheDocument();
       expect(screen.getByRole("link", { name: TITLE })).toHaveAttribute("href", "/admin/deleted-reasons");
       expect(document.body).not.toHaveTextContent(bad.trim());
+      expect(walk).not.toHaveBeenCalled();
       expect(AdminUsers.legacyReasonsPage).not.toHaveBeenCalled();
       expect(AdminUsers.mintAttempt).not.toHaveBeenCalled();
       expect(AdminUsers.settleAttempt).not.toHaveBeenCalled();

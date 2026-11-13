@@ -120,10 +120,8 @@ export function ReasonReviewLegacyPage() {
 function LegacyReview() {
   const [params] = useSearchParams();
   const account = params.get("account");
-  const discovery = useDiscovery();
 
-  if (account === null) return <LegacyList {...discovery} />;
-  if (!isCanonicalAccountRef(account)) {
+  if (account !== null && !isCanonicalAccountRef(account)) {
     return (
       <div className="fold-page-narrow space-y-5">
         <ButtonLink variant="link" to={LEGACY_REVIEW_PATH}>{LEGACY_REVIEW_TITLE}</ButtonLink>
@@ -132,6 +130,12 @@ function LegacyReview() {
       </div>
     );
   }
+  return <LegacyReviewWalk account={account} />;
+}
+
+function LegacyReviewWalk({ account }: { account: string | null }) {
+  const discovery = useDiscovery();
+  if (account === null) return <LegacyList {...discovery} />;
   return <LegacyAccountView key={account} account={account} />;
 }
 
