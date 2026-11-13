@@ -27,7 +27,6 @@
 #        [--layout spread|tail|head] [--charset ascii|multibyte] [--reason-len N] [--target-reason-len N] [--droplet 2gb|1gb]
 #        [--dense-counts 100000|none] [--seconds-per-reason N] [--sitting-minutes N] [--shared-daemon] [--no-browser] [--browser-fallback-digest] [--keep]
 #        [--next-changed-only] [--next-changed-presses N] [--next-changed-runs N] [--profile-next-changed]
-#        [--delete-probe]
 #
 # --charset: the text of the reasons, background and target alike (default ascii). multibyte is a 21-rune unit of 1- to 4-byte UTF-8 runes (2-byte accented letters and Omega,
 # 3-byte euro sign, CJK and a zero-width joiner, 4-byte emoji, combining marks) repeated and cut to the requested RUNE length with the row's ASCII ordinal at the end, 61 bytes per
@@ -54,12 +53,6 @@
 # A run is FULL only when its environment record names the whole matrix (sizes 10k/100k/1M, counts 0..10k, deletion counts 0..10k, the dense 100,000, the
 # browser, 1,000-rune targets); anything less is a PILOT, said in evidence-status.json (coverage) and in the verdict. A pilot's complete means only that
 # every row it asked for exists and is clean.
-# --delete-probe: a one-off DIAGNOSTIC, not a matrix run: four deletions of a 100,000-reason multibyte subject (every reason removed) on one shared 1,000,000-row filler, in the order
-# F, M, M, F, each after the same reset (the scenario dropped, contact_requests VACUUMed, audit_logs truncated). F leaves audit_logs fresh; M tops it up to the per-action counts of seq 164
-# of the multibyte-spread matrix, with rows copied from one real deletion. It needs exactly --sizes 1000000 --counts 0 --dense-counts none --charset multibyte --layout spread --no-browser.
-# Its rows are named delete-subject-100000-remove-probe<F|M>-r<N>, the judge treats them like any deletion (a 503 stays a 503), the evidence is incomplete by construction, and
-# probe-summary.json says what was measured and what the fixture does not reproduce (qc1/lib.sh, QC1_PROBE_*). docs/agents/testing.md has the command.
-# Read nothing until qc1_probe_readiness on the collected directory prints ready: four rows are coverage, not a reading.
 # --browser-fallback-digest: one extra rendered-panel case at the largest browser count of the first size with crypto.subtle removed, so the bundled
 # SHA-256 runs (not required by the matrix).
 #
@@ -77,7 +70,7 @@ source "$HERE/isolation.sh"
 
 WORK="" IMAGE="" SIZES="$QC1_SIZES_DEFAULT" COUNTS="$QC1_COUNTS_DEFAULT" LAYOUT=spread CHARSET=ascii REASON_LEN=200 TARGET_REASON_LEN=1000 DROPLET=2gb KEEP=0
 SECONDS_PER_REASON=10 SITTING_MINUTES=15 SHARED=0 BROWSER=1 DENSE="$QC1_DENSE_COUNTS_DEFAULT" BROWSER_NOSUBTLE=0
-NEXT_CHANGED_PRESSES=1 NEXT_CHANGED_RUNS=1 NEXT_CHANGED_ONLY=0 PROFILE_NEXT_CHANGED=0 DELETE_PROBE=0
+NEXT_CHANGED_PRESSES=1 NEXT_CHANGED_RUNS=1 NEXT_CHANGED_ONLY=0 PROFILE_NEXT_CHANGED=0
 while (( $# )); do
   case "$1" in
     --dir) WORK="${2:?new scratch path required}"; shift 2 ;;
@@ -99,7 +92,6 @@ while (( $# )); do
     --next-changed-runs) NEXT_CHANGED_RUNS="${2:?whole number of runs required}"; shift 2 ;;
     --next-changed-only) NEXT_CHANGED_ONLY=1; shift ;;
     --profile-next-changed) PROFILE_NEXT_CHANGED=1; shift ;;
-    --delete-probe) DELETE_PROBE=1; shift ;;
     --keep) KEEP=1; shift ;;
     --help) sed -n '2,/^set -Eeuo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option $1" >&2; exit 1 ;;
@@ -118,12 +110,6 @@ if [[ ! "$TARGET_REASON_LEN" =~ ^[0-9]+$ ]] || (( TARGET_REASON_LEN < 1 || TARGE
 if (( NEXT_CHANGED_RUNS > 1 && ! NEXT_CHANGED_ONLY )); then echo 'qc1: --next-changed-runs above 1 needs --next-changed-only (the full matrix runs the panel case once)' >&2; exit 1; fi
 if (( PROFILE_NEXT_CHANGED && NEXT_CHANGED_PRESSES < 2 )); then echo 'qc1: --profile-next-changed profiles the repeated presses: pass --next-changed-presses above 1' >&2; exit 1; fi
 if (( NEXT_CHANGED_ONLY )) && { (( ! BROWSER )) || [[ "$DENSE" == none ]]; }; then echo 'qc1: --next-changed-only measures the rendered panel at the dense counts: it needs the browser (no --no-browser) and --dense-counts' >&2; exit 1; fi
-DELETE_PROBE_JSON=null
-if (( DELETE_PROBE )); then
-  { [[ "$SIZES" == 1000000 && "$COUNTS" == 0 && "$DENSE" == none && "$CHARSET" == multibyte && "$LAYOUT" == spread ]] && (( ! BROWSER && ! NEXT_CHANGED_ONLY )); } \
-    || { echo 'qc1: --delete-probe is a one-size diagnostic: it needs --sizes 1000000 --counts 0 --dense-counts none --charset multibyte --layout spread --no-browser' >&2; exit 1; }
-  DELETE_PROBE_JSON="$(qc1_probe_settings)"
-fi
 case "$DROPLET" in
   2gb) DB_MEMORY=1200m; APP_MEMORY=600m ;;
   1gb) DB_MEMORY=600m; APP_MEMORY=300m ;;
@@ -269,13 +255,13 @@ jq -n --argjson database "$database" --argjson incomplete "$incomplete" --arg ir
   --arg dbCid "$DB_CID" --arg dbImage "$dbImage" --argjson dbMemLimit "$dbMem" \
   --arg appCid "$FIRST_APP_CID" --argjson appContainers "$env_APP_CONTAINERS" --argjson daemon "$env_DAEMON_JSON" --argjson sources "$env_SOURCES" \
   --argjson calibration "$calib" --arg sizes "$SIZES" --arg counts "$COUNTS" \
-  --argjson targetLen "$env_TARGET_REASON_LEN" --arg deleteCounts "$(IFS=,; printf "%s" "${ALL_DELETE_LIST[*]}")" --arg setv1Selftest "$SETV1_SELFTEST" --arg dense "$DENSE" --argjson clicks "$QC1_CLICKS_PER_CASE" --argjson ncPresses "$NEXT_CHANGED_PRESSES" --argjson ncRuns "$NEXT_CHANGED_RUNS" --argjson ncOnly "$([[ $NEXT_CHANGED_ONLY == 1 ]] && echo true || echo false)" --argjson ncProfile "$([[ $PROFILE_NEXT_CHANGED == 1 ]] && echo true || echo false)" --argjson spr "$env_SECONDS_PER_REASON" --argjson sit "$env_SITTING_MINUTES" --argjson browser "$([[ $BROWSER == 1 ]] && echo true || echo false)" --argjson browserRuntime "$env_BROWSER_RUNTIME" --argjson deleteProbe "$(jraw "${DELETE_PROBE_JSON:-}")" \
+  --argjson targetLen "$env_TARGET_REASON_LEN" --arg deleteCounts "$(IFS=,; printf "%s" "${ALL_DELETE_LIST[*]}")" --arg setv1Selftest "$SETV1_SELFTEST" --arg dense "$DENSE" --argjson clicks "$QC1_CLICKS_PER_CASE" --argjson ncPresses "$NEXT_CHANGED_PRESSES" --argjson ncRuns "$NEXT_CHANGED_RUNS" --argjson ncOnly "$([[ $NEXT_CHANGED_ONLY == 1 ]] && echo true || echo false)" --argjson ncProfile "$([[ $PROFILE_NEXT_CHANGED == 1 ]] && echo true || echo false)" --argjson spr "$env_SECONDS_PER_REASON" --argjson sit "$env_SITTING_MINUTES" --argjson browser "$([[ $BROWSER == 1 ]] && echo true || echo false)" --argjson browserRuntime "$env_BROWSER_RUNTIME" \
   '{image:$image, imageId:$imageId, revision:$revision, recoveryPolicy:$level, appRepoDigests:$appDigests,
     appContainerId:$appCid, appImageId:($appContainers[0].imageId), appContainers:$appContainers,
     postgresImage:$pgImage, postgresImageId:$pgImageId, postgresRepoDigests:$pgDigests, postgresVersion:$pg, dbContainerId:$dbCid, dbImageId:$dbImage,
     limits:{droplet:$droplet, dbMemory:$dbMemory, appMemory:$appMemory, cpuset:$cpuset, dbMemoryLimitBytes:$dbMemLimit, appMemoryLimitBytes:($appContainers[0].memoryLimitBytes)},
     daemon:$daemon, sources:$sources, calibration:$calibration, browserRuntime:$browserRuntime,
-    settings:{workers:0, schedulerAppRuns:true, browser:$browser, autovacuum:"off", checkpointTimeout:"1d", maxWalSize:"4GB", appEnv:"dev", layout:$layout, charset:$charset, reasonLen:$reasonLen, targetReasonLen:$targetLen, deleteCounts:$deleteCounts, secondsPerReason:$spr, sittingMinutes:$sit, sizes:$sizes, counts:$counts, denseCounts:$dense, clicksPerCase:$clicks, nextChangedPresses:$ncPresses, nextChangedRuns:$ncRuns, nextChangedOnly:$ncOnly, profileNextChanged:$ncProfile, wire:"set-v1", setV1Selftest:$setv1Selftest, deleteProbe:$deleteProbe},
+    settings:{workers:0, schedulerAppRuns:true, browser:$browser, autovacuum:"off", checkpointTimeout:"1d", maxWalSize:"4GB", appEnv:"dev", layout:$layout, charset:$charset, reasonLen:$reasonLen, targetReasonLen:$targetLen, deleteCounts:$deleteCounts, secondsPerReason:$spr, sittingMinutes:$sit, sizes:$sizes, counts:$counts, denseCounts:$dense, clicksPerCase:$clicks, nextChangedPresses:$ncPresses, nextChangedRuns:$ncRuns, nextChangedOnly:$ncOnly, profileNextChanged:$ncProfile, wire:"set-v1", setV1Selftest:$setv1Selftest},
     maxRequestBytes:$maxRequestBytes, database:$database, incomplete:$incomplete, incompleteReason:$ireason,
     labels:{
       competitors:"FOLD_WORKERS=0 turns the job workers off but not the scheduler of the app, which enqueues jobs at start, at each full UTC hour and at church midnight; the harness waits past those edges, records a scheduler-overlap flag from a model of them and counts scheduler-shaped rows in the jobs table, and a window that touches either is invalid. Autovacuum is off, timed checkpoints are deferred, the harness checkpoints itself and waits for other active backends before each operation. The workers-on observation (item 9) is not attributable",
@@ -320,7 +306,6 @@ finalize_evidence() { # complete|aborted exit-code [signal]
   qc1_judge "$MEASUREMENTS" "${MAX_REQUEST_BYTES:-0}" >"$WORK/failures.jsonl" || judge_ok=false
   qc1_evidence_status "$MEASUREMENTS" "$SIZES" "${COUNTS:-}" "$WORK/environment.json" "${REVISION:-}" "${MAX_REQUEST_BYTES:-0}" "$(IFS=,; printf '%s' "${DENSE_LIST[*]:-}")" "$abort" >"$WORK/evidence-status.json" \
     || { echo 'qc1: WARNING: evidence-status.json could not be written' >&2; status=1; }
-  if (( ${DELETE_PROBE:-0} )); then qc1_probe_summary "$MEASUREMENTS" >"$WORK/probe-summary.json" || { echo 'qc1: WARNING: probe-summary.json could not be written' >&2; status=1; }; fi
   jq -n --slurpfile env "$WORK/environment.json" --slurpfile status "$WORK/evidence-status.json" --argjson judgeOk "$judge_ok" \
     '{environment:$env[0], evidence:$status[0], judgeRan:$judgeOk,
       nextStep:"budgetFailures need a reviewed engineering disposition (written design and independent review in state.json) before any release containing T07B-2 is planned; a run is release evidence only when evidence.releaseEvidence is true (complete AND full coverage); a pilot run being complete means only that the rows it asked for exist and are clean; evidence.notMeasured lists what this harness does not measure"}' \
@@ -655,20 +640,20 @@ instrumented() {
 # The rows contact_requests holds right now, as a number (null when unreadable). Taken immediately BEFORE each operation, by instrumented and by the cases that are not instrumented.
 table_rows() { local c; c="$(psql_db -c 'SELECT count(*) FROM contact_requests' 2>/dev/null || true)"; if [[ "$c" =~ ^[0-9]+$ ]]; then printf "%s" "$c"; else printf null; fi; }
 # The statements that cost the most database time in the window just measured (qc1/top-statements.sql): cluster-wide, filtered by text, NOT attributed to the operation.
-top_statements() { local t; t="$(docker exec -i "$DB_CID" psql -X -U church -d "${QC1_DB:-fold}" -At -v ON_ERROR_STOP=1 -v lim="${QC1_TOP_N:-8}" -f - <"$HERE/qc1/top-statements.sql" 2>/dev/null)" && [[ "$t" == \[* ]] && printf "%s" "$t" || printf null; }
+top_statements() { local t; t="$(docker exec -i "$DB_CID" psql -X -U church -d "${QC1_DB:-fold}" -At -v ON_ERROR_STOP=1 -f - <"$HERE/qc1/top-statements.sql" 2>/dev/null)" && [[ "$t" == \[* ]] && printf "%s" "$t" || printf null; }
 audit_actions() { psql_db -c "SELECT coalesce(jsonb_object_agg(action, c), '{}'::jsonb)::text FROM (SELECT action, count(*) AS c FROM audit_logs GROUP BY action) s"; }
 instr_json() {
   jq -nc --argjson wal "$WAL_BYTES" --argjson ctl "${CONTROL_WAL:-null}" --argjson app "$APP_PEAK_KB" --argjson reset "$APP_HWM_RESET" --argjson appSamples "${APP_MEM_SAMPLES:-0}" --argjson appBelow "${APP_BELOW_BASELINE:-false}" --argjson db "$DB_PEAK_KB" --argjson dbs "${DB_MEM_SAMPLES:-0}" \
     --argjson span "$GATE_SPAN_MS" --argjson grants "$GATE_GRANTS" --argjson ticks "$GATE_TICKS" --argjson holders "$GATE_HOLDERS" --argjson maxgap "$GATE_MAXGAP" --argjson meangap "$GATE_MEANGAP" --argjson holes "$GATE_HOLES" \
     --argjson av "$GATE_AV" --argjson mc "$GATE_MC" --argjson cc "$COMMIT_CALLS" --argjson cmax "$COMMIT_MAX" --argjson ctot "$COMMIT_TOTAL" \
     --argjson sched "$SCHEDULER_OVERLAP" --argjson srows "$SCHEDULER_ROWS" \
-    --arg topn "${QC1_TOP_N:-8}" --argjson top "${TOP_STATEMENTS:-null}" --argjson tr0 "${TABLE_ROWS0:-null}" --argjson tr1 "${TABLE_ROWS1:-null}" --argjson aa0 "${AUDIT_ACTIONS0:-null}" --argjson aa1 "${AUDIT_ACTIONS1:-null}" --argjson ar0 "${AUDIT_ROWS0:-null}" --argjson ar1 "${AUDIT_ROWS1:-null}" --argjson ab0 "${AUDIT_BYTES0:-null}" --argjson ab1 "${AUDIT_BYTES1:-null}" \
+    --argjson top "${TOP_STATEMENTS:-null}" --argjson tr0 "${TABLE_ROWS0:-null}" --argjson tr1 "${TABLE_ROWS1:-null}" --argjson aa0 "${AUDIT_ACTIONS0:-null}" --argjson aa1 "${AUDIT_ACTIONS1:-null}" --argjson ar0 "${AUDIT_ROWS0:-null}" --argjson ar1 "${AUDIT_ROWS1:-null}" --argjson ab0 "${AUDIT_BYTES0:-null}" --argjson ab1 "${AUDIT_BYTES1:-null}" \
     '{walBytes:$wal, walControlBytes:$ctl, appPeakKb:$app, appHwmReset:$reset, appMemSamples:$appSamples, appHwmBelowBaseline:$appBelow, dbPeakKb:$db, dbMemSamples:$dbs,
       gateSpanMs:$span, gateGrantTicks:$grants, gateTicks:$ticks, gateHolders:$holders, gateMaxGapMs:$maxgap, gateMeanGapMs:$meangap, gateHoles:$holes,
       autovacuumWorkers:$av, maxActiveClients:$mc, commitCalls:$cc, commitMsMax:$cmax, commitMsTotal:$ctot,
       schedulerOverlap:$sched, schedulerRows:$srows,
       auditRowsBefore:$ar0, auditRowsAfter:$ar1, auditBytesBefore:$ab0, auditBytesAfter:$ab1, tableRowsBefore:$tr0, tableRowsAfter:$tr1,
-      topStatements:$top, topStatementsNote:("pg_stat_statements top " + $topn + " by total time over the window, cluster-wide and filtered by text: not attributed to this operation; read after the window, nothing reset"), auditActionsBefore:$aa0, auditActionsAfter:$aa1,
+      topStatements:$top, topStatementsNote:"pg_stat_statements top 8 by total time over the window, cluster-wide and filtered by text: not attributed to this operation; read after the window, nothing reset", auditActionsBefore:$aa0, auditActionsAfter:$aa1,
       auditActionsDelta:(if ($aa0|type) == "object" and ($aa1|type) == "object" then ([$aa0, $aa1] | (.[0] | keys) + (.[1] | keys) | unique | map(. as $k | {key:$k, value:(($aa1[$k] // 0) - ($aa0[$k] // 0))}) | from_entries) else null end),
       attribution:"WAL, commit and gate figures are cluster-wide counters, not attributed to this operation; they are attributable only if no invalid finding names a competitor"}'
 }
@@ -894,8 +879,7 @@ delete_with() { # target mode items-file
   # The watermark: only audits written after this point belong to this deletion.
   audit_mark="$(psql_db -c 'SELECT coalesce(max(id), 0) FROM audit_logs')"
   [[ "$audit_mark" =~ ^[0-9]+$ ]] || { echo "qc1: cannot read the audit watermark ('$audit_mark')" >&2; exit 1; }
-  DEL_AUDIT_MARK="$audit_mark"   # the deletion's watermark, for the diagnostic's rollback check
-  DIAG_CASE="${DELETE_CASE:-delete-$mode-$k}" instrumented do_delete "$t" "$WORK/delete.body"
+  DIAG_CASE="delete-$mode-$k" instrumented do_delete "$t" "$WORK/delete.body"
   DEL_KEPT="$(jq '.erasure.reasonsKept // null' "$WORK/delete.out" 2>/dev/null || echo null)"
   DEL_REMOVED="$(jq '.erasure.reasonsRemoved // null' "$WORK/delete.out" 2>/dev/null || echo null)"
   DELETE_JSON="$(delete_json)"
@@ -1399,100 +1383,6 @@ explained_order_control_delete() { # n which
 }
 
 
-# --- the deletion diagnostic (--delete-probe; the order, the target and what it does not reproduce are QC1_PROBE_* in qc1/lib.sh) --------------------------------------
-# Everything here runs only in the disposable database this run made. TRUNCATE of audit_logs is plain (no CASCADE): a table that something referenced would refuse it.
-probe_sql() { docker exec -i "$DB_CID" psql -X -U church -d fold -At -v ON_ERROR_STOP=1 "$@" -f -; }
-# The audit rows M copies: one real row per target action, written by this revision's binary during one deletion and left as that deletion's own scrub left them.
-probe_template() { # n
-  local t mark0
-  note "diagnostic: one real deletion to take the audit rows from"
-  mark0="$(psql_db -c 'SELECT coalesce(max(id), 0) FROM audit_logs')"
-  make_user; t="$USER_ID"
-  load_scenario "$1" 10 "$t" subject "$CPS"
-  traverse "$t" "$WORK/items-template.json"
-  DELETE_CASE=probe-template delete_with "$t" mixed "$WORK/items-template.json"
-  [[ "$DEL_STATUS" == 200 && "$(jq -r .dbOk <<<"$OUTCOME_JSON")" == true ]] || { echo "qc1: the template deletion did not complete cleanly ($DEL_STATUS): the probe has no audit rows to copy" >&2; exit 1; }
-  probe_sql -v target="$QC1_PROBE_AUDIT_TARGET" -v mark="$mark0" <<'SQL' >/dev/null
-CREATE TABLE qc1_audit_template AS
-  SELECT DISTINCT ON (action) actor_id, action, target_type, target_id, meta_json, ip, at FROM audit_logs
-  WHERE id > :mark AND action IN (SELECT jsonb_object_keys(:'target'::jsonb)) ORDER BY action, id;
-SQL
-  [[ "$(psql_db -c 'SELECT count(*) FROM qc1_audit_template')" == "$(jq 'length' <<<"$QC1_PROBE_AUDIT_TARGET")" ]] || { echo 'qc1: the template deletion did not write every audit action of the target' >&2; exit 1; }
-  # Proved here, before any replicate is spent: the top-up and the scan on a few hundred rows (rolled back), and the rollback reader on this real, completed deletion,
-  # which must see all three things a deletion changes. A fault in any of them ends the run now.
-  probe_top_up "$(jq -c 'map_values(100)' <<<"$QC1_PROBE_AUDIT_TARGET")" dry
-  probe_audit_scan >/dev/null
-  probe_atomicity "$t" "$(jq -r 'map(.requestId) | join(",")' "$WORK/items-template.json")" "$DEL_AUDIT_MARK"
-  [[ "$PROBE_ATOMICITY" == nonAtomic:reasons-changed,account-changed,erasure-audits-written ]] || { echo "qc1: the rollback check did not see a completed deletion ($PROBE_ATOMICITY)" >&2; exit 1; }
-}
-# M: add exactly the rows each action lacks to reach the target ($1, a JSON object). An action already over it adds nothing and the replicate is stateUnmatched in the summary.
-# With $2 = dry the insert runs inside a transaction that is rolled back.
-probe_top_up() { # target [dry]
-  {
-    if [[ "${2:-}" == dry ]]; then echo 'BEGIN;'; fi
-    cat <<'SQL'
-INSERT INTO audit_logs (actor_id, action, target_type, target_id, meta_json, ip, at)
-SELECT t.actor_id, t.action, t.target_type, CASE WHEN t.action LIKE 'add.%' THEN 2 * (g % 550000) + 1 ELSE 1000000000 + g % 200 END, t.meta_json, t.ip, t.at - (g % 36000) * interval '1 second'
-FROM qc1_audit_template t
-CROSS JOIN LATERAL generate_series(1, greatest(0, (:'target'::jsonb ->> t.action)::bigint - (SELECT count(*) FROM audit_logs a WHERE a.action = t.action))) g;
-SQL
-    if [[ "${2:-}" == dry ]]; then echo 'ROLLBACK;'; fi
-  } | probe_sql -v target="$1" >/dev/null
-}
-# audit_logs as the deletion will find it: bytes, and per action the rows, the rows with an ip (what the retention report and the ip scrubs read) and the mean meta width.
-# One full scan, so the hint bits of freshly written rows are set before the window opens, in both arms.
-probe_audit_scan() {
-  psql_db -c "SELECT jsonb_build_object('totalBytes', pg_total_relation_size('audit_logs'), 'heapBytes', pg_relation_size('audit_logs'), 'indexBytes', pg_indexes_size('audit_logs'),
-    'byAction', coalesce((SELECT jsonb_object_agg(action, jsonb_build_object('rows', n, 'withIp', nip, 'metaBytesMean', mb)) FROM (SELECT action, count(*) AS n, count(*) FILTER (WHERE ip <> '') AS nip, round(avg(pg_column_size(meta_json))) AS mb FROM audit_logs GROUP BY action) s), '{}'))::text"
-}
-# Rollback evidence for a deletion that did not answer 200 (qc1_probe_atomicity): every read is checked, and one that fails twice is unreadable, never "unchanged".
-probe_atomicity() { # target ids mark   -> PROBE_ATOMICITY
-  local d="$WORK/probe-atom" i
-  rm -rf "$d"; mkdir "$d"
-  cp "$WORK/text.pre" "$d/text.pre"
-  for i in 1 2; do if qc1_text_snapshot_ids_sql "$2" | psql_stdin >"$d/text.atom"; then break; fi; rm -f "$d/text.atom"; done
-  psql_db -c "SELECT (deleted_at IS NULL)::text || '|' || (email LIKE 'qc1-subject-%@example.invalid')::text FROM users WHERE id = $1" >"$d/account" || rm -f "$d/account"
-  psql_db -c "SELECT action || '|' || count(*) FROM audit_logs WHERE id > $3 AND action IN ('user.deleted', 'contact.reason_kept', 'contact.reason_removed', 'add.reason_kept', 'add.reason_removed') GROUP BY action" >"$d/audits" || rm -f "$d/audits"
-  PROBE_ATOMICITY="$(qc1_probe_atomicity "$d")"
-  rm -rf "$d"
-}
-probe_replicate() { # arm replicate n
-  # The row's diagnostic metadata lives under "diag": "probe" is the judge's instrumented legacy tombstone probe (lib.sh ran), which demands instrument metrics this metadata does not carry.
-  local arm="$1" r="$2" n="$3" label t started physical audit ids code atomicity=notNeeded
-  label="delete-subject-100000-remove-probe$arm-r$r"
-  started="$(ms)"
-  note "diagnostic replicate $r ($arm): reset, then load, traverse and delete"
-  quiesce
-  drop_scenarios
-  psql_db -c 'VACUUM (PARALLEL 0) contact_requests' >/dev/null   # not parallel, for the /dev/shm reason of the sparse case
-  psql_db -c 'TRUNCATE audit_logs RESTART IDENTITY' >/dev/null
-  physical="$(psql_db -c "SELECT jsonb_build_object('heapBytes', pg_relation_size('contact_requests'), 'indexBytes', pg_indexes_size('contact_requests'), 'totalBytes', pg_total_relation_size('contact_requests'),
-    'relpages', (SELECT relpages FROM pg_class WHERE oid = 'contact_requests'::regclass), 'deadTuples', (SELECT n_dead_tup FROM pg_stat_user_tables WHERE relname = 'contact_requests'))::text")"
-  make_user; t="$USER_ID"
-  load_scenario "$n" 100000 "$t" subject "$CPS"
-  text_shape "$t"
-  traverse "$t" "$WORK/items-probe.json"
-  if [[ "$arm" == M ]]; then probe_top_up "$QC1_PROBE_AUDIT_TARGET"; fi
-  audit="$(probe_audit_scan)"
-  DELETE_CASE="$label" QC1_TOP_N=40 delete_with "$t" remove "$WORK/items-probe.json"
-  code="$(jq -r '.code // "none"' "$WORK/delete-attempts/$(printf '%04d' "$DEL_ATTEMPT").json" 2>/dev/null || echo none)"
-  if [[ "$DEL_STATUS" != 200 ]]; then
-    ids="$(jq -r 'map(.requestId) | join(",")' "$WORK/items-probe.json")"
-    probe_atomicity "$t" "$ids" "$DEL_AUDIT_MARK"; atomicity="$PROBE_ATOMICITY"
-  fi
-  record 6 "$label" "$n" "$(jq -nc --argjson del "$DELETE_JSON" --argjson bytes "$BODY_BYTES" --argjson expect "$EXPECT_JSON" --argjson outcome "$OUTCOME_JSON" --argjson roles "$(roles_json "$WORK/items-probe.json")" --argjson shape "$TEXT_SHAPE_JSON" \
-    --arg arm "$arm" --argjson r "$r" --arg code "$code" --arg atomicity "$atomicity" --argjson physical "$physical" --argjson audit "$audit" --argjson started "$started" --argjson ended "$(ms)" \
-    '{delete:$del, reasons:100000, bodyBytes:$bytes, expect:$expect, outcome:$outcome, roles:$roles, textShape:$shape,
-      diag:{arm:$arm, replicate:$r, code:$code, atomicity:$atomicity, physical:$physical, audit:$audit, startedMs:$started, endedMs:$ended}}')"
-  note "diagnostic replicate $r ($arm): status $DEL_STATUS in $DEL_MS ms, $atomicity"
-}
-measure_delete_probe() { # n
-  local r
-  probe_template "$1"
-  for r in "${!QC1_PROBE_ORDER[@]}"; do probe_replicate "${QC1_PROBE_ORDER[r]}" "$((r + 1))" "$1"; done
-  note 'diagnostic probe finished: probe-summary.json; the evidence is incomplete by construction and is not QC-1 evidence'
-}
-
 measure_size() { # n
   local n="$1" t k d mode rows tr_json bk
   CURRENT_SIZE="$n"
@@ -1511,7 +1401,6 @@ measure_size() { # n
     || { echo 'qc1: clearing the background rows removed the seeded admin, counterparts or group' >&2; exit 1; }
   [[ "$(psql_db -c 'SELECT count(*) FROM contact_requests')" == 0 ]] || { echo 'qc1: contact_requests is not empty after clearing it' >&2; exit 1; }
   load_filler "$n" all
-  if (( DELETE_PROBE )); then measure_delete_probe "$n"; return 0; fi
   # #298: nothing but the rendered panel at the dense counts, R times, over the background rows just loaded. No control request, no deletion matrix, no plans.
   if (( NEXT_CHANGED_ONLY )); then
     note "size $n: sampling \"Next changed reason\" ($NEXT_CHANGED_PRESSES presses, $NEXT_CHANGED_RUNS runs) at the dense counts only"
