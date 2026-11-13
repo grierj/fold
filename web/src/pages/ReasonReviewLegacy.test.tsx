@@ -170,7 +170,7 @@ describe("Stop and Try again", () => {
     await waitFor(() => expect(walk).toHaveBeenCalledTimes(2));
     await userEvent.click(screen.getByRole("button", { name: "Stop" }));
     expect(screen.getByRole("status")).toHaveTextContent(STOPPED);
-    expect(screen.getByRole("status").parentElement).toHaveFocus();
+    await waitFor(() => expect(screen.getByRole("status").parentElement).toHaveFocus());
     // The dropped unit answers late: nothing from it is shown or followed.
     await act(async () => second.resolve(unit("30", account("99", "9"))));
     expect(labels()).toEqual(["Deleted account · ref 41"]);
@@ -235,7 +235,7 @@ describe("a failed unit", () => {
     mount();
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(BUSY);
-    expect(alert.parentElement).toHaveFocus();
+    await waitFor(() => expect(alert.parentElement).toHaveFocus());
     expect(document.body).not.toHaveTextContent(/unexpected answer|private server text|Failed to fetch|invalid cursor|<html>/);
     expect(labels()).toEqual(["Deleted account · ref 41"]);
     expect(screen.queryByText(EMPTY)).not.toBeInTheDocument();
@@ -276,7 +276,7 @@ describe("a failed unit", () => {
     mount();
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(copy);
-    expect(alert.parentElement).toHaveFocus();
+    await waitFor(() => expect(alert.parentElement).toHaveFocus());
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
     expect(screen.queryByText(EMPTY)).not.toBeInTheDocument();
@@ -622,7 +622,7 @@ describe("a page that cannot be trusted or read", () => {
     mountAccount();
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent(BUSY);
-    expect(alert.parentElement).toHaveFocus();
+    await waitFor(() => expect(alert.parentElement).toHaveFocus());
     expect(document.body).not.toHaveTextContent(/unexpected answer|private server text|Failed to fetch|invalid cursor|<html>/);
     await userEvent.click(screen.getByRole("button", { name: "Try again" }));
     await screen.findByRole("group", { name: "Reason 1 of 1" });
@@ -1043,10 +1043,9 @@ describe("the reasons changed under the admin", () => {
     pageCall.mockResolvedValueOnce(pageOf(a, b2, d));
     await pressSave();
     await screen.findByText(CHANGED);
-    await screen.findByRole("group", { name: "Reason 3 of 3" });
+    expect(await screen.findAllByText("Changed since you looked: choose again")).toHaveLength(2);
     expect(radio(1, 3, "Keep text")).toBeChecked();
     expect(checkedRadios()).toHaveLength(1);
-    expect(screen.getAllByText("Changed since you looked: choose again")).toHaveLength(2);
     expect(document.body).not.toHaveTextContent("reason text 3");
     expect(document.body).toHaveTextContent("reason text 4");
     expect(settleCall).not.toHaveBeenCalled();
@@ -1081,7 +1080,7 @@ describe("the reasons changed under the admin", () => {
     await screen.findByRole("group", { name: "Reason 1 of 3" });
     await waitFor(() => expect(checkedRadios()).toHaveLength(3));
     expect(screen.queryByText(/Changed since you looked/)).not.toBeInTheDocument();
-    expect(screen.getByRole("alert").parentElement).toHaveFocus();
+    await waitFor(() => expect(screen.getByRole("alert").parentElement).toHaveFocus());
     expect(saveButton()).toBeEnabled();
   });
 
@@ -1112,7 +1111,7 @@ describe("the reasons changed under the admin", () => {
     await screen.findByRole("group", { name: "Reason 3 of 3" });
     await waitFor(() => expect(checkedRadios()).toHaveLength(2));
     expect(screen.getAllByText("Changed since you looked: choose again")).toHaveLength(1);
-    expect(document.querySelector('[data-reason-heading="2"]')).toHaveFocus();
+    await waitFor(() => expect(document.querySelector('[data-reason-heading="2"]')).toHaveFocus());
     expect(saveButton()).toBeDisabled();
   });
 });
