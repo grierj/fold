@@ -18,8 +18,8 @@ import (
 // A database restored while Fold keeps running would hand back receipts and
 // ledger facts the running process has already acted on. The barrier makes the
 // process notice. One settings row, restore_fence, is a counter. Every fenced
-// transaction (the admin account deletion and the settle route) adds one to it
-// as its first statement (the ticket). The process keeps the largest value of
+// transaction (the admin account deletion, the settle route and the deleted-
+// accounts reason save) adds one to it as its first statement (the ticket). The process keeps the largest value of
 // a fenced COMMIT it saw acknowledged in memory (the floor, never written
 // anywhere). A ticket that reads a value at or below the floor means the
 // database has lost an acknowledged commit: it was restored (or tampered with).
@@ -252,7 +252,8 @@ func (a *App) abandonRestoreTicket(tk *restoreTicket) {
 var errFenceUnsealed = errors.New("a fenced transaction returned no actor seal")
 
 // fencedContactMutation is the only way to run a fenced transaction (the
-// admin account deletion and the settle route). It is a.contactMutationCtx
+// admin account deletion, the settle route and the deleted-accounts reason
+// save, apiAdminLegacyReasonSave). It is a.contactMutationCtx
 // with the restore ticket around it:
 //
 //   - the ticket is the callback's first statement, on the callback's own

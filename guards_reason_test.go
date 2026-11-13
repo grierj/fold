@@ -17,11 +17,25 @@ import (
 // seal, like the settle and deletion transactions (R5-C01).
 // ---------------------------------------------------------------------------
 
-// reasonPageSealProblems checks account_erasure_reasons.go: currentAdminIn is
-// called once, as the return of the reasonPageTx callback in reasonPageAttempt,
-// right after the readBeforeSeal seam, so nothing locks after it.
-func reasonPageSealProblems(src string) []string {
-	parsed := guardkit.Sources{"account_erasure_reasons.go": src}.Parse(0)
+// readSealSite is one page-shaped read that ends with the actor seal: the file
+// and the function whose reasonPageTx callback must end with it, and the
+// function a fixture inserts a second seal call before.
+type readSealSite struct{ file, fn, anchorFn string }
+
+// readSealSites are the reads the guard covers: the live reason page and the
+// legacy read attempt that discovery and the probe share (T07B-3a). A new
+// ungated read that calls currentAdminIn is added here with its negative
+// fixtures.
+var readSealSites = []readSealSite{
+	{"account_erasure_reasons.go", "reasonPageAttempt", "func (a *App) apiAdminErasureReasonsPage("},
+	{"api_admin_reasons_legacy.go", "legacyReadAttempt", "func (a *App) runLegacyRead("},
+}
+
+// readSealProblems checks one site's file: currentAdminIn is called once, as
+// the return of the reasonPageTx callback in the site's function, right after
+// the readBeforeSeal seam, so nothing locks after it.
+func readSealProblems(site readSealSite, src string) []string {
+	parsed := guardkit.Sources{site.file: src}.Parse(0)
 	if len(parsed.Problems) > 0 {
 		return parsed.Problems
 	}
@@ -35,11 +49,11 @@ func reasonPageSealProblems(src string) []string {
 		return true
 	})
 	if calls != 1 {
-		bad = append(bad, fmt.Sprintf("account_erasure_reasons.go: currentAdminIn must be called exactly once, found %d", calls))
+		bad = append(bad, fmt.Sprintf("%s: currentAdminIn must be called exactly once, found %d", site.file, calls))
 	}
-	fd := guardkit.FindFunc(tree, "reasonPageAttempt")
+	fd := guardkit.FindFunc(tree, site.fn)
 	if fd == nil {
-		return append(bad, "account_erasure_reasons.go: reasonPageAttempt is gone")
+		return append(bad, site.file+": "+site.fn+" is gone")
 	}
 	var lit *ast.FuncLit
 	ast.Inspect(fd.Body, func(n ast.Node) bool {
@@ -49,15 +63,15 @@ func reasonPageSealProblems(src string) []string {
 		return true
 	})
 	if lit == nil || len(lit.Body.List) < 2 {
-		return append(bad, "account_erasure_reasons.go: reasonPageAttempt must pass a function literal to a.reasonPageTx")
+		return append(bad, site.file+": "+site.fn+" must pass a function literal to a.reasonPageTx")
 	}
 	last := lit.Body.List[len(lit.Body.List)-1]
 	ret, ok := last.(*ast.ReturnStmt)
 	if !ok || len(ret.Results) != 1 {
-		return append(bad, "account_erasure_reasons.go: the page transaction must end with return currentAdminIn(tx, me, pred)")
+		return append(bad, site.file+": the page transaction must end with return currentAdminIn(tx, me, pred)")
 	}
 	if c, ok := ret.Results[0].(*ast.CallExpr); !ok || guardkit.Callee(c) != "currentAdminIn" || len(c.Args) != 3 {
-		bad = append(bad, "account_erasure_reasons.go: the page transaction's last statement must be return currentAdminIn(tx, me, pred)")
+		bad = append(bad, site.file+": the page transaction's last statement must be return currentAdminIn(tx, me, pred)")
 	}
 	seam, ok := lit.Body.List[len(lit.Body.List)-2].(*ast.IfStmt)
 	seamCalled := false
@@ -70,36 +84,84 @@ func reasonPageSealProblems(src string) []string {
 		})
 	}
 	if !seamCalled {
-		bad = append(bad, "account_erasure_reasons.go: the readBeforeSeal seam must be the statement just before the seal")
+		bad = append(bad, site.file+": the readBeforeSeal seam must be the statement just before the seal")
 	}
 	return bad
 }
 
 func TestReasonPageSealIsLast(t *testing.T) {
-	b, err := os.ReadFile("account_erasure_reasons.go")
-	if err != nil {
-		t.Fatal(err)
+	for _, site := range readSealSites {
+		t.Run(site.fn, func(t *testing.T) {
+			b, err := os.ReadFile(site.file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			real := string(b)
+			for _, v := range readSealProblems(site, real) {
+				t.Error(v)
+			}
+			with := func(old, replacement string) string {
+				if strings.Count(real, old) != 1 {
+					t.Fatalf("fixture anchor %q must occur once, found %d", old, strings.Count(real, old))
+				}
+				return strings.Replace(real, old, replacement, 1)
+			}
+			seal := "\t\t// Last statement: nothing locks after it.\n\t\treturn currentAdminIn(tx, me, pred)"
+			for _, tc := range []struct{ name, src string }{
+				{"no seal", with(seal, "\t\treturn nil")},
+				{"a statement after the seal", with(seal, "\t\tif err := currentAdminIn(tx, me, pred); err != nil {\n\t\t\treturn err\n\t\t}\n\t\treturn tx.Exec(\"SELECT 1\").Error")},
+				{"a locking statement after the seam", with(seal, "\t\ttx.Exec(\"SELECT id FROM users WHERE id = 1 FOR UPDATE\")\n\t\treturn currentAdminIn(tx, me, pred)")},
+				{"a second seal call", with(site.anchorFn, "func (a *App) otherPage(tx *gorm.DB, me *models.User) error { return currentAdminIn(tx, me, nil) }\n\n"+site.anchorFn)},
+				{"the seam moved", with("\t\tif a.hooks.readBeforeSeal != nil {\n\t\t\ta.hooks.readBeforeSeal(tx)\n\t\t}\n", "")},
+			} {
+				if bad := readSealProblems(site, tc.src); len(bad) == 0 {
+					t.Errorf("%s: the guard accepted it", tc.name)
+				}
+			}
+		})
 	}
-	real := string(b)
-	for _, v := range reasonPageSealProblems(real) {
+}
+
+// unguardedSealCallers lists calls of currentAdminIn outside the files allowed:
+// the page-shaped reads readSealSites guards, and the attempts file whose seal
+// literals guards_seal_test.go checks. A call anywhere else would be a seal no
+// guard covers.
+func unguardedSealCallers(src guardkit.Sources) []string {
+	allowed := map[string]bool{"admin_operation_attempts.go": true}
+	for _, site := range readSealSites {
+		allowed[site.file] = true
+	}
+	parsed := src.Parse(0)
+	bad := append([]string(nil), parsed.Problems...)
+	for _, f := range parsed.Files {
+		if allowed[f.Path] {
+			continue
+		}
+		ast.Inspect(f.AST, func(n ast.Node) bool {
+			if c, ok := n.(*ast.CallExpr); ok && guardkit.Callee(c) == "currentAdminIn" {
+				bad = append(bad, fmt.Sprintf("%s calls currentAdminIn but no seal guard reads it", f.Path))
+			}
+			return true
+		})
+	}
+	return bad
+}
+
+func TestCurrentAdminInCallersAreGuarded(t *testing.T) {
+	production := guardkit.Production(t)
+	for _, v := range unguardedSealCallers(production) {
 		t.Error(v)
 	}
-	with := func(old, replacement string) string {
-		if strings.Count(real, old) != 1 {
-			t.Fatalf("fixture anchor %q must occur once, found %d", old, strings.Count(real, old))
+	// The guard fails for a seal in a file no guard reads, and reads files
+	// anywhere in the tree.
+	for _, name := range []string{"api_other.go", "internal/other/other.go"} {
+		with := guardkit.Sources{}
+		for k, v := range production {
+			with[k] = v
 		}
-		return strings.Replace(real, old, replacement, 1)
-	}
-	seal := "\t\t// Last statement: nothing locks after it.\n\t\treturn currentAdminIn(tx, me, pred)"
-	for _, tc := range []struct{ name, src string }{
-		{"no seal", with(seal, "\t\treturn nil")},
-		{"a statement after the seal", with(seal, "\t\tif err := currentAdminIn(tx, me, pred); err != nil {\n\t\t\treturn err\n\t\t}\n\t\treturn tx.Exec(\"SELECT 1\").Error")},
-		{"a locking statement after the seam", with(seal, "\t\ttx.Exec(\"SELECT id FROM users WHERE id = 1 FOR UPDATE\")\n\t\treturn currentAdminIn(tx, me, pred)")},
-		{"a second seal call", with("func (a *App) apiAdminErasureReasonsPage(", "func (a *App) otherPage(tx *gorm.DB, me *models.User) error { return currentAdminIn(tx, me, nil) }\n\nfunc (a *App) apiAdminErasureReasonsPage(")},
-		{"the seam moved", with("\t\tif a.hooks.readBeforeSeal != nil {\n\t\t\ta.hooks.readBeforeSeal(tx)\n\t\t}\n", "")},
-	} {
-		if bad := reasonPageSealProblems(tc.src); len(bad) == 0 {
-			t.Errorf("%s: the guard accepted it", tc.name)
+		with[name] = "package main\n\nfunc other() { currentAdminIn(nil, nil, nil) }\n"
+		if len(unguardedSealCallers(with)) == 0 {
+			t.Errorf("the guard accepted a currentAdminIn call in %s", name)
 		}
 	}
 }

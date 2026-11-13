@@ -219,3 +219,10 @@ and an admin-only, CSRF-protected `POST /api/v1/e2e/attempt-clock`, and only whe
 `FOLD_E2E_CLOCK=1`. `web/e2e/run.sh` and `server.sh` build with the tag and set the variable; the
 Dockerfile, release build, `make test` and `go build` never set the tag. That no shipped build sets
 it is checked by review, not by a test.
+
+The same file adds `POST /api/v1/e2e/legacy-tombstone {userId}` (admin, CSRF, same gate), which soft-deletes
+one live account without deciding its contact-request reasons. No live path leaves that state, so the
+deleted-accounts review (`admin-reason-review.spec.ts`, `legacy-reasons.ts`, the two `admin-deleted-reasons`
+pages in `ui-pages.ts`) cannot be reached without it. It refuses the caller and any admin (400), answers 200
+only when exactly one live account became a tombstone and 404 otherwise; a deleted admin is covered by the Go
+tests, not by this route.

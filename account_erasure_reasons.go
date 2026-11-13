@@ -76,6 +76,9 @@ const (
 	reasonReviewVersion = 1
 	// reasonSourceDeletion marks a decision made inside an account deletion.
 	reasonSourceDeletion = "deletion"
+	// reasonSourceLegacy marks a view or a decision made in the deleted-accounts
+	// review (T07B-3a), after the account was already deleted.
+	reasonSourceLegacy = "legacy_review"
 	// reasonStatementTimeout bounds each statement of a page transaction.
 	reasonStatementTimeout = 10 * time.Second
 )
@@ -406,8 +409,10 @@ type reasonPageBody struct {
 	After *string `json:"after"`
 }
 
-// reasonItemJSON is one reason in a page. requestId and counterpartRef are
-// decimal strings so a signed 64-bit id survives JavaScript.
+// reasonItemJSON is one reason in a page. requestId, counterpartRef and
+// partyRef are decimal strings so a signed 64-bit id survives JavaScript.
+// partyRef is set only by a deleted account's own legacy page: the account the
+// item is about, whose name is never shown.
 type reasonItemJSON struct {
 	RequestID          string    `json:"requestId"`
 	ReviewHash         string    `json:"reviewHash"`
@@ -418,6 +423,7 @@ type reasonItemJSON struct {
 	CounterpartName    string    `json:"counterpartName"`
 	CounterpartDeleted bool      `json:"counterpartDeleted"`
 	CounterpartRef     string    `json:"counterpartRef,omitempty"`
+	PartyRef           string    `json:"partyRef,omitempty"`
 	ReviewerIsParty    bool      `json:"reviewerIsParty"`
 	ContextLabel       string    `json:"contextLabel,omitempty"`
 	Reason             string    `json:"reason"`
@@ -443,14 +449,41 @@ type reasonPageStep struct {
 }
 
 // reasonPageTx runs fn in one transaction on ctx whose statements the server
-// also bounds (R4-CTX): a client deadline is not server cancellation.
+// also bounds (R4-CTX): a client deadline is not server cancellation. The
+// ending is explicit so a ROLLBACK the server never acknowledged keeps its
+// contactRollbackError: the locks may still be held, so rollbackConfirmed is
+// false and no caller starts another attempt on them. It stays ungated: the
+// seal is the last statement and these reads take no contact gate.
 func (a *App) reasonPageTx(ctx context.Context, fn func(tx *gorm.DB) error) error {
-	return a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Exec("SELECT set_config('statement_timeout', ?, true)", fmt.Sprintf("%dms", ceilMillis(reasonStatementTimeout))).Error; err != nil {
-			return err
+	tx := a.DB.WithContext(ctx).Begin()
+	if tx.Error != nil {
+		return tx.Error
+	}
+	defer func() {
+		if p := recover(); p != nil {
+			_ = tx.Rollback().Error
+			panic(p)
 		}
-		return fn(tx)
-	})
+	}()
+	if err := tx.Exec("SELECT set_config('statement_timeout', ?, true)", fmt.Sprintf("%dms", ceilMillis(reasonStatementTimeout))).Error; err != nil {
+		return rollbackReasonPage(tx, err)
+	}
+	if err := fn(tx); err != nil {
+		return rollbackReasonPage(tx, err)
+	}
+	if err := tx.Commit().Error; err != nil {
+		return err
+	}
+	return nil
+}
+
+// rollbackReasonPage ends tx after a failed reason-page attempt. A failed
+// ROLLBACK wraps the cause so the busy retry treats the locks as still held.
+func rollbackReasonPage(tx *gorm.DB, cause error) error {
+	if rerr := tx.Rollback().Error; rerr != nil {
+		return &contactRollbackError{Cause: cause, Rollback: rerr}
+	}
+	return cause
 }
 
 // reasonPageAttempt reads one scanner unit as the signed-in admin, writes the
@@ -707,6 +740,11 @@ type reasonPlan struct {
 	Decisions []reasonDecision
 	ActorID   uint
 	IP        string
+	// Source is the audit meta source of every decision: empty is the account
+	// deletion (reasonSourceDeletion), reasonSourceLegacy the deleted-accounts
+	// save. It is the only thing the two callers of eraseContactRequestReasonsIn
+	// differ in.
+	Source string
 	// mayReview is what the deletion's seal decides again on the locked actor
 	// row (reasonReviewRule.allows); nil when the account has no reasons.
 	mayReview func(*models.User) bool
@@ -927,8 +965,9 @@ func (r reasonReviewRule) allows(u *models.User) bool {
 
 // eraseContactRequestReasonsIn writes the decisions and blanks the removed
 // reasons. It is the only writer of contact_requests.reason (the guard in
-// guards_contact_text_test.go allows its one UPDATE literal here and its one call in
-// eraseAccountIn, directly after eraseContactRequestTextIn).
+// guards_contact_text_test.go allows its one UPDATE literal here and its two
+// calls: eraseAccountIn, directly after eraseContactRequestTextIn, and the
+// fenced callback of apiAdminLegacyReasonSave).
 // Decisions go in batches of reasonBlankBatch inside the same transaction: for
 // each batch the signed audit rows are written first, then that batch's removes
 // are blanked in one UPDATE whose RowsAffected must equal the batch's remove
@@ -945,6 +984,10 @@ func eraseContactRequestReasonsIn(tx *gorm.DB, s erasureSubject, plan reasonPlan
 		return nil
 	}
 	actor := plan.ActorID
+	source := plan.Source
+	if source == "" {
+		source = reasonSourceDeletion
+	}
 	size := max(reasonBlankBatch, 1)
 	entries := make([]audit.SignedEntry, 0, min(size, len(plan.Decisions)))
 	remove := make([]int64, 0, min(size, len(plan.Decisions)))
@@ -970,7 +1013,7 @@ func eraseContactRequestReasonsIn(tx *gorm.DB, s erasureSubject, plan reasonPlan
 				Actor: &actor, Action: action, TargetType: target, TargetID: d.RequestID, IP: plan.IP,
 				Meta: map[string]any{
 					"erasedUserId": s.ID, "erasedRole": d.Role, "purpose": d.Purpose, "status": d.Status,
-					"reviewerIsParty": d.ReviewerIsParty, "source": reasonSourceDeletion, "reviewVersion": reasonReviewVersion,
+					"reviewerIsParty": d.ReviewerIsParty, "source": source, "reviewVersion": reasonReviewVersion,
 				},
 			})
 			if d.Remove {
