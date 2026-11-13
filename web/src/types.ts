@@ -1458,6 +1458,11 @@ export interface ErasureReasonItem {
   counterpartName: string;
   counterpartDeleted: boolean;
   counterpartRef?: string;
+  // Only on a deleted account's own legacy page (POST
+  // /admin/erasure-reasons/legacy/:userId/page): the account the item is about,
+  // as a decimal id. That account is shown as "Deleted account" and this
+  // reference, never by a name.
+  partyRef?: string;
   // The signed-in admin is the requester or the subject of this request.
   reviewerIsParty: boolean;
   contextLabel?: string;

@@ -1085,8 +1085,9 @@ func TestLegacyReadSealBusy(t *testing.T) {
 // and starts no second attempt: the server may still hold the locks. The
 // proxy drops the attempt's ROLLBACK, so reasonPageTx keeps the
 // contactRollbackError and every legacy read answers 503 reason_review_busy
-// after exactly one seal. The shared helper also serves the live page, so it
-// is covered here too; the acknowledged-rollback retry stays covered by
+// after exactly one seal. The shared helper also serves the live page and an
+// account's own page, so they are
+// covered here too; the acknowledged-rollback retry stays covered by
 // TestLegacyReadSealBusy.
 func TestLegacyReadBusySealRollbackNotAcknowledged(t *testing.T) {
 	s := newLegacyScene(t, 2)
@@ -1151,6 +1152,7 @@ func TestLegacyReadBusySealRollbackNotAcknowledged(t *testing.T) {
 		{"GET", legacyDiscoveryPath, nil, "accounts"},
 		{"GET", legacyProbePath, nil, "found"},
 		{"POST", livePath, map[string]any{"after": nil}, "items"},
+		{"POST", legacyPagePath(s.users[0].ID), map[string]any{"after": nil}, "items"},
 	} {
 		code, body := call(r.method, r.path, r.body)
 		if code != http.StatusServiceUnavailable || codeOf2(t, body) != "reason_review_busy" || strings.Contains(body, r.leak) {
@@ -1190,5 +1192,854 @@ func TestLegacyReadFailureIsNeverAnEmptyList(t *testing.T) {
 	code, body := s.discover(legacyDiscoveryPath)
 	if code != http.StatusServiceUnavailable || codeOf2(t, body) != "reason_review_busy" {
 		t.Fatalf("a failed marker lookup: %d %s, want 503 reason_review_busy", code, body)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// A deleted account's own page (slice S2): POST legacy/:userId/page
+// ---------------------------------------------------------------------------
+
+func legacyPagePath(id uint) string {
+	return "/api/v1/admin/erasure-reasons/legacy/" + itoa(id) + "/page"
+}
+
+// accountPage posts one page request as c and decodes a 200.
+func accountPage(t *testing.T, c *apiClient, id uint, after *string) (int, reasonPageJSON, string) {
+	t.Helper()
+	w := c.do("POST", legacyPagePath(id), map[string]any{"after": after}, true)
+	var page reasonPageJSON
+	if w.Code == http.StatusOK {
+		if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil {
+			t.Fatalf("page body: %v", err)
+		}
+	}
+	return w.Code, page, w.Body.String()
+}
+
+func requestIDs(items []reasonItemJSON) []string {
+	out := make([]string, len(items))
+	for i, it := range items {
+		out[i] = it.RequestID
+	}
+	return out
+}
+
+func viewAudits(t *testing.T, db *gorm.DB) []models.AuditLog {
+	t.Helper()
+	var rows []models.AuditLog
+	if err := db.Where("action = ?", audit.UserErasureReasonsViewed).Order("id").Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	return rows
+}
+
+// txStatement is one statement GORM sent, with the transaction it ran in.
+type txStatement struct {
+	pool any
+	sql  string
+}
+
+// recordTxStatements sees every statement GORM sends on db, in order, with the
+// connection pool it used: statements of one transaction share it.
+func recordTxStatements(t *testing.T, db *gorm.DB) func() []txStatement {
+	t.Helper()
+	var mu sync.Mutex
+	var out []txStatement
+	capture := func(tx *gorm.DB) {
+		mu.Lock()
+		out = append(out, txStatement{pool: tx.Statement.ConnPool, sql: strings.Join(strings.Fields(tx.Statement.SQL.String()), " ")})
+		mu.Unlock()
+	}
+	name := fmt.Sprintf("test:tx_statements:%d", queryCounterSeq.Add(1))
+	for _, reg := range []func() error{
+		func() error { return db.Callback().Raw().After("gorm:raw").Register(name, capture) },
+		func() error { return db.Callback().Row().After("gorm:row").Register(name, capture) },
+		func() error { return db.Callback().Query().After("gorm:query").Register(name, capture) },
+		func() error { return db.Callback().Create().After("gorm:create").Register(name, capture) },
+	} {
+		if err := reg(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		_ = db.Callback().Raw().Remove(name)
+		_ = db.Callback().Row().Remove(name)
+		_ = db.Callback().Query().Remove(name)
+		_ = db.Callback().Create().Remove(name)
+	})
+	return func() []txStatement {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]txStatement(nil), out...)
+	}
+}
+
+// failStatements makes every statement whose SQL satisfies match fail, on the
+// Raw, Row, Query and Create paths, until the test ends. A model query or insert
+// has no SQL before GORM builds it, so those fail after they ran: the error is
+// what the caller sees, and the transaction is rolled back with the row in it.
+func failStatements(t *testing.T, db *gorm.DB, match func(sql string) bool) (stop func()) {
+	t.Helper()
+	name := fmt.Sprintf("test:fail_statements:%d", queryCounterSeq.Add(1))
+	fail := func(tx *gorm.DB) {
+		if match(tx.Statement.SQL.String()) {
+			_ = tx.AddError(fmt.Errorf("injected statement failure"))
+		}
+	}
+	for _, reg := range []func() error{
+		func() error { return db.Callback().Raw().Before("gorm:raw").Register(name, fail) },
+		func() error { return db.Callback().Row().Before("gorm:row").Register(name, fail) },
+		func() error { return db.Callback().Query().After("gorm:query").Register(name, fail) },
+		func() error { return db.Callback().Create().After("gorm:create").Register(name, fail) },
+	} {
+		if err := reg(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stop = func() {
+		_ = db.Callback().Raw().Remove(name)
+		_ = db.Callback().Row().Remove(name)
+		_ = db.Callback().Query().Remove(name)
+		_ = db.Callback().Create().Remove(name)
+	}
+	t.Cleanup(stop)
+	return stop
+}
+
+// The page of an account deleted before reasons were reviewed: every field of
+// an item, both party orders and the actor as either party, a live and a
+// deleted counterpart, context labels, the per-viewer and per-party hash, the
+// view audit (once per page that shows items, never for an empty one, never
+// text) and the decided pair that leaves the page.
+func TestLegacyAccountPage(t *testing.T) {
+	s := newLegacyScene(t, 4)
+	gone, live, gone2, bare := s.users[0], s.users[1], s.users[2], s.users[3]
+	group := newTestGroup(t, s.app, live, "Legacy Group", models.GroupActive)
+	// The requester side, the subject side, a deleted counterpart, the admin as
+	// the subject and as the requester, and rows that never qualify: a blank
+	// reason, someone else's request.
+	r1 := erasureMakeRequest(t, s.app.DB, policy.RequestContact, policy.ContactWithdrawn, gone.ID, live.ID, group.ID, 0, 0, 1, "")
+	r2 := erasureMakeRequest(t, s.app.DB, policy.RequestGroupAdd, policy.ContactWithdrawn, live.ID, gone.ID, 999999, 0, 0, 2, "")
+	// s.ask files its requests in group 1, which is the group above here: these
+	// name a group that does not exist, so no label can be shown.
+	noGroup := func(requester, subject *models.User, n int) models.ContactRequest {
+		return erasureMakeRequest(t, s.app.DB, policy.RequestContact, policy.ContactWithdrawn, requester.ID, subject.ID, 999999, 0, 0, n, "")
+	}
+	r3 := noGroup(gone, gone2, 3)
+	r4 := noGroup(s.admin, gone, 4)
+	r5 := noGroup(gone, s.admin, 5)
+	blank := noGroup(gone, live, 6)
+	if err := s.app.DB.Exec("UPDATE contact_requests SET reason = '' WHERE id = ?", blank.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	noGroup(live, s.other, 7)
+	s.bury(t, gone, gone2, bare)
+	id := func(r models.ContactRequest) string { return itoa(r.ID) }
+	goneRef, gone2Ref := itoa(gone.ID), itoa(gone2.ID)
+
+	code, page, body := accountPage(t, s.ac, gone.ID, nil)
+	want := []string{id(r1), id(r2), id(r3), id(r4), id(r5)}
+	if code != http.StatusOK || !page.ReviewRequired || page.Next != nil || !reflect.DeepEqual(requestIDs(page.Items), want) {
+		t.Fatalf("first page: %d reviewRequired=%v next=%v ids=%v, want ids %v: %s", code, page.ReviewRequired, page.Next, requestIDs(page.Items), want, body)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &raw); err != nil || len(raw) != 3 || raw["reviewRequired"] == nil {
+		t.Fatalf("top-level keys %v (%v), want items, next and reviewRequired", raw, err)
+	}
+	byID := map[string]reasonItemJSON{}
+	for _, it := range page.Items {
+		byID[it.RequestID] = it
+		if !validReviewHash(it.ReviewHash) || it.CreatedAt.IsZero() || it.PartyRef != goneRef {
+			t.Errorf("item %s: hash %q, createdAt %v, partyRef %q (want %s)", it.RequestID, it.ReviewHash, it.CreatedAt, it.PartyRef, goneRef)
+		}
+	}
+	check := func(name string, got reasonItemJSON, r models.ContactRequest, role, purpose, counterpart string, counterpartDeleted bool, ref string, reviewerIsParty bool, label string) {
+		t.Helper()
+		if got.Role != role || got.Purpose != purpose || got.Status != policy.ContactWithdrawn || got.Reason != r.Reason ||
+			got.CounterpartName != counterpart || got.CounterpartDeleted != counterpartDeleted || got.CounterpartRef != ref ||
+			got.ReviewerIsParty != reviewerIsParty || got.ContextLabel != label {
+			t.Errorf("%s: %+v", name, got)
+		}
+	}
+	check("requester side, live counterpart, group shown", byID[id(r1)], r1, "requester", policy.RequestContact, live.PublicName(), false, "", false, "Legacy Group")
+	check("subject side, context group gone", byID[id(r2)], r2, "subject", policy.RequestGroupAdd, live.PublicName(), false, "", false, "")
+	check("deleted counterpart is never named", byID[id(r3)], r3, "requester", policy.RequestContact, "Deleted account", true, gone2Ref, false, "")
+	check("the admin is the requester", byID[id(r4)], r4, "subject", policy.RequestContact, s.admin.PublicName(), false, "", true, "")
+	check("the admin is the subject", byID[id(r5)], r5, "requester", policy.RequestContact, s.admin.PublicName(), false, "", true, "")
+	for _, leak := range []string{gone.Name, gone.Email, gone2.Name, gone2.Email, blank.Reason, "identifying reason 7"} {
+		if leak != "" && strings.Contains(body, leak) {
+			t.Errorf("the page leaks %q", leak)
+		}
+	}
+
+	// The hash binds the viewer and the party: recompute it from the production
+	// reader, and see that another admin and another party get different ones.
+	key, err := reasonHashKey(s.app.Config.SessionSecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hashFor := func(viewer, party uint, request uint) string {
+		var got string
+		rows, err := s.app.DB.Raw("SELECT "+reasonSelect+" FROM contact_requests WHERE id = ?", request).Rows()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := scanReasonRowsWith(rows, key, int64(viewer), int64(party), true, nil, func(r reasonRow) error { got = r.Hash; return nil }); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := byID[id(r3)].ReviewHash; got != hashFor(s.admin.ID, gone.ID, r3.ID) {
+		t.Errorf("the hash is not (admin, account)'s: %s", got)
+	}
+	second := loginAPI(t, s.app, "erase-second", erasurePW)
+	_, secondPage, _ := accountPage(t, second, gone.ID, nil)
+	parties := 0
+	for _, it := range secondPage.Items {
+		if it.ReviewerIsParty {
+			parties++
+		}
+		if it.ReviewHash == byID[it.RequestID].ReviewHash {
+			t.Errorf("another admin got the same hash for %s", it.RequestID)
+		}
+	}
+	if len(secondPage.Items) != 5 || parties != 0 {
+		t.Errorf("another admin sees %d items, party to %d, want 5 and 0", len(secondPage.Items), parties)
+	}
+
+	// The other tombstone's page for the same request: its own side, ref and hash.
+	_, page2, _ := accountPage(t, s.ac, gone2.ID, nil)
+	if len(page2.Items) != 1 || page2.Items[0].RequestID != id(r3) {
+		t.Fatalf("the counterpart's page: %+v", page2.Items)
+	}
+	it := page2.Items[0]
+	if it.Role != "subject" || it.PartyRef != gone2Ref || it.CounterpartName != "Deleted account" || !it.CounterpartDeleted || it.CounterpartRef != goneRef {
+		t.Errorf("the counterpart's item: %+v", it)
+	}
+	if it.ReviewHash == byID[id(r3)].ReviewHash {
+		t.Error("two parties of one request got the same hash")
+	}
+
+	// One view audit per nonempty page: the three above, never text.
+	audits := viewAudits(t, s.app.DB)
+	if len(audits) != 3 {
+		t.Fatalf("%d view audits after three nonempty pages, want 3", len(audits))
+	}
+	first := audits[0]
+	if first.ActorID == nil || *first.ActorID != s.admin.ID || first.TargetType != "user" || first.TargetID != gone.ID || first.IP != "" ||
+		first.MetaJSON != `{"count": 5, "source": "legacy_review"}` {
+		t.Errorf("view row: %+v", first)
+	}
+	if audits[1].ActorID == nil || *audits[1].ActorID != s.second.ID || audits[2].TargetID != gone2.ID {
+		t.Errorf("view rows by viewer and target: %+v %+v", audits[1], audits[2])
+	}
+	for _, a := range audits {
+		if strings.Contains(a.MetaJSON, "identifying") {
+			t.Error("a view audit holds reason text")
+		}
+	}
+
+	// An account with nothing: an empty unit, no reviewRequired, no audit.
+	before := len(viewAudits(t, s.app.DB))
+	code, page, body = accountPage(t, s.ac, bare.ID, nil)
+	if code != http.StatusOK || body != `{"items":[],"next":null}` || page.ReviewRequired {
+		t.Errorf("an empty account: %d %s, want exactly empty items and a null next", code, body)
+	}
+	if n := len(viewAudits(t, s.app.DB)); n != before {
+		t.Errorf("an empty page wrote a view audit (%d, was %d)", n, before)
+	}
+
+	// A decided pair leaves its own account's page and no other: the deleted
+	// counterpart still lists the request until it is decided itself.
+	legacyMark(t, s.app.DB, int64(r3.ID), gone.ID, policy.RequestContact, true)
+	_, page, _ = accountPage(t, s.ac, gone.ID, nil)
+	if want := []string{id(r1), id(r2), id(r4), id(r5)}; !reflect.DeepEqual(requestIDs(page.Items), want) {
+		t.Errorf("after deciding (r3, account): %v, want %v", requestIDs(page.Items), want)
+	}
+	if got := viewAudits(t, s.app.DB); got[len(got)-1].MetaJSON != `{"count": 4, "source": "legacy_review"}` {
+		t.Errorf("the page's audit count is not what it showed: %s", got[len(got)-1].MetaJSON)
+	}
+	if _, page2, _ = accountPage(t, s.ac, gone2.ID, nil); len(page2.Items) != 1 {
+		t.Errorf("the counterpart lost the request when only the other side was decided: %v", requestIDs(page2.Items))
+	}
+	legacyMark(t, s.app.DB, int64(r3.ID), gone2.ID, policy.RequestContact, false)
+	if _, page2, _ = accountPage(t, s.ac, gone2.ID, nil); len(page2.Items) != 0 || page2.ReviewRequired {
+		t.Errorf("a decided counterpart still lists the request: %+v", page2)
+	}
+}
+
+// An id that is not a deleted account is 404 and reads no request; the actor is
+// decided first, so an admin who may not review cannot tell a deleted account
+// from a live one by the answer.
+func TestLegacyAccountPageNotADeletedAccount(t *testing.T) {
+	s := newLegacyScene(t, 3)
+	gone, live := s.users[0], s.users[1]
+	s.ask(t, gone, live, 1)
+	s.bury(t, gone)
+	statements := recordContactRequestStatements(t, s.app.DB)
+
+	var maxID uint
+	if err := s.app.DB.Raw("SELECT max(id) FROM users").Scan(&maxID).Error; err != nil {
+		t.Fatal(err)
+	}
+	for name, id := range map[string]string{
+		"a live account":      itoa(live.ID),
+		"no such user":        itoa(maxID + 1000),
+		"zero":                "0",
+		"a leading zero":      "0" + itoa(gone.ID),
+		"a plus sign":         "+" + itoa(gone.ID),
+		"negative":            "-" + itoa(gone.ID),
+		"not a number":        "abc",
+		"a fraction":          itoa(gone.ID) + ".0",
+		"beyond 63 bits":      "9223372036854775808",
+		"beyond 64 bits":      "18446744073709551616",
+		"a signed boundary":   "-9223372036854775808",
+		"whitespace":          "%20" + itoa(gone.ID),
+		"a hex number":        "0x" + itoa(gone.ID),
+		"the user's own id":   itoa(s.admin.ID),
+		"a max 63-bit number": "9223372036854775807",
+	} {
+		w := s.ac.do("POST", "/api/v1/admin/erasure-reasons/legacy/"+id+"/page", map[string]any{"after": nil}, true)
+		if w.Code != http.StatusNotFound || strings.Contains(w.Body.String(), "identifying") || strings.Contains(w.Body.String(), "items") {
+			t.Errorf("%s: %d %s, want 404 and nothing else", name, w.Code, w.Body.String())
+		}
+	}
+	// Only the ids that reached the transaction (a well-formed one) read the
+	// table's scanner: none of the above did, since none was a deleted account.
+	if n := len(scannerStatements(statements())); n != 0 {
+		t.Errorf("%d scanner statements for ids that are not deleted accounts, want none", n)
+	}
+	if n := len(viewAudits(t, s.app.DB)); n != 0 {
+		t.Errorf("%d view audits for ids that are not deleted accounts", n)
+	}
+	// The deleted account itself works, so the 404s above were about the id.
+	if code, page, body := accountPage(t, s.ac, gone.ID, nil); code != http.StatusOK || len(page.Items) != 1 {
+		t.Errorf("the deleted account: %d %s", code, body)
+	}
+}
+
+// Who may read an account's text: an active adult admin. Everyone else is
+// refused before the account or any request is read (no statement over
+// contact_requests, no audit row), with the answer discovery gives.
+func TestLegacyAccountPageAuthorization(t *testing.T) {
+	setup := func(t *testing.T) (legacyScene, func() []reasonStatement) {
+		s := newLegacyScene(t, 2)
+		s.ask(t, s.users[0], s.users[1], 1)
+		s.bury(t, s.users[0])
+		return s, recordContactRequestStatements(t, s.app.DB)
+	}
+	noText := func(t *testing.T, body string) {
+		t.Helper()
+		for _, leak := range []string{"identifying", "items", "next", "count", "reviewHash"} {
+			if strings.Contains(body, leak) {
+				t.Errorf("the refusal leaks %q: %s", leak, body)
+			}
+		}
+	}
+	for _, id := range []string{"a deleted account", "a live account", "no such user"} {
+		t.Run("a known-17 admin, "+id, func(t *testing.T) {
+			s, statements := setup(t)
+			if err := s.app.DB.Exec("UPDATE users SET birth_date = ? WHERE id = ?", time.Now().AddDate(-17, 0, 0), s.admin.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			target := map[string]uint{"a deleted account": s.users[0].ID, "a live account": s.users[1].ID, "no such user": 999999}[id]
+			code, _, body := accountPage(t, s.ac, target, nil)
+			if code != http.StatusForbidden || codeOf2(t, body) != "reason_review_not_allowed" {
+				t.Fatalf("%d %s, want 403 reason_review_not_allowed whatever the id", code, body)
+			}
+			noText(t, body)
+			if n := len(statements()); n != 0 {
+				t.Errorf("%d statements over contact_requests before the refusal, want none", n)
+			}
+			if n := len(viewAudits(t, s.app.DB)); n != 0 {
+				t.Errorf("%d view audits for a refused admin", n)
+			}
+		})
+	}
+	t.Run("a teen admin", func(t *testing.T) {
+		s, statements := setup(t)
+		if err := s.app.DB.Exec("UPDATE users SET account_type = ?, birth_date = ? WHERE id = ?", models.AccountTeen, time.Now().AddDate(-15, 0, 0), s.admin.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		code, _, body := accountPage(t, s.ac, s.users[0].ID, nil)
+		if code != http.StatusForbidden || codeOf2(t, body) != "reason_review_not_allowed" {
+			t.Fatalf("%d %s, want 403 reason_review_not_allowed", code, body)
+		}
+		noText(t, body)
+		if len(statements()) != 0 || len(viewAudits(t, s.app.DB)) != 0 {
+			t.Error("a refused teen read requests or wrote an audit row")
+		}
+	})
+	t.Run("an adult admin of unknown age", func(t *testing.T) {
+		s, _ := setup(t)
+		if err := s.app.DB.Exec("UPDATE users SET birth_date = NULL WHERE id = ?", s.admin.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if code, page, body := accountPage(t, s.ac, s.users[0].ID, nil); code != http.StatusOK || len(page.Items) != 1 {
+			t.Fatalf("%d %s, want the page: an unknown age is not under 18", code, body)
+		}
+	})
+	t.Run("a disabled admin is signed out", func(t *testing.T) {
+		s, statements := setup(t)
+		if err := s.app.DB.Exec("UPDATE users SET status = 'disabled' WHERE id = ?", s.admin.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		code, _, body := accountPage(t, s.ac, s.users[0].ID, nil)
+		if code != http.StatusUnauthorized {
+			t.Fatalf("%d %s, want 401", code, body)
+		}
+		noText(t, body)
+		if len(statements()) != 0 {
+			t.Error("a signed-out admin read requests")
+		}
+	})
+	t.Run("a non-admin", func(t *testing.T) {
+		s, statements := setup(t)
+		newTestUser(t, s.app, "legacy-member", erasurePW, models.RoleMember)
+		mc := loginAPI(t, s.app, "legacy-member", erasurePW)
+		code, _, body := accountPage(t, mc, s.users[0].ID, nil)
+		if code != http.StatusForbidden || codeOf2(t, body) == "reason_review_not_allowed" {
+			t.Fatalf("%d %s, want a plain 403", code, body)
+		}
+		noText(t, body)
+		if len(statements()) != 0 || len(viewAudits(t, s.app.DB)) != 0 {
+			t.Error("a non-admin read requests or wrote an audit row")
+		}
+	})
+	t.Run("a signed-out client", func(t *testing.T) {
+		s, _ := setup(t)
+		// A client with no session has no csrf token either, so the token check
+		// may answer first; either way nothing is read.
+		w := newAPIClient(t, s.app).do("POST", legacyPagePath(s.users[0].ID), map[string]any{"after": nil}, false)
+		if (w.Code != http.StatusUnauthorized && w.Code != http.StatusForbidden) || strings.Contains(w.Body.String(), "identifying") {
+			t.Fatalf("%d %s, want 401 or 403", w.Code, w.Body.String())
+		}
+	})
+	t.Run("a post without the csrf token", func(t *testing.T) {
+		s, statements := setup(t)
+		w := s.ac.do("POST", legacyPagePath(s.users[0].ID), map[string]any{"after": nil}, false)
+		if w.Code != http.StatusForbidden || codeOf2(t, w.Body.String()) != "session_expired" {
+			t.Fatalf("%d %s, want the csrf refusal", w.Code, w.Body.String())
+		}
+		noText(t, w.Body.String())
+		if len(statements()) != 0 || len(viewAudits(t, s.app.DB)) != 0 {
+			t.Error("a post without a token read requests or wrote an audit row")
+		}
+	})
+	t.Run("a get is not a route", func(t *testing.T) {
+		s, _ := setup(t)
+		w := s.ac.do("GET", legacyPagePath(s.users[0].ID), nil, false)
+		if w.Code == http.StatusOK || strings.Contains(w.Body.String(), "identifying") {
+			t.Fatalf("%d %s: the account page must be a POST", w.Code, w.Body.String())
+		}
+	})
+}
+
+// The body and the cursor: signed ids in decimal strings, a bad one 400 before
+// anything is read.
+func TestLegacyAccountPageBodyAndCursor(t *testing.T) {
+	s := newLegacyScene(t, 2)
+	gone, live := s.users[0], s.users[1]
+	s.ask(t, gone, live, 1)
+	s.bury(t, gone)
+	statements := recordContactRequestStatements(t, s.app.DB)
+	for name, body := range map[string]any{
+		"a number":           map[string]any{"after": 5},
+		"an object":          map[string]any{"after": map[string]any{}},
+		"not json":           rawJSON(`{"after":`),
+		"no body":            nil,
+		"a json array":       rawJSON(`[]`),
+		"a non-canonical id": map[string]any{"after": "01"},
+		"a plus sign":        map[string]any{"after": "+1"},
+		"empty":              map[string]any{"after": ""},
+		"a space":            map[string]any{"after": " 1"},
+		"a fraction":         map[string]any{"after": "1.5"},
+		"hex":                map[string]any{"after": "0x1"},
+		"negative zero":      map[string]any{"after": "-0"},
+		"beyond int64":       map[string]any{"after": "9223372036854775808"},
+		"below int64":        map[string]any{"after": "-9223372036854775809"},
+	} {
+		w := s.ac.do("POST", legacyPagePath(gone.ID), body, true)
+		if w.Code != http.StatusBadRequest || strings.Contains(w.Body.String(), "identifying") {
+			t.Errorf("%s: %d %s, want 400", name, w.Code, w.Body.String())
+		}
+	}
+	if len(statements()) != 0 || len(viewAudits(t, s.app.DB)) != 0 {
+		t.Error("a bad body read requests or wrote a view audit")
+	}
+	// No "after" key and a null one are both the start.
+	for name, body := range map[string]any{"missing": map[string]any{}, "null": map[string]any{"after": nil}} {
+		w := s.ac.do("POST", legacyPagePath(gone.ID), body, true)
+		if w.Code != http.StatusOK {
+			t.Errorf("after %s: %d %s", name, w.Code, w.Body.String())
+		}
+	}
+	for _, good := range []string{"0", "-1", "9223372036854775807", "-9223372036854775808"} {
+		g := good
+		if code, _, body := accountPage(t, s.ac, gone.ID, &g); code != http.StatusOK {
+			t.Errorf("after %s: %d %s, want 200", good, code, body)
+		}
+	}
+}
+
+// Paging an account: the cursor boundaries over signed ids, the 100-item cap, a
+// unit that spends its budget before finding anything, and the union of the
+// pages against the reference query. Every page's ids are decimal strings.
+func TestLegacyAccountPageCursorBoundaries(t *testing.T) {
+	t.Run("signed boundary ids, one request a page", func(t *testing.T) {
+		s := newLegacyScene(t, 3)
+		gone, live := s.users[0], s.users[1]
+		ids := []int64{math.MinInt64, -1, 0, math.MaxInt64}
+		for i, want := range ids {
+			r := s.ask(t, gone, live, i)
+			s.setID(t, r.ID, want)
+		}
+		// Another account's request between them never enters this account's pages.
+		s.ask(t, s.users[2], live, 9)
+		s.bury(t, gone)
+		setScanBounds(t, 50000, 256, 1)
+		var chain []string
+		var after *string
+		for i := 0; i < 10; i++ {
+			code, page, body := accountPage(t, s.ac, gone.ID, after)
+			if code != http.StatusOK || len(page.Items) > 1 {
+				t.Fatalf("page %d: %d %s", i, code, body)
+			}
+			chain = append(chain, requestIDs(page.Items)...)
+			if page.Next == nil {
+				break
+			}
+			if len(page.Items) == 1 && *page.Next != page.Items[0].RequestID {
+				t.Fatalf("page %d: next %s is not the last request returned %s", i, *page.Next, page.Items[0].RequestID)
+			}
+			after = page.Next
+		}
+		if want := []string{"-9223372036854775808", "-1", "0", "9223372036854775807"}; !reflect.DeepEqual(chain, want) {
+			t.Fatalf("the chain %v, want %v", chain, want)
+		}
+		if n := len(viewAudits(t, s.app.DB)); n != 4 {
+			t.Errorf("%d view audits for four pages of one item, want 4", n)
+		}
+	})
+
+	t.Run("the 100th and 101st request", func(t *testing.T) {
+		s := newLegacyScene(t, 2)
+		gone, live := s.users[0], s.users[1]
+		var want []string
+		for i := 0; i < 101; i++ {
+			want = append(want, itoa(s.ask(t, gone, live, i).ID))
+		}
+		s.bury(t, gone)
+		code, page, body := accountPage(t, s.ac, gone.ID, nil)
+		if code != http.StatusOK || len(page.Items) != 100 || page.Next == nil || *page.Next != want[99] {
+			t.Fatalf("first page: %d items=%d next=%v: %s", code, len(page.Items), page.Next, body)
+		}
+		code, last, body := accountPage(t, s.ac, gone.ID, page.Next)
+		if code != http.StatusOK || len(last.Items) != 1 || last.Next != nil || !last.ReviewRequired {
+			t.Fatalf("second page: %d items=%d next=%v: %s", code, len(last.Items), last.Next, body)
+		}
+		got := append(requestIDs(page.Items), requestIDs(last.Items)...)
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("the union of both pages has the wrong ids or order")
+		}
+		// The audit counts what each page showed.
+		audits := viewAudits(t, s.app.DB)
+		if len(audits) != 2 || audits[0].MetaJSON != `{"count": 100, "source": "legacy_review"}` || audits[1].MetaJSON != `{"count": 1, "source": "legacy_review"}` {
+			t.Errorf("view audits %+v", audits)
+		}
+	})
+
+	t.Run("a spent unit with nothing to show leads on", func(t *testing.T) {
+		s := newLegacyScene(t, 3)
+		gone, live := s.users[0], s.users[1]
+		// Two other people's requests, then this account's: a unit of two rows
+		// finds nothing the first time and the cursor moves past them.
+		s.ask(t, live, s.users[2], 1)
+		s.ask(t, live, s.users[2], 2)
+		mine := s.ask(t, gone, live, 3)
+		s.bury(t, gone)
+		setScanBounds(t, 2, 1, 100)
+		before := len(viewAudits(t, s.app.DB))
+		code, page, body := accountPage(t, s.ac, gone.ID, nil)
+		if code != http.StatusOK || len(page.Items) != 0 || page.Next == nil || page.ReviewRequired {
+			t.Fatalf("first unit: %d %s, want no items, reviewRequired omitted and a next", code, body)
+		}
+		if len(viewAudits(t, s.app.DB)) != before {
+			t.Error("an empty unit wrote a view audit")
+		}
+		code, page, body = accountPage(t, s.ac, gone.ID, page.Next)
+		if code != http.StatusOK || !reflect.DeepEqual(requestIDs(page.Items), []string{itoa(mine.ID)}) {
+			t.Fatalf("second unit: %d %s, want the request", code, body)
+		}
+	})
+
+	t.Run("pages equal the reference over a mix", func(t *testing.T) {
+		s := newLegacyScene(t, 5)
+		r := rand.New(rand.NewSource(301))
+		for i := 0; i < 160; i++ {
+			a, b := s.users[r.Intn(len(s.users))], s.users[r.Intn(len(s.users))]
+			if a.ID == b.ID {
+				continue
+			}
+			req := s.ask(t, a, b, i)
+			if r.Intn(5) == 0 {
+				if err := s.app.DB.Exec("UPDATE contact_requests SET reason = '' WHERE id = ?", req.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		s.bury(t, s.users[0], s.users[1], s.users[2])
+		for _, u := range s.users[:3] {
+			for _, it := range legacyReference(t, s.app.DB) {
+				if it.Party == int64(u.ID) && r.Intn(4) == 0 {
+					var purpose string
+					if err := s.app.DB.Raw("SELECT purpose FROM contact_requests WHERE id = ?", it.Request).Scan(&purpose).Error; err != nil {
+						t.Fatal(err)
+					}
+					legacyMark(t, s.app.DB, it.Request, u.ID, purpose, r.Intn(2) == 0)
+				}
+			}
+		}
+		setScanBounds(t, 50000, 16, 7)
+		ref := legacyReference(t, s.app.DB)
+		for _, u := range s.users[:3] {
+			var want []string
+			for _, it := range ref {
+				if it.Party == int64(u.ID) {
+					want = append(want, strconv.FormatInt(it.Request, 10))
+				}
+			}
+			var got []string
+			var after *string
+			for pages := 0; pages < 100; pages++ {
+				code, page, body := accountPage(t, s.ac, u.ID, after)
+				if code != http.StatusOK || len(page.Items) > 7 {
+					t.Fatalf("account %d page %d: %d %d items %s", u.ID, pages, code, len(page.Items), body)
+				}
+				got = append(got, requestIDs(page.Items)...)
+				if page.Next == nil {
+					break
+				}
+				after = page.Next
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("account %d: pages gave %v, the reference %v", u.ID, got, want)
+			}
+		}
+	})
+}
+
+// The page is one transaction that ends with the actor seal: the early actor
+// read first, the account and the scan after it, the view audit before the
+// seal, and nothing after the seal.
+func TestLegacyAccountPageStatementOrder(t *testing.T) {
+	s := newLegacyScene(t, 2)
+	gone, live := s.users[0], s.users[1]
+	s.ask(t, gone, live, 1)
+	s.bury(t, gone)
+	statements := recordTxStatements(t, s.app.DB)
+	if code, page, body := accountPage(t, s.ac, gone.ID, nil); code != http.StatusOK || len(page.Items) != 1 {
+		t.Fatalf("%d %s", code, body)
+	}
+	const sealSQL = "password_hash, session_version, logout_version FROM users WHERE id = $1 FOR SHARE NOWAIT"
+	all := statements()
+	var pool any
+	for _, st := range all {
+		if strings.Contains(st.sql, sealSQL) || strings.Contains(st.sql, strings.ReplaceAll(sealSQL, "$1", "?")) {
+			if pool != nil {
+				t.Fatal("two seal statements in one request")
+			}
+			pool = st.pool
+		}
+	}
+	if pool == nil {
+		t.Fatal("no seal statement")
+	}
+	var tx []string
+	for _, st := range all {
+		if st.pool == pool {
+			tx = append(tx, st.sql)
+		}
+	}
+	at := func(sub string) int {
+		for i, sql := range tx {
+			if strings.Contains(sql, sub) {
+				return i
+			}
+		}
+		return -1
+	}
+	actorRead, account, scan, items, auditAt, seal := at(`FROM "users"`), at("SELECT id, deleted_at FROM users WHERE id"), at(reasonUnitPrefix), at("AND reason <> ''"), at(`INSERT INTO "audit_logs"`), len(tx)-1
+	if !strings.Contains(tx[seal], "FOR SHARE NOWAIT") {
+		t.Fatalf("the transaction does not end with the seal: %v", tx)
+	}
+	if !(actorRead >= 0 && actorRead < account && account < scan && scan < items && items < auditAt && auditAt < seal) {
+		t.Errorf("statement order: actor read %d, account %d, scan %d, items %d, audit %d, seal %d in %v", actorRead, account, scan, items, auditAt, seal, tx)
+	}
+}
+
+// The seal decides the page: a stale session, a cleared password or an admin who
+// stopped being allowed to review commits nothing, and its answer carries no
+// item. The view audit is in the same transaction, so a refused page leaves none.
+func TestLegacyAccountPageSealDecides(t *testing.T) {
+	for name, tc := range map[string]struct {
+		code   int
+		reason string
+		hook   func(s legacyScene) func(*gorm.DB)
+	}{
+		"a stale session": {http.StatusUnauthorized, "signed_out", func(s legacyScene) func(*gorm.DB) {
+			return func(*gorm.DB) {
+				if err := s.app.DB.Exec("UPDATE users SET session_version = session_version + 1 WHERE id = ?", s.admin.ID).Error; err != nil {
+					t.Error(err)
+				}
+			}
+		}},
+		"a logout": {http.StatusUnauthorized, "signed_out", func(s legacyScene) func(*gorm.DB) {
+			return func(*gorm.DB) {
+				if err := s.app.DB.Exec("UPDATE users SET logout_version = logout_version + 1 WHERE id = ?", s.admin.ID).Error; err != nil {
+					t.Error(err)
+				}
+			}
+		}},
+		"a cleared password": {http.StatusUnauthorized, "signed_out", func(s legacyScene) func(*gorm.DB) {
+			return func(*gorm.DB) {
+				if err := s.app.DB.Exec("UPDATE users SET password_hash = NULL WHERE id = ?", s.admin.ID).Error; err != nil {
+					t.Error(err)
+				}
+			}
+		}},
+		"an admin who became known to be 17": {http.StatusForbidden, "reason_review_not_allowed", func(s legacyScene) func(*gorm.DB) {
+			return func(*gorm.DB) {
+				if err := s.app.DB.Exec("UPDATE users SET birth_date = ? WHERE id = ?", time.Now().AddDate(-17, 0, 0), s.admin.ID).Error; err != nil {
+					t.Error(err)
+				}
+			}
+		}},
+		"an admin who became a member": {http.StatusUnauthorized, "signed_out", func(s legacyScene) func(*gorm.DB) {
+			return func(*gorm.DB) {
+				if err := s.app.DB.Exec("UPDATE users SET role = 'member', session_version = session_version + 1 WHERE id = ?", s.admin.ID).Error; err != nil {
+					t.Error(err)
+				}
+			}
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newLegacyScene(t, 2)
+			s.ask(t, s.users[0], s.users[1], 1)
+			s.bury(t, s.users[0])
+			s.app.hooks.readBeforeSeal = tc.hook(s)
+			code, _, body := accountPage(t, s.ac, s.users[0].ID, nil)
+			if code != tc.code || codeOf2(t, body) != tc.reason {
+				t.Fatalf("%d %s, want %d %q", code, body, tc.code, tc.reason)
+			}
+			for _, leak := range []string{"identifying", "items", "reviewHash"} {
+				if strings.Contains(body, leak) {
+					t.Errorf("the refusal leaks %q: %s", leak, body)
+				}
+			}
+			if n := len(viewAudits(t, s.app.DB)); n != 0 {
+				t.Errorf("%d view audits committed for a page the seal refused", n)
+			}
+		})
+	}
+
+	t.Run("an empty unit is decided by the seal too", func(t *testing.T) {
+		s := newLegacyScene(t, 2)
+		s.bury(t, s.users[0])
+		s.app.hooks.readBeforeSeal = func(*gorm.DB) {
+			if err := s.app.DB.Exec("UPDATE users SET birth_date = ? WHERE id = ?", time.Now().AddDate(-17, 0, 0), s.admin.ID).Error; err != nil {
+				t.Error(err)
+			}
+		}
+		code, _, body := accountPage(t, s.ac, s.users[0].ID, nil)
+		if code != http.StatusForbidden || codeOf2(t, body) != "reason_review_not_allowed" || strings.Contains(body, "items") {
+			t.Fatalf("%d %s, want 403 reason_review_not_allowed with no page", code, body)
+		}
+	})
+
+	t.Run("the account is deleted account only until the read", func(t *testing.T) {
+		// A live account that is deleted between requests is a different 404/200
+		// each time: nothing is cached or remembered by the route.
+		s := newLegacyScene(t, 2)
+		s.ask(t, s.users[0], s.users[1], 1)
+		if code, _, _ := accountPage(t, s.ac, s.users[0].ID, nil); code != http.StatusNotFound {
+			t.Fatalf("a live account: %d, want 404", code)
+		}
+		s.bury(t, s.users[0])
+		if code, page, body := accountPage(t, s.ac, s.users[0].ID, nil); code != http.StatusOK || len(page.Items) != 1 {
+			t.Fatalf("after it was deleted: %d %s", code, body)
+		}
+	})
+}
+
+// A busy actor row is retried under the page's bounds and then 503 busy, with no
+// item and no audit row; an unacknowledged rollback starts no second attempt
+// (TestLegacyReadBusySealRollbackNotAcknowledged covers this route too).
+func TestLegacyAccountPageSealBusy(t *testing.T) {
+	old := busyRetryWindow
+	busyRetryWindow = 30 * time.Second
+	t.Cleanup(func() { busyRetryWindow = old })
+	s := newLegacyScene(t, 2)
+	s.ask(t, s.users[0], s.users[1], 1)
+	s.bury(t, s.users[0])
+	var attempts atomic.Int64
+	s.app.hooks.readBeforeSeal = func(*gorm.DB) { attempts.Add(1) }
+	hold, _ := beginOwnedTx(t, s.app.DB)
+	if err := hold.Exec("SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE", s.admin.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	code, _, body := accountPage(t, s.ac, s.users[0].ID, nil)
+	if code != http.StatusServiceUnavailable || codeOf2(t, body) != "reason_review_busy" || strings.Contains(body, "items") || strings.Contains(body, "identifying") {
+		t.Fatalf("under the hold: %d %s, want 503 reason_review_busy", code, body)
+	}
+	if n := attempts.Load(); n != 3 {
+		t.Fatalf("%d attempts, want 3", n)
+	}
+	if n := len(viewAudits(t, s.app.DB)); n != 0 {
+		t.Fatalf("%d view audits after three rolled-back attempts, want none", n)
+	}
+	hold.Rollback()
+	attempts.Store(0)
+	code, page, body := accountPage(t, s.ac, s.users[0].ID, nil)
+	if code != http.StatusOK || len(page.Items) != 1 || attempts.Load() != 1 {
+		t.Fatalf("after the release: %d %s (%d attempts)", code, body, attempts.Load())
+	}
+	if n := len(viewAudits(t, s.app.DB)); n != 1 {
+		t.Fatalf("%d view audits after one served page, want 1", n)
+	}
+}
+
+// A failed statement is a failed page (503, retry the same cursor), never an
+// empty one and never a half-written audit: the read of the account, of the
+// scan's lookups, of the items, and the audit insert itself.
+func TestLegacyAccountPageFailureIsNeverAnEmptyPage(t *testing.T) {
+	for name, match := range map[string]func(string) bool{
+		"the account read":    func(sql string) bool { return strings.Contains(sql, "SELECT id, deleted_at FROM users WHERE id") },
+		"a scan lookup":       func(sql string) bool { return strings.Contains(sql, "unnest(") },
+		"the facts lookup":    func(sql string) bool { return strings.Contains(sql, "LEFT JOIN users req") },
+		"the item read":       func(sql string) bool { return strings.Contains(sql, "reason <> ''") && strings.Contains(sql, "ANY(") },
+		"the view audit":      func(sql string) bool { return strings.Contains(sql, `"audit_logs"`) },
+		"the context lookups": func(sql string) bool { return strings.Contains(sql, `FROM "groups"`) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newLegacyScene(t, 2)
+			group := newTestGroup(t, s.app, s.users[1], "Legacy Group", models.GroupActive)
+			erasureMakeRequest(t, s.app.DB, policy.RequestContact, policy.ContactWithdrawn, s.users[0].ID, s.users[1].ID, group.ID, 0, 0, 1, "")
+			s.bury(t, s.users[0])
+			stop := failStatements(t, s.app.DB, match)
+			code, _, body := accountPage(t, s.ac, s.users[0].ID, nil)
+			stop()
+			if code != http.StatusServiceUnavailable || codeOf2(t, body) != "reason_review_busy" {
+				t.Fatalf("%d %s, want 503 reason_review_busy", code, body)
+			}
+			for _, leak := range []string{"items", "identifying", "next", "reviewRequired"} {
+				if strings.Contains(body, leak) {
+					t.Errorf("the failure leaks %q: %s", leak, body)
+				}
+			}
+			if n := len(viewAudits(t, s.app.DB)); n != 0 {
+				t.Errorf("%d view audits after a failed page, want none", n)
+			}
+		})
 	}
 }

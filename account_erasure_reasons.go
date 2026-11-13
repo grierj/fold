@@ -76,6 +76,9 @@ const (
 	reasonReviewVersion = 1
 	// reasonSourceDeletion marks a decision made inside an account deletion.
 	reasonSourceDeletion = "deletion"
+	// reasonSourceLegacy marks a view or a decision made in the deleted-accounts
+	// review (T07B-3a), after the account was already deleted.
+	reasonSourceLegacy = "legacy_review"
 	// reasonStatementTimeout bounds each statement of a page transaction.
 	reasonStatementTimeout = 10 * time.Second
 )
@@ -406,8 +409,10 @@ type reasonPageBody struct {
 	After *string `json:"after"`
 }
 
-// reasonItemJSON is one reason in a page. requestId and counterpartRef are
-// decimal strings so a signed 64-bit id survives JavaScript.
+// reasonItemJSON is one reason in a page. requestId, counterpartRef and
+// partyRef are decimal strings so a signed 64-bit id survives JavaScript.
+// partyRef is set only by a deleted account's own legacy page: the account the
+// item is about, whose name is never shown.
 type reasonItemJSON struct {
 	RequestID          string    `json:"requestId"`
 	ReviewHash         string    `json:"reviewHash"`
@@ -418,6 +423,7 @@ type reasonItemJSON struct {
 	CounterpartName    string    `json:"counterpartName"`
 	CounterpartDeleted bool      `json:"counterpartDeleted"`
 	CounterpartRef     string    `json:"counterpartRef,omitempty"`
+	PartyRef           string    `json:"partyRef,omitempty"`
 	ReviewerIsParty    bool      `json:"reviewerIsParty"`
 	ContextLabel       string    `json:"contextLabel,omitempty"`
 	Reason             string    `json:"reason"`
