@@ -114,7 +114,7 @@ case "$1" in
       *NetworkMode*) echo "${STUB_NET:-bridge}" ;;
       *Mounts*) printf '%b' "${STUB_MOUNTS:-/var/lib/docker /var/lib/docker/volumes/x/_data\n}" ;;
     esac ;;
-  exec) case "$*" in *fold-owned-scan*) echo 0 ;; esac ;;
+  exec) case "$*" in *fold-owned-scan*) echo 0 ;; *fold-listener-scan*) printf "%s\n" "${STUB_LISTEN-checked 2}"; exit "${STUB_LISTEN_RC:-0}" ;; esac ;;
 esac
 exit 0
 STUB
@@ -171,8 +171,51 @@ launch --out "$WORK/ev1" -- --keep >"$WORK/l1.out" 2>&1
 run_line="$(grep '^run ' "$WORK/stub.log")"
 [[ "$(grep -c '^run ' "$WORK/stub.log")" == 1 ]]
 # One container, privileged, named and hostnamed for this run, with no mounts, host network or socket.
-grep -qE -- '--name fold-drill-[0-9a-f]{12} --hostname fold-drill-[0-9a-f]{12} --privileged -e DOCKER_TLS_CERTDIR= docker:29-dind$' <<<"$run_line"
-if grep -qE -- ' -v |--volume|--mount|--network|--net |docker\.sock|--pid|--ipc|--userns|--cap-add' <<<"$run_line"; then echo "isolation: the nested container is given more than it needs: $run_line" >&2; exit 1; fi
+grep -qE -- '--name fold-drill-[0-9a-f]{12} --hostname fold-drill-[0-9a-f]{12} --privileged -e DOCKER_TLS_CERTDIR= docker:29-dind@sha256:[0-9a-f]{64} dockerd --host=unix:///var/run/docker.sock$' <<<"$run_line"
+if grep -qE -- ' -v |--volume|--mount|--network|--net |docker\.sock|--pid|--ipc|--userns|--cap-add|--publish| -p | -P |--expose' <<<"${run_line% dockerd --host=unix:///var/run/docker.sock}"; then echo "isolation: the nested container is given more than it needs: $run_line" >&2; exit 1; fi
+# The daemon's own command line. The image's ENTRYPOINT (dockerd-entrypoint.sh) puts tcp://0.0.0.0:2375 in front of any arguments that are empty or start with `-`, so the first word
+# after the image has to be `dockerd` itself, with exactly one --host, the unix socket. check_dind_argv reads the argv file (its first line is this launch's `run`, every argument
+# quoted) and takes the image as the one argument before `dockerd`: the default is a digest-pinned reference, and --dind-image is passed as given.
+check_dind_argv() { # IMAGE_PATTERN
+  local -a v
+  eval "v=($(head -n 1 "$WORK/stub.log.argv"))"
+  [[ "${#v[@]}" == 12 && "${v[0]}" == run && "${v[1]}" == -d && "${v[2]}" == --name && "${v[4]}" == --hostname && "${v[6]}" == --privileged && "${v[7]}" == -e && "${v[8]}" == DOCKER_TLS_CERTDIR= ]] \
+    || { echo "isolation: the nested launch is not the expected twelve arguments: ${v[*]}" >&2; exit 1; }
+  [[ "${v[9]}" =~ $1 && "${v[10]}" == dockerd && "${v[11]}" == --host=unix:///var/run/docker.sock ]] || { echo "isolation: the daemon is not started as 'dockerd --host=unix:///var/run/docker.sock' after the image: ${v[*]:9}" >&2; exit 1; }
+}
+check_dind_argv '^docker:29-dind@sha256:[0-9a-f]{64}$'
+# The digest is the multi-arch index of docker:29-dind, as the launcher says; the fixture only requires that it is a full sha256 and that the tag it came from is still named.
+grep -qE '^DIND_DEFAULT=docker:29-dind@sha256:[0-9a-f]{64}$' "$LA"; grep -q '^OUT="" DIND=\$DIND_DEFAULT ' "$LA"
+# The listening-socket lookup is the launcher's own LISTEN_SCAN, passed as ONE argument of `sh -c`, followed by its name and exactly the two files it reads, after the daemon answers
+# (`docker info`) and before anything is installed or run.
+LISTEN_TXT="$(sed -n "/^LISTEN_SCAN=\$(cat <<'LISTEN'\$/,/^LISTEN\$/p" "$LA" | sed '1d;$d')"
+[[ -n "$LISTEN_TXT" ]]
+scan_n=0; scan_argv=
+while IFS= read -r l; do if [[ "$l" == *" fold-listener-scan "* ]]; then scan_n=$((scan_n + 1)); scan_argv=$l; fi; done <"$WORK/stub.log.argv"
+[[ "$scan_n" == 1 ]]
+declare -a scan_v; eval "scan_v=($scan_argv)"
+[[ "${#scan_v[@]}" == 8 && "${scan_v[0]}" == exec && "${scan_v[1]}" =~ ^c{64}$ && "${scan_v[2]}" == sh && "${scan_v[3]}" == -c && "${scan_v[4]}" == "$LISTEN_TXT" && "${scan_v[5]}" == fold-listener-scan && "${scan_v[6]}" == /proc/net/tcp && "${scan_v[7]}" == /proc/net/tcp6 ]]
+info_l="$(grep -n '^exec c\{64\} docker info$' "$WORK/stub.log" | head -n 1 | cut -d: -f1)"; scan_l="$(grep -n ' fold-listener-scan /proc/net/tcp /proc/net/tcp6$' "$WORK/stub.log" | head -n 1 | cut -d: -f1)"
+apk_l="$(grep -n '^exec c\{64\} apk add' "$WORK/stub.log" | head -n 1 | cut -d: -f1)"
+[[ -n "$info_l" && -n "$scan_l" && -n "$apk_l" && "$info_l" -lt "$scan_l" && "$scan_l" -lt "$apk_l" ]]
+# The lookup itself, run for real on made-up /proc/net/tcp files (a LISTEN row is state 0A; 2375 is 0x0947, 2376 is 0x0948): a listener on either port at any address, in either file, is
+# printed; an established connection on 2375, listeners elsewhere and a file that cannot be read are not; and the count says how many files it could read.
+mkdir "$WORK/proc"
+tcp_hdr='  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode'
+row() { printf '   0: %s 00000000:0000 %s 00000000:00000000 00:00000000 00000000     0        0 1 1 x\n' "$1" "$2"; }
+{ echo "$tcp_hdr"; row 00000000:0050 0A; row 0100007F:0BB8 0A; row 0100007F:0947 01; row 0100007F:0948 06; } >"$WORK/proc/clean4"
+{ echo "$tcp_hdr"; row 00000000000000000000000000000000:01BB 0A; } >"$WORK/proc/clean6"
+{ echo "$tcp_hdr"; row 00000000:0947 0A; } >"$WORK/proc/bad4"
+{ echo "$tcp_hdr"; row 0100007F:0948 0A; } >"$WORK/proc/loop4"
+{ echo "$tcp_hdr"; row 00000000000000000000000000000000:0947 0A; } >"$WORK/proc/bad6"
+echo "$tcp_hdr" >"$WORK/proc/empty"
+scan() { sh -c "$LISTEN_TXT" fold-listener-scan "$@"; }
+[[ "$(scan "$WORK/proc/clean4" "$WORK/proc/clean6")" == 'checked 2' ]]
+[[ "$(scan "$WORK/proc/empty" "$WORK/proc/absent")" == 'checked 1' ]]
+[[ "$(scan "$WORK/proc/absent" "$WORK/proc/absent2")" == 'checked 0' ]]
+[[ "$(scan "$WORK/proc/bad4" "$WORK/proc/clean6")" == "$WORK/proc/bad4 listens on tcp 00000000:0947"$'\n''checked 2' ]]
+[[ "$(scan "$WORK/proc/clean4" "$WORK/proc/bad6")" == "$WORK/proc/bad6 listens on tcp 00000000000000000000000000000000:0947"$'\n''checked 2' ]]
+[[ "$(scan "$WORK/proc/loop4" "$WORK/proc/clean6")" == "$WORK/proc/loop4 listens on tcp 0100007F:0948"$'\n''checked 2' ]]
 # The repository goes in as a bundle by cp, the drill runs inside with the flag, the evidence comes out by cp, and the container is removed by id.
 grep -q '^cp .*fold.bundle ccc' "$WORK/stub.log"; grep -q "^cp ccc[c]*:/work/out/. $WORK/ev1/" "$WORK/stub.log"
 grep -q '^exec -e FOLD_NESTED_RUN=[0-9a-f]\{12\} -e FOLD_DRILL_ISOLATED_DAEMON=1 -e QC1_NO_SANDBOX=1 -e QC1_WEB_DIR=/work/fold/web -w /work/fold c\{64\} bash -c .* _ bash deploy/digitalocean/restore-drill.sh --dir /work/out --keep$' "$WORK/stub.log"
@@ -181,8 +224,29 @@ prep_l="$(grep -n 'browser-prepare.sh /work/prep$' "$WORK/stub.log" | head -n 1 
 [[ -n "$prep_l" && -n "$run_l" && "$prep_l" -lt "$run_l" ]]
 wrapped_call "$WORK/stub.log.argv" deploy/digitalocean/qc1/browser-prepare.sh /work/prep; wrapped_call "$WORK/stub.log.argv" deploy/digitalocean/restore-drill.sh --dir /work/out --keep   # the preparation and the drill, each under the exact supervisor (one argument), which loads the prepared Chromium, then its own words as separate arguments
 grep -qE '^rm -fv c{64}$' "$WORK/stub.log"
+# The override: any reference goes in exactly as given, with the same daemon command line.
+: >"$WORK/stub.log"
+launch --out "$WORK/ev1o" --dind-image example.invalid/dind:override -- --keep >"$WORK/l1o.out" 2>&1
+grep -q 'drill exit=0' "$WORK/l1o.out"
+check_dind_argv '^example\.invalid/dind:override$'
 # Refusals leave the container removed and the drill unrun.
 refuse_launch() { : >"$WORK/stub.log"; local rc=0; "$@" >"$WORK/lr.out" 2>&1 || rc=$?; [[ "$rc" == 1 ]]; }
+# A daemon that is not shown to be unix-only is refused as soon as it answers, before anything is installed or run in it: a TCP 2375 or 2376 listener, a lookup that fails (even if its
+# text would pass), prints nothing, finds no readable file or prints anything else is no proof, and the container is removed by id.
+refuse_tcp() { # NAME OUTPUT [RC]
+  STUB_LISTEN="$2" STUB_LISTEN_RC="${3:-0}" refuse_launch launch --out "$WORK/ev-$1"
+  grep -q 'not shown to listen on its unix socket only' "$WORK/lr.out"; grep -qE '^rm -fv c{64}$' "$WORK/stub.log"
+  grep -q ' fold-listener-scan /proc/net/tcp /proc/net/tcp6$' "$WORK/stub.log"
+  if grep -qE 'apk add|restore-drill.sh|qc1-measure.sh|browser-prepare.sh|^cp .*fold.bundle' "$WORK/stub.log"; then echo "isolation: $1: the run went on after the TCP check refused it" >&2; exit 1; fi
+}
+refuse_tcp tcp2375 $'/proc/net/tcp listens on tcp 00000000:0947\nchecked 2'
+grep -q 'listens on tcp 00000000:0947' "$WORK/lr.out"
+refuse_tcp tcp2376 $'/proc/net/tcp6 listens on tcp 00000000000000000000000000000000:0948\nchecked 2'
+refuse_tcp silent ''
+refuse_tcp none 'checked 0'
+refuse_tcp odd 'checked 3'
+refuse_tcp noise $'warning\nchecked 2'
+refuse_tcp failed 'checked 2' 1
 STUB_MOUNTS='/var/run/docker.sock /var/run/docker.sock\n' refuse_launch launch --out "$WORK/ev2"
 grep -q 'mounts beyond its own /var/lib/docker' "$WORK/lr.out"; grep -qE '^rm -fv c{64}$' "$WORK/stub.log"; if grep -q 'restore-drill.sh' "$WORK/stub.log"; then exit 1; fi
 STUB_MOUNTS='/var/lib/docker /v\n/work /home/me/work\n' refuse_launch launch --out "$WORK/ev3"
@@ -204,7 +268,7 @@ case "$1" in
   info) echo '{"Name":"x","ContainersRunning":0}' ;;
   run) printf 'c%.0s' {1..64}; echo ;;
   inspect) case "$*" in *NetworkMode*) echo bridge ;; *Mounts*) echo '/var/lib/docker /v' ;; esac ;;
-  exec) case "$*" in *fold-owned-scan*) echo 0 ;; *restore-drill.sh*) exit 7 ;; esac ;;
+  exec) case "$*" in *fold-owned-scan*) echo 0 ;; *fold-listener-scan*) echo "checked 2" ;; *restore-drill.sh*) exit 7 ;; esac ;;
 esac
 exit 0
 STUB

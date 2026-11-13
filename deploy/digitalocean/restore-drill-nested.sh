@@ -42,6 +42,10 @@
 #     `docker cp`, the evidence comes out the same way, into the new --out
 #     directory; after it starts, its mounts are read back and it is torn down
 #     if they hold anything but its own /var/lib/docker volume;
+#   - the inner daemon listens on its unix socket only: it is started as `dockerd --host=unix:///var/run/docker.sock`, never through the image's
+#     default arguments, which add an unauthenticated tcp://0.0.0.0:2375 for a privileged daemon (the workload only ever reaches it by `docker exec`).
+#     Once it answers, the listening TCP sockets in the container are read back and the run is refused if 2375 or 2376 is one of them (or if they cannot
+#     be read), before anything is installed or run. That is a check of this container's own network namespace, not a test of what could reach it;
 #   - it needs --privileged, which Docker allows only to a daemon you control; a
 #     rootless daemon that refuses privileged containers cannot host this drill
 #     (the drill then cannot run at all, which is the intended failure);
@@ -97,7 +101,12 @@
 # go with the container).
 set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
-OUT="" DIND=docker:29-dind QC1=0 CROSS=0
+# The default is the multi-arch index of docker:29-dind (Docker Hub, built 2026-11-05; Docker 29.9.3), so a campaign's daemon cannot change between runs or
+# between its arm64 and amd64 hosts. A tag moves; the digest does not. Moving it is a decision: check `docker buildx imagetools inspect docker:29-dind`, read
+# the new image's dockerd-entrypoint.sh (the daemon arguments below depend on it), and change this line and the fixtures' pattern together. --dind-image takes
+# any reference, a tag included, and is used as given.
+DIND_DEFAULT=docker:29-dind@sha256:08a98015fce594af7c382883bea080ea206de74402a95da9dc52b6428c8cd121
+OUT="" DIND=$DIND_DEFAULT QC1=0 CROSS=0
 drill_args=()
 while (( $# )); do
   case "$1" in
@@ -273,6 +282,21 @@ for d in /proc/[0-9]*; do
 done
 echo "$n"
 SCAN
+)
+# The lookup that shows the daemon has no TCP API: it runs in the container (busybox sh and awk) on the files given as arguments, /proc/net/tcp and /proc/net/tcp6, which
+# are the container's own network namespace, and prints a line for each socket in LISTEN state (0A) on port 2375 (0x0947) or 2376 (0x0948), on any address, then "checked N",
+# N being how many of the files it could read. Nothing is signalled or written. A listener on another port is none of its business (the drill's own containers publish 80 and 443
+# through the daemon, after this has run).
+# shellcheck disable=SC2016 # the script runs inside the container
+LISTEN_SCAN=$(cat <<'LISTEN'
+n=0
+for f; do
+  [ -r "$f" ] || continue
+  n=$((n+1))
+  awk 'NR > 1 && $4 == "0A" { c = split($2, a, ":"); p = toupper(a[c]); if (p == "0947" || p == "0948") print FILENAME " listens on tcp " $2 }' "$f" || exit 1
+done
+echo "checked $n"
+LISTEN
 )
 # WRAP is what each docker exec runs the workload under (bash -c "$WRAP" _ COMMAND...). It loads the Chromium the preparation found, then runs COMMAND in a process group of
 # its own, under a leader that does nothing but hold the group, and polls for /work/stop-request. The request becomes one TERM to that group, sent by the group's number, which
@@ -620,7 +644,12 @@ mkdir "$OUT"
 # No -v, no --network host, no docker.sock: the one thing this container may do
 # is run its own daemon. The image's own anonymous /var/lib/docker volume is the
 # only mount it will have.
-CID="$(docker run -d --name "$NAME" --hostname "$NAME" --privileged -e DOCKER_TLS_CERTDIR= "$DIND")"
+# The image has an ENTRYPOINT (dockerd-entrypoint.sh) and no CMD. When the arguments after the image are empty or start with `-`, the entrypoint puts its own
+# dockerd command in front of them, and without TLS that command includes --host=tcp://0.0.0.0:2375: an unauthenticated API of a privileged daemon, open to
+# whatever shares the bridge or the inner containers' gateway. Appending --host=unix://... to those defaults would not remove it. A first argument of `dockerd`
+# skips the defaults and is exec'd through the same docker-init and dind wrapper, so the daemon, its signal handling and its cleanup are the ones the image
+# starts by default, with the one socket named here, which is where the docker CLI in the container looks.
+CID="$(docker run -d --name "$NAME" --hostname "$NAME" --privileged -e DOCKER_TLS_CERTDIR= "$DIND" dockerd --host=unix:///var/run/docker.sock)"
 mounts="$(docker inspect --format '{{range .Mounts}}{{.Destination}} {{.Source}}{{"\n"}}{{end}}' "$CID")"
 bad="$(awk '$1 != "/var/lib/docker" && NF' <<<"$mounts")"
 if [[ -n "$bad" || "$mounts" == *docker.sock* ]]; then
@@ -631,6 +660,15 @@ fi
 if [[ "$(docker inspect --format '{{.HostConfig.NetworkMode}}' "$CID")" == host ]]; then echo 'restore-drill-nested: the container uses the host network' >&2; exit 1; fi
 for ((i=0;i<120;i++)); do docker exec "$CID" docker info >/dev/null 2>&1 && break; sleep 1; done
 docker exec "$CID" docker info >/dev/null
+# The daemon has bound its sockets by the time it answers, so this is the moment a TCP listener would exist. A probe that cannot read /proc/net/tcp, fails or prints
+# anything else proves nothing and refuses the run just as a listener does (only "checked 1" or "checked 2" passes: tcp always, tcp6 where the kernel has it).
+tcp_probe_rc=0
+tcp_probe="$(docker exec "$CID" sh -c "$LISTEN_SCAN" fold-listener-scan /proc/net/tcp /proc/net/tcp6 2>&1)" || tcp_probe_rc=$?
+if (( tcp_probe_rc != 0 )) || [[ "$tcp_probe" != 'checked 1' && "$tcp_probe" != 'checked 2' ]]; then
+  echo 'restore-drill-nested: the inner daemon is not shown to listen on its unix socket only (TCP 2375 or 2376 is open, or the listening sockets could not be read); refusing:' >&2
+  printf '%s\n' "$tcp_probe" >&2
+  exit 1
+fi
 docker exec "$CID" apk add --no-cache bash git jq curl go nodejs npm util-linux coreutils findutils tar make openssl >/dev/null
 docker cp "$TMP/fold.bundle" "$CID:/work.bundle"
 docker exec "$CID" sh -c "git clone -q /work.bundle /work/fold && cd /work/fold && git checkout -q --detach $HEAD_SHA && test -z \"\$(git status --porcelain)\""

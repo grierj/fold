@@ -440,6 +440,14 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   `restore-drill-nested.sh` and require, in the argv file, that each exec line ends with `bash -c`, exactly that text as ONE argument, `_`, `bash` and the workload's words as separate
   arguments; a call whose `WRAP` and words are joined into one argument is refused (each fixture checks that on a made-up line). They also require that it loads the prepared Chromium,
   polls for the stop request and TERMs the group, and does not exec the command in its place. The scale self-test's stub docker does the same, and `nest-done` checks the preparation's call.
+- **The nested daemon has no TCP API** (`isolation-fixtures.sh`). The `docker:*-dind` entrypoint adds `--host=tcp://0.0.0.0:2375` (an unauthenticated API of a privileged daemon) to its
+  default command whenever the arguments after the image are empty or start with `-`; an extra `--host=unix://...` after those defaults does not remove it. So the launcher starts the
+  daemon as `docker run ... <image> dockerd --host=unix:///var/run/docker.sock`, and the fixture reads the launch's argv file and requires exactly those twelve arguments (the image
+  being the digest-pinned default or, with `--dind-image`, the reference as given). The launcher then reads the container's `/proc/net/tcp` and `tcp6` with `LISTEN_SCAN` once the
+  daemon answers and refuses the run, removing the container, if 2375 or 2376 is a listening port or the lookup proves nothing (fails, prints anything but `checked 1` or `checked 2`);
+  the fixture runs that lookup for real on made-up proc files and drives the refusals through the stub docker. This is the container's own network namespace, not a test of what could
+  reach it, and it does not run the real image: the real daemon is a hand check (`docs/FIRST-CHURCH-CHECKS.md`). Moving the pinned digest is a deliberate change: read the new image's
+  `dockerd-entrypoint.sh` first.
 
 ### Reason-review scale matrix (#293, #294)
 

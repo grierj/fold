@@ -716,6 +716,11 @@ exec)
 	done
 	shift # the container id
 	case "$*" in
+	*fold-listener-scan*)
+		# The launcher's check that the inner daemon has no TCP API: the container is a simulation with no daemon, so it answers as a daemon with unix sockets only would.
+		echo 'checked 2'
+		exit 0
+		;;
 	*fold-owned-scan*)
 		[[ -z ${STUB_SCAN_HANG:-} ]] || hang
 		# Only the first lookup that gets this far stalls: whatever else is left running afterwards is what the case is about.
