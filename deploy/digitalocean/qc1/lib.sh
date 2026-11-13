@@ -1527,3 +1527,100 @@ qc1_app_peak() { # baseline_kb end_kb samples_file
       print (m > base + 0 ? m - base : 0), n + 0, ((e && endv + 0 < base + 0) ? "true" : "false")
     }' "$3"
 }
+
+# --- the deletion diagnostic (qc1-measure.sh --delete-probe) -----------------------------------------------------------------------------
+# A one-off, diagnostic-only run beside the matrix: four deletions of a 100,000-reason multibyte subject (every reason removed) on ONE 1,000,000-row filler, in the
+# order F, M, M, F. F leaves audit_logs as the run made it (fresh); M tops it up to the per-action counts seq 164 of the multibyte-spread matrix (revision bb3aaeeb)
+# found, copied from the rows one real deletion wrote. It is never QC-1 evidence: the judge is unchanged (a probe 503 is judged like any 503), and what it
+# shows is what these four requests did on this fixture, not why seq 164 timed out.
+QC1_PROBE_ORDER=(F M M F)
+QC1_PROBE_AUDIT_TARGET='{"user.created":140,"user.deleted":119,"add.reason_kept":705990,"add.reason_removed":605990,"user.erasure_reasons_viewed":18339}'
+QC1_PROBE_SEQ164_AUDIT_BYTES=480305152
+QC1_PROBE_TABLE_ROWS=1100000
+# What the probe does not reproduce, named in the environment record and in every summary.
+QC1_PROBE_DIFFERENCES='[
+ "contact_requests is VACUUMed before every replicate: the matrix heap carried about 1.15M dead tuples by seq 167 and was never VACUUMed (no churn here)",
+ "audit_logs is rebuilt for each replicate. M copies one real deletion'"'"'s audit rows per action (laid out one action after another, timestamps and target ids spread) up to seq 164'"'"'s counts; the matrix'"'"'s own heap, index and dead-row split, its 119 different deleted accounts and its aborted audit rows are not reproduced. Bytes are reported beside seq 164'"'"'s, not matched",
+ "the M top-up is written after the traversal, so the traversal ran against an almost empty audit_logs",
+ "one filler load and one template deletion serve all four replicates; the cache regime, host load, run position, app uptime, the earlier 10k and 100k sizes and the users and jobs table sizes are not reproduced"]'
+QC1_PROBE_LIMITS='[
+ "two replicates per arm on one host: this reports what these four requests did, not a rate, and not a cause, sufficiency or necessity",
+ "statement times are cluster-wide pg_stat_statements counters: they belong to the deletion only when singleClient shows one client, no autovacuum and no scheduler overlap; a statement cancelled by a timeout is not counted, so a 503 can leave its slowest statement unseen",
+ "auditStatementMs sums the statements whose first 200 characters name audit_logs; blkReadMs is time waiting on block reads, not CPU",
+ "no host or cgroup counters are collected: a slow replicate cannot be told apart from a busy host except through blkReadMs and the single-client flags",
+ "seq 164 stays a named operation failure whatever this shows; an arm that did not time out does not clear it"]'
+qc1_probe_settings() {
+  jq -nc --argjson target "$QC1_PROBE_AUDIT_TARGET" --argjson differences "$QC1_PROBE_DIFFERENCES" --arg order "${QC1_PROBE_ORDER[*]}" \
+    '{diagnostic:true, order:($order | split(" ")), subject:"subject:100000:remove", auditTarget:$target, differences:$differences,
+      note:"a diagnostic beside the matrix, never QC-1 evidence and never a matrix cell; see probe-summary.json"}'
+}
+
+# What a deletion that did not answer 200 left behind, from facts read AFTER it, one file each in a directory (text.pre, text.atom, account, audits). A file exists only
+# when its read succeeded, so a failed or malformed read is "invalid:atomicity-unreadable" and never "nonAtomic": a product finding needs a clean read that says so.
+#   text.pre/text.atom  qc1_text_snapshot lines of the account's reasons before and after (every one must still be as it was: nothing may have been blanked)
+#   account             "notDeleted|emailUnchanged" of the subject ("true|true" when the erasure left it alone)
+#   audits              "action|count" of the erasure's own audit actions written after the deletion's watermark (none may exist)
+# Prints clean, nonAtomic:<what>[,<what>] or invalid:atomicity-unreadable. The scrubs of other accounts' audit rows are not read: a watermark cannot see them.
+qc1_probe_atomicity() { # dir
+  local d="$1" f ex what=()
+  for f in text.pre text.atom account audits; do [[ -f "$d/$f" ]] || { echo invalid:atomicity-unreadable; return 0; }; done
+  if [[ ! -s "$d/text.pre" ]] || grep -qvE '^[0-9]+\|[0-9a-f]{64}\|[0-9]+\|[0-9]+$' "$d/text.pre" "$d/text.atom" \
+     || [[ "$(wc -l <"$d/account")" != 1 ]] || ! grep -qxE '(true|false)\|(true|false)' "$d/account" \
+     || grep -qvE '^(user\.deleted|(contact|add)\.reason_(kept|removed))\|[0-9]+$' "$d/audits"; then
+    echo invalid:atomicity-unreadable; return 0
+  fi
+  ex="$(qc1_text_exact "$d/text.pre" "$d/text.atom" 0)" || { echo invalid:atomicity-unreadable; return 0; }
+  [[ "${ex%%|*}" == true ]] || what+=(reasons-changed)
+  [[ "$(<"$d/account")" == 'true|true' ]] || what+=(account-changed)
+  [[ ! -s "$d/audits" ]] || what+=(erasure-audits-written)
+  if (( ${#what[@]} )); then echo "nonAtomic:$(IFS=,; echo "${what[*]}")"; else echo clean; fi
+}
+
+# The summary of a probe run, from measurements.jsonl alone: one object per replicate and a list of what was and was not measured. It decides nothing about cause.
+# A replicate's class, the first that applies: invalid:<why> (no status; a competitor in the window; a refusal with no allow-listed code; a rollback that could not
+# be read), stateUnmatched (an M run whose audit histogram at the start of the window is not the target), nonAtomic:<what>, completed, completedWrong (200 but the
+# database or text is not as asked), timedOutAtomic (503 delete_timed_out, nothing left behind) and refused:<code>.
+qc1_probe_summary() { # measurements.jsonl
+  jq -sc --argjson target "$QC1_PROBE_AUDIT_TARGET" --argjson seq164 "$QC1_PROBE_SEQ164_AUDIT_BYTES" --argjson budget "$QC1_DELETE_BUDGET_MS" --argjson tableRows "$QC1_PROBE_TABLE_ROWS" \
+    --argjson differences "$QC1_PROBE_DIFFERENCES" --argjson limits "$QC1_PROBE_LIMITS" '
+    def known: ["delete_timed_out", "reason_review_busy", "reason_review_changed", "restore_detected", "server_error"];
+    def num($v): ($v | type) == "number";
+    def competitors: [
+      (if .delete.schedulerOverlap != false then "scheduler-overlap" else empty end),
+      (if .delete.schedulerRows != 0 then "scheduler-rows" else empty end),
+      (if (num(.delete.gateHolders) | not) or .delete.gateHolders > 1 then "gate-holders" else empty end),
+      (if (num(.delete.maxActiveClients) | not) or .delete.maxActiveClients > 1 then "other-clients" else empty end),
+      (if .delete.autovacuumWorkers != 0 then "autovacuum" else empty end),
+      (if .workers != 0 then "workers" else empty end),
+      (if .delete.tableRowsBefore != $tableRows then "table-rows" else empty end)];
+    def klass:
+      (.delete.status // "") as $s | (.probe.code // "none") as $c | (.probe.atomicity // "invalid:atomicity-unreadable") as $a | competitors as $comp |
+      if ($s | test("^[1-5][0-9]{2}$") | not) then "invalid:no-status"
+      elif ($comp | length) > 0 then "invalid:" + ($comp | join(","))
+      elif $s != "200" and (known | index($c)) == null then "invalid:no-code"
+      elif $s != "200" and ($a | startswith("invalid")) then $a
+      elif .probe.arm == "M" and .delete.auditActionsBefore != $target then "stateUnmatched"
+      elif $s != "200" and ($a | startswith("nonAtomic")) then $a
+      elif $s != "200" and $a != "clean" then "invalid:atomicity-unreadable"
+      elif $s == "200" then (if .outcome.dbOk == true and .outcome.textExact == true then "completed" else "completedWrong" end)
+      elif $c == "delete_timed_out" then "timedOutAtomic"
+      else "refused:" + $c end;
+    def audit: [.delete.topStatements[]? | select(.query | test("audit_logs"; "i"))];
+    [.[] | select(.item == 6 and ((.case // "") | startswith("delete-subject-100000-remove-probe")))] | sort_by(.probe.replicate) as $rows
+    | ($rows | map({replicate: .probe.replicate, arm: .probe.arm, case: .case, class: klass,
+        status: .delete.status, code: .probe.code, requestMs: .delete.ms, budgetMs: $budget,
+        auditMatchesSeq164Counts: (if .probe.arm == "M" then (.delete.auditActionsBefore == $target) else null end),
+        auditActionsBefore: .delete.auditActionsBefore, auditRowsBefore: .delete.auditRowsBefore, auditBytesBefore: .delete.auditBytesBefore,
+        auditBytesVsSeq164: (if num(.delete.auditBytesBefore) then ((.delete.auditBytesBefore / $seq164) * 1000 | round / 1000) else null end),
+        auditScan: .probe.audit,
+        statements: {topN: (.delete.topStatements | length), auditStatementsMs: ([audit[].totalMs] | add // 0), auditStatementsBlkReadMs: ([audit[].blkReadMs] | add // 0),
+                     allTopBlkReadMs: ([.delete.topStatements[]?.blkReadMs] | add // 0), smallestListedMs: (.delete.topStatements | if length > 0 then .[-1].totalMs else null end),
+                     note: "cluster-wide pg_stat_statements over the window, not attributed to the deletion; a statement not listed took less than smallestListedMs"},
+        singleClient: {maxActiveClients: .delete.maxActiveClients, gateHolders: .delete.gateHolders, autovacuumWorkers: .delete.autovacuumWorkers, schedulerOverlap: .delete.schedulerOverlap, schedulerRows: .delete.schedulerRows, workers: .workers},
+        atomicity: .probe.atomicity, physicalBefore: .probe.physical, startedMs: .probe.startedMs, endedMs: .probe.endedMs})) as $reps
+    | {schema: "fold/qc1-delete-probe-summary/v1", diagnostic: true,
+       label: "audit-count-matched (M) against fresh (F) audit_logs, churn-free 1M multibyte fixture; never QC-1 evidence",
+       order: ($reps | map(.arm)), incomplete: (($reps | length) != 4), replicates: $reps,
+       byArm: {F: ($reps | map(select(.arm == "F") | .class)), M: ($reps | map(select(.arm == "M") | .class))},
+       differences: $differences, limits: $limits}'  "$1"
+}

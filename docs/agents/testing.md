@@ -684,6 +684,52 @@ without it; none is written before then.
   and max over stub presses, the runs it must refuse to count, pooling across stacks, and no figures
   without a run).
 
+#### Deletion diagnostic (`--delete-probe`, issue #294)
+
+A one-off run for one question: on a churn-free 1,000,000-row multibyte spread fixture, what do four
+deletions of a 100,000-reason multibyte subject (every reason removed) do, and how does that differ
+when `audit_logs` holds seq 164's per-action counts (M) rather than fresh audits (F)? It is a
+diagnostic. It is never QC-1 evidence or a matrix cell, it changes no budget, judge rule or gate, a
+probe 503 is judged like any 503, and seq 164 stays a named operation failure whatever it shows.
+
+```bash
+E=~/.local/state/fold/t294-delete-probe/$(git rev-parse --short=12 HEAD)-$(date -u +%Y%m%dT%H%M%SZ)
+scripts/reason-review-scale.sh --only qc1 --evidence-dir $E \
+  --qc1-arg --sizes --qc1-arg 1000000 --qc1-arg --counts --qc1-arg 0 --qc1-arg --dense-counts --qc1-arg none \
+  --qc1-arg --charset --qc1-arg multibyte --qc1-arg --layout --qc1-arg spread --qc1-arg --no-browser --qc1-arg --delete-probe
+```
+
+The flag is refused unless those settings are exactly these. The wrapper exits non-zero: the evidence is
+incomplete by construction (every other case is missing), and `settings.deleteProbe` in `environment.json`
+says why. Read `$E/qc1/probe-summary.json` (`qc1_probe_summary` recomputes it from `measurements.jsonl`).
+
+- **Sequence.** The 1,000,000-row filler loads once. One real 10-reason deletion then writes the audit rows
+  that M copies (`qc1_audit_template`, one row per action of seq 164). Replicates run F, M, M, F, each after
+  the same reset: scenario dropped, `contact_requests` VACUUMed, `audit_logs` truncated. Each then loads the
+  100,000-reason subject and walks it. M tops `audit_logs` up to the target after that walk, by exactly the
+  rows each action lacks; one scan sets the hint bits and records bytes and rows with an ip by action, in both
+  arms. The rows are `delete-subject-100000-remove-probe<F|M>-r<N>`. The SQL touches only the disposable
+  database this run made; the top-up never uses replica mode and `TRUNCATE` has no `CASCADE`.
+- **What it reports.** Per replicate: outcome class, request ms beside the 40 s budget, `audit_logs` bytes
+  beside seq 164's 480,305,152 (the ratio is reported, not matched), the audit histogram at the start of the
+  window, the top 40 statements with `blkReadMs`, and the single-client flags. Statement times are
+  cluster-wide `pg_stat_statements` counters, not attributed to the deletion; they belong to it only when
+  `singleClient` shows one client, no autovacuum and no scheduler overlap. A statement cancelled by a timeout
+  is not counted.
+- **Rollback evidence.** A non-200 reads the account's reasons, the account row and the erasure's own audit
+  actions after the watermark (`qc1_probe_atomicity`). A read that fails twice or is malformed is
+  `invalid:atomicity-unreadable`, never a finding; `nonAtomic:*` needs clean reads that show a change. The
+  scrubs of other accounts' audit rows are not read.
+- **Reading it.** Two replicates per arm on one host report what happened; they give no rate and no cause,
+  sufficiency or necessity, whatever the split. `differences` and `limits` in the summary name what the
+  fixture does not reproduce (no churn, a rebuilt `audit_logs`, one shared filler, no host counters). A run
+  that stops early is `incomplete` and gets no reading. Record the result in
+  `docs/plan/M7.4-ERASURE-INVENTORY.md` 12.3 beside seq 164 as DIAGNOSTIC.
+- **Checks that run without Docker**: `qc1-fixtures.sh` (the flag refusals, every rollback class and failed
+  read, every outcome class and competitor, the judge on a probe 503, and the order of the reset in the
+  source). The SQL runs only under Docker: the template, the top-up and the scan are first proven by the real
+  run, and a mismatch shows as `stateUnmatched` or ends the run.
+
 ### Source guards
 
 - Source guards are the parse-only tests in `guards_<concern>_test.go`, `throttle_keys_test.go`,

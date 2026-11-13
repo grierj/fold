@@ -1455,7 +1455,7 @@ mut top-str 'if .item == 6 and .case == "delete-subject-100-mixed" then .delete.
 mut top-win "$BP then del(.window.topStatements) else . end"; expect_invalid top-win metric-missing
 mut top-put 'if .item == 5 and .case == "legacy-put" then del(.put.topStatements) else . end'; [[ "$(legacy_pending "$WORK/e2.top-put")" == 1 ]]
 ts_sql="$HERE/qc1/top-statements.sql"
-for pat in 'pg_stat_statements' 'total_exec_time DESC' 'LIMIT 8' 'cluster-wide' 'NOT attributed'; do grep -qF -- "$pat" "$ts_sql" || { echo "qc1: top-statements.sql lost: $pat" >&2; exit 1; }; done
+for pat in 'pg_stat_statements' 'total_exec_time DESC' 'LIMIT :lim' 'blkReadMs' 'blkWriteMs' 'cluster-wide' 'NOT attributed'; do grep -qF -- "$pat" "$ts_sql" || { echo "qc1: top-statements.sql lost: $pat" >&2; exit 1; }; done
 if grep -v '^--' "$ts_sql" | grep -Eiw 'reset|insert|update|delete|truncate|alter|create|drop|vacuum' >/dev/null; then echo 'qc1: top-statements.sql is not read-only' >&2; exit 1; fi
 ins_body="$(sed -n '/^instrumented() {/,/^}/p' "$RUNNER_SRC")"
 [[ "$(grep -c 'pg_stat_statements_reset' <<<"$ins_body")" == 1 ]]   # one reset, at the start of the window, as before: the COMMIT timing is read from the same window
@@ -2026,8 +2026,9 @@ vo_body="$(sed -n '/^verify_outcome() {/,/^}/p' "$RUNNER_SRC")"
 grep -qF 'qc1_outcome_sql "$t" "$ids" "$mark" | psql_stdin' <<<"$vo_body"; grep -qF 'qc1_outcome_ok "$deleted" "$blank" "$nonblank" "$audits" "$kept" "$removed"' <<<"$vo_body"
 # Only the watermark and the before/after growth record (rows and bytes of audit_logs around each operation: the confounding the run leaves) read it.
 # (and the by-action growth record audit_actions, and the phase hook's read, which write nothing and are not decision counts)
-if grep -n 'FROM audit_logs' "$RUNNER_SRC" | grep -v 'max(id)' | grep -v "count(\*) || ' ' || pg_total_relation_size('audit_logs') FROM audit_logs" | grep -v '^[0-9]*:audit_actions()' | grep -v '^[0-9]*:exec docker exec -i $DB_CID psql -X -U church -d fold -At'; then echo 'the runner counts audits outside qc1_audit_count_sql' >&2; exit 1; fi
-[[ "$(grep -c "pg_total_relation_size('audit_logs')" "$RUNNER_SRC")" == 4 ]]   # the two reads around an operation, the phase hook's and the one before the explained deletion (its growth record)
+# The diagnostic's own reads: the rows it copies (the template and the top-up), the one scan that reports audit_logs before the window, and the rollback check, which is bound by the watermark. None of them counts the decisions of a deletion.
+if grep -n 'FROM audit_logs' "$RUNNER_SRC" | grep -v 'max(id)' | grep -v "count(\*) || ' ' || pg_total_relation_size('audit_logs') FROM audit_logs" | grep -v '^[0-9]*:audit_actions()' | grep -v '^[0-9]*:exec docker exec -i $DB_CID psql -X -U church -d fold -At' | grep -vF 'SELECT DISTINCT ON (action) actor_id, action, target_type' | grep -vF 'generate_series(1, greatest(0,' | grep -vF 'count(*) AS n, count(*) FILTER (WHERE ip' | grep -vF 'WHERE id > $3 AND action IN'; then echo 'the runner counts audits outside qc1_audit_count_sql' >&2; exit 1; fi
+[[ "$(grep -c "pg_total_relation_size('audit_logs')" "$RUNNER_SRC")" == 5 ]]   # the two reads around an operation, the phase hook's, the one before the explained deletion (its growth record) and the diagnostic's scan before its window
 grep -qF 'AUDIT_ROWS0 AUDIT_BYTES0' "$RUNNER_SRC"; grep -qF 'AUDIT_ROWS1 AUDIT_BYTES1' "$RUNNER_SRC"
 # the judge still requires the database outcome: the pilot2 rows (accumulated audits) are invalid, bound rows are not
 mut dbbad "$DEL then .outcome = {dbOk:false, accountDeleted:\"true\", reasonsBlank:50, reasonsWithText:50, decisionAudits:1260} else . end"; expect_invalid dbbad outcome-db
@@ -2706,5 +2707,115 @@ jq -e '.code == "withheld"' "$AD/0006.json" >/dev/null
 req_partial() { printf '%s' '{"code":"delete_timed_out"}' >"$AR"; echo '503 1'; return 7; }
 attempt 7 req_partial; jq -e '.code == "withheld" and .transport == "failed" and .responseBytes > 0' "$AD/0007.json" >/dev/null
 grep -q 'qc1_delete_attempt "\$WORK/delete-attempts"' "$HERE/qc1-measure.sh"
+
+# --- the deletion diagnostic (--delete-probe): a one-off, never evidence --------------------------------------------------------------
+# The flag is refused unless the run is the one fixture it is made for, before anything is created.
+grep -q -- '--delete-probe' <<<"$help"
+refused 'one-size diagnostic' bash "$RUNNER" --dir "$WORK/never" --delete-probe
+refused 'one-size diagnostic' bash "$RUNNER" --dir "$WORK/never" --delete-probe --sizes 100000,1000000 --counts 0 --dense-counts none --charset multibyte --layout spread --no-browser
+refused 'one-size diagnostic' bash "$RUNNER" --dir "$WORK/never" --delete-probe --sizes 1000000 --counts 10 --dense-counts none --charset multibyte --layout spread --no-browser
+refused 'one-size diagnostic' bash "$RUNNER" --dir "$WORK/never" --delete-probe --sizes 1000000 --counts 0 --dense-counts 100000 --charset multibyte --layout spread --no-browser
+refused 'one-size diagnostic' bash "$RUNNER" --dir "$WORK/never" --delete-probe --sizes 1000000 --counts 0 --dense-counts none --charset ascii --layout spread --no-browser
+refused 'one-size diagnostic' bash "$RUNNER" --dir "$WORK/never" --delete-probe --sizes 1000000 --counts 0 --dense-counts none --charset multibyte --layout tail --no-browser
+refused 'one-size diagnostic' bash "$RUNNER" --dir "$WORK/never" --delete-probe --sizes 1000000 --counts 0 --dense-counts none --charset multibyte --layout spread
+# What the run records about itself, and the target it copies (seq 164's histogram sums to its 1,330,578 audit rows).
+[[ "$(qc1_probe_settings | jq -c '[.diagnostic, .order, (.differences | length)]')" == '[true,["F","M","M","F"],4]' ]]
+[[ "$(jq -c 'add' <<<"$QC1_PROBE_AUDIT_TARGET")" == 1330578 && "${QC1_PROBE_ORDER[*]}" == 'F M M F' ]]
+jq -e 'type == "array" and all(type == "string")' <<<"$QC1_PROBE_DIFFERENCES" >/dev/null; jq -e 'type == "array" and all(type == "string")' <<<"$QC1_PROBE_LIMITS" >/dev/null
+
+# The rollback check: a failed or malformed read is unreadable and never a finding; only clean reads can say the deletion left something behind.
+H1="$(printf 'a%.0s' {1..64})"; H2="$(printf 'b%.0s' {1..64})"; H3="$(printf 'e%.0s' {1..64})"
+atom() { # name; makes the four facts of a clean rollback in a new directory (printed), which a case then changes
+  local d="$WORK/atom-$1"; mkdir "$d"
+  printf '11|%s|21|61\n13|%s|21|61\n' "$H1" "$H2" >"$d/text.pre"; cp "$d/text.pre" "$d/text.atom"; printf 'true|true\n' >"$d/account"; : >"$d/audits"
+  printf '%s' "$d"
+}
+class() { qc1_probe_atomicity "$1"; }
+d="$(atom clean)"; [[ "$(class "$d")" == clean ]]
+for gone in text.pre text.atom account audits; do d="$(atom no-$gone)"; rm -f -- "${d:?}/${gone:?}"; [[ "$(class "$d")" == invalid:atomicity-unreadable ]]; done      # a read that failed
+d="$(atom empty-pre)"; : >"$d/text.pre"; [[ "$(class "$d")" == invalid:atomicity-unreadable ]]                                                              # no baseline to compare with
+d="$(atom bad-hash)"; printf '11|nothex|21|61\n' >"$d/text.atom"; [[ "$(class "$d")" == invalid:atomicity-unreadable ]]                                   # a malformed snapshot line
+d="$(atom bad-pre)"; printf '11|%s|21\n' "$H1" >"$d/text.pre"; [[ "$(class "$d")" == invalid:atomicity-unreadable ]]
+d="$(atom bad-account)"; printf 'maybe|true\n' >"$d/account"; [[ "$(class "$d")" == invalid:atomicity-unreadable ]]
+d="$(atom two-account)"; printf 'true|true\ntrue|true\n' >"$d/account"; [[ "$(class "$d")" == invalid:atomicity-unreadable ]]
+d="$(atom bad-audit)"; printf 'user.deleted|x\n' >"$d/audits"; [[ "$(class "$d")" == invalid:atomicity-unreadable ]]
+d="$(atom other-audit)"; printf 'user.created|1\n' >"$d/audits"; [[ "$(class "$d")" == invalid:atomicity-unreadable ]]                                       # only the erasure's own actions are asked for
+d="$(atom changed)"; printf '11|%s|21|61\n13|%s|21|61\n' "$H1" "$H1" >"$d/text.atom"; [[ "$(class "$d")" == nonAtomic:reasons-changed ]]
+d="$(atom blanked)"; printf '11|%s|0|0\n13|%s|21|61\n' "$H3" "$H2" >"$d/text.atom"; [[ "$(class "$d")" == nonAtomic:reasons-changed ]]
+d="$(atom vanished)"; : >"$d/text.atom"; [[ "$(class "$d")" == nonAtomic:reasons-changed ]]                                                                # a clean read that finds the rows gone
+d="$(atom account)"; printf 'false|true\n' >"$d/account"; [[ "$(class "$d")" == nonAtomic:account-changed ]]
+d="$(atom renamed)"; printf 'true|false\n' >"$d/account"; [[ "$(class "$d")" == nonAtomic:account-changed ]]
+d="$(atom audits)"; printf 'user.deleted|1\nadd.reason_removed|5\n' >"$d/audits"; [[ "$(class "$d")" == nonAtomic:erasure-audits-written ]]
+d="$(atom several)"; printf 'false|true\n' >"$d/account"; printf 'add.reason_kept|2\n' >"$d/audits"; [[ "$(class "$d")" == nonAtomic:account-changed,erasure-audits-written ]]
+d="$(atom outranked)"; printf 'false|true\n' >"$d/account"; rm -f -- "${d:?}/audits"; [[ "$(class "$d")" == invalid:atomicity-unreadable ]]                # one failed read hides nothing: invalid beats a finding
+d="$(atom completed)"; printf '11|%s|0|0\n13|%s|21|61\n' "$H3" "$H2" >"$d/text.atom"; printf 'false|false\n' >"$d/account"; printf 'user.deleted|1\nadd.reason_removed|5\n' >"$d/audits"
+[[ "$(class "$d")" == nonAtomic:reasons-changed,account-changed,erasure-audits-written ]]   # what the runner expects of its own completed template deletion (a positive control)
+
+# The summary: classes, the single-client flags beside the statement time, bytes against seq 164's, nothing read as a cause.
+prow() { # replicate arm status code atomicity
+  jq -nc --argjson r "$1" --arg arm "$2" --arg st "$3" --arg code "$4" --arg at "$5" --argjson target "$QC1_PROBE_AUDIT_TARGET" '
+    {status:"measured", item:6, case:("delete-subject-100000-remove-probe" + $arm + "-r" + ($r | tostring)), size:1000000, workers:0, reasons:100000,
+     outcome:{dbOk:($st == "200"), textExact:($st == "200")},
+     delete:{status:$st, ms:(if $st == "200" then 21000 else 39000 end), schedulerOverlap:false, schedulerRows:0, gateHolders:1, maxActiveClients:1, autovacuumWorkers:0, tableRowsBefore:1100000,
+             auditRowsBefore:(if $arm == "M" then 1330578 else 1001 end), auditBytesBefore:(if $arm == "M" then 480305152 else 2000000 end),
+             auditActionsBefore:(if $arm == "M" then $target else {"user.created":1, "user.erasure_reasons_viewed":1000} end),
+             topStatements:[{query:"UPDATE contact_requests SET reason = $1", totalMs:9000, blkReadMs:10}, {query:"SELECT x FROM audit_logs WHERE ip <> $1", totalMs:3400.5, blkReadMs:120.2}, {query:"UPDATE audit_logs SET ip = $1", totalMs:800, blkReadMs:5}]},
+     probe:{arm:$arm, replicate:$r, code:$code, atomicity:$at}}'
+}
+{ prow 1 F 200 none notNeeded; prow 2 M 503 delete_timed_out clean; prow 3 M 503 delete_timed_out clean; prow 4 F 200 none notNeeded
+  jq -nc '{status:"pending", item:4, case:"legacy-discovery", size:null}'; } >"$WORK/probe.jsonl"
+s="$(qc1_probe_summary "$WORK/probe.jsonl")"
+[[ "$(jq -c '[.incomplete, .order, .byArm]' <<<"$s")" == '[false,["F","M","M","F"],{"F":["completed","completed"],"M":["timedOutAtomic","timedOutAtomic"]}]' ]]
+[[ "$(jq -c '.replicates[1] | [.requestMs, .budgetMs, .auditMatchesSeq164Counts, .auditBytesVsSeq164, .statements.auditStatementsMs, .statements.auditStatementsBlkReadMs, .statements.allTopBlkReadMs, .statements.topN, .statements.smallestListedMs]' <<<"$s")" == '[39000,40000,true,1,4200.5,125.2,135.2,3,800]' ]]   # only statements that name audit_logs are summed
+[[ "$(jq -c '.replicates[0] | [.auditMatchesSeq164Counts, .auditBytesVsSeq164, .singleClient.maxActiveClients]' <<<"$s")" == '[null,0.004,1]' ]]
+[[ "$(jq -r '.replicates[0].statements.note' <<<"$s")" == *'not attributed to the deletion'* ]]
+jq -e '.diagnostic == true and (.label | contains("never QC-1 evidence")) and (.differences | length) == 4 and (.limits | length) == 5' <<<"$s" >/dev/null
+if jq -r '.. | strings' <<<"$s" | grep -Eiw 'proves|proved|caused|because|explains|reproduces' >/dev/null; then echo 'qc1: the probe summary claims a cause' >&2; exit 1; fi
+# a run that stopped early is incomplete and says which replicates ran; rows that are not the probe's are ignored
+head -n 2 "$WORK/probe.jsonl" >"$WORK/probe2.jsonl"; [[ "$(qc1_probe_summary "$WORK/probe2.jsonl" | jq -c '[.incomplete, (.replicates | length)]')" == '[true,2]' ]]
+: >"$WORK/probe0.jsonl"; [[ "$(qc1_probe_summary "$WORK/probe0.jsonl" | jq -c '[.incomplete, (.replicates | length)]')" == '[true,0]' ]]
+# each class, one stub each
+cls() { printf '%s\n' "$1" >"$WORK/probe1.jsonl"; qc1_probe_summary "$WORK/probe1.jsonl" | jq -r '.replicates[0].class'; }
+[[ "$(cls "$(prow 1 F 200 none notNeeded | jq -c '.outcome.textExact = false')")" == completedWrong ]]
+[[ "$(cls "$(prow 1 F 200 none notNeeded | jq -c '.outcome.dbOk = false')")" == completedWrong ]]
+[[ "$(cls "$(prow 1 M 200 none notNeeded | jq -c '.delete.auditActionsBefore["add.reason_kept"] = 1')")" == stateUnmatched ]]      # an M run that did not start from seq 164's counts
+[[ "$(cls "$(prow 1 F 200 none notNeeded | jq -c '.delete.auditActionsBefore = {}')")" == completed ]]                                # the histogram is only a gate for M
+[[ "$(cls "$(prow 1 F 503 delete_timed_out nonAtomic:account-changed)")" == nonAtomic:account-changed ]]
+[[ "$(cls "$(prow 1 M 503 delete_timed_out nonAtomic:reasons-changed | jq -c '.delete.auditActionsBefore = {}')")" == stateUnmatched ]]
+[[ "$(cls "$(prow 1 F 503 delete_timed_out invalid:atomicity-unreadable)")" == invalid:atomicity-unreadable ]]
+[[ "$(cls "$(prow 1 F 503 delete_timed_out notNeeded)")" == invalid:atomicity-unreadable ]]                                          # a non-200 whose rollback was never read
+[[ "$(cls "$(prow 1 F 503 reason_review_busy clean)")" == refused:reason_review_busy ]]
+for bad in none withheld server_error_x ""; do [[ "$(cls "$(prow 1 F 503 "$bad" clean)")" == invalid:no-code ]]; done
+[[ "$(cls "$(prow 1 F 503 delete_timed_out clean | jq -c '.delete.status = "unknown"')")" == invalid:no-status ]]
+[[ "$(cls "$(prow 1 F 200 none notNeeded | jq -c '.delete.status = "000"')")" == invalid:no-status ]]
+[[ "$(cls "$(prow 1 F 503 delete_timed_out clean | jq -c '.delete.maxActiveClients = 2 | .delete.autovacuumWorkers = 1')")" == invalid:other-clients,autovacuum ]]
+for tweak in '.delete.schedulerOverlap = true' '.delete.schedulerOverlap = null' '.delete.schedulerRows = 1' '.delete.gateHolders = 2' 'del(.delete.gateHolders)' 'del(.delete.maxActiveClients)' '.workers = 1' '.delete.tableRowsBefore = 1099999'; do
+  [[ "$(cls "$(prow 1 F 503 delete_timed_out clean | jq -c "$tweak")")" == invalid:* ]] || { echo "qc1: a competitor was not invalid: $tweak" >&2; exit 1; }
+done
+# The judge is unchanged: a probe-labelled 503 is judged like any 503.
+mut probe503 "$DEL then .case = \"delete-subject-100-mixed-probeM-r2\" | .delete.status = \"503\" else . end"; expect_invalid probe503 status
+
+# The wiring, in the source: the reset is the same for every replicate and happens before anything is loaded, the template and the top-up run in the disposable database
+# only and never in replica mode, the rollback is read only after a refusal, the filler loads once, and the matrix path asks for eight statements as before.
+RUNNER_SRC="$HERE/qc1-measure.sh"
+pr_body="$(sed -n '/^probe_replicate() {/,/^}/p' "$RUNNER_SRC")"
+l_drop="$(grep -n 'drop_scenarios$' <<<"$pr_body" | cut -d: -f1)"; l_vac="$(grep -n 'VACUUM (PARALLEL 0) contact_requests' <<<"$pr_body" | cut -d: -f1)"; l_trunc="$(grep -n 'TRUNCATE audit_logs RESTART IDENTITY' <<<"$pr_body" | cut -d: -f1)"
+l_load="$(grep -n 'load_scenario "\$n" 100000' <<<"$pr_body" | cut -d: -f1)"; l_trav="$(grep -n 'traverse "\$t"' <<<"$pr_body" | cut -d: -f1)"; l_top="$(grep -n 'probe_top_up' <<<"$pr_body" | cut -d: -f1)"
+l_scan="$(grep -n 'probe_audit_scan' <<<"$pr_body" | cut -d: -f1)"; l_del="$(grep -n 'QC1_TOP_N=40 delete_with' <<<"$pr_body" | cut -d: -f1)"; l_atom="$(grep -n 'probe_atomicity "\$t"' <<<"$pr_body" | cut -d: -f1)"
+[[ -n "$l_drop$l_vac$l_trunc$l_load$l_trav$l_top$l_scan$l_del$l_atom" && "$l_drop" -lt "$l_vac" && "$l_vac" -lt "$l_trunc" && "$l_trunc" -lt "$l_load" && "$l_load" -lt "$l_trav" && "$l_trav" -lt "$l_top" && "$l_top" -lt "$l_scan" && "$l_scan" -lt "$l_del" && "$l_del" -lt "$l_atom" ]]
+grep -qF 'if [[ "$DEL_STATUS" != 200 ]]; then' <<<"$pr_body"                                                                         # the rollback is read after a refusal only
+pt_body="$(sed -n '/^probe_template() {/,/^}/p' "$RUNNER_SRC")"                                                                  # before any replicate: the dry run of the top-up and the scan, and the rollback reader's positive control
+grep -qF 'probe_top_up "$(jq -c '"'"'map_values(100)'"'"' <<<"$QC1_PROBE_AUDIT_TARGET")" dry' <<<"$pt_body"; grep -qF 'probe_audit_scan >/dev/null' <<<"$pt_body"
+grep -qF 'nonAtomic:reasons-changed,account-changed,erasure-audits-written' <<<"$pt_body"
+probe_code="$pr_body$(sed -n '/^probe_template() {/,/^}/p;/^probe_top_up() {/,/^}/p;/^probe_audit_scan() {/,/^}/p' "$RUNNER_SRC")"
+if grep -v '^ *#' <<<"$probe_code" | grep -Eiw 'session_replication_role|cascade|analyze audit_logs'; then echo 'qc1: the probe writes in replica mode, cascades or analyzes audit_logs' >&2; exit 1; fi
+[[ "$(grep -c 'qc1_probe_summary "\$MEASUREMENTS"' "$RUNNER_SRC")" == 1 ]]
+grep -qF -- '-v lim="${QC1_TOP_N:-8}"' "$RUNNER_SRC"; [[ "$(grep -c 'QC1_TOP_N=40' "$RUNNER_SRC")" == 1 ]]                           # only the probe asks for more than eight
+ms_body="$(sed -n '/^measure_size() {/,/^}/p' "$RUNNER_SRC")"
+l_filler="$(grep -n 'load_filler "\$n" all' <<<"$ms_body" | cut -d: -f1)"; l_hook="$(grep -n 'measure_delete_probe "\$n"; return 0' <<<"$ms_body" | cut -d: -f1)"; l_nc="$(grep -n '^  if (( NEXT_CHANGED_ONLY )); then' <<<"$ms_body" | cut -d: -f1)"
+[[ -n "$l_filler$l_hook$l_nc" && "$l_filler" -lt "$l_hook" && "$l_hook" -lt "$l_nc" ]]
+[[ "$(sed -n '/^measure_delete_probe() {/,/^}/p;/^probe_replicate() {/,/^}/p' "$RUNNER_SRC" | { grep -c 'load_filler' || true; })" == 0 ]]            # one filler for all four
+grep -qF 'DEL_AUDIT_MARK="$audit_mark"' "$RUNNER_SRC"; grep -qF 'DIAG_CASE="${DELETE_CASE:-delete-$mode-$k}"' "$RUNNER_SRC"
+grep -qF 'qc1_delete_attempt "$WORK/delete-attempts"' "$RUNNER_SRC"                                                                     # the attempt record is untouched
 
 echo 'qc1 fixtures: ok'
