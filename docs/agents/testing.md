@@ -482,6 +482,12 @@ one revision: the report refuses to call a matrix `FULL` when they differ. A pas
 makes the wrapper record that step `partial`, which the matrix accepts (it requires `pass` or
 `partial`, exit 0). `scripts/reason-review-matrix.sh --dry-run` lists the cells.
 
+Every measured DELETE leaves `delete-attempts/NNNN.json` in the cell's evidence directory
+(`qc1_delete_attempt`): status, the request's exit, duration, byte counts, the case, size, charset and
+revision, and the response's `code` only when it is one of five known API codes (otherwise `withheld`).
+No message, log or request text is kept, and no cause is inferred; a missing number means the record
+could not be written (said on stderr).
+
 The matrix takes nothing a cell says about itself on trust. For each cell it **recomputes** the
 evidence status from `measurements.jsonl` and `environment.json` with `qc1_evidence_status` (the
 function that wrote `evidence-status.json`) and judges by that; the saved file must equal the

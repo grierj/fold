@@ -2681,4 +2681,23 @@ mut sch-lim-other 'if .item == 8 then .executions.scannerInitial.limits = [50000
 mut sch-lim-rows 'if .item == 8 then .executions.scannerInitial.rows = [300] else . end'; expect_invalid sch-lim-rows scanner-limit-overrun
 mut sch-lim-last 'if .item == 8 and .size == 100 then .executions.scannerContinuation = {count:2, rows:[17488, 256], sharedBlocks:[900, 40], limits:[17488, 256]} else . end'
 [[ "$(jq -r '.complete' <<<"$(status_of "$WORK/e2.sch-lim-last")")" == true ]]                                                        # the largest batch is a legitimate production statement
+# --- a measured DELETE leaves a safe record, at once, whatever happens next -----------------------------------------
+AD="$WORK/attempts"; AR="$WORK/answer"; printf '{}' >"$WORK/dbody"
+req() { printf '%s' "$REQ_BODY" >"$AR"; echo "503 1234"; }
+req_down() { echo "000 0"; return 7; }
+attempt() { local n="$1"; shift; qc1_delete_attempt "$AD" "$n" "$AR" "$WORK/dbody" '{"seq":4,"case":"delete-keep-10","size":10000,"charset":"multibyte","revision":"abc"}' -- "$@"; }
+REQ_BODY='{"error":"deleting took too long, so nothing was deleted","code":"delete_timed_out"}'; attempt 1 req
+jq -e '.code == "delete_timed_out" and .status == "503" and .transport == "ok" and .ms == 1234 and .bodyBytes == 2 and .seq == 4 and .case == "delete-keep-10" and .size == 10000 and .charset == "multibyte" and .revision == "abc"' "$AD/0001.json" >/dev/null
+[[ "$DEL_STATUS $DEL_MS" == '503 1234' ]]
+# an answer whose code is not a known one, or whose message could hold a person's words, is withheld, not kept
+REQ_BODY='{"error":"reason: Alice needs help","code":"alice_private"}'; attempt 2 req
+jq -e '.code == "withheld" and .responseBytes > 0' "$AD/0002.json" >/dev/null; if grep -rqi 'alice' "$AD"; then echo 'qc1: a response message was kept' >&2; exit 1; fi
+# a request that fails cannot be given the answer before it; two attempts never share a file; a taken number is refused, not overwritten
+attempt 3 req_down; jq -e '.code == "none" and .responseBytes == 0 and .status == "000" and .transport == "failed" and .requestExit == 7' "$AD/0003.json" >/dev/null
+[[ "$(find "$AD" -name '*.json' | wc -l)" == 3 ]]; jq -e '.code == "withheld"' "$AD/0002.json" >/dev/null
+attempt 1 req_down 2>"$WORK/dup.err"; grep -q 'delete attempt 1 was not written' "$WORK/dup.err"; jq -e '.code == "delete_timed_out"' "$AD/0001.json" >/dev/null
+# the record is there when what runs after the request fails
+REQ_BODY='{"code":"reason_review_busy"}'; if ( attempt 4 req; false ); then exit 1; fi; jq -e '.code == "reason_review_busy"' "$AD/0004.json" >/dev/null
+grep -q 'qc1_delete_attempt "\$WORK/delete-attempts"' "$HERE/qc1-measure.sh"
+
 echo 'qc1 fixtures: ok'

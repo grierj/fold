@@ -166,6 +166,33 @@ qc1_lsn_bytes() { # from to
     BEGIN { x = lsn(a); y = lsn(b); if (x < 0 || y < 0 || y < x) { print "invalid"; exit 1 } printf "%.0f\n", y - x }'
 }
 
+# Run one measured DELETE and keep a small record of how it ended, before the caller's post-request instrumentation can fail:
+#   qc1_delete_attempt dir n response-file body-file meta-json -- command...   (the command prints "status ms", as `timed` does)
+# Sets DEL_STATUS and DEL_MS. The response file is emptied first, so a request that fails cannot be read as the one before it. The record
+# (dir/NNNN.json, written whole, never over another) holds only the caller's controlled fields (meta), the status, the command's exit, the
+# duration, byte counts and the response's "code" when it is one of the known ones below. A response with any other code, or none, is
+# "withheld": its message is never read or kept. No cause is inferred. A record that cannot be written is said on stderr and changes nothing else.
+qc1_delete_attempt() {
+  local dir="$1" n="$2" resp="$3" body="$4" meta="$5" out rc=0 code=none rbytes=0 transport=ok c dst
+  shift 6
+  : >"$resp"
+  out="$("$@")" || rc=$?
+  read -r DEL_STATUS DEL_MS <<<"$out"
+  if [[ -s "$resp" ]]; then
+    rbytes="$(wc -c <"$resp")" code=withheld
+    c="$(jq -r 'if type == "object" and (.code | type) == "string" then .code else "" end' "$resp" 2>/dev/null || true)"
+    case "$c" in delete_timed_out | reason_review_busy | reason_review_changed | restore_detected | server_error) code="$c" ;; esac
+  fi
+  (( rc == 0 )) || transport=failed
+  dst="$(printf '%s/%04d.json' "$dir" "$n")"
+  { mkdir -p "$dir" && [[ ! -e "$dst" ]] && jq -nc --argjson m "${meta:-null}" --argjson n "$n" --arg st "${DEL_STATUS:-}" --arg ms "${DEL_MS:-}" --arg t "$transport" \
+    --argjson rc "$rc" --argjson rb "$rbytes" --arg bb "$(wc -c <"$body" 2>/dev/null)" --arg code "$code" \
+    '($m // {}) + {schema:"fold/qc1-delete-attempt/v1", attempt:$n, status:(if $st | test("^[0-9]{3}$") then $st else "unknown" end), ms:($ms | tonumber? // null),
+      transport:$t, requestExit:$rc, responseBytes:$rb, bodyBytes:($bb | tonumber? // null), code:$code}' >"$dst.tmp" && mv -n "$dst.tmp" "$dst"; } \
+    || echo "qc1: the record for delete attempt $n was not written" >&2
+  return 0
+}
+
 # What a deletion of k reasons does under a choice mode, as "kept removed":
 # keep keeps all, remove removes all, mixed removes the first half (the first
 # ceil(k/2) entries) and keeps the rest.

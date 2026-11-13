@@ -750,8 +750,15 @@ delete_json() {
   jq -nc --arg st "$DEL_STATUS" --argjson ms "$DEL_MS" --argjson kept "${DEL_KEPT:-null}" --argjson removed "${DEL_REMOVED:-null}" --argjson instr "$(instr_json)" \
     '{status:$st, ms:$ms, reasonsKept:$kept, reasonsRemoved:$removed, commitMs:$instr.commitMsMax} + $instr'
 }
+# Every DELETE leaves $WORK/delete-attempts/NNNN.json (qc1_delete_attempt: safe facts only), written as the request ends, inside the evidence tree.
+# seq is the case the next record() will number; DIAG_CASE names it where the caller sets it. The few ms to write it fall inside the operation window, after the response.
+DEL_ATTEMPT=0
 do_delete() { # target bodyfile
-  read -r DEL_STATUS DEL_MS <<<"$(timed DELETE "/admin/users/$1" "$2" "$WORK/delete.out")"
+  DEL_ATTEMPT=$((DEL_ATTEMPT + 1))
+  qc1_delete_attempt "$WORK/delete-attempts" "$DEL_ATTEMPT" "$WORK/delete.out" "$2" \
+    "$(jq -nc --argjson seq "$((CASE_SEQ + 1))" --arg case "${DIAG_CASE:-unlabelled}" --arg size "${CURRENT_SIZE:-}" --arg charset "$CHARSET" --arg revision "$REVISION" \
+      '{seq:$seq, case:$case, size:($size | tonumber? // null), charset:$charset, revision:$revision}')" \
+    -- timed DELETE "/admin/users/$1" "$2" "$WORK/delete.out"
 }
 ctl_request() { api GET /auth/me >/dev/null; }
 # record item case size extra-json   (RECORD_STATUS: measured, observation or failed)
@@ -872,7 +879,7 @@ delete_with() { # target mode items-file
   # The watermark: only audits written after this point belong to this deletion.
   audit_mark="$(psql_db -c 'SELECT coalesce(max(id), 0) FROM audit_logs')"
   [[ "$audit_mark" =~ ^[0-9]+$ ]] || { echo "qc1: cannot read the audit watermark ('$audit_mark')" >&2; exit 1; }
-  instrumented do_delete "$t" "$WORK/delete.body"
+  DIAG_CASE="delete-$mode-$k" instrumented do_delete "$t" "$WORK/delete.body"
   DEL_KEPT="$(jq '.erasure.reasonsKept // null' "$WORK/delete.out" 2>/dev/null || echo null)"
   DEL_REMOVED="$(jq '.erasure.reasonsRemoved // null' "$WORK/delete.out" 2>/dev/null || echo null)"
   DELETE_JSON="$(delete_json)"
@@ -909,7 +916,7 @@ refusal_case() { # kind target items-file k   (sets REFUSAL_JSON)
     *) echo "qc1: unknown refusal $kind" >&2; return 1 ;;
   esac
   bytes="$(wc -c <"$WORK/delete.body")"
-  instrumented do_delete "$t" "$WORK/delete.body"
+  DIAG_CASE="refusal-$kind" instrumented do_delete "$t" "$WORK/delete.body"
   code="$(jq -r '.code // ""' "$WORK/delete.out" 2>/dev/null || true)"
   if [[ "$(account_untouched "$t")" == t ]]; then unchanged=true; fi
   REFUSAL_JSON="$(jq -nc --arg status "$DEL_STATUS" --argjson ms "$DEL_MS" --argjson app "$APP_PEAK_KB" --argjson bytes "$bytes" --argjson unchanged "$unchanged" --arg code "$code" \
