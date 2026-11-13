@@ -358,10 +358,6 @@ if grep -q 'qc1-measure.sh' "$WORK/stub.log"; then echo 'the measurement ran aft
 : >"$WORK/stub.log"; launch --out "$WORK/m-qc1-nb" --qc1 -- --no-browser --sizes 10000 >"$WORK/l3.out" 2>&1
 if grep -q 'browser-prepare.sh' "$WORK/stub.log"; then echo 'the browser was prepared although --no-browser was given' >&2; exit 1; fi
 grep -q 'qc1-measure.sh --dir /work/out' "$WORK/stub.log"
-# --calibrate-only measures nothing and drives no browser: it is not prepared either, and the preflight arguments reach the runner whole.
-: >"$WORK/stub.log"; launch --out "$WORK/m-qc1-cal" --qc1 -- --calibrate-only >"$WORK/l3.out" 2>&1
-if grep -q 'browser-prepare.sh' "$WORK/stub.log"; then echo 'the browser was prepared for the instrument preflight' >&2; exit 1; fi
-grep -q -- '_ bash deploy/digitalocean/qc1-measure.sh --dir /work/out --calibrate-only$' "$WORK/stub.log"
 : >"$WORK/stub.log"; launch --out "$WORK/m-drill-nb" -- --no-browser >"$WORK/l3.out" 2>&1
 grep -q 'browser-prepare.sh /work/prep$' "$WORK/stub.log"   # the drill prepares regardless; restore-drill.sh itself rejects the unknown option
 # The run's own failure comes back as the launcher's exit, in both modes.
@@ -667,7 +663,7 @@ set -Eeuo pipefail
 exec </dev/null
 RUNNER="$1"; MODE="$2"
 export PATH="$AEB:$PATH"
-KEEP="${KEEP:-0}"; SAMPLERS=(); CONTAINERS=(dbcid appcid); NET_ID=netid; VOL=""; VOL_TOKEN=""; DB_CID=dbcid; APP_STARTED_MS=0; ROOT=/nonexistent; PREFLIGHT_ONLY=0
+KEEP="${KEEP:-0}"; SAMPLERS=(); CONTAINERS=(dbcid appcid); NET_ID=netid; VOL=""; VOL_TOKEN=""; DB_CID=dbcid; APP_STARTED_MS=0; ROOT=/nonexistent
 mkdir -p "$WORK/ae-work"; echo '[]' >"$WORK/ae-work/plan-items.json"; WORK="$WORK/ae-work"
 sleep() { :; }
 src() { awk -v f="$1" '$0 ~ "^" f "\\(\\) \\{" { on = 1 } on { print } on && (/^}$/ || /^[a-z_]+\(\) \{.*\}$/) { exit }' "$RUNNER"; }
@@ -749,10 +745,6 @@ ao_body="$(sed -n '/^autoexplain_on() {/,/^}/p' "$RUNNER")"; [[ "$(sed -n 2p <<<
 cp_body="$(sed -n '/^capture_plans() {/,/^}/p' "$RUNNER")"; l_f="$(grep -n 'AUTOEXPLAIN_DIRTY=1' <<<"$cp_body" | cut -d: -f1)"; l_a="$(grep -n 'ALTER SYSTEM SET auto_explain.log_min_duration = 0' <<<"$cp_body" | cut -d: -f1)"
 l_w="$(grep -n 'await_setting auto_explain.log_min_duration -1' <<<"$cp_body" | cut -d: -f1)"; l_c="$(grep -n 'AUTOEXPLAIN_DIRTY=0' <<<"$cp_body" | cut -d: -f1)"; [[ -n "$l_f$l_a$l_w$l_c" && "$l_f" -lt "$l_a" && "$l_w" -lt "$l_c" ]]
 [[ "$(grep -c 'AUTOEXPLAIN_DIRTY=1' "$RUNNER")" == 2 && "$(grep -c '^  AUTOEXPLAIN_DIRTY=0' "$RUNNER")" == 2 ]]    # exactly the two places that turn it on and the two that prove it off
-# Both drivers extract cleanup (and the functions it calls) into a shell with `set -u`: every global those functions read must be initialized in the
-# driver (a missing one fails the driver with "unbound variable" instead of the scenario). PREFLIGHT_ONLY=0 in both inits is what the --calibrate-only
-# change taught this file; this pins it.
-grep -q 'PREFLIGHT_ONLY=0' "$WORK/ae-driver.sh"
 
 # --- a run that stops still leaves its evidence (abort finalization), and the fixture vacuums are not parallel -----------------------------------------------------------------
 # The runner's own functions (finalize_evidence and the writers it calls, cleanup, autoexplain_reset, note, psql_db) are taken out of the script as they are and run against the
@@ -771,7 +763,7 @@ cp "$HERE/testdata/qc1-100k-abort-harness.log" "$OUT/harness.log"
 echo '{"gate":{"ok":true}}' >"$OUT/calibration.json"
 WORK="$OUT"; MEASUREMENTS="$OUT/measurements.jsonl"
 exec >>"$WORK/harness.log" 2>&1
-KEEP="${KEEP:-0}"; SAMPLERS=(); CONTAINERS=(dbcid appcid); NET_ID=netid; VOL=""; VOL_TOKEN=""; DB_CID=dbcid; AUTOEXPLAIN_DIRTY=0; PREFLIGHT_ONLY=0
+KEEP="${KEEP:-0}"; SAMPLERS=(); CONTAINERS=(dbcid appcid); NET_ID=netid; VOL=""; VOL_TOKEN=""; DB_CID=dbcid; AUTOEXPLAIN_DIRTY=0
 SIZES=100000; COUNTS=0,10,100,1000,10000; DENSE=100000; DENSE_LIST=(100000); ALL_DELETE_LIST=(0 10 100 1000 10000 100000); REVISION="$(printf 'a%.0s' {1..40})"; MAX_REQUEST_BYTES=6291456
 IMAGE=qc1-fold:test; IMAGE_ID=sha256:test; LEVEL=2; DROPLET=2gb; DB_MEMORY=2g; APP_MEMORY=1g; CPUSET=0; LAYOUT=spread; REASON_LEN=200; TARGET_REASON_LEN=1000
 NEXT_CHANGED_PRESSES=1; NEXT_CHANGED_RUNS=1; NEXT_CHANGED_ONLY=0; PROFILE_NEXT_CHANGED=0
@@ -797,8 +789,6 @@ case "$MODE" in
   early)        exit 0 ;;
 esac
 DRV
-# The fin driver runs under `set -u` too: it must initialize the same global.
-grep -q 'PREFLIGHT_ONLY=0' "$WORK/fin-driver.sh"
 fin_run() { # mode [env...]  -> rc, FD (the work directory), the stub log
   local mode="$1"; shift
   FD="$WORK/fin"; rm -rf "$FD"; mkdir -p "$WORK/fin-state"; : >"$WORK/fin-stub.log"
