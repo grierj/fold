@@ -36,7 +36,7 @@ trap 'fixture_signal 129' HUP
 trap 'printf "isolation fixture failed at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 refused() { local needle="$1" rc=0; shift; "$@" >"$WORK/out" 2>&1 || rc=$?; [[ "$rc" != 0 ]]; [[ -z "$needle" ]] || grep -qF -- "$needle" "$WORK/out"; }
 
-# Interrupt the actual ownership helpers at registration and during wait. The child
+# Interrupt the actual ownership helpers at registration and immediately before wait. The child
 # can only write its completion marker while the fixture's tools still exist.
 declare -f fixture_signal start_owned_runner finish >"$WORK/owner-functions"
 cat >"$WORK/owner-hook" <<'HOOK'
