@@ -6,8 +6,10 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -25,6 +27,7 @@ import (
 	"time"
 
 	"fold/internal/audit"
+	"fold/internal/dbopen"
 	"fold/internal/policy"
 	"fold/internal/reasonscan"
 	"fold/internal/testdb"
@@ -2911,14 +2914,17 @@ func TestLegacySaveBusy(t *testing.T) {
 			t.Fatal(err)
 		}
 		before := r.written()
-		var logs bytes.Buffer
+		var appLogs, gormLogs bytes.Buffer
 		previous := log.Writer()
-		log.SetOutput(&logs)
+		log.SetOutput(&appLogs)
 		t.Cleanup(func() { log.SetOutput(previous) })
+		r.app.DB = r.app.DB.Session(&gorm.Session{Logger: dbopen.Logger(log.New(&gormLogs, "\r\n", log.LstdFlags))})
 		id, w := r.save(gone.ID, decisions)
 		wantSaveCode(t, w, http.StatusConflict, "admin_account_busy")
-		if strings.Contains(logs.String(), "55P03") || strings.Contains(strings.ToUpper(logs.String()), "NOWAIT") {
-			t.Errorf("busy save exposed the database lock error: %s", logs.String())
+		for name, out := range map[string]string{"application": appLogs.String(), "database": gormLogs.String()} {
+			if strings.Contains(out, "55P03") || strings.Contains(strings.ToUpper(out), "NOWAIT") {
+				t.Errorf("busy save exposed the database lock error in its %s log: %s", name, out)
+			}
 		}
 		if seals.Load() != 3 || retries.Load() != 2 {
 			t.Errorf("%d seals and %d retries, want 3 and 2", seals.Load(), retries.Load())
@@ -2949,14 +2955,17 @@ func TestLegacySaveBusy(t *testing.T) {
 			t.Fatal(err)
 		}
 		before := r.written()
-		var logs bytes.Buffer
+		var appLogs, gormLogs bytes.Buffer
 		previous := log.Writer()
-		log.SetOutput(&logs)
+		log.SetOutput(&appLogs)
 		t.Cleanup(func() { log.SetOutput(previous) })
+		r.app.DB = r.app.DB.Session(&gorm.Session{Logger: dbopen.Logger(log.New(&gormLogs, "\r\n", log.LstdFlags))})
 		id, w := r.save(a.ID, choose(itemsA, "remove"))
 		wantSaveCode(t, w, http.StatusConflict, "legacy_save_busy")
-		if strings.Contains(logs.String(), "55P03") || strings.Contains(strings.ToUpper(logs.String()), "NOWAIT") {
-			t.Errorf("busy save exposed the database lock error: %s", logs.String())
+		for name, out := range map[string]string{"application": appLogs.String(), "database": gormLogs.String()} {
+			if strings.Contains(out, "55P03") || strings.Contains(strings.ToUpper(out), "NOWAIT") {
+				t.Errorf("busy save exposed the database lock error in its %s log: %s", name, out)
+			}
 		}
 		if strings.Contains(w.Body.String(), "delete_reason_busy") || strings.Contains(w.Body.String(), "deleted") {
 			t.Errorf("the answer speaks of a deletion: %s", w.Body.String())
@@ -3030,6 +3039,204 @@ func TestLegacySaveBusy(t *testing.T) {
 				r.wantUnchanged(before, id, a.ID, attemptRolledBack)
 				wantSettle(t, r.settled(id, a.ID), settleNotApplied, nil)
 			})
+		}
+	})
+}
+
+// The busy filter is scoped to a legacy save's own transactions: the same
+// lock failure on the same statement is dropped only there. Anywhere else —
+// the live deletion seals the same actor row with the same statement — the
+// production logger keeps it, as it keeps every unrelated failure, with
+// redaction unchanged.
+func TestLegacyBusyLoggerScope(t *testing.T) {
+	// prodDB equips the rig with the production-configured GORM logger
+	// writing to logs. marked decides whether the handle carries the save's
+	// scope, the way the route's bounded context does.
+	prodDB := func(t *testing.T, r *saveRig, logs *bytes.Buffer, marked bool) *gorm.DB {
+		t.Helper()
+		db := r.app.DB.Session(&gorm.Session{Logger: dbopen.Logger(log.New(logs, "\r\n", log.LstdFlags))})
+		if marked {
+			return db.WithContext(dbopen.WithLegacySaveBusyScope(context.Background()))
+		}
+		return db
+	}
+	suppressed := func(t *testing.T, out string) {
+		t.Helper()
+		if strings.Contains(out, "55P03") || strings.Contains(strings.ToUpper(out), "NOWAIT") {
+			t.Errorf("the database log hid a failure it does not own: %s", out)
+		}
+	}
+	kept := func(t *testing.T, out, want string) {
+		t.Helper()
+		if !strings.Contains(out, want) {
+			t.Errorf("the database log hid a failure it does not own, want %q in: %s", want, out)
+		}
+	}
+	// busySeal runs the exact actor seal while another transaction holds the
+	// admin row, and checks the failure really is lock-not-available: the log
+	// assertions below mean nothing without it.
+	busySeal := func(t *testing.T, db *gorm.DB, admin *models.User) {
+		t.Helper()
+		err := currentAdminIn(db, admin, nil)
+		if !errors.Is(err, errActorBusy) || pgCode(err) != pgLockNotAvailable {
+			t.Fatalf("seal = %v, want the actor busy on SQLSTATE 55P03", err)
+		}
+	}
+
+	t.Run("actor seal outside the save still logged", func(t *testing.T) {
+		r := newSaveRig(t)
+		hold, _ := beginOwnedTx(t, r.direct)
+		if err := hold.Exec("SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE", r.admin.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := hold.Rollback().Error; err != nil {
+				t.Fatal(err)
+			}
+		}()
+		t.Run("direct", func(t *testing.T) {
+			var logs bytes.Buffer
+			busySeal(t, prodDB(t, r, &logs, false), r.admin)
+			kept(t, logs.String(), "55P03")
+		})
+		t.Run("in a transaction", func(t *testing.T) {
+			var logs bytes.Buffer
+			tx := prodDB(t, r, &logs, false).Begin()
+			busySeal(t, tx, r.admin)
+			if err := tx.Rollback().Error; err != nil {
+				t.Fatal(err)
+			}
+			kept(t, logs.String(), "55P03")
+		})
+	})
+
+	t.Run("actor seal inside the save suppressed", func(t *testing.T) {
+		r := newSaveRig(t)
+		hold, _ := beginOwnedTx(t, r.direct)
+		if err := hold.Exec("SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE", r.admin.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := hold.Rollback().Error; err != nil {
+				t.Fatal(err)
+			}
+		}()
+		t.Run("direct", func(t *testing.T) {
+			var logs bytes.Buffer
+			busySeal(t, prodDB(t, r, &logs, true), r.admin)
+			suppressed(t, logs.String())
+		})
+		t.Run("in a transaction", func(t *testing.T) {
+			var logs bytes.Buffer
+			tx := prodDB(t, r, &logs, true).Begin()
+			busySeal(t, tx, r.admin)
+			if err := tx.Rollback().Error; err != nil {
+				t.Fatal(err)
+			}
+			suppressed(t, logs.String())
+		})
+	})
+
+	// busyBlank runs the exact counterpart blank while another transaction
+	// holds the other deleted party, and checks the failure really is
+	// lock-not-available from the trigger's share lock.
+	busyBlank := func(t *testing.T, db *gorm.DB, req models.ContactRequest, party uint) {
+		t.Helper()
+		err := db.Exec("UPDATE contact_requests SET reason = '' WHERE id = ANY(?::bigint[]) AND reason <> '' AND (requester_id = ? OR subject_user_id = ?)",
+			pgBigintArray([]int64{int64(req.ID)}), party, party).Error
+		if pgCode(err) != pgLockNotAvailable {
+			t.Fatalf("blank = %v, want SQLSTATE 55P03", err)
+		}
+	}
+	blankScene := func(t *testing.T) (*saveRig, models.ContactRequest, uint, *gorm.DB) {
+		t.Helper()
+		r := newSaveRig(t)
+		a, b := r.target("gone-a"), r.target("gone-b")
+		req := r.askAdd(a, b, 1)
+		r.bury(a, b)
+		hold, _ := beginOwnedTx(t, r.direct)
+		if err := hold.Exec("SELECT id FROM users WHERE id = ? FOR UPDATE", b.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		return r, req, a.ID, hold
+	}
+
+	t.Run("counterpart blank outside the save still logged", func(t *testing.T) {
+		r, req, party, hold := blankScene(t)
+		defer func() {
+			if err := hold.Rollback().Error; err != nil {
+				t.Fatal(err)
+			}
+		}()
+		t.Run("direct", func(t *testing.T) {
+			var logs bytes.Buffer
+			busyBlank(t, prodDB(t, r, &logs, false), req, party)
+			kept(t, logs.String(), "55P03")
+		})
+		t.Run("in a transaction", func(t *testing.T) {
+			var logs bytes.Buffer
+			tx := prodDB(t, r, &logs, false).Begin()
+			busyBlank(t, tx, req, party)
+			if err := tx.Rollback().Error; err != nil {
+				t.Fatal(err)
+			}
+			kept(t, logs.String(), "55P03")
+		})
+	})
+
+	t.Run("counterpart blank inside the save suppressed", func(t *testing.T) {
+		r, req, party, hold := blankScene(t)
+		defer func() {
+			if err := hold.Rollback().Error; err != nil {
+				t.Fatal(err)
+			}
+		}()
+		t.Run("direct", func(t *testing.T) {
+			var logs bytes.Buffer
+			busyBlank(t, prodDB(t, r, &logs, true), req, party)
+			suppressed(t, logs.String())
+		})
+		t.Run("in a transaction", func(t *testing.T) {
+			var logs bytes.Buffer
+			tx := prodDB(t, r, &logs, true).Begin()
+			busyBlank(t, tx, req, party)
+			if err := tx.Rollback().Error; err != nil {
+				t.Fatal(err)
+			}
+			suppressed(t, logs.String())
+		})
+	})
+
+	t.Run("a different lock still logged", func(t *testing.T) {
+		r := newSaveRig(t)
+		hold, _ := beginOwnedTx(t, r.direct)
+		if err := hold.Exec("SELECT id FROM users WHERE id = ? FOR UPDATE", r.admin.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if err := hold.Rollback().Error; err != nil {
+				t.Fatal(err)
+			}
+		}()
+		for _, marked := range []bool{false, true} {
+			var logs bytes.Buffer
+			err := prodDB(t, r, &logs, marked).Exec("SELECT id FROM users WHERE id = ? FOR UPDATE NOWAIT", r.admin.ID).Error
+			if err == nil || pgCode(err) != pgLockNotAvailable {
+				t.Fatalf("other NOWAIT lock = %v, want SQLSTATE 55P03", err)
+			}
+			kept(t, logs.String(), "55P03")
+		}
+	})
+
+	t.Run("an unrelated failure still logged", func(t *testing.T) {
+		r := newSaveRig(t)
+		for _, marked := range []bool{false, true} {
+			var logs bytes.Buffer
+			err := prodDB(t, r, &logs, marked).Exec("SELECT * FROM legacy_busy_missing_table_xyz").Error
+			if err == nil {
+				t.Fatal("missing-table query succeeded")
+			}
+			kept(t, logs.String(), "legacy_busy_missing_table_xyz")
 		}
 	})
 }

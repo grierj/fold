@@ -49,6 +49,7 @@ import (
 	"time"
 
 	"fold/internal/audit"
+	"fold/internal/dbopen"
 	"fold/internal/jobs"
 	"fold/internal/policy"
 	"fold/models"
@@ -617,6 +618,11 @@ func (a *App) apiAdminLegacyReasonSave(c *gin.Context) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), legacySaveBudget)
 	defer cancel()
+	// Only this save's transactions may drop the two expected lock failures
+	// from the database log: the mark travels with the bounded context into
+	// every fenced statement, while the live deletion seals the same actor
+	// row with the same statement outside it.
+	ctx = dbopen.WithLegacySaveBusyScope(ctx)
 	retry := newBusyRetry(ctx)
 	// Reset at the start of every attempt: a rolled-back attempt's values are
 	// never used. predFailed: the seal's rule (not the plain admin test) refused.
