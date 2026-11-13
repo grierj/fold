@@ -4372,3 +4372,727 @@ func TestLegacySaveVsConversion(t *testing.T) {
 		s.wantSavedOnce(id, 1, counter)
 	})
 }
+
+// ---------------------------------------------------------------------------
+// The forward deletion and the legacy save on the same request.
+//
+// A request between two accounts is two items, one per party. One party is
+// already a deleted account (A, decided by the legacy save), the other is live
+// (B, decided by the forward deletion's reviewed set, or, once B is gone, by the
+// legacy save too). The two routes read the same row under different rules: the
+// forward path consumes a complete set-v1 envelope, the legacy path a named
+// subset; a Keep changes no request column, a Remove blanks the one reason for
+// both parties, and a lifecycle change of a pending row changes its hash. Each
+// test drives the real audited pages, the real attempt mint, the real PUT and
+// the real DELETE, in both operation orders and in both party orders.
+// ---------------------------------------------------------------------------
+
+type composedOpts struct {
+	aFirst  bool // the deleted account is the requester; false: the subject
+	purpose string
+	status  string
+	extra   bool // B has a second reason of its own, with a bystander
+}
+
+type composedWorld struct {
+	t            *testing.T
+	r            *saveRig
+	a, b, c      *models.User // a: deleted account; b: live, then deleted by the forward route; c: bystander
+	req          models.ContactRequest
+	extra        models.ContactRequest // between b (requester) and c, a terminal contact request
+	aRole, bRole string
+}
+
+func newComposed(t *testing.T, o composedOpts) *composedWorld {
+	t.Helper()
+	r := newSaveRig(t)
+	w := &composedWorld{t: t, r: r, a: r.target("gone-a"), b: r.target("live-b"), c: r.target("live-c")}
+	requester, subject := w.a, w.b
+	w.aRole, w.bRole = "requester", "subject"
+	if !o.aFirst {
+		requester, subject = w.b, w.a
+		w.aRole, w.bRole = "subject", "requester"
+	}
+	w.req = erasureMakeRequest(t, r.direct, o.purpose, o.status, requester.ID, subject.ID, 1, 0, 0, 1, "")
+	if o.extra {
+		w.extra = erasureMakeRequest(t, r.direct, policy.RequestContact, policy.ContactWithdrawn, w.b.ID, w.c.ID, 1, 0, 0, 2, "")
+	}
+	r.bury(w.a)
+	return w
+}
+
+// composedMatrix runs fn for the deleted account as requester and as subject,
+// with a contact request and a group add (the two audit families).
+func composedMatrix(t *testing.T, extra bool, fn func(t *testing.T, w *composedWorld)) {
+	for _, party := range []struct {
+		name   string
+		aFirst bool
+	}{{"deleted account requests", true}, {"deleted account is the subject", false}} {
+		for _, purpose := range []string{policy.RequestContact, policy.RequestGroupAdd} {
+			t.Run(party.name+"/"+purpose, func(t *testing.T) {
+				fn(t, newComposed(t, composedOpts{aFirst: party.aFirst, purpose: purpose, status: policy.ContactWithdrawn, extra: extra}))
+			})
+		}
+	}
+}
+
+func (w *composedWorld) reqID() int64   { return int64(w.req.ID) }
+func (w *composedWorld) extraID() int64 { return int64(w.extra.ID) }
+
+// legacyItems and forwardItems are the two audited pages walked from the start.
+func (w *composedWorld) legacyItems() []reasonItemJSON  { return w.r.items(w.a.ID) }
+func (w *composedWorld) forwardItems() []reasonItemJSON { return allPages(w.t, w.r.c, w.b.ID) }
+
+func (w *composedWorld) legacySave(items []reasonItemJSON, choices ...string) (string, *httptest.ResponseRecorder) {
+	w.t.Helper()
+	return w.r.save(w.a.ID, choose(items, choices...))
+}
+
+func (w *composedWorld) mintDelete() string {
+	w.t.Helper()
+	return mintAttemptFor(w.t, w.r.c, w.b.ID)
+}
+
+// forwardDelete is DELETE /admin/users/:b with the id and, when given, the
+// review (nil sends none).
+func (w *composedWorld) forwardDelete(id string, review any) httpResult {
+	body := map[string]any{"attemptId": id}
+	if review != nil {
+		body["reasonReview"] = review
+	}
+	return deleteAccount(w.r.c, w.b.ID, body)
+}
+
+// reviewFor is the set-v1 envelope over items, choosing by request id; an item
+// not named in choices is kept.
+func reviewFor(items []reasonItemJSON, choices map[int64]string) map[string]any {
+	return reviewOf(items, func(it reasonItemJSON) string {
+		id, _ := parseRequestID(it.RequestID)
+		if c, ok := choices[id]; ok {
+			return c
+		}
+		return "keep"
+	})
+}
+
+// forwardState is the ledger state of a deletion id minted for b.
+func (w *composedWorld) forwardState(id string) attemptState {
+	w.t.Helper()
+	nonce, _, ok := w.r.app.openAttempt(id, attemptKindAccountDelete, w.r.admin.ID, w.b.ID)
+	if !ok {
+		w.t.Fatal("the deletion id does not open for the tuple it was minted for")
+	}
+	st, _ := w.r.app.attempts.ledger.look(nonce)
+	return st
+}
+
+// listed is the discovery listing, every unit: account id to request ids.
+func (w *composedWorld) listed() map[string][]string {
+	w.t.Helper()
+	out := map[string][]string{}
+	var after *string
+	for i := 0; i < 20; i++ {
+		path := legacyDiscoveryPath
+		if after != nil {
+			path += "?after=" + *after
+		}
+		res := w.r.c.do("GET", path, nil, false)
+		if res.Code != http.StatusOK {
+			w.t.Fatalf("discovery: %d %s", res.Code, res.Body.String())
+		}
+		var p legacyReasonDiscoveryJSON
+		if err := json.Unmarshal(res.Body.Bytes(), &p); err != nil {
+			w.t.Fatal(err)
+		}
+		for _, a := range p.Accounts {
+			for _, it := range a.Items {
+				out[a.UserID] = append(out[a.UserID], it.RequestID)
+			}
+		}
+		if p.Next == nil {
+			return out
+		}
+		after = p.Next
+	}
+	w.t.Fatal("discovery never ended")
+	return nil
+}
+
+func (w *composedWorld) wantListed(want map[string][]string) {
+	w.t.Helper()
+	got := w.listed()
+	if len(got) == 0 && len(want) == 0 {
+		return
+	}
+	for k := range got {
+		sort.Strings(got[k])
+	}
+	for k := range want {
+		sort.Strings(want[k])
+	}
+	if !reflect.DeepEqual(got, want) {
+		w.t.Fatalf("discovery lists %v, want %v", got, want)
+	}
+}
+
+func (w *composedWorld) aKey() string { return itoa(w.a.ID) }
+func rid(id int64) string             { return strconv.FormatInt(id, 10) }
+
+func (w *composedWorld) bDeleted() bool { return w.r.deleted(w.b.ID) }
+
+// decisionWant is one decision audit row, exactly: who decided, what, about
+// which request and party, and the metadata that names the party and the path.
+type decisionWant struct {
+	req    models.ContactRequest
+	kept   bool
+	erased uint
+	role   string
+	source string // reasonSourceLegacy or the deletion's
+	status string
+}
+
+// wantViews checks the audited page views so far: each is source, target
+// account and the count the page showed, in the order they were served. Both
+// pages write one per nonempty page, in the page's own transaction.
+func (w *composedWorld) wantViews(want ...string) {
+	w.t.Helper()
+	var got []string
+	for _, v := range viewAudits(w.t, w.r.direct) {
+		var meta struct {
+			Count  int    `json:"count"`
+			Source string `json:"source"`
+		}
+		if err := json.Unmarshal([]byte(v.MetaJSON), &meta); err != nil {
+			w.t.Fatal(err)
+		}
+		if v.ActorID == nil || *v.ActorID != w.r.admin.ID || v.TargetType != "user" || v.IP != "" {
+			w.t.Errorf("view row %+v: want the admin's, on a user, with no address", v)
+		}
+		got = append(got, fmt.Sprintf("%s:%d:%d", meta.Source, v.TargetID, meta.Count))
+	}
+	if !reflect.DeepEqual(got, want) {
+		w.t.Errorf("page views = %v, want %v", got, want)
+	}
+}
+
+func (w *composedWorld) wantDecisions(want ...decisionWant) {
+	w.t.Helper()
+	rows := w.r.decisionRows()
+	var got []string
+	for _, d := range rows {
+		got = append(got, fmt.Sprintf("%s %s %d %v", d.Action, d.TargetType, d.TargetID, d.Meta["erasedUserId"]))
+	}
+	if len(rows) != len(want) {
+		w.t.Fatalf("%d decision rows %v, want %d", len(rows), got, len(want))
+	}
+	for i, x := range want {
+		kind := requestKindOf(x.req.Purpose)
+		action := kind.reasonRemoved
+		if x.kept {
+			action = kind.reasonKept
+		}
+		meta := map[string]any{"erasedUserId": float64(x.erased), "erasedRole": x.role, "purpose": x.req.Purpose, "status": x.status,
+			"reviewerIsParty": false, "source": x.source, "reviewVersion": float64(1)}
+		d := rows[i]
+		if d.Action != action || d.TargetType != kind.target || d.TargetID != int64(x.req.ID) || d.ActorID == nil ||
+			*d.ActorID != int64(w.r.admin.ID) || !reflect.DeepEqual(d.Meta, meta) {
+			w.t.Errorf("decision %d = %+v\nwant %s on %s %d by %d with meta %v", i, d, action, kind.target, x.req.ID, w.r.admin.ID, meta)
+		}
+		for _, leak := range []string{"identifying", "reviewHash", "attemptId", "hash"} {
+			if strings.Contains(d.Raw, leak) {
+				w.t.Errorf("decision %d's meta carries %q: %s", i, leak, d.Raw)
+			}
+		}
+	}
+}
+
+func (w *composedWorld) legacyDecision(req models.ContactRequest, kept bool, status string) decisionWant {
+	role := w.aRole
+	if req.ID != w.req.ID {
+		w.t.Fatal("a legacy decision here is about the shared request")
+	}
+	return decisionWant{req: req, kept: kept, erased: w.a.ID, role: role, source: reasonSourceLegacy, status: status}
+}
+
+func (w *composedWorld) forwardDecision(req models.ContactRequest, kept bool, status string) decisionWant {
+	role := w.bRole
+	if req.ID == w.extra.ID {
+		role = "requester"
+	}
+	return decisionWant{req: req, kept: kept, erased: w.b.ID, role: role, source: "deletion", status: status}
+}
+
+// wantSameHashes compares what two pages served for the same
+// requests: a Keep or an unrelated decision changes no column, a lifecycle
+// change of a pending row does.
+func wantSameHashes(t *testing.T, what string, before, after []reasonItemJSON) {
+	t.Helper()
+	if len(before) != len(after) {
+		t.Fatalf("%s: %v then %v", what, requestIDs(before), requestIDs(after))
+	}
+	for i := range before {
+		if before[i].RequestID != after[i].RequestID || before[i].ReviewHash != after[i].ReviewHash {
+			t.Errorf("%s: item %d was %s %s, is %s %s", what, i, before[i].RequestID, before[i].ReviewHash, after[i].RequestID, after[i].ReviewHash)
+		}
+	}
+}
+
+func (w *composedWorld) wantUntouched(reqs ...models.ContactRequest) {
+	w.t.Helper()
+	for _, q := range reqs {
+		if got := w.r.reasonOf(int64(q.ID)); got != q.Reason {
+			w.t.Errorf("request %d reason = %q, want it untouched (%q)", q.ID, got, q.Reason)
+		}
+	}
+}
+
+func (w *composedWorld) wantBlank(reqs ...models.ContactRequest) {
+	w.t.Helper()
+	for _, q := range reqs {
+		if got := w.r.reasonOf(int64(q.ID)); got != "" {
+			w.t.Errorf("request %d reason = %q, want it blanked", q.ID, got)
+		}
+	}
+}
+
+// wantForwardDeleted checks the 200 and the report's counts.
+func wantForwardDeleted(t *testing.T, res httpResult, kept, removed int) {
+	t.Helper()
+	if res.code != http.StatusOK {
+		t.Fatalf("delete: %d %s, want 200", res.code, res.body)
+	}
+	var out struct {
+		Erasure erasureReportJSON `json:"erasure"`
+	}
+	if err := json.Unmarshal([]byte(res.body), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Erasure.ReasonsKept != kept || out.Erasure.ReasonsRemoved != removed {
+		t.Errorf("report kept %d removed %d, want %d and %d", out.Erasure.ReasonsKept, out.Erasure.ReasonsRemoved, kept, removed)
+	}
+}
+
+func wantForwardRefused(t *testing.T, res httpResult, code string) {
+	t.Helper()
+	if res.code != http.StatusConflict || !strings.Contains(res.body, `"code":"`+code+`"`) {
+		t.Fatalf("delete: %d %s, want 409 %s", res.code, res.body, code)
+	}
+}
+
+// Legacy Keep for A, then B's forward deletion with the review B's page gave
+// before the Keep. The Keep changed no column, so the review is still the
+// current set; B decides its own side, and A's marker stays A's.
+func TestComposedLegacyKeepThenForwardDelete(t *testing.T) {
+	for _, bChoice := range []string{"keep", "remove"} {
+		t.Run("B "+bChoice+"s", func(t *testing.T) {
+			composedMatrix(t, true, func(t *testing.T, w *composedWorld) {
+				bBefore, aBefore := w.forwardItems(), w.legacyItems()
+				if got, want := requestIDs(bBefore), []string{rid(w.reqID()), rid(w.extraID())}; !reflect.DeepEqual(got, want) {
+					t.Fatalf("b's panel lists %v, want %v", got, want)
+				}
+				if got := requestIDs(aBefore); !reflect.DeepEqual(got, []string{rid(w.reqID())}) {
+					t.Fatalf("a's page lists %v, want the one shared request", got)
+				}
+				w.wantListed(map[string][]string{w.aKey(): {rid(w.reqID())}})
+
+				_, res := w.legacySave(aBefore, "keep")
+				if res.Code != http.StatusOK || strings.TrimSpace(res.Body.String()) != `{"kept":1,"removed":0}` {
+					t.Fatalf("legacy keep: %d %s", res.Code, res.Body.String())
+				}
+				w.wantDecisions(w.legacyDecision(w.req, true, policy.ContactWithdrawn))
+				w.wantUntouched(w.req, w.extra)
+				// A's side is decided and gone from the list; B's side is untouched
+				// and its hash is the one B's panel already holds.
+				w.wantListed(nil)
+				if got := w.legacyItems(); len(got) != 0 {
+					t.Errorf("a's page still lists %v", requestIDs(got))
+				}
+				wantSameHashes(t, "b's panel after a's keep", bBefore, w.forwardItems())
+
+				id := w.mintDelete()
+				review := reviewFor(bBefore, map[int64]string{w.reqID(): bChoice, w.extraID(): "remove"})
+				removed := 1
+				if bChoice == "remove" {
+					removed = 2
+				}
+				wantForwardDeleted(t, w.forwardDelete(id, review), 2-removed, removed)
+				if got := w.forwardState(id); got != attemptApplied {
+					t.Errorf("the deletion id is %v, want applied", got)
+				}
+				w.wantDecisions(
+					w.legacyDecision(w.req, true, policy.ContactWithdrawn),
+					w.forwardDecision(w.req, bChoice == "keep", policy.ContactWithdrawn),
+					w.forwardDecision(w.extra, false, policy.ContactWithdrawn))
+				if bChoice == "keep" {
+					w.wantUntouched(w.req)
+				} else {
+					w.wantBlank(w.req)
+				}
+				w.wantBlank(w.extra)
+				// Both sides of the shared request are decided: nothing is listed for
+				// either account, and the first Keep cannot be spent twice.
+				w.wantViews(
+					fmt.Sprintf("deletion:%d:2", w.b.ID), fmt.Sprintf("legacy_review:%d:1", w.a.ID), fmt.Sprintf("deletion:%d:2", w.b.ID))
+				w.wantListed(nil)
+				if got := w.r.items(w.b.ID); len(got) != 0 {
+					t.Errorf("the deleted b's page lists %v", requestIDs(got))
+				}
+				before := w.r.written()
+				again, res := w.legacySave(aBefore, "keep")
+				wantSaveCode(t, res, http.StatusConflict, "reason_review_changed")
+				w.r.wantUnchanged(before, again, w.a.ID, attemptRolledBack)
+			})
+		})
+	}
+}
+
+// Legacy Remove for A while B's deletion review is open. The Remove blanks the
+// one reason for both parties, so the request leaves B's current set. When
+// something else survives, B's old review is stale (409, nothing written, the id
+// ends rolled back) and the reloaded set deletes. When nothing survives, the
+// current set is empty and the stale body is ignored: B is deleted normally.
+func TestComposedLegacyRemoveWhileForwardReviewIsOpen(t *testing.T) {
+	t.Run("a surviving reason makes the old review stale", func(t *testing.T) {
+		composedMatrix(t, true, func(t *testing.T, w *composedWorld) {
+			bBefore, aBefore := w.forwardItems(), w.legacyItems()
+			_, res := w.legacySave(aBefore, "remove")
+			if res.Code != http.StatusOK || strings.TrimSpace(res.Body.String()) != `{"kept":0,"removed":1}` {
+				t.Fatalf("legacy remove: %d %s", res.Code, res.Body.String())
+			}
+			w.wantBlank(w.req)
+			w.wantUntouched(w.extra)
+			w.wantDecisions(w.legacyDecision(w.req, false, policy.ContactWithdrawn))
+
+			stale := w.mintDelete()
+			before := w.r.written()
+			wantForwardRefused(t, w.forwardDelete(stale, reviewFor(bBefore, nil)), "reason_review_changed")
+			if got := w.r.written(); got != before {
+				t.Fatalf("a stale review wrote something:\nbefore: %s\nafter:  %s", before, got)
+			}
+			if w.bDeleted() || w.forwardState(stale) != attemptRolledBack {
+				t.Fatalf("b deleted: %v, id %v: want a live account and a rolled-back id", w.bDeleted(), w.forwardState(stale))
+			}
+			// A review that still names the blanked request is the same stale set,
+			// whatever its choices.
+			again := w.mintDelete()
+			wantForwardRefused(t, w.forwardDelete(again, reviewFor(bBefore, map[int64]string{w.reqID(): "remove", w.extraID(): "remove"})), "reason_review_changed")
+			if w.r.written() != before || w.bDeleted() {
+				t.Fatal("a second stale review changed something")
+			}
+
+			// Reloading drops the blanked request; the set it now holds deletes.
+			bAfter := w.forwardItems()
+			if got := requestIDs(bAfter); !reflect.DeepEqual(got, []string{rid(w.extraID())}) {
+				t.Fatalf("b's reloaded panel lists %v, want only its own reason", got)
+			}
+			fresh := w.mintDelete()
+			wantForwardDeleted(t, w.forwardDelete(fresh, reviewFor(bAfter, nil)), 1, 0)
+			w.wantDecisions(
+				w.legacyDecision(w.req, false, policy.ContactWithdrawn),
+				w.forwardDecision(w.extra, true, policy.ContactWithdrawn))
+			w.wantBlank(w.req)
+			w.wantUntouched(w.extra)
+			w.wantListed(nil)
+		})
+	})
+
+	// Nothing survives for B: the forward set is empty, which is not stale. The
+	// body is ignored, whatever it holds, and no decision of B's is written.
+	t.Run("when every reason vanished the stale body is ignored", func(t *testing.T) {
+		for _, body := range []string{"the stale review", "no review"} {
+			t.Run(body, func(t *testing.T) {
+				composedMatrix(t, false, func(t *testing.T, w *composedWorld) {
+					bBefore, aBefore := w.forwardItems(), w.legacyItems()
+					if got := requestIDs(bBefore); !reflect.DeepEqual(got, []string{rid(w.reqID())}) {
+						t.Fatalf("b's panel lists %v, want the shared request alone", got)
+					}
+					if _, res := w.legacySave(aBefore, "remove"); res.Code != http.StatusOK {
+						t.Fatalf("legacy remove: %d %s", res.Code, res.Body.String())
+					}
+					var review any
+					if body == "the stale review" {
+						review = reviewFor(bBefore, map[int64]string{w.reqID(): "remove"})
+					}
+					id := w.mintDelete()
+					wantForwardDeleted(t, w.forwardDelete(id, review), 0, 0)
+					if !w.bDeleted() || w.forwardState(id) != attemptApplied {
+						t.Errorf("b deleted: %v, id %v: want deleted and applied", w.bDeleted(), w.forwardState(id))
+					}
+					w.wantDecisions(w.legacyDecision(w.req, false, policy.ContactWithdrawn))
+					w.wantBlank(w.req)
+					w.wantListed(nil)
+				})
+			})
+		}
+	})
+
+	// The same Remove for A while B's set also holds a surviving reason, but
+	// sent with no review at all, is the plain needs-a-review refusal.
+	t.Run("a surviving reason still needs a review", func(t *testing.T) {
+		composedMatrix(t, true, func(t *testing.T, w *composedWorld) {
+			aBefore := w.legacyItems()
+			if _, res := w.legacySave(aBefore, "remove"); res.Code != http.StatusOK {
+				t.Fatalf("legacy remove: %d %s", res.Code, res.Body.String())
+			}
+			id := w.mintDelete()
+			before := w.r.written()
+			wantForwardRefused(t, w.forwardDelete(id, nil), "needs_reason_review")
+			if w.r.written() != before || w.bDeleted() {
+				t.Fatal("the refusal changed something")
+			}
+		})
+	})
+}
+
+// Forward Keep by B, then A's legacy review. The Keep changed no column, so the
+// request is still listed for A and A's page from before B's deletion still
+// holds A's hash; A decides its own side with its own erasedUserId, and a
+// Remove then blanks the reason B chose to keep.
+func TestComposedForwardKeepThenLegacyReview(t *testing.T) {
+	for _, aChoice := range []string{"keep", "remove"} {
+		t.Run("A "+aChoice+"s", func(t *testing.T) {
+			composedMatrix(t, true, func(t *testing.T, w *composedWorld) {
+				aBefore, bBefore := w.legacyItems(), w.forwardItems()
+				id := w.mintDelete()
+				wantForwardDeleted(t, w.forwardDelete(id, reviewFor(bBefore, map[int64]string{w.extraID(): "remove"})), 1, 1)
+				w.wantDecisions(
+					w.forwardDecision(w.req, true, policy.ContactWithdrawn),
+					w.forwardDecision(w.extra, false, policy.ContactWithdrawn))
+				w.wantUntouched(w.req)
+				w.wantBlank(w.extra)
+
+				// B's Keep decided B's side only: A's side is still listed and the
+				// page is the one A saw before B's deletion.
+				w.wantListed(map[string][]string{w.aKey(): {rid(w.reqID())}})
+				wantSameHashes(t, "a's page after b's keep", aBefore, w.legacyItems())
+				w.wantViews(fmt.Sprintf("legacy_review:%d:1", w.a.ID), fmt.Sprintf("deletion:%d:2", w.b.ID), fmt.Sprintf("legacy_review:%d:1", w.a.ID))
+				if got := w.r.items(w.b.ID); len(got) != 0 {
+					t.Errorf("the deleted b's page lists %v after b decided", requestIDs(got))
+				}
+
+				// The page A held before B's deletion still decides.
+				_, res := w.legacySave(aBefore, aChoice)
+				want := `{"kept":1,"removed":0}`
+				if aChoice == "remove" {
+					want = `{"kept":0,"removed":1}`
+				}
+				if res.Code != http.StatusOK || strings.TrimSpace(res.Body.String()) != want {
+					t.Fatalf("legacy %s: %d %s, want 200 %s", aChoice, res.Code, res.Body.String(), want)
+				}
+				w.wantDecisions(
+					w.forwardDecision(w.req, true, policy.ContactWithdrawn),
+					w.forwardDecision(w.extra, false, policy.ContactWithdrawn),
+					w.legacyDecision(w.req, aChoice == "keep", policy.ContactWithdrawn))
+				if aChoice == "keep" {
+					w.wantUntouched(w.req)
+				} else {
+					w.wantBlank(w.req)
+				}
+				w.wantListed(nil)
+				before := w.r.written()
+				id2, res := w.legacySave(aBefore, "keep")
+				wantSaveCode(t, res, http.StatusConflict, "reason_review_changed")
+				w.r.wantUnchanged(before, id2, w.a.ID, attemptRolledBack)
+			})
+		})
+	}
+}
+
+// Forward Remove by B invalidates A's old legacy decision: the reason is blank,
+// so the pair is reviewed and a save naming it is stale. A save that names it
+// next to a still-valid item is refused whole, with no partial decision, and the
+// reloaded page decides the one that is left.
+func TestComposedForwardRemoveInvalidatesLegacyDecision(t *testing.T) {
+	composedMatrix(t, true, func(t *testing.T, w *composedWorld) {
+		third := erasureMakeRequest(t, w.r.direct, policy.RequestContact, policy.ContactWithdrawn, w.a.ID, w.c.ID, 1, 0, 0, 3, "")
+		aBefore, bBefore := w.legacyItems(), w.forwardItems()
+		if got, want := requestIDs(aBefore), []string{rid(w.reqID()), rid(int64(third.ID))}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("a's page lists %v, want %v", got, want)
+		}
+		id := w.mintDelete()
+		wantForwardDeleted(t, w.forwardDelete(id, reviewFor(bBefore, map[int64]string{w.reqID(): "remove"})), 1, 1)
+		w.wantDecisions(
+			w.forwardDecision(w.req, false, policy.ContactWithdrawn),
+			w.forwardDecision(w.extra, true, policy.ContactWithdrawn))
+		w.wantBlank(w.req)
+		w.wantUntouched(w.extra, third)
+		w.wantListed(map[string][]string{w.aKey(): {rid(int64(third.ID))}})
+
+		// Neither the blanked item alone nor with the valid one is accepted, and
+		// the valid one is not decided on the side.
+		before := w.r.written()
+		for name, choices := range map[string][]string{"the blanked item": {"keep", ""}, "the blanked item and a valid one": {"keep", "keep"}, "a remove of both": {"remove", "remove"}} {
+			id, res := w.legacySave(aBefore, choices...)
+			wantSaveCode(t, res, http.StatusConflict, "reason_review_changed")
+			w.r.wantUnchanged(before, id, w.a.ID, attemptRolledBack)
+			if n := len(w.r.decisionsFor(int64(third.ID), w.a.ID)); n != 0 {
+				t.Errorf("%s: %d decisions for the valid item", name, n)
+			}
+		}
+		w.wantUntouched(third)
+
+		// The reloaded page holds only the valid item, with its old hash: B's
+		// deletion changed none of its columns.
+		aAfter := w.legacyItems()
+		wantSameHashes(t, "a's page after b's remove", aBefore[1:], aAfter)
+		_, res := w.legacySave(aAfter, "keep")
+		if res.Code != http.StatusOK || strings.TrimSpace(res.Body.String()) != `{"kept":1,"removed":0}` {
+			t.Fatalf("legacy keep of the one left: %d %s", res.Code, res.Body.String())
+		}
+		w.wantDecisions(
+			w.forwardDecision(w.req, false, policy.ContactWithdrawn),
+			w.forwardDecision(w.extra, true, policy.ContactWithdrawn),
+			decisionWant{req: third, kept: true, erased: w.a.ID, role: "requester", source: reasonSourceLegacy, status: policy.ContactWithdrawn})
+		w.wantBlank(w.req)
+		w.wantListed(nil)
+	})
+}
+
+func (w *composedWorld) statusOf(req models.ContactRequest) string {
+	w.t.Helper()
+	var s string
+	if err := w.r.direct.Raw("SELECT status FROM contact_requests WHERE id = ?", req.ID).Scan(&s).Error; err != nil {
+		w.t.Fatal(err)
+	}
+	return s
+}
+
+// pendingMatrix runs fn for a pending contact request between the deleted
+// account and B in both party orders. Such a row is what a restored or
+// pre-erasure database holds: the deleted account's request never reached a
+// terminal state. Both routes reconcile it for real (reconcileContacts ends it
+// for the deleted party), which changes its hash.
+func pendingMatrix(t *testing.T, fn func(t *testing.T, w *composedWorld)) {
+	for _, party := range []struct {
+		name   string
+		aFirst bool
+	}{{"deleted account requests", true}, {"deleted account is the subject", false}} {
+		t.Run(party.name, func(t *testing.T) {
+			w := newComposed(t, composedOpts{aFirst: party.aFirst, purpose: policy.RequestContact, status: policy.ContactPending, extra: true})
+			if got := w.statusOf(w.req); got != policy.ContactPending {
+				t.Fatalf("the request starts %s, want pending", got)
+			}
+			fn(t, w)
+		})
+	}
+}
+
+// A pending row is ended by A's legacy save (the real reconciliation), so the
+// decision cannot be a no-column Keep for B: B's old review no longer matches
+// and a Keep for A makes the hash B's panel holds stale. A Remove also takes the
+// request out of B's set. In both, the legacy audit row records the status the
+// row had when it was decided, and the reloaded review deletes.
+func TestComposedLegacyDecisionEndsAPendingRowForTheForwardReview(t *testing.T) {
+	for _, aChoice := range []string{"keep", "remove"} {
+		t.Run("A "+aChoice+"s", func(t *testing.T) {
+			pendingMatrix(t, func(t *testing.T, w *composedWorld) {
+				aBefore, bBefore := w.legacyItems(), w.forwardItems()
+				_, res := w.legacySave(aBefore, aChoice)
+				if res.Code != http.StatusOK {
+					t.Fatalf("legacy %s: %d %s", aChoice, res.Code, res.Body.String())
+				}
+				w.wantDecisions(w.legacyDecision(w.req, aChoice == "keep", policy.ContactPending))
+				if got := w.statusOf(w.req); got != policy.ContactEnded {
+					t.Fatalf("the request is %s after the save, want ended by the reconciliation", got)
+				}
+				w.wantListed(nil)
+
+				id := w.mintDelete()
+				before := w.r.written()
+				wantForwardRefused(t, w.forwardDelete(id, reviewFor(bBefore, nil)), "reason_review_changed")
+				if w.r.written() != before || w.bDeleted() || w.forwardState(id) != attemptRolledBack {
+					t.Fatalf("the stale review changed something (deleted %v, id %v)", w.bDeleted(), w.forwardState(id))
+				}
+
+				bAfter := w.forwardItems()
+				removedReq := 0
+				if aChoice == "keep" {
+					if got := requestIDs(bAfter); !reflect.DeepEqual(got, []string{rid(w.reqID()), rid(w.extraID())}) {
+						t.Fatalf("b's reloaded panel lists %v", got)
+					}
+					if bAfter[0].ReviewHash == bBefore[0].ReviewHash {
+						t.Error("the ended request kept its hash: the reconciliation changed a column the hash covers")
+					}
+					if bAfter[1].ReviewHash != bBefore[1].ReviewHash {
+						t.Error("an unrelated request's hash changed")
+					}
+				} else {
+					removedReq = 1
+					if got := requestIDs(bAfter); !reflect.DeepEqual(got, []string{rid(w.extraID())}) {
+						t.Fatalf("b's reloaded panel lists %v, want the blanked request gone", got)
+					}
+				}
+				fresh := w.mintDelete()
+				wantForwardDeleted(t, w.forwardDelete(fresh, reviewFor(bAfter, nil)), len(bAfter), 0)
+				want := []decisionWant{w.legacyDecision(w.req, aChoice == "keep", policy.ContactPending)}
+				if removedReq == 0 {
+					want = append(want, w.forwardDecision(w.req, true, policy.ContactEnded))
+				}
+				w.wantDecisions(append(want, w.forwardDecision(w.extra, true, policy.ContactWithdrawn))...)
+				if aChoice == "keep" {
+					w.wantUntouched(w.req)
+				} else {
+					w.wantBlank(w.req)
+				}
+				w.wantUntouched(w.extra)
+			})
+		})
+	}
+}
+
+// B's deletion ends the pending row for the deleted party (the real
+// reconciliation), so A's page from before it is stale even when B kept the
+// reason; the fresh page lists the request with a new hash and decides it,
+// recording the ended status. When B removed it, nothing is left for A.
+func TestComposedForwardDeleteEndsAPendingRowForTheLegacySave(t *testing.T) {
+	for _, bChoice := range []string{"keep", "remove"} {
+		t.Run("B "+bChoice+"s", func(t *testing.T) {
+			pendingMatrix(t, func(t *testing.T, w *composedWorld) {
+				aBefore, bBefore := w.legacyItems(), w.forwardItems()
+				id := w.mintDelete()
+				kept, removed := 2, 0
+				if bChoice == "remove" {
+					kept, removed = 1, 1
+				}
+				wantForwardDeleted(t, w.forwardDelete(id, reviewFor(bBefore, map[int64]string{w.reqID(): bChoice})), kept, removed)
+				w.wantDecisions(
+					w.forwardDecision(w.req, bChoice == "keep", policy.ContactPending),
+					w.forwardDecision(w.extra, true, policy.ContactWithdrawn))
+				if got := w.statusOf(w.req); got != policy.ContactEnded {
+					t.Fatalf("the request is %s after the deletion, want ended by the reconciliation", got)
+				}
+
+				// A's old decision is stale in either case, and nothing it names is
+				// decided on the side.
+				before := w.r.written()
+				staleID, res := w.legacySave(aBefore, "keep")
+				wantSaveCode(t, res, http.StatusConflict, "reason_review_changed")
+				w.r.wantUnchanged(before, staleID, w.a.ID, attemptRolledBack)
+
+				if bChoice == "remove" {
+					w.wantBlank(w.req)
+					w.wantListed(nil)
+					if got := w.legacyItems(); len(got) != 0 {
+						t.Errorf("a's page lists %v after b removed the reason", requestIDs(got))
+					}
+					return
+				}
+				w.wantUntouched(w.req)
+				w.wantListed(map[string][]string{w.aKey(): {rid(w.reqID())}})
+				aAfter := w.legacyItems()
+				if len(aAfter) != 1 || aAfter[0].ReviewHash == aBefore[0].ReviewHash {
+					t.Fatalf("a's reloaded page = %v: want the one request with a new hash", requestIDs(aAfter))
+				}
+				if _, res := w.legacySave(aAfter, "keep"); res.Code != http.StatusOK {
+					t.Fatalf("legacy keep of the reloaded page: %d %s", res.Code, res.Body.String())
+				}
+				w.wantDecisions(
+					w.forwardDecision(w.req, true, policy.ContactPending),
+					w.forwardDecision(w.extra, true, policy.ContactWithdrawn),
+					w.legacyDecision(w.req, true, policy.ContactEnded))
+				w.wantUntouched(w.req)
+				w.wantListed(nil)
+			})
+		})
+	}
+}
