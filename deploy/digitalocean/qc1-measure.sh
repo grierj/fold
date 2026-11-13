@@ -40,8 +40,9 @@
 #
 # --calibrate-only: the instrument preflight. It makes the same checks, builds the same stack, runs the same setup and the same calibration, writes preflight.json and stops: no
 # fixtures, no operation, no browser, no evidence files (it is not QC-1 evidence and not a measurement). It exits 0 only when every instrument is proven, which for the app's peak
-# memory means the control showed the reset probe lowering a stored mark and the app's own baseline was clean (qc1/lib.sh, "the app's peak-memory reset"); otherwise it exits 1
-# naming each problem. preflight.json says exactly what was proven and what was not. A full run makes the same calibration and stops before the first operation when it fails.
+# memory means one rule: the control demonstrated the reset probe lowering a stored mark and was shown stopped, and the app's own baseline was accepted
+# (qc1/lib.sh, "the app's peak-memory reset"); otherwise it exits 1 naming each problem. preflight.json says exactly what was proven and what was not
+# (proves names only the process that demonstrated the lowering). A full run makes the same calibration and stops before the first operation when it fails.
 #
 # --dense-counts: reasons in ONE account at the tables that can hold them, additive to --counts (the scaling design's R5: 100,000 at the 100k and 1M
 # tables, judged against the same budgets). "none" leaves them out (a pilot); a run without them is complete only for the sizes it names.
@@ -558,30 +559,55 @@ app_mem_read() { # pid
   return 1
 }
 # shellcheck disable=SC2329,SC2016 # called through QC1_HWM_WRITE; the sh program is literal.
-app_mem_reset() { timeout 10 docker exec "$SIDE_CID" sh -c 'echo 5 > "/proc/$1/clear_refs"' _ "$1" 2>&1; }
-# The control: an awk the helper starts in the app's pid namespace, which builds an 8 MiB string and drops it, so its stored mark stands well above its RSS, writes its own pid to a
-# ready file and waits for a stop file. Prints the pid, or why not. It is the only thing this harness ever starts or ends inside the app's namespace besides the app's own reset.
-# shellcheck disable=SC2329 # called through QC1_HWM_CONTROL_START.
-app_ctl_start() {
-  local i out
-  timeout 10 docker exec "$SIDE_CID" sh -c 'rm -f /tmp/qc1-hwm-ctl.stop /tmp/qc1-hwm-ctl.ready' 2>&1 || { echo 'the control files could not be cleared'; return 1; }
-  timeout 10 docker exec -d "$SIDE_CID" awk 'BEGIN { s = "x"; while (length(s) < 8388608) s = s s; s = ""; getline l < "/proc/self/stat"; split(l, f, " "); print f[1] > "/tmp/qc1-hwm-ctl.ready"; close("/tmp/qc1-hwm-ctl.ready"); while ((getline x < "/tmp/qc1-hwm-ctl.stop") < 0) system("sleep 0.2") }' 2>&1 \
-    || { echo 'the control could not be launched'; return 1; }
-  for ((i = 0; i < 100; i++)); do
-    out="$(timeout 10 docker exec "$SIDE_CID" cat /tmp/qc1-hwm-ctl.ready 2>/dev/null || true)"
-    if [[ "$out" =~ ^[0-9]+$ ]]; then printf '%s\n' "$out"; return 0; fi
-    sleep 0.1
-  done
-  echo 'the control was not ready within 10 s'
-  return 1
+app_mem_reset() { # pid
+  timeout 10 docker exec "$SIDE_CID" sh -c 'echo 5 > "/proc/$1/clear_refs"' _ "$1" 2>&1
 }
-# Ends the control: the stop file first, and a kill only of a process that is not pid 1 and whose command line is awk (never the app).
+# The control: an awk the helper starts in the app's pid namespace, which builds an 8 MiB string and drops it, so its stored mark stands well above its RSS, writes its own pid to a
+# ready file and waits for a stop file. Prints the pid, or why not. It is the only thing this harness ever starts inside the app's namespace besides the app's own reset.
+# Each try uses its own handshake files, so a lingering earlier try cannot corrupt a later one's. Readiness has one absolute deadline (a slow daemon shows as
+# a timeout, never as silent progress); every poll is bounded by the time left. A launch that never becomes ready writes the stop file and answers 2:
+# liveness is then unknown, so the calibration fails closed instead of retrying beside a process that may still run.
+# shellcheck disable=SC2329 # called through QC1_HWM_CONTROL_START.
+app_ctl_start() { # [tag]
+  local tag="${1:-ctl}" start_ms deadline_ms now_ms rem out
+  # shellcheck disable=SC2016 # $1 is the helper-side sh argument, expanded in the container.
+  timeout 10 docker exec "$SIDE_CID" sh -c 'rm -f "/tmp/qc1-hwm-ctl.$1.stop" "/tmp/qc1-hwm-ctl.$1.ready"' _ "$tag" 2>&1 || { echo 'the control files could not be cleared'; return 1; }
+  # shellcheck disable=SC2016 # the awk program is literal; the tag travels in -v, never in shell text.
+  timeout 10 docker exec -d "$SIDE_CID" awk -v tag="$tag" 'BEGIN { stopf = "/tmp/qc1-hwm-ctl." tag ".stop"; readyf = "/tmp/qc1-hwm-ctl." tag ".ready"; s = "x"; while (length(s) < 8388608) s = s s; s = ""; getline l < "/proc/self/stat"; split(l, f, " "); print f[1] > readyf; close(readyf); while ((getline x < stopf) < 0) system("sleep 0.2") }' 2>&1 \
+    || { echo 'the control could not be launched'; return 1; }
+  start_ms="$(ms)"; deadline_ms=$((start_ms + QC1_HWM_READY_MS))
+  while :; do
+    now_ms="$(ms)"
+    if (( now_ms >= deadline_ms )); then
+      # shellcheck disable=SC2016 # $1 is the helper-side sh argument, expanded in the container.
+      timeout 10 docker exec "$SIDE_CID" sh -c 'touch "/tmp/qc1-hwm-ctl.$1.stop"' _ "$tag" >/dev/null 2>&1 || true
+      echo "the control was not ready within $((QC1_HWM_READY_MS / 1000)) s"
+      return 2
+    fi
+    rem=$(( (deadline_ms - now_ms + 999) / 1000 )); (( rem > 10 )) && rem=10
+    out="$(timeout "$rem" docker exec "$SIDE_CID" cat "/tmp/qc1-hwm-ctl.$tag.ready" 2>/dev/null || true)"
+    if [[ "$out" =~ ^[0-9]+$ ]]; then printf '%s\n' "$out"; return 0; fi
+    sleep 0.2
+  done
+}
+# Ends the control through its own stop file and verifies it is gone: the only signal ever sent to the control is none. A pid from a file plus a name
+# check cannot prove which process holds the number now, so a process that cannot be shown gone fails the calibration instead of being killed (a reused
+# number is never signalled). The wait has one absolute deadline and every poll is bounded by the time left; the outcome is recorded per try.
 # shellcheck disable=SC2329 # called through QC1_HWM_CONTROL_STOP.
-app_ctl_stop() { # pid
-  [[ "$1" =~ ^[0-9]+$ ]] && (( $1 > 1 )) || return 1
-  # shellcheck disable=SC2016 # the sh program is literal; $1 is its own argument.
-  timeout 20 docker exec "$SIDE_CID" sh -c 'touch /tmp/qc1-hwm-ctl.stop; for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do [ -d "/proc/$1" ] || exit 0; sleep 0.1; done
-    if tr "\0" " " <"/proc/$1/cmdline" | grep -q "^awk "; then kill -9 "$1"; fi; sleep 0.2; [ ! -d "/proc/$1" ]' _ "$1"
+app_ctl_stop() { # tag pid
+  local tag="$1" pid="$2" deadline_ms now_ms rem
+  [[ -n "${tag:-}" && "${pid:-}" =~ ^[0-9]+$ ]] && (( 10#$pid > 1 )) || return 1
+  # shellcheck disable=SC2016 # $1 is the helper-side sh argument, expanded in the container.
+  timeout 10 docker exec "$SIDE_CID" sh -c 'touch "/tmp/qc1-hwm-ctl.$1.stop"' _ "$tag" >/dev/null 2>&1 || true
+  deadline_ms=$(( $(ms) + QC1_HWM_STOP_MS))
+  while :; do
+    now_ms="$(ms)"
+    if (( now_ms >= deadline_ms )); then echo "the control process $pid was still present $((QC1_HWM_STOP_MS / 1000)) s after its stop file was written"; return 1; fi
+    rem=$(( (deadline_ms - now_ms + 999) / 1000 )); (( rem > 10 )) && rem=10
+    # shellcheck disable=SC2016 # the sh program is literal; $1 is its own argument.
+    if timeout "$rem" docker exec "$SIDE_CID" sh -c '[ ! -d "/proc/$1" ]' _ "$pid" >/dev/null 2>&1; then return 0; fi
+    sleep 0.2
+  done
 }
 QC1_HWM_READ=app_mem_read QC1_HWM_WRITE=app_mem_reset QC1_HWM_CONTROL_START=app_ctl_start QC1_HWM_CONTROL_STOP=app_ctl_stop
 # Database memory: the container's own cgroup, read inside it (cgroup v2, then v1).
@@ -755,8 +781,9 @@ calibrate() {
     : >"$WORK/cal.mem"; db_mem_start "$WORK/cal.mem"; sleep 0.5; db_mem_stop
     memsamples="$(grep -c '^[0-9][0-9]*$' "$WORK/cal.mem" || true)"
   fi
-  # The app's peak-memory baseline. The control (a process the helper starts, whose stored mark stands above its RSS) must show the probe lowering a mark; the app's own probe then must
-  # find its baseline clean. Both are recorded with every reading, timestamp, write outcome and diagnostic (qc1/lib.sh, qc1_hwm_calibration_json).
+  # The app's peak-memory baseline. The control (a process the helper starts, whose stored mark stands above its RSS) must show the probe lowering a mark
+  # and must then be shown stopped; the app's own probe must be accepted. Both are recorded with every reading, timestamp, write outcome and diagnostic
+  # (qc1/lib.sh, qc1_hwm_calibration_json). A control that cannot be shown stopped fails the calibration: nothing is measured beside it.
   ctl="$(qc1_hwm_control)"
   app="$(qc1_hwm_reset_verify 1)"
   appmem="$(qc1_hwm_calibration_json "$app" "$ctl")" || appmem='{"schema":"qc1-app-memory/v2","ok":false,"hwmReset":false,"proof":"the calibration record could not be built"}'

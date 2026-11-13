@@ -595,12 +595,16 @@ argument above 128 KiB. `qc1-fixtures.sh` runs the runner's real `record()` on s
   `qc1/lib.sh`) shared by the calibration and every operation: coherent `VmRSS`/`VmHWM` readings
   from one pass over `/proc/1/status` around a write of 5 to `clear_refs`, each with its time,
   write status and bounded diagnostic. Equality of two marks proves nothing; only a mark that stood
-  above RSS and is lower after the write is `demonstrated`. A control process the helper starts
-  must be `demonstrated` (that is the instrument's proof), and the app's own baseline must be within
-  4096 kB of its RSS (an inherited tolerance, recorded, not derived). An app whose mark equals its
-  RSS is `baseline-clean`: its peak is right, and no reset is claimed. Anything else leaves the
-  calibration false and every peak invalid. An old record that carries only `hwmReset` is read as
-  before; a false one stays a failure of unknown cause.
+  above RSS and is lower after the write is `demonstrated`. One rule for every instrument:
+  the control must be `demonstrated` with a verified stop (that is the instrument's proof),
+  and the app's own baseline must be accepted (within 4096 kB of its RSS, an inherited
+  tolerance, recorded, not derived). A control that cannot be shown stopped, or a start that
+  left liveness unknown, fails the calibration instead of being killed or retried: nothing is
+  measured beside a process that may still run. `proves` names only the process that actually
+  demonstrated the lowering. An app whose mark equals its RSS is `baseline-clean`: its peak is
+  right, and no reset is claimed. Anything else leaves the calibration false and every peak
+  invalid. An old record that carries only `hwmReset` is read as before; a false one stays a
+  failure of unknown cause.
 
 ### Sampling Next changed reason (#298)
 

@@ -1676,7 +1676,16 @@ refused 'needs the browser' bash "$RUNNER" --dir "$WORK/never" --next-changed-on
 if grep -nE 'id -u|EUID' "$RUNNER"; then echo 'qc1: the runner must not require root' >&2; exit 1; fi
 # The helper hooks (the reset probe's reader, writer and control) name /proc/PID paths, but only inside the helper container through docker exec, in the app's own pid namespace; they are the one
 # place such a path may appear, so the guard reads the runner without them.
-if sed '/^app_mem_read() {/,/^}/d;/^app_mem_reset() /d;/^app_ctl_start() {/,/^}/d;/^app_ctl_stop() {/,/^}/d' "$RUNNER" | grep -nE 'APP_PID|/proc/\$|"/sys/fs/cgroup/system.slice|cgroup_file\(\)'; then echo 'qc1: the runner reads host process or cgroup paths' >&2; exit 1; fi
+if sed '/^app_mem_read() {/,/^}/d;/^app_mem_reset() {/,/^}/d;/^app_ctl_start() {/,/^}/d;/^app_ctl_stop() {/,/^}/d' "$RUNNER" | grep -nE 'APP_PID|/proc/\$|"/sys/fs/cgroup/system.slice|cgroup_file\(\)'; then echo 'qc1: the runner reads host process or cgroup paths' >&2; exit 1; fi
+# Inside each hook, a process or cgroup path is allowed only as an argument of the same line's docker exec (the helper's own namespace through the daemon,
+# never the host): a host read added on any other line of a hook body is refused, and each hook has a negative fixture below.
+for fn in app_mem_read app_mem_reset app_ctl_start app_ctl_stop; do
+  if sed -n "/^$fn() {/,/^}/p" "$RUNNER" | grep -v 'docker exec' | grep -nE '/proc/|/sys/fs/cgroup'; then echo "qc1: $fn reads a host process or cgroup path outside docker exec" >&2; exit 1; fi
+done
+for fn in app_mem_read app_mem_reset app_ctl_start app_ctl_stop; do
+  awk -v fn="$fn" 'index($0, fn "() {") == 1 { print; print "  cat /proc/1/status >/dev/null"; next } { print }' "$RUNNER" >"$WORK/runner-host-$fn.sh"
+  if sed -n "/^$fn() {/,/^}/p" "$WORK/runner-host-$fn.sh" | grep -v 'docker exec' | grep -qE '/proc/|/sys/fs/cgroup'; then :; else echo "qc1: a host read inside $fn was not caught" >&2; exit 1; fi
+done
 # Every cgroup and process read goes through docker exec.
 grep -q 'docker exec "\$SIDE_CID" awk' "$RUNNER"; grep -q 'docker exec "\$DB_CID" sh -c "test -r' "$RUNNER"
 # The daemon guard comes before anything is created, and refuses a busy daemon.
@@ -2346,10 +2355,12 @@ hwm_loud() { head -c 5000 /dev/zero | tr '\0' 'x'; return 1; }
 hwm_hooks; QC1_HWM_READ=hwm_loud; hwm_script '' 'ok|ok|ok|ok'
 p="$(qc1_hwm_reset_verify 1 2)"
 hwm_is "$p" '.attemptsUsed == 2 and (.attempts[0].before.error | length) < 400'
-# the control: a process the helper starts whose mark stands above its RSS; the same probe on it must demonstrate, and it is stopped whatever happened.
-ctl_start() { local l; l="$(hwm_pop ctl 2>/dev/null)" || { echo 'no more scripted controls'; return 1; }; if [[ "$l" == FAIL* ]]; then echo "${l#FAIL }"; return 1; fi; echo "$l" >>"$HW/started"; printf '%s\n' "$l"; }
-ctl_stop() { echo "$1" >>"$HW/stopped"; return 0; }
-ctl_run() { hwm_hooks; : >"$HW/started"; : >"$HW/stopped"; printf '%s\n' "$1" | tr '|' '\n' >"$HW/ctl"; hwm_script "$2" "$3"; QC1_HWM_CONTROL_START=ctl_start QC1_HWM_CONTROL_STOP=ctl_stop; qc1_hwm_control; }  # controls reads writes
+# the control: a process the helper starts whose mark stands above its RSS; the same probe on it must demonstrate, and every try must be shown stopped.
+# Scripted starts: a pid, FAIL (nothing launched, exit 1, the try may repeat) or FAIL2 (launched but never ready, exit 2, the try must not repeat).
+# Scripted stops: ok or FAIL, one entry per try in order (a missing entry is ok).
+ctl_start() { local l; echo "$1" >>"$HW/tags"; l="$(hwm_pop ctl 2>/dev/null)" || { echo 'no more scripted controls'; return 1; }; if [[ "$l" == FAIL2* ]]; then echo "${l#FAIL2 }"; return 2; fi; if [[ "$l" == FAIL* ]]; then echo "${l#FAIL }"; return 1; fi; echo "$l" >>"$HW/started"; printf '%s\n' "$l"; }
+ctl_stop() { local l; l="$(hwm_pop stops 2>/dev/null)" || l=ok; if [[ "$l" == FAIL* ]]; then echo "${l#FAIL }" >&2; return 1; fi; echo "$2" >>"$HW/stopped"; return 0; }
+ctl_run() { hwm_hooks; : >"$HW/started"; : >"$HW/stopped"; : >"$HW/tags"; printf '%s\n' "$1" | tr '|' '\n' >"$HW/ctl"; printf '%s\n' "${4:-ok|ok}" | tr '|' '\n' >"$HW/stops"; hwm_script "$2" "$3"; QC1_HWM_CONTROL_START=ctl_start QC1_HWM_CONTROL_STOP=ctl_stop; qc1_hwm_control; }  # controls reads writes [stops]
 c="$(ctl_run 77 '10000 40000|10000 10000' ok)"
 hwm_is "$c" '.started and .demonstrated and .pid == 77 and .stopped and .probe.proof == "demonstrated"'; [[ "$(cat "$HW/stopped")" == 77 ]]
 c="$(ctl_run 'FAIL no exec|FAIL still no' '' '')"
@@ -2360,6 +2371,18 @@ c="$(ctl_run '88|89' '10000 10000|10000 10000|10000 10000|10000 10000' 'ok|ok')"
 hwm_is "$c" '.started and (.demonstrated | not) and .probe.proof == "baseline-clean"'; [[ "$(cat "$HW/stopped" | paste -sd,)" == 88,89 ]]
 c="$(ctl_run '90|91' '10000 40000|10000 40000|10000 40000|10000 10000' 'ok|ok')"  # the first control's mark stays above RSS (stale), the second demonstrates
 hwm_is "$c" '.demonstrated and .pid == 91 and .probe.attempts[0].before.hwmKb == 40000'; [[ "$(cat "$HW/started" | paste -sd,)" == 90,91 ]]
+# A control whose process cannot be shown stopped fails and is not retried, even when its probe demonstrated a lowering: only one try starts.
+c="$(ctl_run 77 '10000 40000|10000 10000' ok FAIL)"
+hwm_is "$c" '.started and (.demonstrated | not) and (.stopped == false) and (.probe.proof == "demonstrated")'; [[ "$(cat "$HW/started")" == 77 ]]
+# A start that left liveness unknown (launched but never ready) is revoked, not retried, and fails closed.
+c="$(ctl_run 'FAIL2 launched but no ready line' '' '')"
+hwm_is "$c" '(.started | not) and (.demonstrated | not) and (.stopped == false) and (.error | contains("revoked"))'; [[ ! -s "$HW/started" ]]; [[ "$(cat "$HW/tags")" == 1 ]]
+# A clean pre-launch failure still retries: nothing was launched, so the second try may demonstrate.
+c="$(ctl_run 'FAIL no exec|78' '10000 40000|10000 10000' ok)"
+hwm_is "$c" '.started and .demonstrated and .pid == 78'; [[ "$(cat "$HW/stopped")" == 78 ]]; [[ "$(cat "$HW/tags" | paste -sd,)" == 1,2 ]]
+# Every try is retained with its cleanup outcome: a stale first try that stopped, then a demonstrating second.
+c="$(ctl_run '90|91' '10000 40000|10000 40000|10000 40000|10000 10000' 'ok|ok')"
+hwm_is "$c" '.demonstrated and (.attempts | length) == 2 and ([.attempts[].stopped] == [true, true]) and .stopped'
 # the calibration record, built from the probes by the rules the judge recomputes it with.
 cal() { qc1_hwm_calibration_json "$1" "$2"; }
 APP_CLEAN="$(hwm_probe '10000 10000|10010 10010' ok)"; APP_LOWERED="$(hwm_probe '10000 50000|10000 10000' ok)"; APP_STALE="$(hwm_probe '10000 50000|10000 50000' ok 1)"; APP_WRITEFAIL="$(hwm_probe '10000 50000|10000 50000' 'Read-only file system' 1)"
@@ -2367,8 +2390,15 @@ CTL_OK="$(ctl_run 77 '10000 40000|10000 10000' ok)"; CTL_NOHEAD="$(ctl_run '88|8
 m="$(cal "$APP_CLEAN" "$CTL_OK")"
 hwm_is "$m" '.hwmReset and .ok and .schema == "qc1-app-memory/v2" and .proof == "demonstrated-on-control" and (.appLoweringObserved | not) and .controlDemonstrated and (.proves | length) == 2 and (.doesNotProve | length) >= 3'
 hwm_is "$m" '.doesNotProve[0] | contains("that a write to the app lowered its mark")'
-m="$(cal "$APP_LOWERED" "$CTL_NONE")"
-hwm_is "$m" '.hwmReset and .proof == "demonstrated-on-app" and .appLoweringObserved and (.controlDemonstrated | not)'
+m="$(cal "$APP_LOWERED" "$CTL_OK")"
+hwm_is "$m" '.hwmReset and .proof == "demonstrated-on-app-and-control" and .appLoweringObserved and .controlDemonstrated and (.proves | length) == 3'
+hwm_is "$m" '.proves[0] | contains("a write lowers a stored mark (control)")'; hwm_is "$m" '.proves[1] | contains("the write to the app lowered a mark")'
+# An app lowering without a demonstrated, stopped control proves nothing about the instrument: the rule names the control, not the app.
+m="$(cal "$APP_LOWERED" "$CTL_NONE")"; hwm_is "$m" '(.hwmReset | not) and (.proof | contains("did not demonstrate")) and .proves == []'
+m="$(cal "$APP_LOWERED" "$CTL_NOHEAD")"; hwm_is "$m" '(.hwmReset | not) and .proves == []'
+CTL_UNSTOPPED="$(ctl_run 77 '10000 40000|10000 10000' ok FAIL)"
+m="$(cal "$APP_CLEAN" "$CTL_UNSTOPPED")"; hwm_is "$m" '(.hwmReset | not) and (.proof | contains("shown to have stopped")) and .proves == []'
+m="$(cal "$APP_LOWERED" "$CTL_UNSTOPPED")"; hwm_is "$m" '(.hwmReset | not) and (.proof | contains("shown to have stopped"))'
 # BLOCKED, not weakened: the app's baseline is clean but the instrument was never shown to lower a mark, so the reset is not established.
 m="$(cal "$APP_CLEAN" "$CTL_NOHEAD")"; hwm_is "$m" '(.hwmReset | not) and .ok and (.proof | contains("not demonstrated")) and .proves == []'
 m="$(cal "$APP_CLEAN" "$CTL_NONE")"; hwm_is "$m" '(.hwmReset | not) and .proves == []'
@@ -2377,8 +2407,8 @@ m="$(cal "$APP_WRITEFAIL" "$CTL_OK")"; hwm_is "$m" '(.hwmReset | not) and (.proo
 # the judge reads the same record: every false verdict is a named problem, none is suppressed, and the record cannot be edited into agreement.
 calrec() { jq -nc --argjson m "$1" '{gate:{ok:true}, dbMemory:{ok:true, samples:9}, appMemory:$m, wal:{ok:true}, commit:{ok:true}}'; }
 cal_problems() { printf '%s\n' "$1" >"$WORK/cal.rec"; qc1_calibration_problems "$WORK/cal.rec"; }
-[[ -z "$(cal_problems "$(calrec "$(cal "$APP_CLEAN" "$CTL_OK")")")" && -z "$(cal_problems "$(calrec "$(cal "$APP_LOWERED" "$CTL_NONE")")")" ]]
-for pair in "APP_CLEAN CTL_NOHEAD" "APP_CLEAN CTL_NONE" "APP_STALE CTL_OK" "APP_WRITEFAIL CTL_OK"; do
+[[ -z "$(cal_problems "$(calrec "$(cal "$APP_CLEAN" "$CTL_OK")")")" && -z "$(cal_problems "$(calrec "$(cal "$APP_LOWERED" "$CTL_OK")")")" ]]
+for pair in "APP_CLEAN CTL_NOHEAD" "APP_CLEAN CTL_NONE" "APP_LOWERED CTL_NONE" "APP_LOWERED CTL_NOHEAD" "APP_CLEAN CTL_UNSTOPPED" "APP_STALE CTL_OK" "APP_WRITEFAIL CTL_OK"; do
   read -r a_ c_ <<<"$pair"; out="$(cal_problems "$(calrec "$(cal "${!a_}" "${!c_}")")")"
   grep -q 'the app peak-memory reset failed:' <<<"$out" || { echo "calibration $pair: no named problem: $out" >&2; exit 1; }
 done
@@ -2402,6 +2432,14 @@ bad_cal rule '.appMemory.resetProbe.rule = "other"' 'no recorded observations un
 bad_cal schema '.appMemory.schema = "qc1-app-memory/v9"' 'unknown schema'
 bad_cal reset-false '.appMemory.hwmReset = false' 'is recorded as false but its observations say true'
 bad_cal unreadable '.appMemory.ok = false' 'process memory source is unreadable'
+# The redundant certificate fields are checked, not just the rule and the last attempt: a tweaked baseline, attempt count, wrapper time or write status is named.
+bad_cal baseline '.appMemory.resetProbe.baselineKb = 0' 'is not the accepted reading'
+bad_cal baseline-present '.appMemory.resetProbe.attempts[0].after.hwmKb = 99999' 'no attempt was accepted but a baseline'
+bad_cal attempts-used '.appMemory.resetProbe.attemptsUsed = 9' 'does not match the 1 recorded attempts'
+bad_cal write-status '.appMemory.resetProbe.attempts[0].write.exitCode = 1' 'records write ok=true with exitCode=1'
+bad_cal wrapper-times '.appMemory.resetProbe.finishedAt = 0' 'do not bound the attempts'
+bad_cal wrapper-predates '.appMemory.resetProbe.startedAt = 9999999999999' 'predates the probe'
+bad_cal no-attempt-record 'del(.appMemory.control.attempts)' 'records no control attempts'
 # A record from before the observations existed carries the flag alone: a false one stays a failure (its cause is unknown and is not claimed), a true one is read as it always was.
 [[ -z "$(cal_problems '{"gate":{"ok":true},"dbMemory":{"ok":true,"samples":9},"appMemory":{"ok":true,"hwmReset":true},"wal":{"ok":true},"commit":{"ok":true}}')" ]]
 cal_problems '{"gate":{"ok":true},"dbMemory":{"ok":true,"samples":9},"appMemory":{"ok":true,"hwmReset":false},"wal":{"ok":true},"commit":{"ok":true}}' | grep -qF 'the app peak-memory reset failed (a record that carries the flag alone)'
@@ -2416,17 +2454,82 @@ mut probe-lie "$DEL then .delete.appResetProbe = $PROBE_BAD else . end"; expect_
 mut probe-bad "$DEL then .delete.appResetProbe = $PROBE_BAD | .delete.appHwmReset = false else . end"; expect_invalid probe-bad peak-reset-failed   # not suppressed
 mut probe-rule "$DEL then .delete.appResetProbe = ($PROBE_OK | .rule = \"other\") else . end"; expect_invalid probe-rule peak-reset-inconsistent
 mut probe-false-ok "$DEL then .delete.appResetProbe = $PROBE_OK | .delete.appHwmReset = false else . end"; expect_invalid probe-false-ok peak-reset-inconsistent
+# An operation row's certificate is checked beyond its flag: a tweaked baseline or a contradicting write status is inconsistent even with a true flag.
+mut probe-baseline "$DEL then .delete.appResetProbe = ($PROBE_OK | .baselineKb = 0) else . end"; expect_invalid probe-baseline peak-reset-inconsistent
+mut probe-write-status "$DEL then .delete.appResetProbe = ($PROBE_OK | .attempts[0].write.exitCode = 1) else . end"; expect_invalid probe-write-status peak-reset-inconsistent
+# A measured row of a v2 run that claims an established baseline without its probe cannot be rechecked: invalid. The same shape under a legacy
+# record (no v2 schema) keeps the flag-only reading, so old evidence is not rewritten.
+gen_env | jq -c --argjson m "$(cal "$APP_CLEAN" "$CTL_OK")" '.calibration.appMemory = $m' >"$WORK/env.v2"
+jq -c "$DEL then del(.delete.appResetProbe) else . end" "$WORK/e2.jsonl" >"$WORK/e2.v2-noprobe"
+[[ "$(jq -r --arg f peak-reset-unproven '[.invalid[] | select(.failure == $f)] | length > 0' <<<"$(qc1_evidence_status "$WORK/e2.v2-noprobe" "10,100" "0,10,100,1000,10000" "$WORK/env.v2" "$HEAD_FAKE" 6291456)")" == true ]] \
+  || { echo 'a v2 row without its probe is not peak-reset-unproven' >&2; exit 1; }
+[[ "$(jq -r --arg f peak-reset-unproven '[.invalid[] | select(.failure == $f)] | length > 0' <<<"$(status_of "$WORK/e2.jsonl")")" == false ]]
 # nothing above reached a daemon, and nothing is left behind by it
 [[ ! -e "$HW/docker-called" ]]; unset -f docker
+# The control handshake against a stub daemon: per-try files, one absolute readiness deadline with revocation, verified stops and no signalling.
+STUB="$WORK/ctl-stub"; mkdir -p "$STUB"; echo 1000000 >"$STUB/ms"
+# The stubs below are reached only through the eval'd runner functions, which shellcheck cannot see.
+# shellcheck disable=SC2329 # reached through app_ctl_start/app_ctl_stop below.
+ms() { local n; n="$(cat "$STUB/ms")"; n=$((n + 5000)); echo "$n" >"$STUB/ms"; echo "$n"; }
+# shellcheck disable=SC2329 # reached through app_ctl_start/app_ctl_stop below.
+sleep() { :; }
+# shellcheck disable=SC2329 # reached through app_ctl_start/app_ctl_stop below.
+timeout() { local t="$1"; shift; echo "$t" >>"$STUB/timeouts"; "$@"; }
+# shellcheck disable=SC2329 # reached through app_ctl_start/app_ctl_stop below.
+docker() {
+  local last="${*: -1}" f
+  echo "docker $*" >>"$STUB/docker.log"
+  case "$*" in
+  *'rm -f '*qc1-hwm-ctl.*) return 0 ;;
+  *'exec -d '*) return 0 ;;
+  *' cat '*qc1-hwm-ctl.*)
+    f="$(awk '{ for (i=1;i<=NF;i++) if ($i ~ /qc1-hwm-ctl\./) { gsub(/"/, "", $i); print $i; exit } }' <<<"$*")"
+    [[ -n "$f" && -e "$STUB/$(basename "$f")" ]] && { cat "$STUB/$(basename "$f")"; return 0; }
+    return 1 ;;
+  *'touch '*qc1-hwm-ctl.*) : >"$STUB/stop-$last"; return 0 ;;
+  *'[ ! -d '*) [[ -e "$STUB/proc-$last" ]] && return 1 || return 0 ;;
+  *) return 0 ;;
+  esac
+}
+# The deadlines come from the sourced library, exactly as the runner reads them (it sources lib.sh too); the static checks above pin that the
+# runner's handshake names them.
+# shellcheck disable=SC2034 # read by the eval'd runner functions below.
+SIDE_CID=side
+eval "$(sed -n '/^app_ctl_start() {/,/^}/p;/^app_ctl_stop() {/,/^}/p' "$RUNNER_SRC")"
+# Ready at once, through this try's own file.
+echo 4242 >"$STUB/qc1-hwm-ctl.1.ready"
+[[ "$(app_ctl_start 1)" == 4242 ]]
+grep -q "cat /tmp/qc1-hwm-ctl.1.ready" "$STUB/docker.log"
+# Never ready: bounded by the one deadline, names it, writes the stop file (revocation) and answers 2, so the calibration fails closed instead of retrying.
+: >"$STUB/docker.log"; : >"$STUB/timeouts"; echo 1000000 >"$STUB/ms"; rm -f "$STUB/stop-2"
+rc=0; out="$(app_ctl_start 2)" || rc=$?
+[[ "$rc" == 2 ]]; [[ "$out" == 'the control was not ready within 60 s' ]]; [[ -e "$STUB/stop-2" ]]
+[[ "$(grep -c 'cat /tmp/qc1-hwm-ctl.2.ready' "$STUB/docker.log")" -lt 30 ]]
+[[ -z "$(awk '$1 > 10' "$STUB/timeouts")" ]]
+# A gone process stops cleanly; a persistent one fails after the one stop deadline, and nothing is ever signalled.
+: >"$STUB/docker.log"
+app_ctl_stop 1 4242
+: >"$STUB/proc-9999"
+rc=0; out="$(app_ctl_stop 1 9999)" || rc=$?
+[[ "$rc" == 1 ]]; [[ "$out" == 'the control process 9999 was still present 10 s after its stop file was written' ]]
+if grep -qw 'kill' "$STUB/docker.log"; then echo 'qc1: the stop signalled instead of verifying' >&2; exit 1; fi
+[[ -z "$(awk '$1 > 10' "$STUB/timeouts")" ]]
+unset -f ms sleep timeout docker
 # the runner is wired to the one probe: the operation and the calibration both call it, the peak stays null unless the baseline was established, and the old second rule is gone.
 RUNNER_BODY_I="$(sed -n '/^instrumented() {/,/^}/p' "$RUNNER_SRC")"; RUNNER_BODY_C="$(sed -n '/^calibrate() {/,/^}/p' "$RUNNER_SRC")"
 grep -qF 'APP_RESET_PROBE="$(qc1_hwm_reset_verify 1)"' <<<"$RUNNER_BODY_I"; grep -qF 'ctl="$(qc1_hwm_control)"' <<<"$RUNNER_BODY_C"; grep -qF 'app="$(qc1_hwm_reset_verify 1)"' <<<"$RUNNER_BODY_C"
 grep -qF 'appmem="$(qc1_hwm_calibration_json "$app" "$ctl")"' <<<"$RUNNER_BODY_C"; grep -qF 'appMemory:$appmem' <<<"$RUNNER_BODY_C"
 if grep -nE 'app_reset_hwm|rss0|hwm1 <= hwm0|hwm_reset <= rss0' "$RUNNER_SRC"; then echo 'qc1: a second reset rule is back in the runner' >&2; exit 1; fi
 grep -qF 'appResetProbe:$rprobe' "$RUNNER_SRC"
-# every exec of the hooks is bounded, the control's kill is guarded (never pid 1, only an awk), and nothing here uses Docker outside the hooks
+# every exec of the hooks is bounded, the control is never signalled (no saved-PID kill: the stop is verified through the stop file, and a process that
+# cannot be shown gone fails the calibration instead), readiness and stops have one absolute deadline each, and every try uses its own handshake files.
 for fn in app_mem_read app_mem_reset app_ctl_start app_ctl_stop; do sed -n "/^$fn() {/,/^}/p" "$RUNNER_SRC" | grep -q 'timeout ' || { echo "qc1: $fn is not bounded" >&2; exit 1; }; done
-sed -n '/^app_ctl_stop() {/,/^}/p' "$RUNNER_SRC" | grep -qF '(( $1 > 1 ))'; sed -n '/^app_ctl_stop() {/,/^}/p' "$RUNNER_SRC" | grep -qF 'grep -q "^awk "'
+if sed -n '/^app_ctl_stop() {/,/^}/p' "$RUNNER_SRC" | grep -qE '(^|[^_a-zA-Z])kill([^_a-zA-Z]|$)'; then echo 'qc1: the control stop signals a process instead of verifying it is gone' >&2; exit 1; fi
+if sed -n '/^app_ctl_stop() {/,/^}/p' "$RUNNER_SRC" | grep -q 'cmdline'; then echo 'qc1: the control stop identifies a process by name instead of owning its lifetime' >&2; exit 1; fi
+sed -n '/^app_ctl_start() {/,/^}/p' "$RUNNER_SRC" | grep -qF 'QC1_HWM_READY_MS'; sed -n '/^app_ctl_stop() {/,/^}/p' "$RUNNER_SRC" | grep -qF 'QC1_HWM_STOP_MS'
+sed -n '/^app_ctl_start() {/,/^}/p' "$RUNNER_SRC" | grep -qF 'was not ready within'; sed -n '/^app_ctl_stop() {/,/^}/p' "$RUNNER_SRC" | grep -qF 'still present'
+sed -n '/^app_ctl_start() {/,/^}/p' "$RUNNER_SRC" | grep -qF 'return 2'
+grep -qF 'qc1-hwm-ctl.$tag.ready' "$RUNNER_SRC"; grep -qF 'qc1-hwm-ctl.$1.stop' "$RUNNER_SRC"
 # The instrument preflight (--calibrate-only): it runs the same calibration, writes only preflight.json, never loads or measures, and a full run stops at a failed calibration too.
 grep -qF -- '--calibrate-only) PREFLIGHT_ONLY=1; shift ;;' "$RUNNER_SRC"; grep -qF '(( ! PREFLIGHT_ONLY )) || BROWSER=0' "$RUNNER_SRC"
 gate_l="$(grep -n '^CAL_PROBLEMS="\$(qc1_calibration_problems' "$RUNNER_SRC" | cut -d: -f1)"; pf_l="$(grep -n 'note "instrument preflight passed' "$RUNNER_SRC" | cut -d: -f1)"
