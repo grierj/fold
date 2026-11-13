@@ -4,6 +4,8 @@
 --   reason_len length of each reason when it has one, in RUNES (1..1000)
 --   charset    'ascii' or 'multibyte' (the same 21-rune mixed-width unit as scenario.sql, see there)
 --   reasons    'all' (every row has a reason), 'half' (even i) or 'none'
+--   requester  optional (default 0): a user id that is the requester of EVERY row, instead of the account-less parties below; the legacy decided arm uses a soft-deleted
+--              account so every row names it. 0 keeps the original 1000000+ requesters, byte for byte.
 -- Parties are ids far above any real account (1000000+ and 2000000+), distinct
 -- from each other, so the check requester_id <> subject_user_id holds. Rows are
 -- denied group_add requests, the shape TestQC1LoaderColumnsFitTheSchema (guards_deploy_facts_test.go) checks
@@ -11,12 +13,13 @@
 -- with session_replication_role = replica, the way internal/testdb loads data
 -- (CHECK constraints still apply). Superuser only: a disposable database.
 \set ON_ERROR_STOP on
+\if :{?requester} \else \set requester 0 \endif
 SET session_replication_role = replica;
 INSERT INTO contact_requests (id, requester_id, subject_user_id, context_type, context_id, fields, reason, needs_admin,
                               subject_decision, subject_decided_by, subject_decided_at, admin_decision, status,
                               created_at, expires_at, completed_at, purpose)
 SELECT 2 * g.i,
-       1000000 + (g.i % 5000),
+       CASE WHEN :requester = 0 THEN 1000000 + (g.i % 5000) ELSE :requester END,
        2000000 + (g.i % 5000),
        'group', 1, '',
        CASE WHEN :'reasons' = 'all' OR (:'reasons' = 'half' AND g.i % 2 = 0)

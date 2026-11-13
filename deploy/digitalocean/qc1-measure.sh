@@ -27,6 +27,12 @@
 #        [--layout spread|tail|head] [--charset ascii|multibyte] [--reason-len N] [--target-reason-len N] [--droplet 2gb|1gb]
 #        [--dense-counts 100000|none] [--seconds-per-reason N] [--sitting-minutes N] [--shared-daemon] [--no-browser] [--browser-fallback-digest] [--keep]
 #        [--next-changed-only] [--next-changed-presses N] [--next-changed-runs N] [--profile-next-changed]
+#        [--legacy-only]
+#
+# --legacy-only (T-292, R4-C06 items 4 and 5): measure ONLY the deleted-accounts review (qc1/legacy.sh) at each size, 9 rows per size, judged by the same qc1_judge and counted by the same
+# qc1_evidence_status (settings.mode legacy-only). It needs --no-browser and refuses --layout, --counts, --dense-counts, --charset multibyte, the next-changed options, the browser fallback and a
+# size below 10,000. It is never FULL and never release evidence; its evidence-status.json says so. Run it as two invocations on one head: --sizes 10000,100000 and then --sizes 1000000
+# (docs/agents/testing.md). Fixtures that forge decision markers run only in the disposable database this script creates (qc1/legacy-markers.sql and its guard).
 #
 # --charset: the text of the reasons, background and target alike (default ascii). multibyte is a 21-rune unit of 1- to 4-byte UTF-8 runes (2-byte accented letters and Omega,
 # 3-byte euro sign, CJK and a zero-width joiner, 4-byte emoji, combining marks) repeated and cut to the requested RUNE length with the row's ASCII ordinal at the end, 61 bytes per
@@ -65,19 +71,22 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 HERE="$ROOT/deploy/digitalocean"
 # shellcheck source=deploy/digitalocean/qc1/lib.sh
 source "$HERE/qc1/lib.sh"
+# shellcheck source=deploy/digitalocean/qc1/legacy.sh
+source "$HERE/qc1/legacy.sh"
 # shellcheck source=deploy/digitalocean/isolation.sh
 source "$HERE/isolation.sh"
 
 WORK="" IMAGE="" SIZES="$QC1_SIZES_DEFAULT" COUNTS="$QC1_COUNTS_DEFAULT" LAYOUT=spread CHARSET=ascii REASON_LEN=200 TARGET_REASON_LEN=1000 DROPLET=2gb KEEP=0
 SECONDS_PER_REASON=10 SITTING_MINUTES=15 SHARED=0 BROWSER=1 DENSE="$QC1_DENSE_COUNTS_DEFAULT" BROWSER_NOSUBTLE=0
 NEXT_CHANGED_PRESSES=1 NEXT_CHANGED_RUNS=1 NEXT_CHANGED_ONLY=0 PROFILE_NEXT_CHANGED=0
+LEGACY_ONLY=0 LAYOUT_GIVEN=0 COUNTS_GIVEN=0 DENSE_GIVEN=0
 while (( $# )); do
   case "$1" in
     --dir) WORK="${2:?new scratch path required}"; shift 2 ;;
     --image) IMAGE="${2:?candidate image required}"; shift 2 ;;
     --sizes) SIZES="${2:?comma list required}"; shift 2 ;;
-    --counts) COUNTS="${2:?comma list required}"; shift 2 ;;
-    --layout) LAYOUT="${2:?spread, tail or head}"; shift 2 ;;
+    --counts) COUNTS="${2:?comma list required}"; COUNTS_GIVEN=1; shift 2 ;;
+    --layout) LAYOUT="${2:?spread, tail or head}"; LAYOUT_GIVEN=1; shift 2 ;;
     --charset) CHARSET="${2:?ascii or multibyte}"; shift 2 ;;
     --reason-len) REASON_LEN="${2:?length required}"; shift 2 ;;
     --target-reason-len) TARGET_REASON_LEN="${2:?length required}"; shift 2 ;;
@@ -86,17 +95,29 @@ while (( $# )); do
     --sitting-minutes) SITTING_MINUTES="${2:?whole minutes required}"; shift 2 ;;
     --shared-daemon) SHARED=1; shift ;;
     --no-browser) BROWSER=0; shift ;;
-    --dense-counts) DENSE="${2:?comma list or none}"; shift 2 ;;
+    --dense-counts) DENSE="${2:?comma list or none}"; DENSE_GIVEN=1; shift 2 ;;
     --browser-fallback-digest) BROWSER_NOSUBTLE=1; shift ;;
     --next-changed-presses) NEXT_CHANGED_PRESSES="${2:?whole number of presses required}"; shift 2 ;;
     --next-changed-runs) NEXT_CHANGED_RUNS="${2:?whole number of runs required}"; shift 2 ;;
     --next-changed-only) NEXT_CHANGED_ONLY=1; shift ;;
     --profile-next-changed) PROFILE_NEXT_CHANGED=1; shift ;;
     --keep) KEEP=1; shift ;;
+    --legacy-only) LEGACY_ONLY=1; shift ;;
     --help) sed -n '2,/^set -Eeuo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option $1" >&2; exit 1 ;;
   esac
 done
+# --legacy-only measures one thing and refuses what would make it something else, each with a reason, before any tool, daemon or file is touched.
+if (( LEGACY_ONLY )); then
+  legacy_refuse() { echo "qc1: --legacy-only $*" >&2; exit 1; }
+  (( ! BROWSER )) || legacy_refuse 'needs --no-browser: it measures routes, not the rendered panel'
+  (( ! NEXT_CHANGED_ONLY && NEXT_CHANGED_PRESSES == 1 && NEXT_CHANGED_RUNS == 1 && ! PROFILE_NEXT_CHANGED && ! BROWSER_NOSUBTLE )) || legacy_refuse 'cannot be combined with the next-changed options or --browser-fallback-digest'
+  (( ! LAYOUT_GIVEN && ! COUNTS_GIVEN && ! DENSE_GIVEN )) || legacy_refuse 'seeds its own layouts and pair counts: it refuses --layout, --counts and --dense-counts'
+  [[ "$CHARSET" == ascii ]] || legacy_refuse 'measures ASCII reasons only: it refuses --charset multibyte'
+  while IFS= read -r sz; do
+    if [[ ! "$sz" =~ ^[0-9]+$ ]] || (( sz < 10000 )); then legacy_refuse 'needs every size to be at least 10000 (its seed is 10,000 pairs)'; fi
+  done < <(qc1_list "$SIZES" 2>/dev/null || echo x)
+fi
 for tool in docker git jq curl awk sha256sum node; do command -v "$tool" >/dev/null || { echo "qc1: $tool is required" >&2; exit 1; }; done
 [[ -n "$WORK" ]] || { echo 'qc1: --dir NEW_SCRATCH_PATH is required' >&2; exit 1; }
 WORK="$(realpath -m "$WORK")"
@@ -232,6 +253,7 @@ write_environment() { # incomplete(true|false) reason
   local incomplete="$1" ireason="${2:-}" pg dbImage dbMem calib database
   local IMAGE="${IMAGE:-}" IMAGE_ID="${IMAGE_ID:-}" REVISION="${REVISION:-}" DROPLET="${DROPLET:-}" DB_MEMORY="${DB_MEMORY:-}" APP_MEMORY="${APP_MEMORY:-}" CPUSET="${CPUSET:-}" LAYOUT="${LAYOUT:-}" CHARSET="${CHARSET:-ascii}"
   local PG_IMAGE="${PG_IMAGE:-}" PG_IMAGE_ID="${PG_IMAGE_ID:-}" DB_CID="${DB_CID:-}" FIRST_APP_CID="${FIRST_APP_CID:-}" SIZES="${SIZES:-}" COUNTS="${COUNTS:-}" SETV1_SELFTEST="${SETV1_SELFTEST:-}" DENSE="${DENSE:-}" BROWSER="${BROWSER:-0}"
+  local LEGACY_ONLY="${LEGACY_ONLY:-0}" env_LEGACY=null
   local env_LEVEL env_REASON_LEN env_MAX_REQUEST_BYTES env_TARGET_REASON_LEN env_SECONDS_PER_REASON env_SITTING_MINUTES env_PG_REPO_DIGESTS env_APP_REPO_DIGESTS env_APP_CONTAINERS env_DAEMON_JSON env_SOURCES env_BROWSER_RUNTIME
   env_LEVEL="$(jnum "${LEVEL:-}")" env_REASON_LEN="$(jnum "${REASON_LEN:-}")" env_MAX_REQUEST_BYTES="$(jnum "${MAX_REQUEST_BYTES:-}")" env_TARGET_REASON_LEN="$(jnum "${TARGET_REASON_LEN:-}")"
   env_SECONDS_PER_REASON="$(jnum "${SECONDS_PER_REASON:-}")" env_SITTING_MINUTES="$(jnum "${SITTING_MINUTES:-}")"
@@ -249,19 +271,22 @@ write_environment() { # incomplete(true|false) reason
     database="$(db_settings_json)"
   fi
   calib="$(jraw "$(cat "$WORK/calibration.json" 2>/dev/null || true)")"
+  if (( LEGACY_ONLY )); then
+    env_LEGACY="$(jq -nc --arg sha "$(sha256sum <"$HERE/qc1/legacy-markers.sql" 2>/dev/null | cut -d' ' -f1)" --argjson smoke "$(jraw "$(cat "$WORK/legacy-smoke.json" 2>/dev/null || true)")" '{sizesFloor:10000, seedLayout:"spread", markersSha256:$sha, smoke:$smoke}')"
+  fi
 jq -n --argjson database "$database" --argjson incomplete "$incomplete" --arg ireason "$ireason" --arg image "$IMAGE" --arg imageId "$IMAGE_ID" --arg revision "$REVISION" --argjson level "$env_LEVEL" --arg droplet "$DROPLET" --arg dbMemory "$DB_MEMORY" --arg appMemory "$APP_MEMORY" \
   --arg cpuset "$CPUSET" --arg layout "$LAYOUT" --arg charset "$CHARSET" --argjson reasonLen "$env_REASON_LEN" --argjson maxRequestBytes "$env_MAX_REQUEST_BYTES" \
   --arg pg "$pg" --arg pgImage "$PG_IMAGE" --arg pgImageId "$PG_IMAGE_ID" --argjson pgDigests "$env_PG_REPO_DIGESTS" --argjson appDigests "$env_APP_REPO_DIGESTS" \
   --arg dbCid "$DB_CID" --arg dbImage "$dbImage" --argjson dbMemLimit "$dbMem" \
   --arg appCid "$FIRST_APP_CID" --argjson appContainers "$env_APP_CONTAINERS" --argjson daemon "$env_DAEMON_JSON" --argjson sources "$env_SOURCES" \
   --argjson calibration "$calib" --arg sizes "$SIZES" --arg counts "$COUNTS" \
-  --argjson targetLen "$env_TARGET_REASON_LEN" --arg deleteCounts "$(IFS=,; printf "%s" "${ALL_DELETE_LIST[*]}")" --arg setv1Selftest "$SETV1_SELFTEST" --arg dense "$DENSE" --argjson clicks "$QC1_CLICKS_PER_CASE" --argjson ncPresses "$NEXT_CHANGED_PRESSES" --argjson ncRuns "$NEXT_CHANGED_RUNS" --argjson ncOnly "$([[ $NEXT_CHANGED_ONLY == 1 ]] && echo true || echo false)" --argjson ncProfile "$([[ $PROFILE_NEXT_CHANGED == 1 ]] && echo true || echo false)" --argjson spr "$env_SECONDS_PER_REASON" --argjson sit "$env_SITTING_MINUTES" --argjson browser "$([[ $BROWSER == 1 ]] && echo true || echo false)" --argjson browserRuntime "$env_BROWSER_RUNTIME" \
+  --argjson targetLen "$env_TARGET_REASON_LEN" --arg deleteCounts "$(IFS=,; printf "%s" "${ALL_DELETE_LIST[*]}")" --arg setv1Selftest "$SETV1_SELFTEST" --arg dense "$DENSE" --argjson clicks "$QC1_CLICKS_PER_CASE" --argjson ncPresses "$NEXT_CHANGED_PRESSES" --argjson ncRuns "$NEXT_CHANGED_RUNS" --argjson ncOnly "$([[ $NEXT_CHANGED_ONLY == 1 ]] && echo true || echo false)" --argjson ncProfile "$([[ $PROFILE_NEXT_CHANGED == 1 ]] && echo true || echo false)" --argjson spr "$env_SECONDS_PER_REASON" --argjson sit "$env_SITTING_MINUTES" --argjson browser "$([[ $BROWSER == 1 ]] && echo true || echo false)" --argjson browserRuntime "$env_BROWSER_RUNTIME" --argjson legacyOnly "$([[ $LEGACY_ONLY == 1 ]] && echo true || echo false)" --argjson legacy "$env_LEGACY" \
   '{image:$image, imageId:$imageId, revision:$revision, recoveryPolicy:$level, appRepoDigests:$appDigests,
     appContainerId:$appCid, appImageId:($appContainers[0].imageId), appContainers:$appContainers,
     postgresImage:$pgImage, postgresImageId:$pgImageId, postgresRepoDigests:$pgDigests, postgresVersion:$pg, dbContainerId:$dbCid, dbImageId:$dbImage,
     limits:{droplet:$droplet, dbMemory:$dbMemory, appMemory:$appMemory, cpuset:$cpuset, dbMemoryLimitBytes:$dbMemLimit, appMemoryLimitBytes:($appContainers[0].memoryLimitBytes)},
     daemon:$daemon, sources:$sources, calibration:$calibration, browserRuntime:$browserRuntime,
-    settings:{workers:0, schedulerAppRuns:true, browser:$browser, autovacuum:"off", checkpointTimeout:"1d", maxWalSize:"4GB", appEnv:"dev", layout:$layout, charset:$charset, reasonLen:$reasonLen, targetReasonLen:$targetLen, deleteCounts:$deleteCounts, secondsPerReason:$spr, sittingMinutes:$sit, sizes:$sizes, counts:$counts, denseCounts:$dense, clicksPerCase:$clicks, nextChangedPresses:$ncPresses, nextChangedRuns:$ncRuns, nextChangedOnly:$ncOnly, profileNextChanged:$ncProfile, wire:"set-v1", setV1Selftest:$setv1Selftest},
+    settings:({workers:0, schedulerAppRuns:true, browser:$browser, autovacuum:"off", checkpointTimeout:"1d", maxWalSize:"4GB", appEnv:"dev", layout:$layout, charset:$charset, reasonLen:$reasonLen, targetReasonLen:$targetLen, deleteCounts:$deleteCounts, secondsPerReason:$spr, sittingMinutes:$sit, sizes:$sizes, counts:$counts, denseCounts:$dense, clicksPerCase:$clicks, nextChangedPresses:$ncPresses, nextChangedRuns:$ncRuns, nextChangedOnly:$ncOnly, profileNextChanged:$ncProfile, wire:"set-v1", setV1Selftest:$setv1Selftest} + (if $legacyOnly then {mode:"legacy-only", legacy:$legacy} else {} end)),
     maxRequestBytes:$maxRequestBytes, database:$database, incomplete:$incomplete, incompleteReason:$ireason,
     labels:{
       competitors:"FOLD_WORKERS=0 turns the job workers off but not the scheduler of the app, which enqueues jobs at start, at each full UTC hour and at church midnight; the harness waits past those edges, records a scheduler-overlap flag from a model of them and counts scheduler-shaped rows in the jobs table, and a window that touches either is invalid. Autovacuum is off, timed checkpoints are deferred, the harness checkpoints itself and waits for other active backends before each operation. The workers-on observation (item 9) is not attributable",
@@ -778,8 +803,8 @@ record() {
       table:{backgroundRows:$size, note:"size is the BACKGROUND row count; the rows the table really held (background plus the scenario rows, n + k) are tableRowsBefore/After in each operation'"'"'s figures (and per phase for the browser case)"}} + $extra[0]' >>"$MEASUREMENTS"
 }
 
-load_filler() { # n reasons
-  docker exec -i "$DB_CID" psql -X -U church -d fold -v ON_ERROR_STOP=1 -v n="$1" -v charset="$CHARSET" -v reason_len="$REASON_LEN" -v reasons="$2" -f - <"$HERE/qc1/filler.sql" >/dev/null
+load_filler() { # n reasons [requester: a user id that requests every row; 0 or none keeps the account-less parties]
+  docker exec -i "$DB_CID" psql -X -U church -d fold -v ON_ERROR_STOP=1 -v requester="${3:-0}" -v n="$1" -v charset="$CHARSET" -v reason_len="$REASON_LEN" -v reasons="$2" -f - <"$HERE/qc1/filler.sql" >/dev/null
   psql_db -c 'ANALYZE contact_requests' >/dev/null
   psql_db -c 'CHECKPOINT' >/dev/null
 }
@@ -807,9 +832,9 @@ psql_stdin() { docker exec -i "$DB_CID" psql -X -U church -d fold -At -v ON_ERRO
 # An account made in this shell (fresh_user runs in a subshell): sets USER_ID and USER_EMAIL.
 make_user() { local stamp; stamp="$(date +%s%N)"; USER_EMAIL="qc1-subject-$stamp@example.invalid"; USER_ID="$(new_user "QC subject $stamp" "$USER_EMAIL")"; }
 # The 80-hex attempt id a press mints first, for an account.
-mint_attempt() { # target
+mint_attempt() { # target [kind: account_delete (default) or legacy_reason_save]
   local id
-  id="$(api POST /admin/operation-attempts "$(jq -nc --argjson s "$1" '{kind:"account_delete",subjectUserId:$s}')" | jq -er .attemptId)" || return 1
+  id="$(api POST /admin/operation-attempts "$(jq -nc --argjson s "$1" --arg k "${2:-account_delete}" '{kind:$k,subjectUserId:$s}')" | jq -er .attemptId)" || return 1
   [[ "$id" =~ ^[0-9a-f]{80}$ ]] || { echo "qc1: the minted attempt id is not 80 hex characters" >&2; return 1; }
   printf '%s' "$id"
 }
@@ -1383,6 +1408,14 @@ explained_order_control_delete() { # n which
 }
 
 
+# After qc1_reset_contact_requests: the seeded admin, counterparts and group survive it (the scenarios are built on them) and the table is empty.
+reset_background_checks() {
+  [[ "$(psql_db -c "SELECT count(*) FROM users WHERE email = 'admin@example.invalid'")" == 1 && "$(psql_db -c "SELECT count(*) FROM groups WHERE id = $GROUP")" == 1 \
+    && "$(psql_db -c "SELECT count(*) FROM users WHERE email LIKE 'qc1-counterpart-%@example.invalid'")" == 10 ]] \
+    || { echo 'qc1: clearing the background rows removed the seeded admin, counterparts or group' >&2; exit 1; }
+  [[ "$(psql_db -c 'SELECT count(*) FROM contact_requests')" == 0 ]] || { echo 'qc1: contact_requests is not empty after clearing it' >&2; exit 1; }
+}
+
 measure_size() { # n
   local n="$1" t k d mode rows tr_json bk
   CURRENT_SIZE="$n"
@@ -1396,10 +1429,7 @@ measure_size() { # n
   # complete table list, which no writer can land between.
   quiesce
   qc1_reset_contact_requests || exit 1
-  [[ "$(psql_db -c "SELECT count(*) FROM users WHERE email = 'admin@example.invalid'")" == 1 && "$(psql_db -c "SELECT count(*) FROM groups WHERE id = $GROUP")" == 1 \
-    && "$(psql_db -c "SELECT count(*) FROM users WHERE email LIKE 'qc1-counterpart-%@example.invalid'")" == 10 ]] \
-    || { echo 'qc1: clearing the background rows removed the seeded admin, counterparts or group' >&2; exit 1; }
-  [[ "$(psql_db -c 'SELECT count(*) FROM contact_requests')" == 0 ]] || { echo 'qc1: contact_requests is not empty after clearing it' >&2; exit 1; }
+  reset_background_checks
   load_filler "$n" all
   # #298: nothing but the rendered panel at the dense counts, R times, over the background rows just loaded. No control request, no deletion matrix, no plans.
   if (( NEXT_CHANGED_ONLY )); then
@@ -1514,11 +1544,19 @@ measure_size() { # n
       discards:{close_or_reload:"every choice", conflict_409:"changed items only; choices whose requestId and reviewHash match survive the reload", restart_or_restore:"the attempt id (an open panel holds none until Delete is pressed); the panel keeps its choices, a retained id settles history_unavailable and a fresh press mints a new one", stop:"nothing; Delete stays disabled"}}')"
 }
 
-for n in "${SIZE_LIST[@]}"; do measure_size "$n"; done
+if (( LEGACY_ONLY )); then
+  # The deleted-accounts review only (qc1/legacy.sh): the sentinel the forged-marker file requires, the smoke on 101 pairs before any background load, then the rows of each size.
+  # Nothing of the live matrix runs, and the evidence status (settings.mode) says so.
+  legacy_guard_create
+  legacy_smoke
+  for n in "${SIZE_LIST[@]}"; do legacy_size "$n"; done
+else
+  for n in "${SIZE_LIST[@]}"; do measure_size "$n"; done
 
-# (4) and the legacy PUT body are T07B-3a's: recorded as pending, never as passed.
-jq -nc --arg reason "$QC1_PENDING_4" '{status:"pending", item:4, case:"legacy-discovery", size:null, reason:$reason}' >>"$MEASUREMENTS"
-jq -nc --arg reason "$QC1_PENDING_5" '{status:"pending", item:5, case:"legacy-put", size:null, reason:$reason}' >>"$MEASUREMENTS"
+  # A matrix run does not measure the legacy cases (a --legacy-only run does): recorded as pending, never as passed.
+  jq -nc --arg reason "$QC1_PENDING_4" '{status:"pending", item:4, case:"legacy-discovery", size:null, reason:$reason}' >>"$MEASUREMENTS"
+  jq -nc --arg reason "$QC1_PENDING_5" '{status:"pending", item:5, case:"legacy-put", size:null, reason:$reason}' >>"$MEASUREMENTS"
+fi
 
 # --- the evidence: environment record, judge, status and summary. The same function finalizes a run that stops early (cleanup); a finished run calls it here, and a
 # finalization that could not write a file is a failed run.

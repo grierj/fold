@@ -43,15 +43,18 @@ QC1_DENSE_COUNTS_DEFAULT=100000
 # contactLockID: the gate pg_advisory_xact_lock takes.
 QC1_GATE_LOCK_ID="$(qc1_fact .go.contactLockID)"
 # Items the harness cannot measure at this tree, with the reason it records.
-QC1_PENDING_4='legacy discovery is T07B-3a; the route and the marker lookup are not in this tree'
-QC1_PENDING_5='the legacy PUT body is T07B-3a; its route is not in this tree'
+# A matrix run does not measure the legacy cases (T-292 owns them, in the focused --legacy-only run); the placeholders say so.
+QC1_PENDING_4='legacy discovery is not measured in a matrix run; qc1-measure.sh --legacy-only measures it (docs/agents/testing.md)'
+QC1_PENDING_5='the legacy save is not measured in a matrix run; qc1-measure.sh --legacy-only measures it (docs/agents/testing.md)'
 # Files whose bytes decide what is measured; each must equal HEAD's blob.
-QC1_SOURCE_FILES=(deploy/digitalocean/qc1-measure.sh deploy/digitalocean/qc1/lib.sh deploy/digitalocean/qc1/filler.sql deploy/digitalocean/qc1/scenario.sql
+QC1_SOURCE_FILES=(deploy/digitalocean/qc1-measure.sh deploy/digitalocean/qc1/lib.sh deploy/digitalocean/qc1/filler.sql deploy/digitalocean/qc1/legacy.sh deploy/digitalocean/qc1/legacy-markers.sql deploy/digitalocean/qc1/scenario.sql
   deploy/digitalocean/qc1/top-statements.sql deploy/digitalocean/qc1/panel-measure.mjs deploy/digitalocean/qc1/browser.mjs deploy/digitalocean/qc1/browser-launch.cjs deploy/digitalocean/qc1/browser-preflight.mjs deploy/digitalocean/qc1/response-accounting.mjs
   deploy/digitalocean/qc1/set-v1.mjs deploy/digitalocean/qc1/panel-core.mjs deploy/digitalocean/qc1/panel-driver.mjs deploy/digitalocean/qc1/page-observer.mjs web/src/lib/reasonSetVectors.json
   deploy/digitalocean/qc1/app-facts.json)
 # The statements whose plans must be present for every size.
 QC1_PLAN_KINDS=(scanner-initial scanner-continuation page-items delete-set blank-batch)
+# The legacy-only plan row (item 11) records these instead; QC1_PLAN_KINDS stays what every live item-8 row carries.
+QC1_LEGACY_PLAN_KINDS=(scanner-initial scanner-continuation legacy-facts legacy-markers)
 
 # comma list -> one positive integer per line; fails on anything else.
 qc1_list() {
@@ -588,6 +591,41 @@ qc1_judge_rules() { cat <<'JQ'
                  # Bind the refusal to the count check, not authentication or the body-size limit.
                  or ($m.put.countRefusal | type) != "object" or $m.put.countRefusal.decisions != 101 or (($m.put.countRefusal.status != "400") and ($m.put.countRefusal.status != "422")) or $m.put.countRefusal.authenticated != true or $m.put.countRefusal.reason != "decision_count" or ($m.put.countRefusal.bodyBytes | type) != "number" or $m.put.countRefusal.bodyBytes > $cap or $m.put.countRefusal.unchanged != true)
         then inv("legacy-no-metrics"; {case:$m.case, cap:$cap, why:"the legacy PUT row is the accepted 100-decision subset: its measured body bytes, the instrument set, a workload bound to the declared size, and the verified database effects (kept and blanked text, party-qualified markers and audits); the 101st decision is refused by count validation"}) else empty end ),
+      # The rest of the legacy-only run (T-292) only TIGHTENS what the rows above ask of a legacy row; no budget, class or want of the live matrix changes. A 503 at a route's deadline is the
+      # existing "status" invalid below, never a budget finding; the marker plan (item 11) is recorded and not judged against a threshold.
+      # Exact pairs: the pairs a discovery walk listed are exactly the pairs seeded, each once. Privacy: discovery and the probe carry no reason key and no scenario text, and write no view audit.
+      ( if $m.item == 4 and ($m.case | type) == "string" and ($m.case | test("^legacy-discovery-[0-9]+$")) and ($m.legacy.pairSetExact != true or ($m.legacy.duplicates // 1) != 0)
+        then inv("legacy-pairs-inexact"; {case:$m.case, why:"the pairs the walk listed must be exactly the pairs seeded (compared with the database), none twice"}) else empty end ),
+      ( if $m.item == 4 and ($m.case | type) == "string" and (($m.case | test("^legacy-discovery-[0-9]+$")) or $m.case == "legacy-decided-discovery")
+            and ($m.legacy.privacy.noReasonKey != true or $m.legacy.privacy.noScenarioText != true or ($m.traversal.auditActionsDelta["user.erasure_reasons_viewed"] // 0) != 0)
+        then inv("legacy-privacy"; {case:$m.case, why:"discovery pages carry no reason key and no reason text and write no view audit"}) else empty end ),
+      ( if $m.item == 4 and ($m.case == "legacy-discovery-probe" or $m.case == "legacy-decided-discovery")
+            and ($m.probe.privacy.noReasonKey != true or $m.probe.privacy.noScenarioText != true or ($m.probe.auditActionsDelta["user.erasure_reasons_viewed"] // 0) != 0)
+        then inv("legacy-privacy"; {case:$m.case, why:"the probe answer carries no reason key and no reason text and writes no view audit"}) else empty end ),
+      # An exact account's pages (the deleted account's own audited pages): one view audit per nonempty page and none else, every item names that account, no request twice, the table is the size plus the pairs seeded.
+      ( if $m.item == 4 and ($m.case | type) == "string" and ($m.case | startswith("legacy-account-"))
+            and (($m.traversal.auditActionsDelta["user.erasure_reasons_viewed"] // 0) != ($m.traversal.nonEmptyPages // -2) or $m.legacy.partyRefOk != true or $m.legacy.uniqueRequests != $m.traversal.items
+                 or $m.legacy.accountPairs != $m.traversal.items or ($m.legacy.loadedPairs | type) != "number" or $m.traversal.tableRowsBefore != ($m.size + $m.legacy.loadedPairs)
+                 or $m.legacy.source != "T07B-3a" or ($m.legacy.route | type) != "string" or ($m.legacy.route | length) == 0 or ($m.legacy.tombstoneId | type) != "number"
+                 or ($m.case == "legacy-account-sparse-tail" and ($m.traversal.nonEmptyPages != 1 or ($m.traversal.timeToFirstItemsMs | numz) == null)))
+        then inv("legacy-account"; {case:$m.case, why:"an account's pages write one view audit per nonempty page, every item names the account once, and the table is the declared size plus the pairs seeded"}) else empty end ),
+      # The decided history: every background request names one deleted account and has a marker, so the walk lists none (expect.items is 0, held against traversal.items by the generic count rule) and the
+      # probe finds none; the oracle counts, the forged key set and the table the walks saw bind it to the declared size.
+      ( if $m.item == 4 and $m.case == "legacy-decided-discovery"
+            and (($m.expect.items // -1) != 0 or ($m.probe | type) != "object" or $m.probe.status != "200" or $m.probe.found != false or ($m.probe.route | type) != "string" or ($m.probe.route | length) == 0
+                 or $m.legacy.candidatePairs != $m.size or $m.legacy.markersSeeded != $m.size or $m.legacy.forgedMarkers.keysMatch != true
+                 or $m.traversal.tableRowsBefore != $m.size or $m.probe.tableRowsBefore != $m.size or ($m.legacy.tombstoneId | type) != "number"
+                 or $m.legacy.source != "T07B-3a" or ($m.legacy.route | type) != "string" or ($m.legacy.route | length) == 0)
+        then inv("legacy-decided"; {case:$m.case, why:"the decided history lists no pair and its probe finds none, over exactly the declared size, with a forged marker shaped like the application's"}) else empty end ),
+      ( if $m.item == 11 and $m.case == "legacy-plans"
+            and (($m.plans | type) != "object" or ([$m.plans["scanner-initial"], $m.plans["scanner-continuation"], $m.plans["legacy-facts"], $m.plans["legacy-markers"]] | any(type != "number"))
+                 or ([$m.plans["scanner-initial"], $m.plans["legacy-facts"], $m.plans["legacy-markers"]] | any(. < 1))
+                 or ($m.markerPlans | type) != "object" or $m.markerPlans.executions != $m.plans["legacy-markers"]
+                 or ([$m.markerPlans.auditLogsAccess.targetIndex, $m.markerPlans.auditLogsAccess.seqScan, $m.markerPlans.auditLogsAccess.other] | any(type != "number"))
+                 or ($m.markerPlans.auditLogsAccess.targetIndex + $m.markerPlans.auditLogsAccess.seqScan + $m.markerPlans.auditLogsAccess.other) != $m.markerPlans.executions
+                 or $m.request.status != "200" or ($m.autoExplain.caveats | type) != "array" or ($m.autoExplain.caveats | length) < 3
+                 or ($m.state | type) != "object" or ($m.state.tombstoneId | type) != "number" or $m.state.contactRequests != $m.size or $m.legacy.source != "T07B-3a")
+        then inv("legacy-plans-missing"; {case:$m.case, why:"the plan row holds the application's own logged scanner, facts and marker statements for one discovery page of the decided history, how the marker lookup reached audit_logs, and the capture caveats"}) else empty end ),
       # The labels are bound to the data: a row proves what its case name, size and mode claim. The reasons it was loaded with, the table it ran against (background size plus
       # those reasons, immediately before each operation), the direction of the reasons it listed, and the outcome the database shows after a deletion must all agree with the label.
       ( lblk($m) as $k
@@ -842,6 +880,36 @@ qc1_legacy_want_json() { # sizes
     [ $sizes[] as $s | ($lc[] as $k | select($k <= $s) | {item:4,size:$s,case:("legacy-discovery-" + ($k|tostring))}), {item:4,size:$s,case:"legacy-discovery-probe"}, (select($s >= 100) | {item:5,size:$s,case:"legacy-put"}) ]'
 }
 
+# What a --legacy-only run owes per size: the five contracted legacy rows above plus the exact-account walks, the decided-history walk and the plan row (9 per size).
+# In that mode the rows are MISSING, not pending: the run asked for them (qc1_evidence_status reads settings.mode).
+qc1_legacy_only_want_json() { # sizes
+  local sizes
+  sizes="$(qc1_list "$1" | paste -sd, -)" || return 1
+  { qc1_legacy_want_json "$1"
+    jq -nc --argjson sizes "[$sizes]" '[ $sizes[] as $s | {item:4,size:$s,case:"legacy-account-dense"}, {item:4,size:$s,case:"legacy-account-sparse-tail"}, {item:4,size:$s,case:"legacy-decided-discovery"}, {item:11,size:$s,case:"legacy-plans"} ]'
+  } | jq -sc 'add'
+}
+# The pairs (requestId, userId) one discovery page lists, one JSON object per line: every account's items flattened, a request listed under both parties twice.
+qc1_legacy_discovery_pairs() { # page-file
+  jq -c '.accounts[]? | .userId as $u | .items[]? | {requestId, userId:$u}' "$1"
+}
+# The judge's invalid findings of ONE size, as JSON lines (the harness gate: a harness-class invalid at a smaller size never pays for a larger one). Budget findings are not here.
+qc1_size_invalid() { # measurements.jsonl size max_request_bytes
+  qc1_judge "$1" "${3:-0}" | jq -c --argjson s "$2" 'select(.class == "invalid" and .size == $s)'
+}
+# How the application's own logged executions of the marker lookup reached audit_logs, as {executions, auditLogsAccess:{targetIndex, seqScan, other}}: an execution that scans audit_logs
+# sequentially is a seqScan, otherwise one that uses idx_audit_logs_target (Index Scan, Index Only Scan or Bitmap Index Scan) is targetIndex, anything else is other. Recorded, never judged.
+qc1_marker_plan_access() { # log
+  local out
+  out="$(qc1_extract_plans "$1" legacy-markers)" || return 2
+  awk '
+    function flush() { if (!inb) return; n++; if (seq) sq++; else if (idx) ix++; else ot++ }
+    /duration: .* plan:/ { flush(); inb = 1; seq = idx = 0; next }
+    inb && /Seq Scan on audit_logs/ { seq = 1 }
+    inb && /(Index Scan|Index Only Scan|Bitmap Index Scan) (using|on) idx_audit_logs_target/ { idx = 1 }
+    END { flush(); printf "{\"executions\":%d,\"auditLogsAccess\":{\"targetIndex\":%d,\"seqScan\":%d,\"other\":%d}}\n", n, ix, sq, ot }' <<<"$out"
+}
+
 # Said out loud in every evidence status: what this harness does NOT measure or only approximates, so a clean run is not read as more than it is.
 QC1_NOT_MEASURED_JSON="$(cat <<'JSON'
 ["gate hold time: the gate figures are SAMPLED (the span from the first to the last sample that saw it, with the sampler cadence), never an exact hold time",
@@ -867,7 +935,7 @@ QC1_NOT_MEASURED_MULTIBYTE="multi-byte reasons: the text is a fixed 21-rune patt
 #   releaseEvidence   complete AND full.
 # Budget failures are reported for disposition and do not make a run incomplete.
 qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head max_request_bytes [dense-counts] [abort.json]
-  local sizes counts dense="" want fullwant legacy judged judge_ok=true env_problems envjson abortjson=null
+  local sizes counts dense="" want fullwant legacy judged judge_ok=true env_problems envjson abortjson=null mode
   # Lines that are not JSON cannot be judged or counted: the whole file is invalid evidence.
   if ! jq -e . "$1" >/dev/null 2>&1; then
     printf '%s\n' '{"complete":false,"missing":[],"pending":[],"invalid":[{"class":"invalid","failure":"unparsable-measurements"}],"budgetFailures":[]}'
@@ -879,11 +947,15 @@ qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head 
   want="$(qc1_want_json "$sizes" "$counts" "$dense")" || return 1
   fullwant="$(qc1_want_json 10000,100000,1000000 "$QC1_COUNTS_DEFAULT" 100000)" || return 1
   legacy="$(qc1_legacy_want_json "$sizes")" || return 1
+  # The mode the run recorded in its environment (settings.mode): a legacy-only run owes the legacy rows, as missing (it asked for them), and none of the live matrix. An unreadable record or
+  # no mode is a matrix run, the stricter reading.
+  mode="$(jq -r '.settings.mode // "matrix"' "$4" 2>/dev/null)" || mode=matrix
+  if [[ "$mode" == legacy-only ]]; then want="$(qc1_legacy_only_want_json "$sizes")" || return 1; legacy='[]'; else mode=matrix; fi
   judged="$(qc1_judge "$1" "$6")" || judge_ok=false
   env_problems="$(qc1_environment_problems "$4" "$5" | jq -R . | jq -sc .)" || env_problems='["environment record unreadable"]'
   envjson="$(jq -c . "$4" 2>/dev/null || printf null)"
   if [[ -n "${8:-}" && -s "${8:-}" ]]; then abortjson="$(jq -c . "$8" 2>/dev/null || printf null)"; fi   # an aborted run: how it ended, carried into the status
-  jq -s -c --argjson want "$want" --argjson fullWant "$fullwant" --argjson legacyWant "$legacy" --arg pending4 "$QC1_PENDING_4" --arg pending5 "$QC1_PENDING_5" --argjson judgeOk "$judge_ok" \
+  jq -s -c --argjson want "$want" --argjson fullWant "$fullwant" --argjson legacyWant "$legacy" --arg pending4 "$QC1_PENDING_4" --arg pending5 "$QC1_PENDING_5" --argjson judgeOk "$judge_ok" --arg mode "$mode" \
     --argjson aborted "$abortjson" --argjson argSizes "[$sizes]" --argjson argCounts "[$counts]" --argjson argDense "[${dense}]" --argjson dc "[$QC1_DELETE_COUNTS]" --argjson env "$envjson" \
     --argjson envProblems "$env_problems" --argjson notMeasured "$QC1_NOT_MEASURED_JSON" --arg notMeasuredMultibyte "$QC1_NOT_MEASURED_MULTIBYTE" --argjson judged "$(jq -sc . <<<"$judged")" '
     def nums($x): if $x == null then null else ($x | tostring | split(",") | map(tonumber? // empty) | unique) end;
@@ -920,7 +992,8 @@ qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head 
          (if $s.wire != "set-v1" then "not the set-v1 wire" else empty end),
          (if ($s.layout | IN("spread", "tail", "head") | not) then "the settings do not name the layout (spread, tail or head) the rows were measured in" else empty end),
          (if ($disagree | length) > 0 then "the settings disagree with the arguments or the rows: " + ($disagree | map(.what) | join(", ")) else empty end),
-         (if $s.sizes == null or $s.counts == null or $s.denseCounts == null or $s.deleteCounts == null then "the settings do not name the sizes, counts, dense counts and deletion counts" else empty end) ]) as $covReasons
+         (if $s.sizes == null or $s.counts == null or $s.denseCounts == null or $s.deleteCounts == null then "the settings do not name the sizes, counts, dense counts and deletion counts" else empty end),
+         (if $mode == "legacy-only" then "legacy-only run: the live matrix rows were not run (settings.mode legacy-only)" else empty end) ]) as $covReasons
     | { missing: [ $want[] | select(present(.) | not) ],
         pending: [ $legacyWant[] | select(clean(.) | not) | . + {reason: (if .item == 4 then $pending4 else $pending5 end)} ],
         invalid: ( [ $judged[] | select(.class == "invalid") ]
@@ -995,11 +1068,14 @@ qc1_extract_plans() { # log which
 
 # How many plans of each kind a log holds, as JSON {"scanner-unit":n,...}. A
 # size's plans are present only when every kind has at least one.
-qc1_plan_counts() { # log
-  local kind first=1 n
+qc1_plan_counts() { # log [kind...]  (default QC1_PLAN_KINDS: what every live item-8 row carries)
+  local log="$1" kind first=1 n
+  shift
+  local -a kinds=("$@")
+  (( ${#kinds[@]} )) || kinds=("${QC1_PLAN_KINDS[@]}")
   printf '{'
-  for kind in "${QC1_PLAN_KINDS[@]}"; do
-    n="$(qc1_extract_plans "$1" "$kind" | grep -c 'duration: .* plan:' || true)"
+  for kind in "${kinds[@]}"; do
+    n="$(qc1_extract_plans "$log" "$kind" | grep -c 'duration: .* plan:' || true)"
     (( first )) || printf ','
     first=0
     printf '"%s":%d' "$kind" "$n"

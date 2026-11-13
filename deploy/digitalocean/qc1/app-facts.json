@@ -15,6 +15,8 @@
       "audit-report": "SELECT class, action, count(*) FROM (SELECT action, ",
       "blank-batch": "UPDATE contact_requests SET reason = '' WHERE id = ANY($1::bigint[]) AND reason <> '' AND (requester_id = $2 OR subject_user_id = $3)",
       "delete-set": "reason <> '' AND (requester_id = $1 OR subject_user_id = $2) ORDER BY contact_requests.id FOR UPDATE",
+      "legacy-facts": "LEFT JOIN users sub ON sub.id = cr.subject_user_id",
+      "legacy-markers": "AS c(req, party, target_type, kept, removed)",
       "page-items": "WHERE id = ANY($1::bigint[]) AND reason <> '' AND (requester_id = $2 OR subject_user_id = $3) ORDER BY contact_requests.id",
       "scanner-continuation": "FROM contact_requests WHERE id > $1::bigint ORDER BY id LIMIT $2",
       "scanner-initial": "FROM contact_requests ORDER BY id LIMIT $1"

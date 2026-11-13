@@ -232,7 +232,7 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
 - **QC-1 is a measurement.** Its budget failures are counted in the step's summary for the
   reviewed engineering disposition its header describes; they do not fail the step. A QC-1 run
   that finished normally is `partial` when it is incomplete only because cases are explicitly
-  pending (the legacy discovery and legacy PUT cases, at the time of writing) or its coverage is
+  pending (the legacy discovery and legacy save cases, which a matrix run does not measure; `--legacy-only` does) or its coverage is
   a pilot; the record then carries those cases, their reasons and the tool's coverage reasons.
   It is `fail` when the tool exits non-zero, aborted, holds an invalid finding, lacks a
   measurement it should have, or says it is incomplete without saying why. So a real full-size
@@ -570,8 +570,9 @@ argument above 128 KiB. `qc1-fixtures.sh` runs the runner's real `record()` on s
   Anything else is `PILOT`, and `matrix.json` lists each gap by name: an absent cell, a cell of
   another revision, a saved status that differs from the recomputed one, a runner record that is
   missing or failed, a `COLLECTION-FAILED.txt`, a cell whose coverage is not full, and
-  the cases a cell reports as pending (the legacy discovery and legacy PUT cases are not built at
-  the time of writing, so a real matrix is a `PILOT` until they are). If a 1M-row table cannot run on
+  the cases a cell reports as pending (the legacy discovery and legacy save cases, which a matrix cell does
+  not measure, so a real matrix is a `PILOT` until a later change adds them to the cell; the focused
+  `--legacy-only` run measures them apart, see below). If a 1M-row table cannot run on
   the available host, run the sizes that can and report the gap: a pilot, never `FULL`. A budget
   failure is a finding for engineering disposition (R4-C06), never a gap and never a waiver.
 - The result goes in `docs/plan/M7.4-ERASURE-INVENTORY.md`, section 12.3, "#294/#293 scale matrix":
@@ -585,6 +586,60 @@ argument above 128 KiB. `qc1-fixtures.sh` runs the runner's real `record()` on s
   which can be FULL). The `go` section of `qc1/app-facts.json` changes only by
   `UPDATE_QC1_FACTS=1 go test -run TestQC1AppFacts .`; its `web` section is held by
   `ReasonReviewSection.test.tsx`.
+
+### Legacy QC4/5: the deleted-accounts review (#292)
+
+`qc1-measure.sh --legacy-only` measures R4-C06 items 4 and 5 (legacy discovery, an account's own pages, the marker lookup, the
+100-decision save) and nothing else. It is one focused mode of the same harness: the same judge (`qc1_judge`), the same evidence
+status (`qc1_evidence_status`, which reads `settings.mode` from `environment.json`), the same budgets. It does not run the live matrix
+and is **never FULL and never release evidence**: its status says `legacy-only run: the live matrix rows were not run` in its coverage
+reasons. A matrix run still records the two legacy placeholders as pending, with text that names this mode.
+
+- **Run it as two invocations on one head**, each through the T-297 entry point (a dedicated nested daemon, never `--keep`):
+  `scripts/reason-review-scale.sh --only qc1 --evidence-dir <new dir outside the checkout> --qc1-arg --legacy-only --qc1-arg --no-browser --qc1-arg --sizes --qc1-arg 10000,100000`,
+  then the same with `1000000` once the first is complete. One invocation of all three sizes is equivalent. Each is judged on its own
+  `evidence-status.json`; the head, image id and source hashes in the two `environment.json` files must be equal. A size is rerun only when
+  its invocation was incomplete (invalid or aborted), in a new directory; a complete invocation is never superseded, and every attempt is listed.
+- **The wrapper says `partial`** (exit 10) for a successful legacy-only run, by design: pass-through arguments and the pilot coverage make
+  every run partial. Read `qc1/evidence-status.json` (`complete`, `coverage.reasons`), `environment.json` (`revision`, `settings.mode`,
+  `settings.legacy.smoke`) and the rows, never the wrapper's verdict. An abort, an invalid finding or a missing row is `fail`.
+- **Refused before any daemon call**: it needs `--no-browser` and refuses `--layout`, `--counts`, `--dense-counts`, `--charset multibyte`,
+  the next-changed options, `--browser-fallback-digest` and any size below 10,000 (the seed is 10,000 pairs). `--droplet` and the reason lengths are
+  recorded in `settings`; the acceptance runs use their defaults (`2gb`, 200 and 1,000).
+- **Nine rows per size**: `legacy-discovery-0`, `-100` and `-10000` (an account of 9,900 pairs spread over the table and one of 100 pairs after
+  every background row), `legacy-account-dense` and `legacy-account-sparse-tail` (the account's own pages; one view audit per non-empty page),
+  `legacy-discovery-probe` (the marker lookup, after the save wrote 100 real markers), `legacy-put` (the refused 101st decision and the accepted
+  100: first 50 removed, last 50 kept, each with its own attempt id), `legacy-decided-discovery` (every background request names one deleted
+  account and has a forged marker: the marker-heavy path) and `legacy-plans` (item 11: the application's own logged scanner, facts and marker
+  statements for one page of the decided history, and how the marker lookup reached `audit_logs`, recorded, never judged).
+- **Fresh accounts at every size.** Each deleted account is made by the real `DELETE` while the table is empty and never reused: markers are keyed
+  by (request, party), the scenario ids repeat at every size and `audit_logs` is never truncated.
+- **Judged more tightly than the contracted rows ask**: the pairs a walk lists are compared with the database (`pairSetExact`, no duplicate), discovery
+  and the probe carry no reason key or text and write no view audit, an account's pages write exactly one view audit per non-empty page, the decided
+  history must list nothing and its probe find nothing over exactly the declared size, and the save's effects, receipts and refusal are read from the
+  database. A 503 at a route's own deadline (10 s a unit, 40 s the save) is the unchanged `status` **invalid**, not a budget finding: it makes the
+  invocation incomplete and means a unit did not finish in its budget. No budget, class or want of the live matrix changed.
+- **Forged markers are the one hazard.** `qc1/legacy-markers.sql` writes audit rows that say a deleted account's reasons were decided, which
+  hides them from the review list. It runs only through `forge_markers` in `qc1/legacy.sh`: `psql` into the harness's own database container, by id.
+  Its guard refuses unless the run's own sentinel (`qc1_disposable`, written by the harness into its own cluster, with the run's token and that cluster's
+  system identifier) matches, the site is `QC-1`, the target is a soft-deleted account with the tombstone email, and every request marked is `group_add`.
+  It trusts no email domain. `TestQC1LegacyMarkersSQL` proves the guard, the pairs it hides and the shape of its marker against a real save; do not loosen
+  the guard to make a test pass. The smoke (below) refuses a live account and a wrong token before anything is loaded.
+- **The smoke** runs before any background load, in the same invocation: 101 pairs through the real routes (discovery, an account's pages, the attempt
+  mint, the refused 101st decision, the 100-decision save and its effects, the probe, a forged marker and the guard's refusals). A mismatch exits 1 naming the
+  check and the run is finalized as aborted. A size's last step is a gate: any invalid finding at that size stops the run before a larger one is paid for.
+- **Cost (an estimate, not a budget):** the 10k and 100k invocation takes minutes beyond the fixed start-up; the 1M invocation loads the background rows
+  twice and writes 1,000,000 forged markers into `audit_logs` (four indexes), so allow tens of minutes. Walks of a 1M table are given a longer scheduler
+  window than a minute (`LEGACY_NEED_MS`) so an hourly edge is waited out, not crossed.
+- **What it does not prove**: n=1 per row on one local cgroup model (no rate, no margin, not a real droplet); ASCII reasons only; contact-purpose
+  markers and requests with both parties deleted are covered by the Go selector tests, not measured at scale; the browser's wait on a sparse account is
+  proxied by `timeToFirstItemsMs`; the marker lookup is measured at 0 markers, at 100 and at 100%, not at intermediate mixes; parse time is not separated
+  from request time. Close #292's measurement part only with both invocations `complete: true` and every budget finding either absent or carrying its
+  reviewed R4-C06 disposition; otherwise the PR says `Refs`.
+- **Checks that run without Docker**: the legacy-only block of `qc1-fixtures.sh` (the nine-row set per size passes the judge; every added rule has a
+  mutation that fails it by name, including the 503, the slow unit and a sequential marker plan, which must stay what they were; the status mode; the
+  helpers; the refusals; and that the marker file runs in one place) and `go test -run 'TestQC1LegacyMarkersSQL|TestQC1LegacyPlanMarkersAreWhatTheApplicationSends|TestQC1AppFacts' .`
+  (needs `DATABASE_URL`).
 
 ### Sampling Next changed reason (#298)
 

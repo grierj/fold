@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	"fold/internal/images"
+	"fold/internal/policy"
 	"fold/models"
 
 	"gorm.io/gorm"
@@ -40,6 +41,14 @@ var qc1PlanMarkers = map[string]string{
 	"page-items":           "WHERE id = ANY($1::bigint[]) AND reason <> '' AND (requester_id = $2 OR subject_user_id = $3) ORDER BY contact_requests.id",
 	"audit-report":         "SELECT class, action, count(*) FROM (SELECT action, ",
 	"blank-batch":          "UPDATE contact_requests SET reason = '' WHERE id = ANY($1::bigint[]) AND reason <> '' AND (requester_id = $2 OR subject_user_id = $3)",
+}
+
+// qc1LegacyPlanMarkers are the substrings the legacy-only plan row (item 11) finds in the log: the statement that reads a batch's
+// facts and the marker lookup. They are placeholder-free parts of legacyFactsSQL and legacyMarkersSQL; the matrix's plan row never
+// looks for them, so they are kept apart from qc1PlanMarkers and merged only into the facts file.
+var qc1LegacyPlanMarkers = map[string]string{
+	"legacy-facts":   "LEFT JOIN users sub ON sub.id = cr.subject_user_id",
+	"legacy-markers": "AS c(req, party, target_type, kept, removed)",
 }
 
 type qc1GoFacts struct {
@@ -80,7 +89,12 @@ func qc1CodeFacts(t *testing.T) qc1GoFacts {
 	f.ReasonScanBatchGrowth = reasonScanBatchGrowth
 	f.ScannerSQL.Initial = reasonScanInitialSQL
 	f.ScannerSQL.Continuation = reasonScanContinuationSQL
-	f.PlanMarkers = qc1PlanMarkers
+	f.PlanMarkers = map[string]string{}
+	for _, m := range []map[string]string{qc1PlanMarkers, qc1LegacyPlanMarkers} {
+		for k, v := range m {
+			f.PlanMarkers[k] = v
+		}
+	}
 	// The audit statement is classification (generated from the rule table)
 	// between four fixed pieces around the two named constants.
 	const sentinel = "\x00CLASSIFICATION\x00"
@@ -319,5 +333,235 @@ func TestQC1LoaderColumnsFitTheSchema(t *testing.T) {
 		if !slices.Contains(existing, c) {
 			t.Errorf("qc1LoaderLeftToDefaults names %q, which contact_requests no longer has", c)
 		}
+	}
+}
+
+// The legacy-only plan row looks for these two statements in the server log, so the application must send them: one discovery page over a
+// deleted account's reason sends the facts statement and the marker lookup, and TestQC1AppFacts holds the facts file equal to the merged map.
+func TestQC1LegacyPlanMarkersAreWhatTheApplicationSends(t *testing.T) {
+	s := newLegacyScene(t, 2)
+	gone, live := s.users[0], s.users[1]
+	s.bury(t, gone)
+	s.askAdd(t, gone, live, 1)
+	var mu sync.Mutex
+	var sent []string
+	capture := func(tx *gorm.DB) {
+		mu.Lock()
+		sent = append(sent, strings.Join(strings.Fields(tx.Statement.SQL.String()), " "))
+		mu.Unlock()
+	}
+	name := fmt.Sprintf("test:qc1_legacy_facts:%d", queryCounterSeq.Add(1))
+	if err := s.app.DB.Callback().Raw().After("gorm:raw").Register(name, capture); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.app.DB.Callback().Raw().Remove(name) })
+	if err := s.app.DB.Callback().Row().After("gorm:row").Register(name, capture); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.app.DB.Callback().Row().Remove(name) })
+	if code, body := s.discover(legacyDiscoveryPath); code != http.StatusOK || !strings.Contains(body, `"requestId"`) {
+		t.Fatalf("discovery: %d %s, want one listed pair", code, body)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for kind, marker := range qc1LegacyPlanMarkers {
+		found := false
+		for _, q := range sent {
+			if strings.Contains(q, marker) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("no statement a legacy discovery page sent contains the %s marker %q", kind, marker)
+		}
+	}
+}
+
+// qc1LegacyMarkersText is deploy/digitalocean/qc1/legacy-markers.sql as this test runs it: the psql variables substituted as psql would, and
+// the one psql meta line it may carry dropped. Any other meta line fails the test, so the file cannot do anything the test does not run.
+func qc1LegacyMarkersText(t *testing.T, token string, tombstone, only int64) string {
+	t.Helper()
+	raw, err := os.ReadFile("deploy/digitalocean/qc1/legacy-markers.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		switch {
+		case line == `\set ON_ERROR_STOP on`:
+		case strings.HasPrefix(line, `\`):
+			t.Fatalf("legacy-markers.sql has a psql meta line this test does not run: %q", line)
+		default:
+			lines = append(lines, line)
+		}
+	}
+	if strings.ContainsAny(token, "'\\") {
+		t.Fatalf("token %q is not a plain literal", token)
+	}
+	text := strings.NewReplacer(":'token'", "'"+token+"'", ":'tombstone'", fmt.Sprintf("'%d'", tombstone), ":'only_id'", fmt.Sprintf("'%d'", only)).Replace(strings.Join(lines, "\n"))
+	if strings.Contains(text, ":'") {
+		t.Fatalf("legacy-markers.sql has a psql variable this test does not set:\n%s", text)
+	}
+	return text
+}
+
+// qc1RunMarkers runs the file on one pinned connection and, when its guard refuses, ends the transaction it opened so the pool is not left in an aborted one.
+func qc1RunMarkers(t *testing.T, db *gorm.DB, text string) error {
+	t.Helper()
+	return db.Connection(func(tx *gorm.DB) error {
+		if err := tx.Exec(text).Error; err != nil {
+			_ = tx.Exec("ROLLBACK").Error
+			return err
+		}
+		return nil
+	})
+}
+
+// The forged-marker file is the one piece of the harness that writes decisions. It must hide exactly the pairs it names from the application's
+// own selector, write a marker shaped like the application's, and refuse everything but the harness's own disposable database: a sentinel written into
+// that database and cluster by the harness, the QC-1 site, a soft-deleted account with the tombstone email, and only group_add requests. Nothing a real
+// database could also hold (a domain, a site name) is enough, and the happy case below runs on users whose emails are NOT @example.invalid.
+func TestQC1LegacyMarkersSQL(t *testing.T) {
+	r := newSaveRig(t)
+	db := r.direct
+	live, gone, real := r.target("live"), r.target("gone"), r.target("real")
+	const token = "11111111-2222-3333-4444-555555555555"
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if err := db.Exec(sql, args...).Error; err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	count := func(sql string, args ...any) (n int) {
+		t.Helper()
+		if err := db.Raw(sql, args...).Scan(&n).Error; err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	markers := func() int {
+		return count(`SELECT count(*) FROM audit_logs WHERE action IN ('add.reason_kept','add.reason_removed')`)
+	}
+	harnessDB := func() {
+		exec(`DROP TABLE IF EXISTS qc1_disposable`)
+		exec(`CREATE TABLE qc1_disposable (token text PRIMARY KEY, system_identifier bigint NOT NULL)`)
+		exec(`INSERT INTO qc1_disposable SELECT ?, system_identifier FROM pg_control_system()`, token)
+		exec(`DELETE FROM settings WHERE key = 'site_name'`)
+		exec(`INSERT INTO settings (key, value) VALUES ('site_name', 'QC-1')`)
+	}
+	t.Cleanup(func() { _ = db.Exec(`DROP TABLE IF EXISTS qc1_disposable`).Error })
+	tombstone := func(u *models.User) {
+		exec(`UPDATE users SET deleted_at = now(), email = 'deleted-' || id || '@deleted.invalid' WHERE id = ?`, u.ID)
+	}
+	tombstone(gone)
+	reqA := r.askAdd(gone, live, 1) // the account as requester
+	reqB := r.askAdd(live, gone, 2) // the account as subject
+	reqC := r.askAdd(gone, live, 3) // a request the file is asked to skip with only_id
+	cands := func(ids ...uint) []legacyCandidate {
+		var out []legacyCandidate
+		for _, id := range ids {
+			out = append(out, legacyCandidate{legacyPair{int64(id), int64(gone.ID)}, requestKindOf(policy.RequestGroupAdd)})
+		}
+		return out
+	}
+	decided := func(ids ...uint) map[legacyPair]bool {
+		t.Helper()
+		got, err := legacyMarkersIn(db, cands(ids...))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	refuse := func(why, needle string, token string, target int64, only int64) {
+		t.Helper()
+		before := markers()
+		err := qc1RunMarkers(t, db, qc1LegacyMarkersText(t, token, target, only))
+		if err == nil {
+			t.Fatalf("%s: the file ran", why)
+		}
+		if !strings.Contains(err.Error(), needle) {
+			t.Fatalf("%s: refused with %q, want a refusal naming %q", why, err, needle)
+		}
+		if markers() != before {
+			t.Fatalf("%s: a refusal wrote %d marker(s)", why, markers()-before)
+		}
+		if n := count(`SELECT 1`); n != 1 {
+			t.Fatalf("%s: the connection pool is unusable after the refusal", why)
+		}
+	}
+
+	// A database that merely LOOKS like the harness's: QC-1 site, an admin at @example.invalid, only @example.invalid users and a real tombstone. No sentinel, no run.
+	exec(`UPDATE users SET email = id || '-sim@example.invalid' WHERE deleted_at IS NULL`)
+	exec(`UPDATE users SET email = 'admin@example.invalid' WHERE id = ?`, r.admin.ID)
+	exec(`DELETE FROM settings WHERE key = 'site_name'`)
+	exec(`INSERT INTO settings (key, value) VALUES ('site_name', 'QC-1')`)
+	exec(`DROP TABLE IF EXISTS qc1_disposable`)
+	refuse("a real-looking database with misleading fixture domains and no sentinel", "no qc1_disposable table", token, int64(gone.ID), 0)
+
+	harnessDB()
+	for _, c := range []struct{ why, needle, token string }{
+		{"a wrong token", "token or cluster does not match", "99999999-2222-3333-4444-555555555555"},
+	} {
+		refuse(c.why, c.needle, c.token, int64(gone.ID), 0)
+	}
+	exec(`UPDATE qc1_disposable SET system_identifier = system_identifier + 1`)
+	refuse("a sentinel from another cluster", "token or cluster does not match", token, int64(gone.ID), 0)
+	harnessDB()
+	exec(`INSERT INTO qc1_disposable VALUES ('another', 1)`)
+	refuse("two sentinels", "token or cluster does not match", token, int64(gone.ID), 0)
+	harnessDB()
+	exec(`UPDATE settings SET value = 'Grace Church' WHERE key = 'site_name'`)
+	refuse("another site", "the site is not QC-1", token, int64(gone.ID), 0)
+	harnessDB()
+	refuse("a live account", "not a soft-deleted account with the tombstone email", token, int64(live.ID), 0)
+	exec(`UPDATE users SET email = 'deleted-' || id || '@deleted.invalid' WHERE id = ?`, live.ID)
+	refuse("a live account whose email only looks like a tombstone", "not a soft-deleted account with the tombstone email", token, int64(live.ID), 0)
+	exec(`UPDATE users SET deleted_at = now() WHERE id = ?`, real.ID)
+	refuse("a deleted account whose email is not a tombstone", "not a soft-deleted account with the tombstone email", token, int64(real.ID), 0)
+	contact := r.ask(gone, live, 4) // a contact-purpose request with a reason: refused, never guessed
+	refuse("a contact-purpose request of the account", "only group_add requests are marked", token, int64(gone.ID), 0)
+	exec(`DELETE FROM contact_requests WHERE id = ?`, contact.ID)
+	refuse("a request with no reason to mark", "nothing to mark", token, int64(gone.ID), int64(reqA.ID+1000))
+	refuse("a negative only_id", "tombstone must be positive", token, int64(gone.ID), -1)
+
+	// The happy case: the forged marker hides exactly the pair it names, the application's selector decides it, and its shape is the application's own.
+	if got := decided(reqA.ID, reqB.ID, reqC.ID); len(got) != 0 {
+		t.Fatalf("pairs decided before any marker: %v", got)
+	}
+	before, _ := legacyWalk(t, db, 0, 100)
+	if len(before) != 3 {
+		t.Fatalf("%d pairs listed before the markers, want 3", len(before))
+	}
+	if err := qc1RunMarkers(t, db, qc1LegacyMarkersText(t, token, int64(gone.ID), int64(reqC.ID))); err != nil {
+		t.Fatalf("only_id: %v", err)
+	}
+	if got := decided(reqA.ID, reqB.ID, reqC.ID); len(got) != 1 || !got[legacyPair{int64(reqC.ID), int64(gone.ID)}] {
+		t.Fatalf("only_id marked %v, want exactly the one request it names", got)
+	}
+	if err := qc1RunMarkers(t, db, qc1LegacyMarkersText(t, token, int64(gone.ID), 0)); err != nil {
+		t.Fatalf("all: %v", err)
+	}
+	if got := decided(reqA.ID, reqB.ID, reqC.ID); len(got) != 3 {
+		t.Fatalf("after marking everything %d pairs are decided, want 3", len(got))
+	}
+	if items, _ := legacyWalk(t, db, 0, 100); len(items) != 0 {
+		t.Fatalf("%v still listed after every pair was marked", items)
+	}
+	// The same key set and types as a marker the application writes for a real save.
+	reqD := r.askAdd(real, live, 5)
+	items := r.items(real.ID)
+	if w := func() int { _, w := r.save(real.ID, choose(items, "keep")); return w.Code }(); w != http.StatusOK {
+		t.Fatalf("a real save answered %d", w)
+	}
+	shape := func(request uint, forged bool) string {
+		var s string
+		q := `SELECT target_type || '|' || action || '|' || (SELECT string_agg(k, ',' ORDER BY k) FROM jsonb_object_keys(meta_json) k) || '|' || jsonb_typeof(meta_json->'erasedUserId') || '|' || jsonb_typeof(meta_json->'reviewVersion') FROM audit_logs WHERE target_id = ? AND action = 'add.reason_kept' ORDER BY id DESC LIMIT 1`
+		if err := db.Raw(q, request).Scan(&s).Error; err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	if app, forged := shape(reqD.ID, false), shape(reqA.ID, true); app == "" || app != forged {
+		t.Fatalf("the forged marker's shape %q is not the application's %q", forged, app)
 	}
 }

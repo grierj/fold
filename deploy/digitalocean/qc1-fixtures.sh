@@ -582,10 +582,10 @@ legacy_rows() { # sizes
   for s in $(qc1_list "$1"); do
     for k in $(qc1_list "$QC1_LEGACY_COUNTS"); do
       (( k <= s )) || continue
-      printf '{"status":"measured","item":4,"case":"legacy-discovery-%s","size":%s,"workers":0,"reasons":%s,"expect":{"items":%s},"legacy":{"route":"/api/v1/admin/users/ID/legacy-reasons","loadedPairs":%s,"source":"T07B-3a"},"traversal":%s}\n' "$k" "$s" "$k" "$k" "$k" "$(trav "$(( s + k ))" "$k")"
+      printf '{"status":"measured","item":4,"case":"legacy-discovery-%s","size":%s,"workers":0,"reasons":%s,"expect":{"items":%s},"legacy":{"route":"/api/v1/admin/users/ID/legacy-reasons","loadedPairs":%s,"source":"T07B-3a","pairSetExact":true,"duplicates":0,"privacy":{"noReasonKey":true,"noScenarioText":true}},"traversal":%s}\n' "$k" "$s" "$k" "$k" "$k" "$(trav "$(( s + k ))" "$k")"
     done
     # the marker lookup: a workload of 20 pairs with 5 party-qualified markers seeded for tombstone 7, one found
-    printf '{"status":"measured","item":4,"case":"legacy-discovery-probe","size":%s,"workers":0,"probe":{"ms":3,"status":"200","found":true,"route":"/api/v1/admin/users/ID/legacy-reasons/marker","workload":{"backgroundRows":%s,"loadedPairs":20,"markersSeeded":5,"tombstoneId":7},"marker":{"requestId":"42","party":7,"action":"add.reason_kept","source":"legacy_review"},%s}}\n' "$s" "$s" "$(ins "$(( s + 20 ))")"
+    printf '{"status":"measured","item":4,"case":"legacy-discovery-probe","size":%s,"workers":0,"probe":{"ms":3,"status":"200","found":true,"privacy":{"noReasonKey":true,"noScenarioText":true},"route":"/api/v1/admin/users/ID/legacy-reasons/marker","workload":{"backgroundRows":%s,"loadedPairs":20,"markersSeeded":5,"tombstoneId":7},"marker":{"requestId":"42","party":7,"action":"add.reason_kept","source":"legacy_review"},%s}}\n' "$s" "$s" "$(ins "$(( s + 20 ))")"
     # the legacy PUT: the accepted 100-decision subset of 120 seeded pairs (50 Keep, 50 Blank), its measured body, the verified effects, and the 101st decision refused by count validation
     (( s >= 100 )) || continue
     printf '{"status":"measured","item":5,"case":"legacy-put","size":%s,"workers":0,"put":{"status":"200","ms":50,"appPeakKb":2048,"route":"/api/v1/admin/users/ID/legacy-reasons","decisions":100,"accepted":100,"bodyBytes":17500,"workload":{"backgroundRows":%s,"loadedPairs":120,"tombstoneId":7},"effects":{"dbOk":true,"kept":50,"blanked":50,"rowsBlank":50,"rowsWithText":50,"markers":{"count":100,"party":7,"partyQualified":true,"source":"legacy_review","byAction":{"add.reason_kept":50,"add.reason_removed":50}},"audits":{"count":100,"source":"legacy_review"}},"countRefusal":{"decisions":101,"status":"400","authenticated":true,"reason":"decision_count","bodyBytes":17600,"unchanged":true},%s}}\n' "$s" "$s" "$(ins "$(( s + 120 ))")"
@@ -1707,7 +1707,7 @@ if grep -qE '^(run|rm|network|volume|pull|system|container|kill|stop|exec|prune)
 # another revision is refused. The runner runs from a clean copy of its own files
 # in a throwaway repository, so this holds whatever state the real tree is in.
 CLONE="$WORK/clone"; mkdir -p "$CLONE/deploy/digitalocean/qc1"
-cp "$HERE/qc1-measure.sh" "$CLONE/deploy/digitalocean/"; cp "$HERE"/qc1/app-facts.json "$HERE"/qc1/lib.sh "$HERE"/qc1/filler.sql "$HERE"/qc1/scenario.sql "$HERE"/qc1/panel-measure.mjs "$HERE"/qc1/browser.mjs "$HERE"/qc1/browser-launch.cjs "$HERE"/qc1/browser-preflight.mjs "$HERE"/qc1/response-accounting.mjs "$HERE"/qc1/set-v1.mjs "$HERE"/qc1/panel-core.mjs "$HERE"/qc1/panel-driver.mjs "$HERE"/qc1/page-observer.mjs "$HERE"/qc1/top-statements.sql "$CLONE/deploy/digitalocean/qc1/"; mkdir -p "$CLONE/web/src/lib"; cp "$ROOT/web/src/lib/reasonSetVectors.json" "$CLONE/web/src/lib/"; cp "$HERE/isolation.sh" "$CLONE/deploy/digitalocean/"
+cp "$HERE/qc1-measure.sh" "$CLONE/deploy/digitalocean/"; cp "$HERE"/qc1/app-facts.json "$HERE"/qc1/lib.sh "$HERE"/qc1/filler.sql "$HERE"/qc1/legacy.sh "$HERE"/qc1/legacy-markers.sql "$HERE"/qc1/scenario.sql "$HERE"/qc1/panel-measure.mjs "$HERE"/qc1/browser.mjs "$HERE"/qc1/browser-launch.cjs "$HERE"/qc1/browser-preflight.mjs "$HERE"/qc1/response-accounting.mjs "$HERE"/qc1/set-v1.mjs "$HERE"/qc1/panel-core.mjs "$HERE"/qc1/panel-driver.mjs "$HERE"/qc1/page-observer.mjs "$HERE"/qc1/top-statements.sql "$CLONE/deploy/digitalocean/qc1/"; mkdir -p "$CLONE/web/src/lib"; cp "$ROOT/web/src/lib/reasonSetVectors.json" "$CLONE/web/src/lib/"; cp "$HERE/isolation.sh" "$CLONE/deploy/digitalocean/"
 git init -q "$CLONE"; git -C "$CLONE" config user.name fixture; git -C "$CLONE" config user.email fixture@example.invalid
 git -C "$CLONE" config commit.gpgsign false; git -C "$CLONE" config core.hooksPath /dev/null
 git -C "$CLONE" add -A; git -C "$CLONE" commit -qm clone
@@ -1762,7 +1762,7 @@ grep -q 'for id in "\${CONTAINERS\[@\]}"; do docker rm -fv "\$id"' "$RUNNER"
 grep -q '^start_app 0$' "$RUNNER"; grep -q 'ALTER SYSTEM SET autovacuum = off' "$RUNNER"; grep -q "checkpoint_timeout = '1d'" "$RUNNER"
 grep -q '^instrumented() {' "$RUNNER"; instr_line="$(grep -n '^instrumented() {' "$RUNNER" | cut -d: -f1)"
 [[ "$(sed -n "$((instr_line + 1)),$((instr_line + 20))p" "$RUNNER" | grep -c "^  quiesce$")" == 1 ]]
-cal_line="$(grep -n '^calibrate$' "$RUNNER" | cut -d: -f1)"; first_measure="$(grep -n '^for n in "\${SIZE_LIST\[@\]}"; do measure_size' "$RUNNER" | cut -d: -f1)"
+cal_line="$(grep -n '^calibrate$' "$RUNNER" | cut -d: -f1)"; first_measure="$(grep -n '^ *for n in "\${SIZE_LIST\[@\]}"; do measure_size' "$RUNNER" | cut -d: -f1)"
 [[ -n "$cal_line" && "$cal_line" -lt "$first_measure" ]]
 grep -q 'start_app 2' "$RUNNER"; grep -q 'RECORD_STATUS=observation record 9 workers-on-delete' "$RUNNER"
 grep -q 'if \[\[ "\$n" == "\$MAX_SIZE" \]\]; then observe_workers_on' "$RUNNER"
@@ -1961,11 +1961,14 @@ unset -f psql_db model truncates reset_closed
 RUNNER_BODY="$(sed -n '/^measure_size() {/,/^}$/p' "$HERE/qc1-measure.sh")"
 if grep -n "TRUNCATE contact_requests" "$HERE/qc1-measure.sh"; then echo 'the runner still truncates contact_requests alone' >&2; exit 1; fi
 r_l="$(grep -n 'qc1_reset_contact_requests || exit 1' <<<"$RUNNER_BODY" | head -n 1 | cut -d: -f1)"; f_l="$(grep -n 'load_filler "\$n" all' <<<"$RUNNER_BODY" | head -n 1 | cut -d: -f1)"
-s_l="$(grep -n "admin@example.invalid'\")\" == 1" <<<"$RUNNER_BODY" | head -n 1 | cut -d: -f1)"
+# the survivors check is one function (reset_background_checks) that the matrix and the legacy-only run both call right after the reset
+s_l="$(grep -n '^  reset_background_checks$' <<<"$RUNNER_BODY" | head -n 1 | cut -d: -f1)"
+CHECKS_BODY="$(sed -n '/^reset_background_checks() {/,/^}$/p' "$HERE/qc1-measure.sh")"
 [[ -n "$r_l$f_l$s_l" && "$r_l" -lt "$s_l" && "$s_l" -lt "$f_l" ]]
 q_l="$(grep -n '^  quiesce$' <<<"$RUNNER_BODY" | head -n 1 | cut -d: -f1)"
 [[ -n "$q_l" && "$q_l" -lt "$r_l" ]] || { echo 'the runner no longer quiesces before clearing the background rows' >&2; exit 1; }
-for pat in "FROM groups WHERE id = \$GROUP" "qc1-counterpart-%@example.invalid'\")\" == 10" "SELECT count(*) FROM contact_requests')\" == 0"; do grep -qF -- "$pat" <<<"$RUNNER_BODY" || { echo "the runner no longer checks $pat" >&2; exit 1; }; done
+for pat in "FROM groups WHERE id = \$GROUP" "qc1-counterpart-%@example.invalid'\")\" == 10" "SELECT count(*) FROM contact_requests')\" == 0"; do grep -qF -- "$pat" <<<"$CHECKS_BODY" || { echo "the runner no longer checks $pat" >&2; exit 1; }; done
+grep -qF -- "admin@example.invalid'\")\" == 1" <<<"$CHECKS_BODY" || { echo 'the runner no longer checks that the seeded admin survives the reset' >&2; exit 1; }
 
 # --- pilot2: the outcome of ONE deletion, the app's peak, and the plan capture -------------------------------------------------------------------------------------------------------
 RUNNER_SRC="$HERE/qc1-measure.sh"
@@ -2706,5 +2709,212 @@ jq -e '.code == "withheld"' "$AD/0006.json" >/dev/null
 req_partial() { printf '%s' '{"code":"delete_timed_out"}' >"$AR"; echo '503 1'; return 7; }
 attempt 7 req_partial; jq -e '.code == "withheld" and .transport == "failed" and .responseBytes > 0' "$AD/0007.json" >/dev/null
 grep -q 'qc1_delete_attempt "\$WORK/delete-attempts"' "$HERE/qc1-measure.sh"
+
+# --- T-292: the legacy-only run (qc1/legacy.sh): its nine rows per size, the judge's added rules, the status mode, the helpers and the refusals ---------------------------------------
+# One size's nine rows, as the code in qc1/legacy.sh writes them. Every figure follows from the size and the seed (10,000 pairs: 9,900 spread over the table for the dense account, 100 after
+# every background row for the sparse one), the way a real run's would.
+LO_SEED=10000
+insv() { # rows views: the instrument fragment for a table of `rows`, with `views` account-page view audits in its audit delta
+  local f from to; f="$(ins "$1")"
+  from='"auditActionsDelta":{"x.view":10,"add.reason_kept":5}'; to="\"auditActionsDelta\":{\"user.erasure_reasons_viewed\":$2}"
+  [[ "$f" == *"$from"* ]] || { echo 'qc1: the instrument fixture no longer has the audit delta insv replaces' >&2; return 1; }
+  printf '%s' "${f/"$from"/"$to"}"
+}
+lo_trav() { # rows items views pages [lastStatus]
+  printf '{"units":2,"slowestUnitMs":5,"totalMs":10,"requestMs":8,"clientMs":2,"items":%s,"lastStatus":"%s","unitMs":[5,3],"lastCode":null,"nonEmptyPages":%s,"timeToFirstItemsMs":4,%s}' "$2" "${5:-200}" "$4" "$(insv "$1" "$3")"
+}
+LO_PRIV='{"noReasonKey":true,"noScenarioText":true}'
+lo_rows() { # size
+  local s="$1" k
+  for k in 0 100 "$LO_SEED"; do
+    printf '{"status":"measured","item":4,"case":"legacy-discovery-%s","size":%s,"workers":0,"reasons":%s,"expect":{"items":%s},"legacy":{"route":"GET /api/v1/admin/erasure-reasons/legacy","source":"T07B-3a","loadedPairs":%s,"tombstones":{"A":7,"B":8},"pairSetExact":true,"duplicates":0,"privacy":%s},"traversal":%s}\n' \
+      "$k" "$s" "$k" "$k" "$k" "$LO_PRIV" "$(lo_trav "$((s + k))" "$k" 0 0)"
+  done
+  for c in "dense 9900 99" "sparse-tail 100 1"; do
+    read -r name items pages <<<"$c"
+    printf '{"status":"measured","item":4,"case":"legacy-account-%s","size":%s,"workers":0,"reasons":%s,"expect":{"items":%s},"legacy":{"route":"POST /api/v1/admin/erasure-reasons/legacy/:userId/page","source":"T07B-3a","tombstoneId":7,"loadedPairs":%s,"accountPairs":%s,"partyRefOk":true,"uniqueRequests":%s},"traversal":%s}\n' \
+      "$name" "$s" "$items" "$items" "$LO_SEED" "$items" "$items" "$(lo_trav "$((s + LO_SEED))" "$items" "$pages" "$pages")"
+  done
+  printf '{"status":"measured","item":4,"case":"legacy-discovery-probe","size":%s,"workers":0,"probe":{"ms":3,"status":"200","found":true,"route":"GET /api/v1/admin/erasure-reasons/legacy/probe","privacy":%s,"workload":{"backgroundRows":%s,"loadedPairs":%s,"markersSeeded":100,"tombstoneId":7},"marker":{"requestId":"42","party":7,"action":"add.reason_kept","source":"legacy_review"},%s}}\n' \
+    "$s" "$LO_PRIV" "$s" "$LO_SEED" "$(ins "$((s + LO_SEED))")"
+  printf '{"status":"measured","item":5,"case":"legacy-put","size":%s,"workers":0,"put":{"status":"200","ms":50,"route":"PUT /api/v1/admin/erasure-reasons/legacy/:userId","decisions":100,"accepted":100,"bodyBytes":17500,"mints":2,"workload":{"backgroundRows":%s,"loadedPairs":%s,"tombstoneId":7},"effects":{"dbOk":true,"kept":50,"blanked":50,"rowsBlank":50,"rowsWithText":50,"textExact":true,"othersUntouched":true,"markers":{"count":100,"party":7,"partyQualified":true,"source":"legacy_review","byAction":{"add.reason_kept":50,"add.reason_removed":50}},"audits":{"count":100,"source":"legacy_review"},"receipts":{"before":3,"after":4,"delta":1}},"countRefusal":{"decisions":101,"status":"400","error":"invalid decisions","authenticated":true,"reason":"decision_count","bodyBytes":17600,"unchanged":true,"receiptsDelta":0},%s},"legacy":{"source":"T07B-3a"}}\n' \
+    "$s" "$s" "$LO_SEED" "$(ins "$((s + LO_SEED))")"
+  printf '{"status":"measured","item":4,"case":"legacy-decided-discovery","size":%s,"workers":0,"reasons":0,"expect":{"items":0},"traversal":%s,"probe":{"ms":3,"status":"200","found":false,"route":"GET /api/v1/admin/erasure-reasons/legacy/probe","privacy":%s,%s},"legacy":{"route":"GET /api/v1/admin/erasure-reasons/legacy","source":"T07B-3a","tombstoneId":9,"backgroundRequester":9,"candidatePairs":%s,"markersSeeded":%s,"privacy":%s,"forgedMarkers":{"file":"deploy/digitalocean/qc1/legacy-markers.sql","keysMatch":true}}}\n' \
+    "$s" "$(lo_trav "$s" 0 0 0)" "$LO_PRIV" "$(ins "$s")" "$s" "$s" "$LO_PRIV"
+  printf '{"status":"measured","item":11,"case":"legacy-plans","size":%s,"workers":0,"plans":{"scanner-initial":2,"scanner-continuation":5,"legacy-facts":4,"legacy-markers":4},"markerPlans":{"executions":4,"auditLogsAccess":{"targetIndex":4,"seqScan":0,"other":0}},"request":{"status":"200","ms":900},"state":{"tombstoneId":9,"contactRequests":%s,"markers":%s,"auditRows":%s},"legacy":{"source":"T07B-3a"},"autoExplain":{"scope":"on for one discovery page","caveats":["a","b","c","d"]}}\n' \
+    "$s" "$s" "$s" "$((s + 200))"
+}
+lo_env() { jq -c --arg sizes "${1:-10000}" '.settings += {mode:"legacy-only", browser:false, sizes:$sizes, counts:"0,10,100,1000,10000", denseCounts:"100000", deleteCounts:"0,10,100,1000,10000,100000", layout:"spread", targetReasonLen:1000, wire:"set-v1"} | del(.browserRuntime)' "$WORK/env.json" >"$WORK/env.lo$([[ -n "${1:-}" ]] && echo ."$1")"; }
+lo_env
+lo_env 10000,100000,1000000
+lo_status() { qc1_evidence_status "$1" "${2:-10000}" 0,10,100,1000,10000 "${3:-$WORK/env.lo}" "$HEAD_FAKE" 6291456 100000; }
+lo_rows 10000 >"$WORK/lo.jsonl"
+[[ "$(wc -l <"$WORK/lo.jsonl")" == 9 ]]
+# A clean set is judged clean and complete, in legacy-only mode: nothing missing, nothing pending, no invalid finding, a pilot that says why, never release evidence.
+[[ -z "$(qc1_judge "$WORK/lo.jsonl" 6291456 | jq -c 'select(.class == "invalid")')" ]] || { qc1_judge "$WORK/lo.jsonl" 6291456 >&2; echo 'qc1: the clean legacy-only rows are not clean' >&2; exit 1; }
+st="$(lo_status "$WORK/lo.jsonl")"
+[[ "$(jq -r .complete <<<"$st")" == true && "$(jq -c '[.missing, .pending, .invalid] | map(length)' <<<"$st")" == '[0,0,0]' && "$(jq -r '.coverage.kind' <<<"$st")" == pilot && "$(jq -r .releaseEvidence <<<"$st")" == false ]] || { echo "legacy-only status: $st" >&2; exit 1; }
+jq -e '[.coverage.reasons[] | test("legacy-only run: the live matrix rows were not run")] | any' <<<"$st" >/dev/null
+# The legacy plan row (item 11) has none of the item-8 fields and is not an item-8 row, so the generic plan rules do not apply to it (the item-8 judge needs plans[delete-set], executions, ...).
+[[ "$(jq -c 'select(.item == 11) | has("executions") or has("generic") or has("batchSchedule") or has("tables")' "$WORK/lo.jsonl")" == false ]]
+# Three sizes owe 27 rows, 9 each; without the mode the same rows leave the live matrix missing and the run incomplete (the stricter reading).
+{ lo_rows 10000; lo_rows 100000; lo_rows 1000000; } >"$WORK/lo3.jsonl"
+[[ "$(qc1_legacy_only_want_json 10000,100000,1000000 | jq 'length')" == 27 && "$(qc1_legacy_only_want_json 10000 | jq 'length')" == 9 ]]
+[[ "$(qc1_legacy_only_want_json 10000,100000,1000000 | jq -c 'group_by(.size) | map(length)')" == '[9,9,9]' ]]
+st3="$(lo_status "$WORK/lo3.jsonl" 10000,100000,1000000 "$WORK/env.lo.10000,100000,1000000")"
+[[ "$(jq -r .complete <<<"$st3")" == true && "$(jq '.missing | length' <<<"$st3")" == 0 ]]
+nomode="$(lo_status "$WORK/lo.jsonl" 10000 "$WORK/env.json")"
+[[ "$(jq -r .complete <<<"$nomode")" == false && "$(jq '[.missing[] | select(.item == 4 or .item == 5 or .item == 11) | select(.case | startswith("legacy-"))] | length' <<<"$nomode")" == 0 && "$(jq '.missing | length' <<<"$nomode")" -gt 40 ]]
+jq -c '.settings.mode = "something-else"' "$WORK/env.lo" >"$WORK/env.lo.bad"
+[[ "$(jq -r .complete <<<"$(lo_status "$WORK/lo.jsonl" 10000 "$WORK/env.lo.bad")")" == false ]]
+# A missing row is MISSING (the run asked for it), not pending: every one of the nine, dropped alone, makes the run incomplete and is named.
+for drop in '"case":"legacy-discovery-0"' '"case":"legacy-discovery-100"' '"case":"legacy-discovery-10000"' '"case":"legacy-account-dense"' '"case":"legacy-account-sparse-tail"' '"case":"legacy-discovery-probe"' '"case":"legacy-put"' '"case":"legacy-decided-discovery"' '"case":"legacy-plans"'; do
+  grep -vF -- "$drop" "$WORK/lo.jsonl" >"$WORK/lo.drop"
+  d="$(lo_status "$WORK/lo.drop")"
+  [[ "$(jq -r .complete <<<"$d")" == false && "$(jq '.missing | length' <<<"$d")" == 1 && "$(jq '.pending | length' <<<"$d")" == 0 ]] || { echo "dropping $drop: $d" >&2; exit 1; }
+done
+# The matrix placeholders say what a matrix run does not do.
+grep -q 'qc1-measure.sh --legacy-only measures it' <<<"$QC1_PENDING_4 $QC1_PENDING_5"
+# Each mutation of the clean set fails the named rule, and the rule is not the one that fails on the clean set.
+lo_mut() { jq -c "$2" "$WORK/lo.jsonl" >"$WORK/lo.$1"; }
+lo_bad() { # name failure: the mutation makes exactly this failure appear (and the run incomplete)
+  local d; d="$(lo_status "$WORK/lo.$1")"
+  jq -e --arg f "$2" '[.invalid[] | select(.failure == $f)] | length >= 1' <<<"$d" >/dev/null || { echo "mutation $1 did not raise $2: $(jq -c '[.invalid[] | .failure]' <<<"$d")" >&2; exit 1; }
+  [[ "$(jq -r .complete <<<"$d")" == false ]]
+}
+D0='.item == 4 and .case == "legacy-discovery-0"'; D100='.item == 4 and .case == "legacy-discovery-100"'; D10K='.item == 4 and .case == "legacy-discovery-10000"'
+ACC='.item == 4 and .case == "legacy-account-dense"'; SPA='.item == 4 and .case == "legacy-account-sparse-tail"'; PRB='.item == 4 and .case == "legacy-discovery-probe"'
+PUT='.item == 5 and .case == "legacy-put"'; DEC='.item == 4 and .case == "legacy-decided-discovery"'; PLN='.item == 11'
+lo_mut pairs "if $D10K then .legacy.pairSetExact = false else . end"; lo_bad pairs legacy-pairs-inexact
+lo_mut pairs-missing "if $D100 then del(.legacy.pairSetExact) else . end"; lo_bad pairs-missing legacy-pairs-inexact
+lo_mut dup "if $D100 then .legacy.duplicates = 1 else . end"; lo_bad dup legacy-pairs-inexact
+lo_mut nodup "if $D100 then del(.legacy.duplicates) else . end"; lo_bad nodup legacy-pairs-inexact
+lo_mut key "if $D0 then .legacy.privacy.noReasonKey = false else . end"; lo_bad key legacy-privacy
+lo_mut text "if $D10K then .legacy.privacy.noScenarioText = false else . end"; lo_bad text legacy-privacy
+lo_mut nopriv "if $D100 then del(.legacy.privacy) else . end"; lo_bad nopriv legacy-privacy
+lo_mut view "if $D0 then .traversal.auditActionsDelta[\"user.erasure_reasons_viewed\"] = 1 else . end"; lo_bad view legacy-privacy
+lo_mut pkey "if $PRB then .probe.privacy.noReasonKey = false else . end"; lo_bad pkey legacy-privacy
+lo_mut ptext "if $PRB then .probe.privacy.noScenarioText = false else . end"; lo_bad ptext legacy-privacy
+lo_mut pview "if $PRB then .probe.auditActionsDelta[\"user.erasure_reasons_viewed\"] = 2 else . end"; lo_bad pview legacy-privacy
+lo_mut dpkey "if $DEC then .probe.privacy.noReasonKey = false else . end"; lo_bad dpkey legacy-privacy
+lo_mut dkey "if $DEC then .legacy.privacy.noScenarioText = false else . end"; lo_bad dkey legacy-privacy
+lo_mut views "if $ACC then .traversal.auditActionsDelta[\"user.erasure_reasons_viewed\"] = 98 else . end"; lo_bad views legacy-account
+lo_mut noviews "if $ACC then del(.traversal.auditActionsDelta[\"user.erasure_reasons_viewed\"]) else . end"; lo_bad noviews legacy-account
+lo_mut partyref "if $ACC then .legacy.partyRefOk = false else . end"; lo_bad partyref legacy-account
+lo_mut uniq "if $SPA then .legacy.uniqueRequests = 99 else . end"; lo_bad uniq legacy-account
+lo_mut acctpairs "if $ACC then .legacy.accountPairs = 9899 else . end"; lo_bad acctpairs legacy-account
+lo_mut acctrows "if $SPA then .traversal.tableRowsBefore = 10100 else . end"; lo_bad acctrows legacy-account
+lo_mut sparse2 "if $SPA then .traversal.nonEmptyPages = 2 | .traversal.auditActionsDelta[\"user.erasure_reasons_viewed\"] = 2 else . end"; lo_bad sparse2 legacy-account
+lo_mut sparsefirst "if $SPA then del(.traversal.timeToFirstItemsMs) else . end"; lo_bad sparsefirst legacy-account
+lo_mut acctsrc "if $ACC then .legacy.source = \"harness\" else . end"; lo_bad acctsrc legacy-account
+lo_mut accnoinstr "if $ACC then del(.traversal.walBytes) else . end"; lo_bad accnoinstr metric-missing
+lo_mut prbnoinstr "if $PRB then del(.probe.walBytes) else . end"; lo_bad prbnoinstr metric-missing
+lo_mut decnoinstr "if $DEC then del(.probe.commitCalls) else . end"; lo_bad decnoinstr metric-missing
+lo_mut putnoinstr "if $PUT then del(.put.dbPeakKb) else . end"; lo_bad putnoinstr metric-missing
+lo_mut prbfound "if $PRB then .probe.found = false else . end"; lo_bad prbfound legacy-no-metrics
+lo_mut putnoreason "if $PUT then del(.put.countRefusal.reason) else . end"; lo_bad putnoreason legacy-no-metrics
+lo_mut putrefusal200 "if $PUT then .put.countRefusal.status = \"200\" else . end"; lo_bad putrefusal200 legacy-no-metrics
+lo_mut putunchanged "if $PUT then .put.countRefusal.unchanged = false else . end"; lo_bad putunchanged legacy-no-metrics
+lo_mut putrows "if $PUT then .put.effects.rowsBlank = 49 else . end"; lo_bad putrows legacy-no-metrics
+lo_mut putmarkers "if $PUT then .put.effects.markers.party = 8 else . end"; lo_bad putmarkers legacy-no-metrics
+lo_mut dec-items "if $DEC then .traversal.items = 1 else . end"; lo_bad dec-items discovery-count
+lo_mut dec-expect "if $DEC then .expect.items = 1 | .traversal.items = 1 else . end"; lo_bad dec-expect legacy-decided
+lo_mut dec-found "if $DEC then .probe.found = true else . end"; lo_bad dec-found legacy-decided
+lo_mut dec-keys "if $DEC then .legacy.forgedMarkers.keysMatch = false else . end"; lo_bad dec-keys legacy-decided
+lo_mut dec-cand "if $DEC then .legacy.candidatePairs = 9999 else . end"; lo_bad dec-cand legacy-decided
+lo_mut dec-seeded "if $DEC then .legacy.markersSeeded = 9999 else . end"; lo_bad dec-seeded legacy-decided
+lo_mut dec-rows "if $DEC then .traversal.tableRowsBefore = 10001 else . end"; lo_bad dec-rows legacy-decided
+lo_mut dec-prows "if $DEC then .probe.tableRowsBefore = 10001 else . end"; lo_bad dec-prows legacy-decided
+lo_mut dec-noprobe "if $DEC then del(.probe) else . end"; lo_bad dec-noprobe legacy-decided
+lo_mut dec-status "if $DEC then .probe.status = \"503\" else . end"; lo_bad dec-status legacy-decided
+lo_mut plan-nomarkers "if $PLN then .plans[\"legacy-markers\"] = 0 | .markerPlans.executions = 0 | .markerPlans.auditLogsAccess = {targetIndex:0, seqScan:0, other:0} else . end"; lo_bad plan-nomarkers legacy-plans-missing
+lo_mut plan-nofacts "if $PLN then del(.plans[\"legacy-facts\"]) else . end"; lo_bad plan-nofacts legacy-plans-missing
+lo_mut plan-exec "if $PLN then .markerPlans.executions = 3 else . end"; lo_bad plan-exec legacy-plans-missing
+lo_mut plan-access "if $PLN then .markerPlans.auditLogsAccess.other = 1 else . end"; lo_bad plan-access legacy-plans-missing
+lo_mut plan-nomarkerplans "if $PLN then del(.markerPlans) else . end"; lo_bad plan-nomarkerplans legacy-plans-missing
+lo_mut plan-caveats "if $PLN then .autoExplain.caveats = [\"a\"] else . end"; lo_bad plan-caveats legacy-plans-missing
+lo_mut plan-status "if $PLN then .request.status = \"503\" else . end"; lo_bad plan-status legacy-plans-missing
+lo_mut plan-state "if $PLN then .state.contactRequests = 1 else . end"; lo_bad plan-state legacy-plans-missing
+# A 503 at a route's deadline is the existing "status" INVALID, never a budget finding: the run is incomplete, and nothing here reclassifies it. A slow unit over 10 s is the existing budget.
+lo_mut s503 "if $D10K then .traversal.lastStatus = \"503\" else . end"; lo_bad s503 status
+[[ "$(qc1_judge "$WORK/lo.s503" 6291456 | jq -c 'select(.item == 4 and .case == "legacy-discovery-10000") | .class' | sort -u | paste -sd,)" == '"invalid"' ]]
+lo_mut slow "if $D10K then .traversal.slowestUnitMs = 10001 else . end"
+[[ "$(qc1_judge "$WORK/lo.slow" 6291456 | jq -c 'select(.failure == "unit") | .class')" == '"budget"' && "$(jq -r .complete <<<"$(lo_status "$WORK/lo.slow")")" == true ]]
+# A marker plan with a Seq Scan on audit_logs is RECORDED and judged against nothing: no new budget class (R4-C01 names the index in prose, the subsection reports it).
+lo_mut plan-seq "if $PLN then .markerPlans.auditLogsAccess = {targetIndex:0, seqScan:4, other:0} else . end"
+[[ "$(qc1_judge "$WORK/lo.plan-seq" 6291456 | jq -c 'select(.item == 11)' | wc -l)" == 0 && "$(jq -r .complete <<<"$(lo_status "$WORK/lo.plan-seq")")" == true && "$(jq '.budgetFailures | length' <<<"$(lo_status "$WORK/lo.plan-seq")")" == 0 ]]
+# The contracted rows keep the budgets they had: a body over the cap or a unit over 10 s in a legacy row is the same budget finding as before; none was added or removed for legacy rows.
+[[ "$(jq -r '.budgetFailures | length' <<<"$st")" == 0 ]]
+# Per-size gate: the invalid findings of one size, and none of another.
+[[ -z "$(qc1_size_invalid "$WORK/lo.jsonl" 10000 6291456)" ]]
+[[ "$(qc1_size_invalid "$WORK/lo.pairs" 10000 6291456 | jq -r .failure | paste -sd,)" == legacy-pairs-inexact && -z "$(qc1_size_invalid "$WORK/lo.pairs" 100000 6291456)" ]]
+# --- helpers: the pairs a discovery page lists, the plan counts of the legacy statements and how the marker lookup reached audit_logs ------------------------------------------------------
+cat >"$WORK/lo.page" <<'JSON'
+{"accounts":[{"userId":"7","name":"Deleted account","items":[{"requestId":"1"},{"requestId":"3"}]},{"userId":"8","name":"Deleted account","items":[{"requestId":"3"},{"requestId":"-5"}]}],"next":"3"}
+JSON
+[[ "$(qc1_legacy_discovery_pairs "$WORK/lo.page" | jq -sc 'map("\(.requestId),\(.userId)")')" == '["1,7","3,7","3,8","-5,8"]' ]]
+[[ "$(qc1_legacy_discovery_pairs <(echo '{"accounts":[],"next":null}') | wc -l)" == 0 ]]
+ts() { printf '2026-11-13 10:00:00.000 UTC [%s] LOG:  duration: 1.0 ms  plan:\n\tQuery Text: %s\n%s\n' "$1" "$2" "$3"; }
+{ ts 11 'SELECT id, requester_id FROM contact_requests ORDER BY id LIMIT $1' '	Limit  (cost=0.29..1.0 rows=256 width=25)'
+  ts 12 'SELECT cr.id, cr.purpose FROM contact_requests cr
+	LEFT JOIN users req ON req.id = cr.requester_id
+	LEFT JOIN users sub ON sub.id = cr.subject_user_id
+	WHERE cr.id = ANY($1::bigint[])' '	Nested Loop Left Join  (cost=0.57..1.0 rows=1 width=1)'
+  ts 13 'SELECT c.req, c.party
+	FROM unnest($1::bigint[], $2::bigint[], $3::text[], $4::text[], $5::text[]) AS c(req, party, target_type, kept, removed)
+	WHERE EXISTS (SELECT 1 FROM audit_logs a WHERE a.target_type = c.target_type)' '	Nested Loop Semi Join  (cost=0.43..1.0 rows=1 width=1)
+	  ->  Index Scan using idx_audit_logs_target on audit_logs a  (cost=0.43..8.0 rows=1 width=1)'
+  ts 14 'SELECT c.req, c.party
+	FROM unnest($1::bigint[], $2::bigint[], $3::text[], $4::text[], $5::text[]) AS c(req, party, target_type, kept, removed)
+	WHERE EXISTS (SELECT 1 FROM audit_logs a WHERE a.target_type = c.target_type)' '	Nested Loop Semi Join  (cost=0.43..1.0 rows=1 width=1)
+	  ->  Bitmap Heap Scan on audit_logs a  (cost=4.0..8.0 rows=1 width=1)
+	        ->  Bitmap Index Scan on idx_audit_logs_target  (cost=0.0..4.0 rows=1 width=0)'
+  ts 15 'SELECT c.req, c.party
+	FROM unnest($1::bigint[], $2::bigint[], $3::text[], $4::text[], $5::text[]) AS c(req, party, target_type, kept, removed)
+	WHERE EXISTS (SELECT 1 FROM audit_logs a WHERE a.target_type = c.target_type)' '	Nested Loop Semi Join  (cost=0.43..1.0 rows=1 width=1)
+	  ->  Seq Scan on audit_logs a  (cost=0.0..9000.0 rows=1 width=1)'
+  ts 16 'SELECT c.req, c.party
+	FROM unnest($1::bigint[], $2::bigint[], $3::text[], $4::text[], $5::text[]) AS c(req, party, target_type, kept, removed)' '	Function Scan on unnest c  (cost=0.0..1.0 rows=1 width=1)'
+} >"$WORK/lo.pglog"
+[[ "$(qc1_plan_counts "$WORK/lo.pglog" "${QC1_LEGACY_PLAN_KINDS[@]}")" == '{"scanner-initial":1,"scanner-continuation":0,"legacy-facts":1,"legacy-markers":4}' ]]
+[[ "$(qc1_plan_counts "$WORK/lo.pglog")" == '{"scanner-initial":1,"scanner-continuation":0,"page-items":0,"delete-set":0,"blank-batch":0}' ]]   # the live kinds are what they were
+[[ "$(qc1_marker_plan_access "$WORK/lo.pglog")" == '{"executions":4,"auditLogsAccess":{"targetIndex":2,"seqScan":1,"other":1}}' ]]
+[[ "${#QC1_PLAN_KINDS[@]}" == 5 && "${QC1_LEGACY_PLAN_KINDS[*]}" == 'scanner-initial scanner-continuation legacy-facts legacy-markers' ]]
+# --- the arguments: a legacy-only run refuses anything that would make it another measurement, before any daemon is touched, and a valid run reaches the daemon check ------------------------------
+mkdir -p "$WORK/lostub"; printf '#!/usr/bin/env bash\necho "stub docker: $*" >&2\nexit 1\n' >"$WORK/lostub/docker"; chmod +x "$WORK/lostub/docker"
+lo_run() { PATH="$WORK/lostub:$PATH" bash "$HERE/qc1-measure.sh" --dir "$WORK/lo-never" "$@"; }
+lo_refused() { local needle="$1"; shift; local rc=0; lo_run "$@" >"$WORK/lo.out" 2>&1 || rc=$?; [[ "$rc" == 1 ]] && grep -qF -- "$needle" "$WORK/lo.out" && [[ ! -e "$WORK/lo-never" ]] || { echo "legacy-only $*: rc $rc: $(cat "$WORK/lo.out")" >&2; exit 1; }; }
+lo_refused 'needs --no-browser' --legacy-only
+lo_refused 'needs --no-browser' --legacy-only --sizes 10000
+lo_refused 'refuses --layout' --legacy-only --no-browser --layout tail
+lo_refused 'refuses --layout' --legacy-only --no-browser --counts 0,10
+lo_refused 'refuses --layout' --legacy-only --no-browser --dense-counts none
+lo_refused 'refuses --charset multibyte' --legacy-only --no-browser --charset multibyte
+lo_refused 'cannot be combined' --legacy-only --no-browser --next-changed-presses 3
+lo_refused 'cannot be combined' --legacy-only --no-browser --browser-fallback-digest
+lo_refused 'cannot be combined' --legacy-only --no-browser --next-changed-runs 2 --next-changed-only
+lo_refused 'at least 10000' --legacy-only --no-browser --sizes 9999
+lo_refused 'at least 10000' --legacy-only --no-browser --sizes 10000,500
+lo_refused 'at least 10000' --legacy-only --no-browser --sizes 10000,x
+lo_refused 'cannot reach a Docker daemon' --legacy-only --no-browser --sizes 10000,100000
+lo_refused 'cannot reach a Docker daemon' --legacy-only --no-browser --sizes 1000000 --droplet 2gb
+# the matrix is untouched: without the flag an ordinary argument list reaches the same daemon check
+lo_refused 'cannot reach a Docker daemon' --no-browser --sizes 10000
+# --- the forged markers run in one place only: psql into the harness's own database container, by id, from legacy.sh -------------------------------------------------------------------------
+[[ "$(grep -rn --include='*.sh' -- '-f - <"$HERE/qc1/legacy-markers.sql"' "$HERE" "$ROOT/scripts" | grep -vc '/qc1-fixtures.sh:')" == 1 ]]
+grep -q 'docker exec -i "\$DB_CID" psql -X -U church -d fold .* -f - <"\$HERE/qc1/legacy-markers.sql"' "$HERE/qc1/legacy.sh"
+grep -q 'forge_markers' "$HERE/qc1/legacy.sh"
+if grep -n 'forge_markers\|legacy_forge_with' "$HERE/qc1-measure.sh"; then echo 'qc1: the runner calls the forged-marker file itself' >&2; exit 1; fi
+# the file refuses unless the run's own sentinel matches, and says so in its header
+grep -q "qc1_disposable" "$HERE/qc1/legacy-markers.sql"; grep -q 'READ THIS BEFORE YOU RUN IT' "$HERE/qc1/legacy-markers.sql"
+grep -q "d.token = current_setting('qc1.token')" "$HERE/qc1/legacy-markers.sql"
+# the legacy run is wired: the sentinel and the smoke before any size, in a legacy-only run only, and the matrix keeps its placeholders
+grep -q '^  legacy_guard_create$' "$HERE/qc1-measure.sh"; grep -q '^  legacy_smoke$' "$HERE/qc1-measure.sh"
+[[ "$(grep -n '^  legacy_smoke$' "$HERE/qc1-measure.sh" | cut -d: -f1)" -lt "$(grep -n 'legacy_size "\$n"' "$HERE/qc1-measure.sh" | head -n 1 | cut -d: -f1)" ]]
+grep -q 'status:"pending", item:4' "$HERE/qc1-measure.sh"
+# the legacy source files are in the hashed set, so a changed copy cannot be measured as HEAD
+printf '%s\n' "${QC1_SOURCE_FILES[@]}" | grep -qx 'deploy/digitalocean/qc1/legacy.sh'; printf '%s\n' "${QC1_SOURCE_FILES[@]}" | grep -qx 'deploy/digitalocean/qc1/legacy-markers.sql'
+# the filler change is opt-in: with no requester the rows are what they were
+grep -q '\\if :{?requester} \\else \\set requester 0 \\endif' "$HERE/qc1/filler.sql"; grep -q 'CASE WHEN :requester = 0 THEN 1000000 + (g.i % 5000) ELSE :requester END' "$HERE/qc1/filler.sql"
 
 echo 'qc1 fixtures: ok'

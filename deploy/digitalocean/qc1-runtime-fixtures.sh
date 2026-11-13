@@ -523,7 +523,7 @@ fi
 # --- the runner: browser preflight before anything is created -------------------------------------------------------------
 CLONE="$WORK/clone"; mkdir -p "$CLONE/deploy/digitalocean/qc1" "$CLONE/web/src/lib"
 cp "$HERE/qc1-measure.sh" "$HERE/isolation.sh" "$CLONE/deploy/digitalocean/"
-cp "$HERE"/qc1/app-facts.json "$HERE"/qc1/lib.sh "$HERE"/qc1/filler.sql "$HERE"/qc1/scenario.sql "$HERE"/qc1/panel-measure.mjs "$HERE"/qc1/browser.mjs "$HERE"/qc1/browser-launch.cjs "$HERE"/qc1/browser-preflight.mjs "$HERE"/qc1/response-accounting.mjs "$HERE"/qc1/set-v1.mjs "$HERE"/qc1/panel-core.mjs "$HERE"/qc1/panel-driver.mjs "$HERE"/qc1/page-observer.mjs "$HERE"/qc1/top-statements.sql "$CLONE/deploy/digitalocean/qc1/"; mkdir -p "$CLONE/web/src/lib"; cp "$ROOT/web/src/lib/reasonSetVectors.json" "$CLONE/web/src/lib/"
+cp "$HERE"/qc1/app-facts.json "$HERE"/qc1/lib.sh "$HERE"/qc1/filler.sql "$HERE"/qc1/legacy.sh "$HERE"/qc1/legacy-markers.sql "$HERE"/qc1/scenario.sql "$HERE"/qc1/panel-measure.mjs "$HERE"/qc1/browser.mjs "$HERE"/qc1/browser-launch.cjs "$HERE"/qc1/browser-preflight.mjs "$HERE"/qc1/response-accounting.mjs "$HERE"/qc1/set-v1.mjs "$HERE"/qc1/panel-core.mjs "$HERE"/qc1/panel-driver.mjs "$HERE"/qc1/page-observer.mjs "$HERE"/qc1/top-statements.sql "$CLONE/deploy/digitalocean/qc1/"; mkdir -p "$CLONE/web/src/lib"; cp "$ROOT/web/src/lib/reasonSetVectors.json" "$CLONE/web/src/lib/"
 git init -q "$CLONE"; git -C "$CLONE" config user.name fixture; git -C "$CLONE" config user.email fixture@example.invalid
 git -C "$CLONE" config commit.gpgsign false; git -C "$CLONE" config core.hooksPath /dev/null
 git -C "$CLONE" add -A; git -C "$CLONE" commit -qm clone
@@ -761,12 +761,13 @@ OUT="$FIN_DIR"; mkdir -p "$OUT"
 cp "$HERE/testdata/qc1-100k-abort-rows.jsonl" "$OUT/measurements.jsonl"
 cp "$HERE/testdata/qc1-100k-abort-harness.log" "$OUT/harness.log"
 echo '{"gate":{"ok":true}}' >"$OUT/calibration.json"
+echo '{"ok":true,"checks":["smoke"],"pairs":101}' >"$OUT/legacy-smoke.json"
 WORK="$OUT"; MEASUREMENTS="$OUT/measurements.jsonl"
 exec >>"$WORK/harness.log" 2>&1
 KEEP="${KEEP:-0}"; SAMPLERS=(); CONTAINERS=(dbcid appcid); NET_ID=netid; VOL=""; VOL_TOKEN=""; DB_CID=dbcid; AUTOEXPLAIN_DIRTY=0
 SIZES=100000; COUNTS=0,10,100,1000,10000; DENSE=100000; DENSE_LIST=(100000); ALL_DELETE_LIST=(0 10 100 1000 10000 100000); REVISION="$(printf 'a%.0s' {1..40})"; MAX_REQUEST_BYTES=6291456
 IMAGE=qc1-fold:test; IMAGE_ID=sha256:test; LEVEL=2; DROPLET=2gb; DB_MEMORY=2g; APP_MEMORY=1g; CPUSET=0; LAYOUT=spread; REASON_LEN=200; TARGET_REASON_LEN=1000
-NEXT_CHANGED_PRESSES=1; NEXT_CHANGED_RUNS=1; NEXT_CHANGED_ONLY=0; PROFILE_NEXT_CHANGED=0
+NEXT_CHANGED_PRESSES=1; NEXT_CHANGED_RUNS=1; NEXT_CHANGED_ONLY=0; PROFILE_NEXT_CHANGED=0; LEGACY_ONLY="${LEGACY_ONLY:-0}"
 SECONDS_PER_REASON=10; SITTING_MINUTES=15; PG_REPO_DIGESTS='["pg-digest"]'; APP_REPO_DIGESTS='["app-digest"]'
 APP_CONTAINERS='[{"imageId":"sha256:test","memoryLimitBytes":1024}]'; DAEMON_JSON='{"rootless":false}'; SOURCES='["source"]'; BROWSER_RUNTIME='{"ok":true}'
 sleep() { :; }
@@ -786,6 +787,7 @@ case "$MODE" in
   finfail)      note "size 100000: a step"; mkdir "$WORK/evidence-status.json"; exit 7 ;;
   idem)         note "size 100000: a step"; finalize_evidence aborted 5 ""; sha256sum "$WORK"/*.json >"$WORK/first.sha"; wc -l <"$STUB_LOG" >"$WORK/first.calls"; finalize_evidence aborted 5 ""; sha256sum "$WORK"/*.json >"$WORK/second.sha"; wc -l <"$STUB_LOG" >"$WORK/second.calls"; exit 5 ;;
   complete)     finalize_evidence complete 0; exit 0 ;;
+  legacy)       LEGACY_ONLY=1; finalize_evidence complete 0; exit 0 ;;
   early)        exit 0 ;;
 esac
 DRV
@@ -834,6 +836,13 @@ fin_run complete; [[ "$rc" == 0 ]]; jq -e 'has("aborted") | not' "$FD/evidence-s
 jq -e '.incomplete == false and .recoveryPolicy == 2 and .maxRequestBytes == 6291456 and .settings.reasonLen == 200 and .settings.targetReasonLen == 1000 and .settings.secondsPerReason == 10 and .settings.sittingMinutes == 15 and .appImageId == "sha256:test" and .limits.appMemoryLimitBytes == 1024 and .daemon.rootless == false and .sources == ["source"] and .browserRuntime.ok == true and .postgresRepoDigests == ["pg-digest"] and .appRepoDigests == ["app-digest"]' "$FD/environment.json" >/dev/null
 [[ ! -e "$FD/abort.json" ]]
 fin_run early; [[ "$rc" == 0 && ! -e "$FD/abort.json" ]]
+# (5b) A matrix run's environment record has no mode and no legacy block; a legacy-only run records both, and its evidence status is read in that mode (the run asked for nine rows a
+# size, so they are MISSING when absent, nothing is pending, and the coverage says why it is a pilot).
+fin_run complete; [[ "$rc" == 0 ]]; jq -e '(.settings | has("mode") or has("legacy")) | not' "$FD/environment.json" >/dev/null
+fin_run legacy; [[ "$rc" == 0 ]]
+jq -e '.settings.mode == "legacy-only" and .settings.legacy.sizesFloor == 10000 and .settings.legacy.seedLayout == "spread" and .settings.legacy.smoke.ok == true and .settings.legacy.smoke.pairs == 101 and (.settings.legacy.markersSha256 | test("^[0-9a-f]{64}$"))' "$FD/environment.json" >/dev/null
+[[ "$(jq -r .settings.legacy.markersSha256 "$FD/environment.json")" == "$(sha256sum <"$HERE/qc1/legacy-markers.sql" | cut -d' ' -f1)" ]]
+jq -e '([.missing[] | .item] | unique) == [4,5,11] and (.missing | length) == 9 and (.pending | length) == 0 and ([.coverage.reasons[] | test("legacy-only run: the live matrix rows were not run")] | any) and .coverage.kind == "pilot" and .releaseEvidence == false and .complete == false' "$FD/evidence-status.json" >/dev/null
 # (6) Static: cleanup finalizes after the auto_explain reset and before any removal, from the original status, and the normal end calls the same function.
 cl_body="$(sed -n '/^cleanup() {/,/^}/p' "$RUNNER")"
 l_r="$(grep -n 'autoexplain_reset;' <<<"$cl_body" | head -n 1 | cut -d: -f1)"; l_f="$(grep -n 'finalize_evidence aborted' <<<"$cl_body" | cut -d: -f1)"; l_d="$(grep -n 'docker rm -fv' <<<"$cl_body" | cut -d: -f1)"
