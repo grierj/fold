@@ -358,6 +358,10 @@ if grep -q 'qc1-measure.sh' "$WORK/stub.log"; then echo 'the measurement ran aft
 : >"$WORK/stub.log"; launch --out "$WORK/m-qc1-nb" --qc1 -- --no-browser --sizes 10000 >"$WORK/l3.out" 2>&1
 if grep -q 'browser-prepare.sh' "$WORK/stub.log"; then echo 'the browser was prepared although --no-browser was given' >&2; exit 1; fi
 grep -q 'qc1-measure.sh --dir /work/out' "$WORK/stub.log"
+# --calibrate-only measures nothing and drives no browser: it is not prepared either, and the preflight arguments reach the runner whole.
+: >"$WORK/stub.log"; launch --out "$WORK/m-qc1-cal" --qc1 -- --calibrate-only >"$WORK/l3.out" 2>&1
+if grep -q 'browser-prepare.sh' "$WORK/stub.log"; then echo 'the browser was prepared for the instrument preflight' >&2; exit 1; fi
+grep -q -- '_ bash deploy/digitalocean/qc1-measure.sh --dir /work/out --calibrate-only$' "$WORK/stub.log"
 : >"$WORK/stub.log"; launch --out "$WORK/m-drill-nb" -- --no-browser >"$WORK/l3.out" 2>&1
 grep -q 'browser-prepare.sh /work/prep$' "$WORK/stub.log"   # the drill prepares regardless; restore-drill.sh itself rejects the unknown option
 # The run's own failure comes back as the launcher's exit, in both modes.

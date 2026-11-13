@@ -579,6 +579,28 @@ argument above 128 KiB. `qc1-fixtures.sh` runs the runner's real `record()` on s
   which can be FULL). The `go` section of `qc1/app-facts.json` changes only by
   `UPDATE_QC1_FACTS=1 go test -run TestQC1AppFacts .`; its `web` section is held by
   `ReasonReviewSection.test.tsx`.
+- **Instrument preflight (`--calibrate-only`), before any hours-long run.** The calibration that
+  starts every run (gate sampler, database memory, WAL, commit statistics, the app's peak memory)
+  can fail for reasons the matrix cannot repair afterwards, so run it alone first, on the same
+  disposable daemon and head:
+  `deploy/digitalocean/restore-drill-nested.sh --out $E/preflight --qc1 -- --calibrate-only`
+  (no browser is prepared; use it directly, not through `scripts/reason-review-scale.sh`, whose
+  step record expects QC-1 evidence). It builds the stack and runs the setup, calibrates, writes
+  `preflight.json` and stops: no fixture, no operation, no evidence files, and it is not QC-1
+  evidence. Exit 0 means every instrument is proven; exit 1 prints each problem. A full run makes
+  the same calibration and stops before its first operation when it fails, so the matrix never
+  spends hours on rows the judge will call invalid.
+  What `preflight.json` proves for the app's peak memory, and what it does not, is written in it
+  (`appPeakMemory.proves` / `doesNotProve`) and comes from one probe (`qc1_hwm_reset_verify` in
+  `qc1/lib.sh`) shared by the calibration and every operation: coherent `VmRSS`/`VmHWM` readings
+  from one pass over `/proc/1/status` around a write of 5 to `clear_refs`, each with its time,
+  write status and bounded diagnostic. Equality of two marks proves nothing; only a mark that stood
+  above RSS and is lower after the write is `demonstrated`. A control process the helper starts
+  must be `demonstrated` (that is the instrument's proof), and the app's own baseline must be within
+  4096 kB of its RSS (an inherited tolerance, recorded, not derived). An app whose mark equals its
+  RSS is `baseline-clean`: its peak is right, and no reset is claimed. Anything else leaves the
+  calibration false and every peak invalid. An old record that carries only `hwmReset` is read as
+  before; a false one stays a failure of unknown cause.
 
 ### Sampling Next changed reason (#298)
 

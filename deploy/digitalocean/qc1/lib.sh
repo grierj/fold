@@ -278,7 +278,7 @@ qc1_source_hashes() { # repo-root
 # measurement to HEAD and to immutable image ids and its instruments were
 # proved before use. head is HEAD's full SHA.
 qc1_environment_problems() { # environment.json head
-  jq -r --arg head "$2" --argjson sources "$(printf '%s\n' "${QC1_SOURCE_FILES[@]}" | jq -R . | jq -sc .)" '
+  jq -r --arg head "$2" --argjson sources "$(printf '%s\n' "${QC1_SOURCE_FILES[@]}" | jq -R . | jq -sc .)" "$(qc1_calibration_defs)"'
     def hex64: test("^[0-9a-f]{64}$");
     def sha256id: test("^sha256:[0-9a-f]{64}$");
     ( if .revision != $head then "revision \(.revision) is not HEAD \($head)" else empty end ),
@@ -299,14 +299,8 @@ qc1_environment_problems() { # environment.json head
     ( if .daemon.sharedDaemon != false then "the daemon was shared with other containers" else empty end ),
     ( if .settings.workers != 0 then "measured rows need the background workers off" else empty end ),
     ( if .settings.autovacuum != "off" then "autovacuum was not turned off" else empty end ),
-    ( if .calibration.gate.ok != true then "the gate sampler did not see a known hold" else empty end ),
-    ( if .calibration.dbMemory.ok != true then "the database memory source is unreadable" else empty end ),
-    ( if .calibration.appMemory.ok != true then "the app process memory source is unreadable" else empty end ),
-    ( if .calibration.appMemory.hwmReset != true then "the app peak-memory reset failed" else empty end ),
-    ( if .calibration.wal.ok != true then "the WAL position is unreadable" else empty end ),
-    ( if .calibration.commit.ok != true then "commit statistics are unreadable" else empty end ),
-    ( if .settings.browser == true and (.browserRuntime.ok != true or ((.browserRuntime.chromium // "") == "") or ((.browserRuntime.playwright // "") == "")) then "the browser preflight is not recorded as passing" else empty end ),
-    ( if (.calibration.dbMemory.samples // 0) < 3 then "database memory sampling is too sparse to trust (fewer than 3 samples in the calibration half second)" else empty end )' "$1"
+    calibration_problems(.calibration),
+    ( if .settings.browser == true and (.browserRuntime.ok != true or ((.browserRuntime.chromium // "") == "") or ((.browserRuntime.playwright // "") == "")) then "the browser preflight is not recorded as passing" else empty end )' "$1"
 }
 
 # Judge a measurements file (one JSON object per line). Each finding is a JSON
@@ -329,7 +323,7 @@ qc1_environment_problems() { # environment.json head
 #            assessment; a browser row with a missing figure.
 # Rows with status measured or observation are judged; observations (workers
 # on) are budget-judged but never required to be attributable.
-qc1_judge_defs() { qc1_audit_identity_defs; cat <<'JQ'
+qc1_judge_defs() { qc1_audit_identity_defs; qc1_hwm_defs; cat <<'JQ'
     def inv($why; $x): {class:"invalid", failure:$why} + $x;
     def bud($why; $x): {class:"budget", failure:$why} + $x;
     def numz: if type == "number" then . else null end;
@@ -630,6 +624,9 @@ qc1_judge_rules() { cat <<'JQ'
               ["gateMaxGapMs", $o.gateMaxGapMs], ["auditRowsBefore", $o.auditRowsBefore], ["auditRowsAfter", $o.auditRowsAfter], ["auditBytesBefore", $o.auditBytesBefore], ["auditBytesAfter", $o.auditBytesAfter], ["topStatements", (if ($o.topStatements | type) == "array" then 1 else null end)], ["tableRowsBefore", $o.tableRowsBefore], ["tableRowsAfter", $o.tableRowsAfter], ["auditActionsBefore", $o.auditActionsBefore], ["auditActionsAfter", $o.auditActionsAfter], ["auditActionsDelta", $o.auditActionsDelta] ] | map(select(.[1] == null) | .[0]) ) as $missing
         | if ($missing | length) > 0 then inv("metric-missing"; {metrics:$missing}) else empty end ),
       ( ran($m)[] | select(.appHwmReset != true) | inv("peak-reset-failed"; {}) ),
+      # A row that carries its readings must agree with them: the recorded flag is the probe's verdict, never a second opinion.
+      ( ran($m)[] | select(.appResetProbe != null) | . as $o | hwm_last($o.appResetProbe) as $v
+        | if ($o.appResetProbe.rule // "") != hwm_rule or $v.accepted != $o.appHwmReset then inv("peak-reset-inconsistent"; {recorded:$o.appHwmReset, readings:$v.outcome}) else empty end ),
       ( ran($m)[] | . as $o | (($o.ms // $o.totalMs // 0) / 100 | floor) as $want
         | if ($o.gateTicks // 0) < $want then inv("sampler-starved"; {ticks:$o.gateTicks, wanted:$want}) else empty end ),
       ( ran($m)[] | . as $o | (($o.ms // $o.totalMs // 0) / 100 | floor) as $want
@@ -1498,4 +1495,193 @@ qc1_app_peak() { # baseline_kb end_kb samples_file
       if (base !~ /^[0-9]+$/ || (n == 0 && !e)) { print "null", n + 0, "false"; exit }
       print (m > base + 0 ? m - base : 0), n + 0, ((e && endv + 0 < base + 0) ? "true" : "false")
     }' "$3"
+}
+
+# --- the app's peak-memory reset: one probe, for the calibration and for every operation ---------------------------------------
+# What the figure needs. appPeakKb is the highest VmRSS/VmHWM seen in a window MINUS a baseline read just before it. Linux keeps a stored mark (mm->hiwater_rss) that only a
+# write of 5 to /proc/PID/clear_refs lowers, and reports VmHWM as max(current RSS, stored mark). So the baseline is a true "state at the start" only when the mark read
+# right after the write is within a tolerance of the RSS read in the SAME snapshot: a stale mark above RSS would make the peak read low, whatever happened to the write.
+# What it does NOT need is that a reset visibly happened: with no stored mark above RSS (HWM == RSS) a reset changes nothing, and a failed write is indistinguishable from
+# a successful one. Equality of two marks, or a mark that did not rise, therefore proves nothing about the write, and this probe never says it does.
+#
+# One attempt reads a coherent pair ("VmRSS VmHWM" from one pass over /proc/PID/status), writes 5, reads a coherent pair again, each step with its own timestamp and its own
+# outcome, and names exactly one result:
+#   demonstrated      a mark stood above RSS before the write (so it was the stored mark), it is lower after, and it is within the tolerance of RSS now: the write took effect.
+#                     Intervening growth cannot fake this: without a reset the stored mark never falls.
+#   baseline-clean    the write succeeded and the mark after it is within the tolerance of RSS, so the baseline is the current RSS; the write is NOT shown to have lowered
+#                     anything. Accepted for an operation (the peak is right); never counted as proof of a reset.
+#   unverified-growth the stored mark was lowered, but the mark read after the write is still above the tolerance over RSS (growth and shrinkage between the write and the read).
+#   stale-mark        the mark after the write is above the tolerance over RSS and was not lowered: the write had no effect, or the mark is stale.
+#   write-failed      the write returned an error (its exit status and bounded message are recorded).
+#   read-failed       a reading was missing, unreadable, malformed or not coherent (VmHWM below VmRSS in one snapshot).
+#   unverifiable      the recorded timestamps are not in order.
+# Only demonstrated and baseline-clean are accepted. An attempt that is not accepted leaves the peak invalid (appPeakKb is null, appHwmReset false); up to
+# QC1_HWM_ATTEMPTS attempts are made BEFORE the window opens and every one is recorded.
+#
+# The calibration adds a control: a process the helper itself starts, in the app's pid namespace, that builds and frees a large string so that a stored mark stands above its
+# RSS. The same probe on it must come out demonstrated: that proves the helper can write and read /proc/PID/clear_refs here and that a write lowers a mark. It does not prove
+# that the write to the app lowered the app's mark (only an app that happened to have a mark above its RSS can show that, and then the app's own probe says "demonstrated").
+# The tolerance is the 4096 kB the per-operation rule already used; it is inherited, not derived, and every reading is recorded so a different one can be applied.
+QC1_HWM_RULE='qc1-hwm-reset/v1'
+QC1_HWM_SCHEMA='qc1-app-memory/v2'
+QC1_HWM_TOLERANCE_KB=4096
+QC1_HWM_ATTEMPTS=3
+QC1_HWM_DIAG_BYTES=240
+# The hooks the I/O is reached through (the runner sets them to docker exec; the fixtures set them to scripted stubs, so no daemon is needed).
+#   QC1_HWM_READ pid   prints "RSS_KB HWM_KB" read from one pass over the status file and exits 0, or exits non-zero printing why.
+#   QC1_HWM_WRITE pid  writes 5 to clear_refs; exits non-zero printing why.
+#   QC1_HWM_NOW        prints the time in epoch milliseconds.
+#   QC1_HWM_CONTROL_START prints the pid of a control process whose stored mark stands above its RSS, or exits non-zero printing why; QC1_HWM_CONTROL_STOP pid ends it.
+QC1_HWM_READ="" QC1_HWM_WRITE="" QC1_HWM_NOW="" QC1_HWM_CONTROL_START="" QC1_HWM_CONTROL_STOP=""
+
+# The classification and every rule that reads recorded observations, as jq definitions shared by the runner (which builds the record) and the judge (which recomputes it
+# from the raw readings and refuses a record that disagrees with them).
+qc1_hwm_defs() {
+  printf 'def hwm_tol: %s;\ndef hwm_rule: "%s";\ndef hwm_schema: "%s";\n' "$QC1_HWM_TOLERANCE_KB" "$QC1_HWM_RULE" "$QC1_HWM_SCHEMA"
+  cat <<'JQ'
+    def hwm_valid($r): ($r | type) == "object" and $r.ok == true and ($r.at | type) == "number"
+      and ($r.rssKb | type) == "number" and ($r.hwmKb | type) == "number" and $r.rssKb >= 0 and $r.hwmKb >= $r.rssKb;
+    def hwm_classify($b; $w; $a):
+      if (hwm_valid($b) | not) then {outcome: "read-failed", accepted: false, reason: "the reading before the write is missing, unreadable or not a coherent VmRSS/VmHWM pair"}
+      elif (($w | type) != "object" or $w.ok != true or ($w.at | type) != "number") then {outcome: "write-failed", accepted: false, reason: "the write of 5 to clear_refs did not succeed"}
+      elif (hwm_valid($a) | not) then {outcome: "read-failed", accepted: false, reason: "the reading after the write is missing, unreadable or not a coherent VmRSS/VmHWM pair"}
+      elif ($b.at > $w.at or $w.at > $a.at) then {outcome: "unverifiable", accepted: false, reason: "the timestamps of the two readings and the write are not in order"}
+      else
+        ($b.hwmKb - $b.rssKb) as $hb | ($a.hwmKb - $a.rssKb) as $ha | ($b.hwmKb - $a.hwmKb) as $drop
+        | ( if $ha > hwm_tol then
+              ( if $hb > 0 and $drop > 0 then {outcome: "unverified-growth", accepted: false, reason: "the mark that stood above RSS before the write was lowered, but the mark read after it is still more than the tolerance above the RSS of the same snapshot: the app grew and shrank between the write and the reading, so the baseline is not the state at the write"}
+                else {outcome: "stale-mark", accepted: false, reason: "after the write the mark is more than the tolerance above the RSS of the same snapshot and was not lowered: the write had no effect, or the mark is stale"} end )
+            elif $hb > 0 and $drop > 0 then {outcome: "demonstrated", accepted: true, reason: "a mark that stood above RSS before the write is lower after it and within the tolerance of RSS: the write took effect (the kernel keeps its stored mark until it is reset)"}
+            else {outcome: "baseline-clean", accepted: true, reason: "the mark is within the tolerance of RSS after the write, so the peak is measured from the current RSS; the write is NOT shown to have lowered anything, and a mark that is equal or did not rise proves nothing about a reset"} end )
+          + {headroomBeforeKb: $hb, headroomAfterKb: $ha, droppedKb: $drop, grewKb: ([0, ($a.rssKb - $b.rssKb)] | max), spanMs: ($a.at - $b.at)}
+      end;
+    def hwm_last($p): (($p.attempts // []) | last) as $l | if ($l | type) != "object" then {outcome: "none", accepted: false} else hwm_classify($l.before; $l.write; $l.after) end;
+    # The calibration's verdict from the recorded probes: the app's own, and the control's.
+    def hwm_expected($m):
+      hwm_last($m.resetProbe) as $app
+      | (if (($m.control.probe // null) | type) == "object" then hwm_last($m.control.probe) else {outcome: "none", accepted: false} end) as $ctl
+      | if $app.accepted != true then {ok: false, proof: "the app reset is not established (\($app.outcome))"}
+        elif $app.outcome == "demonstrated" then {ok: true, proof: "demonstrated-on-app"}
+        elif $ctl.outcome == "demonstrated" then {ok: true, proof: "demonstrated-on-control"}
+        else {ok: false, proof: "the instrument is not demonstrated: no mark of the app stood above its RSS and the control did not demonstrate a lowered mark (\($ctl.outcome))"} end;
+    def hwm_probe_problems($p; $label):
+      ($p.attempts // []) as $at
+      | ( if ($p | type) != "object" or ($p.rule // "") != hwm_rule or ($p.toleranceKb // null) != hwm_tol then "\($label): no recorded observations under the rule \(hwm_rule) and its tolerance" else empty end ),
+        ( if ($at | length) == 0 then "\($label): no attempt is recorded" else empty end ),
+        ( $at | to_entries[] | . as $e | hwm_classify($e.value.before; $e.value.write; $e.value.after) as $v
+          | if $e.value.outcome != $v.outcome then "\($label): attempt \($e.key + 1) is recorded as \($e.value.outcome) but its readings say \($v.outcome)" else empty end ),
+        ( if ($at | length) > 0 then hwm_last($p) as $v | (if $p.accepted != $v.accepted then "\($label): the recorded verdict disagrees with the last attempt's readings" else empty end) else empty end ),
+        ( if ($at | length) > 1 and ($at[:-1] | map(hwm_classify(.before; .write; .after).accepted) | any) then "\($label): attempts went on after an accepted one" else empty end );
+    def hwm_problems($m):
+      ( if $m.ok != true then "the app process memory source is unreadable" else empty end ),
+      ( if ($m.schema // null) == null then
+          ( if $m.hwmReset != true then "the app peak-memory reset failed (a record that carries the flag alone)" else empty end )
+        elif $m.schema != hwm_schema then "the app peak-memory record has an unknown schema"
+        else
+          hwm_probe_problems($m.resetProbe; "the app peak-memory reset"),
+          ( if ($m.control | type) != "object" then "the app peak-memory instrument has no recorded control"
+            elif (($m.control.probe // null) | type) == "object" then hwm_probe_problems($m.control.probe; "the peak-memory control") else empty end ),
+          ( hwm_expected($m) as $e
+            | if $m.hwmReset != $e.ok then "the app peak-memory reset is recorded as \($m.hwmReset) but its observations say \($e.ok) (\($e.proof))"
+              elif $e.ok != true then "the app peak-memory reset failed: \($e.proof)" else empty end )
+        end );
+JQ
+}
+
+# The calibration of every instrument as problems, one per line (none when all hold). One rule for the runner (which stops before measuring) and the judge.
+qc1_calibration_defs() { qc1_hwm_defs; cat <<'JQ'
+    def calibration_problems($c):
+      ( if $c.gate.ok != true then "the gate sampler did not see a known hold" else empty end ),
+      ( if $c.dbMemory.ok != true then "the database memory source is unreadable" else empty end ),
+      hwm_problems($c.appMemory),
+      ( if $c.wal.ok != true then "the WAL position is unreadable" else empty end ),
+      ( if $c.commit.ok != true then "commit statistics are unreadable" else empty end ),
+      ( if ($c.dbMemory.samples // 0) < 3 then "database memory sampling is too sparse to trust (fewer than 3 samples in the calibration half second)" else empty end );
+JQ
+}
+qc1_calibration_problems() { # calibration.json
+  jq -r -f <(qc1_calibration_defs; echo 'calibration_problems(.)') "$1"
+}
+
+# A bounded, single-line, printable diagnostic from whatever a hook printed.
+qc1_hwm_diag() { printf '%s' "$1" | tr -c '[:print:]' ' ' | cut -c1-"$QC1_HWM_DIAG_BYTES"; }
+qc1_hwm_clock() { if [[ -n "$QC1_HWM_NOW" ]]; then "$QC1_HWM_NOW"; else date +%s%3N; fi; }
+# One coherent reading as JSON {at, ok, rssKb, hwmKb, error}. Fails closed: no reader, a failing reader or anything but two integers with HWM >= RSS is ok:false.
+qc1_hwm_read_json() { # pid
+  local at out rc=0 rss="" hwm="" err=""
+  at="$(qc1_hwm_clock)"
+  if [[ -z "$QC1_HWM_READ" ]]; then err="no reader is configured"; else out="$("$QC1_HWM_READ" "$1" 2>&1)" || rc=$?; fi
+  if [[ -n "$err" ]]; then :
+  elif (( rc != 0 )); then err="the read failed: $(qc1_hwm_diag "$out")"
+  elif [[ "$out" =~ ^([0-9]+)\ ([0-9]+)$ ]]; then
+    rss="${BASH_REMATCH[1]}" hwm="${BASH_REMATCH[2]}"
+    if (( 10#$hwm < 10#$rss )); then err="VmHWM ($hwm) is below VmRSS ($rss) in one snapshot: not a coherent reading"; fi
+  else err="the read is not two integers: $(qc1_hwm_diag "$out")"; fi
+  if [[ -n "$err" ]]; then jq -nc --argjson at "${at:-0}" --arg err "$err" '{at:$at, ok:false, rssKb:null, hwmKb:null, error:$err}'
+  else jq -nc --argjson at "$at" --argjson rss "$((10#$rss))" --argjson hwm "$((10#$hwm))" '{at:$at, ok:true, rssKb:$rss, hwmKb:$hwm, error:null}'; fi
+}
+# The write as JSON {at, ok, exitCode, error}. A write that is not configured is a failed write.
+qc1_hwm_write_json() { # pid
+  local at out="" rc=0
+  at="$(qc1_hwm_clock)"
+  if [[ -z "$QC1_HWM_WRITE" ]]; then rc=127 out="no writer is configured"; else out="$("$QC1_HWM_WRITE" "$1" 2>&1)" || rc=$?; fi
+  jq -nc --argjson at "${at:-0}" --argjson rc "$rc" --arg err "$(qc1_hwm_diag "$out")" '{at:$at, ok:($rc == 0), exitCode:$rc, error:(if $rc == 0 then null else $err end)}'
+}
+# One attempt, as JSON: the three steps as they happened and the classification of them.
+qc1_hwm_attempt() { # pid n
+  local b w a v
+  b="$(qc1_hwm_read_json "$1")"; w="$(qc1_hwm_write_json "$1")"; a="$(qc1_hwm_read_json "$1")"
+  v="$(jq -nc --argjson b "$b" --argjson w "$w" --argjson a "$a" -f <(qc1_hwm_defs; echo 'hwm_classify($b; $w; $a)'))" || v='{"outcome":"unverifiable","accepted":false,"reason":"the classification itself failed"}'
+  jq -nc --argjson n "$2" --argjson b "$b" --argjson w "$w" --argjson a "$a" --argjson v "$v" '{attempt:$n, before:$b, write:$w, after:$a} + $v'
+}
+# The probe: up to attempts attempts (default QC1_HWM_ATTEMPTS), stopping at the first accepted one. Always prints one JSON object; baselineKb is the mark read after the
+# accepted write (null when none was accepted).
+qc1_hwm_reset_verify() { # pid [attempts]
+  local pid="$1" max="${2:-$QC1_HWM_ATTEMPTS}" i t0 t1 list="[]" at acc=false
+  t0="$(qc1_hwm_clock)"
+  for ((i = 1; i <= max; i++)); do
+    at="$(qc1_hwm_attempt "$pid" "$i")"
+    list="$(jq -c --argjson x "$at" '. + [$x]' <<<"$list")"
+    if [[ "$(jq -r '.accepted' <<<"$at")" == true ]]; then acc=true; break; fi
+  done
+  t1="$(qc1_hwm_clock)"
+  jq -nc --arg rule "$QC1_HWM_RULE" --argjson tol "$QC1_HWM_TOLERANCE_KB" --argjson pid "$pid" --argjson t0 "${t0:-0}" --argjson t1 "${t1:-0}" --argjson acc "$acc" --argjson list "$list" '
+    ($list | last) as $l
+    | {rule:$rule, toleranceKb:$tol, pid:$pid, startedAt:$t0, finishedAt:$t1, accepted:$acc, proof:($l.outcome // "none"), attemptsUsed:($list | length),
+       baselineKb:(if $acc then $l.after.hwmKb else null end), attempts:$list}'
+}
+# The control: a fresh process per try (a reset spends the headroom, so a second probe of the same process cannot demonstrate), at most two. Prints
+# {started, pid, demonstrated, stopped, error, probe}; the control is stopped whatever happened.
+qc1_hwm_control() {
+  local try pid out rc probe="null" started=false demo=false stopped=null err="" cpid="null"
+  for try in 1 2; do
+    rc=0 out=""
+    if [[ -z "$QC1_HWM_CONTROL_START" ]]; then rc=127 out="no control is configured"; else out="$("$QC1_HWM_CONTROL_START" 2>&1)" || rc=$?; fi
+    if (( rc != 0 )) || [[ ! "$out" =~ ^[0-9]+$ ]] || (( 10#$out < 2 )); then err="the control could not be started: $(qc1_hwm_diag "$out")"; continue; fi
+    pid=$((10#$out)); cpid="$pid" started=true err=""
+    probe="$(qc1_hwm_reset_verify "$pid" 1)"
+    if [[ -n "$QC1_HWM_CONTROL_STOP" ]] && "$QC1_HWM_CONTROL_STOP" "$pid" >/dev/null 2>&1; then stopped=true; else stopped=false; fi
+    [[ "$(jq -r '.proof' <<<"$probe")" != demonstrated ]] || { demo=true; break; }
+  done
+  jq -nc --argjson started "$started" --argjson pid "$cpid" --argjson demo "$demo" --argjson stopped "$stopped" --arg err "$err" --argjson probe "$probe" \
+    '{started:$started, pid:$pid, demonstrated:$demo, stopped:$stopped, error:(if $err == "" then null else $err end), probe:$probe,
+      what:"a process the helper started in the app'"'"'s pid namespace whose stored mark stood above its RSS; the same probe on it must come out demonstrated"}'
+}
+# calibration.appMemory: the verdict is computed from the recorded probes by the same definitions the judge recomputes it with.
+qc1_hwm_calibration_json() { # app-probe-json control-json
+  jq -nc --argjson app "$1" --argjson ctl "$2" --arg schema "$QC1_HWM_SCHEMA" -f <(qc1_hwm_defs; cat <<'JQ'
+    {resetProbe:$app, control:$ctl} as $m | hwm_expected($m) as $e
+    | {schema:$schema, ok:([$app.attempts[]? | (.before.ok == true or .after.ok == true)] | any), hwmReset:$e.ok, proof:$e.proof,
+       appLoweringObserved:(hwm_last($app).outcome == "demonstrated"), controlDemonstrated:(hwm_last($ctl.probe // {}).outcome == "demonstrated"),
+       source:"/proc/1/status VmRSS and VmHWM of the app, one pass over the file, read from a helper sharing its pid namespace",
+       proves:(if $e.ok != true then [] else
+         ( ["the helper can write /proc/PID/clear_refs and read /proc/PID/status in this environment, and a write lowers a stored mark (control)"]
+         + (if hwm_last($app).outcome == "demonstrated" then ["the write to the app lowered a mark that stood above its RSS"] else [] end)
+         + ["the app mark read after the write was within \(hwm_tol) kB of its RSS in the same snapshot, so the baseline is the state at the start"] ) end),
+       doesNotProve:( ["that a write to the app lowered its mark, unless appLoweringObserved is true (an app whose mark equals its RSS shows nothing either way)",
+         "that no growth happened between the write and the reading, only that the mark then stood within the tolerance of RSS",
+         "anything about the app's memory ceiling, a leak, an OOM or a real droplet"] ),
+       resetProbe:$app, control:$ctl}
+JQ
+  )
 }

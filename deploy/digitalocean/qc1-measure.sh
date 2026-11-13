@@ -27,6 +27,7 @@
 #        [--layout spread|tail|head] [--charset ascii|multibyte] [--reason-len N] [--target-reason-len N] [--droplet 2gb|1gb]
 #        [--dense-counts 100000|none] [--seconds-per-reason N] [--sitting-minutes N] [--shared-daemon] [--no-browser] [--browser-fallback-digest] [--keep]
 #        [--next-changed-only] [--next-changed-presses N] [--next-changed-runs N] [--profile-next-changed]
+#   deploy/digitalocean/qc1-measure.sh --dir NEW_SCRATCH_PATH --calibrate-only [--image IMG] [--droplet 2gb|1gb] [--shared-daemon] [--keep]
 #
 # --charset: the text of the reasons, background and target alike (default ascii). multibyte is a 21-rune unit of 1- to 4-byte UTF-8 runes (2-byte accented letters and Omega,
 # 3-byte euro sign, CJK and a zero-width joiner, 4-byte emoji, combining marks) repeated and cut to the requested RUNE length with the row's ASCII ordinal at the end, 61 bytes per
@@ -36,6 +37,11 @@
 # blank (SHA-256 of the UTF-8 bytes before and after), and, for the browser, whether the digest and choices it sent equal an independent builder's over the items the server issued and
 # whether the reason text on screen equals the database's. A run is a CELL of the scale matrix (its layout and charset, in environment.json settings and in the evidence coverage);
 # scripts/reason-review-matrix.sh joins the cells of one revision.
+#
+# --calibrate-only: the instrument preflight. It makes the same checks, builds the same stack, runs the same setup and the same calibration, writes preflight.json and stops: no
+# fixtures, no operation, no browser, no evidence files (it is not QC-1 evidence and not a measurement). It exits 0 only when every instrument is proven, which for the app's peak
+# memory means the control showed the reset probe lowering a stored mark and the app's own baseline was clean (qc1/lib.sh, "the app's peak-memory reset"); otherwise it exits 1
+# naming each problem. preflight.json says exactly what was proven and what was not. A full run makes the same calibration and stops before the first operation when it fails.
 #
 # --dense-counts: reasons in ONE account at the tables that can hold them, additive to --counts (the scaling design's R5: 100,000 at the 100k and 1M
 # tables, judged against the same budgets). "none" leaves them out (a pilot); a run without them is complete only for the sizes it names.
@@ -70,7 +76,7 @@ source "$HERE/isolation.sh"
 
 WORK="" IMAGE="" SIZES="$QC1_SIZES_DEFAULT" COUNTS="$QC1_COUNTS_DEFAULT" LAYOUT=spread CHARSET=ascii REASON_LEN=200 TARGET_REASON_LEN=1000 DROPLET=2gb KEEP=0
 SECONDS_PER_REASON=10 SITTING_MINUTES=15 SHARED=0 BROWSER=1 DENSE="$QC1_DENSE_COUNTS_DEFAULT" BROWSER_NOSUBTLE=0
-NEXT_CHANGED_PRESSES=1 NEXT_CHANGED_RUNS=1 NEXT_CHANGED_ONLY=0 PROFILE_NEXT_CHANGED=0
+NEXT_CHANGED_PRESSES=1 NEXT_CHANGED_RUNS=1 NEXT_CHANGED_ONLY=0 PROFILE_NEXT_CHANGED=0 PREFLIGHT_ONLY=0
 while (( $# )); do
   case "$1" in
     --dir) WORK="${2:?new scratch path required}"; shift 2 ;;
@@ -92,6 +98,7 @@ while (( $# )); do
     --next-changed-runs) NEXT_CHANGED_RUNS="${2:?whole number of runs required}"; shift 2 ;;
     --next-changed-only) NEXT_CHANGED_ONLY=1; shift ;;
     --profile-next-changed) PROFILE_NEXT_CHANGED=1; shift ;;
+    --calibrate-only) PREFLIGHT_ONLY=1; shift ;;
     --keep) KEEP=1; shift ;;
     --help) sed -n '2,/^set -Eeuo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option $1" >&2; exit 1 ;;
@@ -109,6 +116,9 @@ if [[ ! "$TARGET_REASON_LEN" =~ ^[0-9]+$ ]] || (( TARGET_REASON_LEN < 1 || TARGE
 [[ "$NEXT_CHANGED_PRESSES" =~ ^[1-9][0-9]*$ && "$NEXT_CHANGED_RUNS" =~ ^[1-9][0-9]*$ ]] || { echo 'qc1: --next-changed-presses and --next-changed-runs are whole numbers above 0' >&2; exit 1; }
 if (( NEXT_CHANGED_RUNS > 1 && ! NEXT_CHANGED_ONLY )); then echo 'qc1: --next-changed-runs above 1 needs --next-changed-only (the full matrix runs the panel case once)' >&2; exit 1; fi
 if (( PROFILE_NEXT_CHANGED && NEXT_CHANGED_PRESSES < 2 )); then echo 'qc1: --profile-next-changed profiles the repeated presses: pass --next-changed-presses above 1' >&2; exit 1; fi
+if (( PREFLIGHT_ONLY && (NEXT_CHANGED_ONLY || PROFILE_NEXT_CHANGED) )); then echo 'qc1: --calibrate-only checks the instruments and measures nothing; it cannot be combined with the next-changed options' >&2; exit 1; fi
+# The instrument preflight needs no browser and none of the matrix: the same stack, the same setup and the same calibration, and then it stops.
+(( ! PREFLIGHT_ONLY )) || BROWSER=0
 if (( NEXT_CHANGED_ONLY )) && { (( ! BROWSER )) || [[ "$DENSE" == none ]]; }; then echo 'qc1: --next-changed-only measures the rendered panel at the dense counts: it needs the browser (no --no-browser) and --dense-counts' >&2; exit 1; fi
 case "$DROPLET" in
   2gb) DB_MEMORY=1200m; APP_MEMORY=600m ;;
@@ -269,7 +279,7 @@ jq -n --argjson database "$database" --argjson incomplete "$incomplete" --arg ir
       walBytes:"cluster-wide pg_current_wal_lsn difference around the operation; walControlBytes is the same for one request that changes nothing",
       gateSpanMs:"the span from the first to the last sample that saw the exclusive contact gate granted, not a hold time: the gate may have been released and retaken between samples, and a hold shorter than the gap between samples can be missed. The sampler cadence is measured per operation (gateMaxGapMs, gateMeanGapMs, gateHoles); no fixed bound is claimed",
       commit:"pg_stat_statements COMMIT entries, cluster-wide: commitMsMax is the slowest COMMIT in the window, commitMsTotal their sum, commitCalls their count",
-      appPeakKb:"VmHWM of the app process minus the value right after a clear_refs reset made for this operation; appHwmReset says the reset was verified",
+      appPeakKb:"the highest VmRSS/VmHWM of the app process in the window minus the mark read right after a clear_refs write made for this operation; appHwmReset says that BASELINE was established (the write succeeded and the mark read after it was within appResetProbe.toleranceKb of the RSS of the same snapshot); it does not say the write lowered a mark, which only an appResetProbe outcome of demonstrated says; appResetProbe holds every reading, timestamp, write outcome and diagnostic",
       dbPeakKb:"peak of the database container cgroup memory.current sampled in a docker exec loop (dbMemSamples samples), minus its first sample; page cache included",
       totalMs:"wall clock of the harness curl loop around a whole traversal (a shell harness, not a rendered panel); requestMs the page requests alone; clientMs the rest. The rendered panel is item 10",
       assumptions:"secondsPerReason and sittingMinutes are human assumptions, kept apart from measurements"},
@@ -290,6 +300,29 @@ write_abort_record() { # exit-code signal
       failingCommand:(if $cmd == "" then null else $cmd end), failingLine:($line | tonumber? // null), failingFunction:(if $fn == "" then null else $fn end), calledFrom:(if $ctext == "" then null else {line:($cline | tonumber? // null), text:$ctext} end), rowsMeasured:$rows, lastRow:$last, measurementsSha256:$sha, harnessLogTail:$tail,
       note:"this run did not finish: evidence-status.json is forced to complete:false and releaseEvidence:false; the rows in measurements.jsonl are as they were measured, judged as a finished run is judged; nothing was continued, repaired or re-measured; failingCommand is the last command that failed before the exit, harnessLogTail the last lines of harness.log as the log had them"}' \
     >"$WORK/abort.json.tmp" && mv "$WORK/abort.json.tmp" "$WORK/abort.json"
+}
+
+# --calibrate-only's record: what ran, on what, and exactly what was and was not proven. It is not QC-1 evidence (evidence-status.json is never written in this mode), it names the
+# revision, image and sources it ran on so it is attributable, and it carries the whole calibration (every reading) so a reviewer can apply a different rule to it.
+write_preflight() { # problems (newline separated, may be empty)
+  local problems="$1" ok=false
+  [[ -n "$problems" ]] || ok=true
+  jq -n --argjson ok "$ok" --arg problems "$problems" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg revision "$REVISION" --arg image "$IMAGE" --arg imageId "$IMAGE_ID" \
+    --argjson sources "$SOURCES" --argjson daemon "$DAEMON_JSON" --arg droplet "$DROPLET" --arg dbMemory "$DB_MEMORY" --arg appMemory "$APP_MEMORY" --arg cpuset "${CPUSET:-}" \
+    --slurpfile cal "$WORK/calibration.json" '
+    $cal[0] as $c
+    | {schema:"fold/qc1-instrument-preflight/v1", writtenAt:$at, ok:$ok,
+       kind:"instrument preflight (qc1-measure.sh --calibrate-only): NOT QC-1 evidence and not a measurement; nothing was loaded and no operation ran",
+       revision:$revision, image:$image, imageId:$imageId, sources:$sources, daemon:$daemon, limits:{droplet:$droplet, dbMemory:$dbMemory, appMemory:$appMemory, cpuset:$cpuset},
+       problems:($problems | split("\n") | map(select(length > 0))),
+       instruments:{gate:$c.gate.ok, dbMemory:$c.dbMemory.ok, appMemoryReadable:$c.appMemory.ok, appPeakBaseline:$c.appMemory.hwmReset, wal:$c.wal.ok, commit:$c.commit.ok},
+       appPeakMemory:{proof:$c.appMemory.proof, appLoweringObserved:$c.appMemory.appLoweringObserved, controlDemonstrated:$c.appMemory.controlDemonstrated,
+                      proves:$c.appMemory.proves, doesNotProve:$c.appMemory.doesNotProve},
+       notChecked:["the browser runtime (--calibrate-only skips it; restore-drill-nested.sh --qc1 without --no-browser, or qc1/browser-preflight.mjs, checks it)",
+                   "that an instrument keeps working for the hours of a run: every operation records and verifies its own baseline, and a failure there stays a finding of that row",
+                   "anything about the application: no fixture, plan, budget, scheduler window or timing was exercised",
+                   "a real droplet: this is whatever daemon DOCKER_HOST names"],
+       calibration:$c}' >"$WORK/preflight.json.tmp" && mv "$WORK/preflight.json.tmp" "$WORK/preflight.json"
 }
 
 finalize_evidence() { # complete|aborted exit-code [signal]
@@ -337,7 +370,8 @@ cleanup() {
   fi
   # A run that stops before it finalized still leaves its evidence: the rows measured, their budget findings, what is missing, how it ended. Before any container is
   # removed (the environment record reads the database and the daemon), after the auto_explain reset, and never changing the exit status.
-  if (( FINALIZED )); then fin=finalized
+  if (( PREFLIGHT_ONLY )); then fin=none-preflight
+  elif (( FINALIZED )); then fin=finalized
   elif (( orig != 0 )) && [[ -n "${MEASUREMENTS:-}" ]]; then
     case "$orig" in 129) sig=HUP ;; 130) sig=INT ;; 143) sig=TERM ;; esac
     if finalize_evidence aborted "$orig" "$sig"; then fin=aborted; else fin=aborted-incomplete; echo "qc1: WARNING: the evidence of this aborted run could not be fully written; see $WORK" >&2; fi
@@ -496,7 +530,7 @@ new_user() {
 
 # --- instruments: all through the daemon, none through host paths -------------------------------------
 # App process memory: the helper shares the app's pid namespace, so the app is
-# its pid 1. Peak = VmHWM since a clear_refs reset, minus the RSS before.
+# its pid 1. Peak = the highest VmRSS/VmHWM in the window minus the mark read right after a clear_refs write, taken only when that baseline is established (qc1_hwm_reset_verify).
 # One read of the helper can fail (an exec under load); three tries, the first success wins.
 app_status_kb() {
   local i v
@@ -506,7 +540,50 @@ app_status_kb() {
   done
   return 1
 }
-app_reset_hwm() { docker exec "$SIDE_CID" sh -c 'echo 5 > /proc/1/clear_refs' >/dev/null 2>&1; }
+# The reset and its proof (qc1/lib.sh, qc1_hwm_reset_verify) reach the app through these hooks. Every exec is bounded (a hung daemon ends at 10 s), and what a failure printed is the
+# diagnostic the record keeps.
+# One coherent reading: "VmRSS VmHWM" from ONE pass over /proc/PID/status in ONE exec (two execs would be two moments). Three tries, the first success wins; the last failure is the message.
+# shellcheck disable=SC2329 # called through QC1_HWM_READ.
+app_mem_read() { # pid
+  local i out rc last=""
+  for i in 1 2 3; do
+    rc=0
+    # shellcheck disable=SC2016 # the awk program is literal.
+    out="$(timeout 10 docker exec "$SIDE_CID" awk '$1 == "VmRSS:" { r = $2 } $1 == "VmHWM:" { h = $2 } END { if (r != "" && h != "") print r, h; else exit 3 }' "/proc/$1/status" 2>&1)" || rc=$?
+    if (( rc == 0 )); then printf '%s\n' "$out"; return 0; fi
+    last="try $i exit $rc: $out"
+    sleep 0.05
+  done
+  printf '%s\n' "$last"
+  return 1
+}
+# shellcheck disable=SC2329,SC2016 # called through QC1_HWM_WRITE; the sh program is literal.
+app_mem_reset() { timeout 10 docker exec "$SIDE_CID" sh -c 'echo 5 > "/proc/$1/clear_refs"' _ "$1" 2>&1; }
+# The control: an awk the helper starts in the app's pid namespace, which builds an 8 MiB string and drops it, so its stored mark stands well above its RSS, writes its own pid to a
+# ready file and waits for a stop file. Prints the pid, or why not. It is the only thing this harness ever starts or ends inside the app's namespace besides the app's own reset.
+# shellcheck disable=SC2329 # called through QC1_HWM_CONTROL_START.
+app_ctl_start() {
+  local i out
+  timeout 10 docker exec "$SIDE_CID" sh -c 'rm -f /tmp/qc1-hwm-ctl.stop /tmp/qc1-hwm-ctl.ready' 2>&1 || { echo 'the control files could not be cleared'; return 1; }
+  timeout 10 docker exec -d "$SIDE_CID" awk 'BEGIN { s = "x"; while (length(s) < 8388608) s = s s; s = ""; getline l < "/proc/self/stat"; split(l, f, " "); print f[1] > "/tmp/qc1-hwm-ctl.ready"; close("/tmp/qc1-hwm-ctl.ready"); while ((getline x < "/tmp/qc1-hwm-ctl.stop") < 0) system("sleep 0.2") }' 2>&1 \
+    || { echo 'the control could not be launched'; return 1; }
+  for ((i = 0; i < 100; i++)); do
+    out="$(timeout 10 docker exec "$SIDE_CID" cat /tmp/qc1-hwm-ctl.ready 2>/dev/null || true)"
+    if [[ "$out" =~ ^[0-9]+$ ]]; then printf '%s\n' "$out"; return 0; fi
+    sleep 0.1
+  done
+  echo 'the control was not ready within 10 s'
+  return 1
+}
+# Ends the control: the stop file first, and a kill only of a process that is not pid 1 and whose command line is awk (never the app).
+# shellcheck disable=SC2329 # called through QC1_HWM_CONTROL_STOP.
+app_ctl_stop() { # pid
+  [[ "$1" =~ ^[0-9]+$ ]] && (( $1 > 1 )) || return 1
+  # shellcheck disable=SC2016 # the sh program is literal; $1 is its own argument.
+  timeout 20 docker exec "$SIDE_CID" sh -c 'touch /tmp/qc1-hwm-ctl.stop; for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do [ -d "/proc/$1" ] || exit 0; sleep 0.1; done
+    if tr "\0" " " <"/proc/$1/cmdline" | grep -q "^awk "; then kill -9 "$1"; fi; sleep 0.2; [ ! -d "/proc/$1" ]' _ "$1"
+}
+QC1_HWM_READ=app_mem_read QC1_HWM_WRITE=app_mem_reset QC1_HWM_CONTROL_START=app_ctl_start QC1_HWM_CONTROL_STOP=app_ctl_stop
 # Database memory: the container's own cgroup, read inside it (cgroup v2, then v1).
 db_mem_file() {
   local f
@@ -581,10 +658,9 @@ quiesce() {
 # edges and, afterwards, by checking the window against the scheduler model and
 # the jobs table. A window that still overlaps is recorded as such and judged
 # invalid. The sampler's real gaps are measured and recorded; no fixed bound is
-# claimed. The app's peak is reset for every operation and the reset is
-# verified.
+# claimed. The app's peak baseline is established for every operation by the shared reset probe, and an operation whose baseline is not established reports no peak.
 instrumented() {
-  local lsn0 lsn1 rss0 hwm_reset hwm_end dbmax dbfirst wait need="${QC1_NEED_MS:-60000}"
+  local lsn0 lsn1 hwm_reset hwm_end dbmax dbfirst wait need="${QC1_NEED_MS:-60000}"
   wait="$(qc1_scheduler_wait "$(ms)" "$need" "$APP_STARTED_MS")"
   if (( wait > 0 )); then
     note "waiting $((wait / 1000)) s so the scheduler's start-up or hourly edge stays out of the window"
@@ -599,12 +675,11 @@ instrumented() {
   psql_db -c 'SELECT pg_stat_statements_reset()' >/dev/null
   psql_db -c 'CHECKPOINT' >/dev/null
   lsn0="$(psql_db -c 'SELECT pg_current_wal_lsn()')"
-  rss0="$(app_status_kb VmRSS || true)"
-  APP_HWM_RESET=false hwm_reset=""
-  if app_reset_hwm; then
-    hwm_reset="$(app_status_kb VmHWM || true)"
-    if [[ "$rss0" =~ ^[0-9]+$ && "$hwm_reset" =~ ^[0-9]+$ ]] && (( hwm_reset <= rss0 + 4096 )); then APP_HWM_RESET=true; fi
-  fi
+  # The baseline: the one probe the calibration also uses writes 5 to clear_refs and reads coherent readings around the write, each recorded (appResetProbe). It is accepted when the mark read
+  # after the write is within the tolerance of the RSS of the same snapshot; "equal" or "not higher" is never taken as proof of a reset. Up to three attempts, all before the window opens.
+  APP_RESET_PROBE="$(qc1_hwm_reset_verify 1)"
+  APP_HWM_RESET="$(jq -r '.accepted == true' <<<"$APP_RESET_PROBE" 2>/dev/null || true)"; [[ "$APP_HWM_RESET" == true ]] || APP_HWM_RESET=false
+  hwm_reset="$(jq -r '.baselineKb // empty' <<<"$APP_RESET_PROBE" 2>/dev/null || true)"
   : >"$WORK/gate.samples"; : >"$WORK/mem.db"; : >"$WORK/mem.app"
   db_mem_start "$WORK/mem.db"
   app_mem_start "$WORK/mem.app"
@@ -643,12 +718,12 @@ table_rows() { local c; c="$(psql_db -c 'SELECT count(*) FROM contact_requests' 
 top_statements() { local t; t="$(docker exec -i "$DB_CID" psql -X -U church -d "${QC1_DB:-fold}" -At -v ON_ERROR_STOP=1 -f - <"$HERE/qc1/top-statements.sql" 2>/dev/null)" && [[ "$t" == \[* ]] && printf "%s" "$t" || printf null; }
 audit_actions() { psql_db -c "SELECT coalesce(jsonb_object_agg(action, c), '{}'::jsonb)::text FROM (SELECT action, count(*) AS c FROM audit_logs GROUP BY action) s"; }
 instr_json() {
-  jq -nc --argjson wal "$WAL_BYTES" --argjson ctl "${CONTROL_WAL:-null}" --argjson app "$APP_PEAK_KB" --argjson reset "$APP_HWM_RESET" --argjson appSamples "${APP_MEM_SAMPLES:-0}" --argjson appBelow "${APP_BELOW_BASELINE:-false}" --argjson db "$DB_PEAK_KB" --argjson dbs "${DB_MEM_SAMPLES:-0}" \
+  jq -nc --argjson wal "$WAL_BYTES" --argjson ctl "${CONTROL_WAL:-null}" --argjson app "$APP_PEAK_KB" --argjson reset "$APP_HWM_RESET" --argjson rprobe "${APP_RESET_PROBE:-null}" --argjson appSamples "${APP_MEM_SAMPLES:-0}" --argjson appBelow "${APP_BELOW_BASELINE:-false}" --argjson db "$DB_PEAK_KB" --argjson dbs "${DB_MEM_SAMPLES:-0}" \
     --argjson span "$GATE_SPAN_MS" --argjson grants "$GATE_GRANTS" --argjson ticks "$GATE_TICKS" --argjson holders "$GATE_HOLDERS" --argjson maxgap "$GATE_MAXGAP" --argjson meangap "$GATE_MEANGAP" --argjson holes "$GATE_HOLES" \
     --argjson av "$GATE_AV" --argjson mc "$GATE_MC" --argjson cc "$COMMIT_CALLS" --argjson cmax "$COMMIT_MAX" --argjson ctot "$COMMIT_TOTAL" \
     --argjson sched "$SCHEDULER_OVERLAP" --argjson srows "$SCHEDULER_ROWS" \
     --argjson top "${TOP_STATEMENTS:-null}" --argjson tr0 "${TABLE_ROWS0:-null}" --argjson tr1 "${TABLE_ROWS1:-null}" --argjson aa0 "${AUDIT_ACTIONS0:-null}" --argjson aa1 "${AUDIT_ACTIONS1:-null}" --argjson ar0 "${AUDIT_ROWS0:-null}" --argjson ar1 "${AUDIT_ROWS1:-null}" --argjson ab0 "${AUDIT_BYTES0:-null}" --argjson ab1 "${AUDIT_BYTES1:-null}" \
-    '{walBytes:$wal, walControlBytes:$ctl, appPeakKb:$app, appHwmReset:$reset, appMemSamples:$appSamples, appHwmBelowBaseline:$appBelow, dbPeakKb:$db, dbMemSamples:$dbs,
+    '{walBytes:$wal, walControlBytes:$ctl, appPeakKb:$app, appHwmReset:$reset, appMemSamples:$appSamples, appHwmBelowBaseline:$appBelow, appResetProbe:$rprobe, dbPeakKb:$db, dbMemSamples:$dbs,
       gateSpanMs:$span, gateGrantTicks:$grants, gateTicks:$ticks, gateHolders:$holders, gateMaxGapMs:$maxgap, gateMeanGapMs:$meangap, gateHoles:$holes,
       autovacuumWorkers:$av, maxActiveClients:$mc, commitCalls:$cc, commitMsMax:$cmax, commitMsTotal:$ctot,
       schedulerOverlap:$sched, schedulerRows:$srows,
@@ -662,7 +737,7 @@ instr_json() {
 # result is part of the evidence (environment.json), and a failed instrument
 # makes the run incomplete instead of leaving nulls to be noticed later.
 calibrate() {
-  local t0 t1 hold samples holders ticks maxgap meangap holes memsamples=0 gate_ok=false mem_ok=false hwm_ok=false wal_ok=false commit_ok=false lsn rss hwm0 hwm1 reset=false calls cur
+  local t0 t1 hold samples holders ticks maxgap meangap holes memsamples=0 gate_ok=false mem_ok=false wal_ok=false commit_ok=false lsn calls cur ctl app appmem
   : >"$WORK/cal.gate"
   gate_sampler_start "$WORK/cal.gate"
   t0="$(ms)"
@@ -680,12 +755,11 @@ calibrate() {
     : >"$WORK/cal.mem"; db_mem_start "$WORK/cal.mem"; sleep 0.5; db_mem_stop
     memsamples="$(grep -c '^[0-9][0-9]*$' "$WORK/cal.mem" || true)"
   fi
-  rss="$(app_status_kb VmRSS || true)"
-  hwm0="$(app_status_kb VmHWM || true)"
-  if [[ "$rss" =~ ^[0-9]+$ && "$hwm0" =~ ^[0-9]+$ ]]; then
-    hwm_ok=true
-    if app_reset_hwm; then hwm1="$(app_status_kb VmHWM || true)"; [[ "$hwm1" =~ ^[0-9]+$ ]] && (( hwm1 <= hwm0 )) && reset=true; fi
-  fi
+  # The app's peak-memory baseline. The control (a process the helper starts, whose stored mark stands above its RSS) must show the probe lowering a mark; the app's own probe then must
+  # find its baseline clean. Both are recorded with every reading, timestamp, write outcome and diagnostic (qc1/lib.sh, qc1_hwm_calibration_json).
+  ctl="$(qc1_hwm_control)"
+  app="$(qc1_hwm_reset_verify 1)"
+  appmem="$(qc1_hwm_calibration_json "$app" "$ctl")" || appmem='{"schema":"qc1-app-memory/v2","ok":false,"hwmReset":false,"proof":"the calibration record could not be built"}'
   lsn="$(psql_db -c 'SELECT pg_current_wal_lsn()')"
   [[ "$lsn" =~ ^[0-9A-F]+/[0-9A-F]+$ ]] && wal_ok=true
   psql_db -c 'SELECT pg_stat_statements_reset()' >/dev/null
@@ -693,10 +767,10 @@ calibrate() {
   calls="$(psql_db -c "SELECT coalesce(sum(calls), 0) FROM pg_stat_statements WHERE query ~* '^commit'")"
   [[ "$calls" =~ ^[0-9]+$ ]] && (( calls >= 1 )) && commit_ok=true
   jq -nc --argjson gate "$gate_ok" --argjson hold "${hold:-0}" --argjson holders "${holders:-0}" --argjson grants "${samples:-0}" --argjson ticks "${ticks:-0}" --argjson maxgap "${maxgap:-0}" --argjson meangap "${meangap:-0}" --argjson holes "${holes:-0}" --argjson memsamples "$memsamples" \
-    --argjson mem "$mem_ok" --arg memFile "${DB_MEM_FILE:-}" --argjson hwm "$hwm_ok" --argjson reset "$reset" --argjson wal "$wal_ok" --argjson commit "$commit_ok" \
+    --argjson mem "$mem_ok" --arg memFile "${DB_MEM_FILE:-}" --argjson appmem "$appmem" --argjson wal "$wal_ok" --argjson commit "$commit_ok" \
     '{gate:{ok:$gate, spanMs:$hold, holders:$holders, grants:$grants, ticks:$ticks, maxGapMs:$maxgap, meanGapMs:$meangap, holes:$holes, expected:"one backend holding the gate continuously for 400 ms"},
       dbMemory:{ok:$mem, samples:$memsamples, source:("container cgroup file " + $memFile + ", sampled through docker exec; samples is the count in half a second")},
-      appMemory:{ok:$hwm, hwmReset:$reset, source:"/proc/1/status VmHWM of the app, read from a helper sharing its pid namespace"},
+      appMemory:$appmem,
       wal:{ok:$wal, source:"pg_current_wal_lsn difference (cluster-wide)"},
       commit:{ok:$commit, source:"pg_stat_statements COMMIT entries (cluster-wide)"}}' >"$WORK/calibration.json"
 }
@@ -795,6 +869,23 @@ note "calibrating the instruments"
 calibrate
 jq -c . "$WORK/calibration.json"
 FIRST_APP_CID="$APP_CID"
+# A calibration that does not hold makes every row it touches invalid, and the matrix takes hours: stop here, before the first operation, and say exactly what is not proven. The
+# record is already in calibration.json (and, for an aborted run, environment.json). The judge applies the same rule (qc1_calibration_problems) to the environment record.
+CAL_PROBLEMS="$(qc1_calibration_problems "$WORK/calibration.json" 2>/dev/null)" || CAL_PROBLEMS='the calibration record could not be read'
+[[ -n "$CAL_PROBLEMS" || -s "$WORK/calibration.json" ]] || CAL_PROBLEMS='the calibration record is empty'
+if (( PREFLIGHT_ONLY )); then
+  write_preflight "$CAL_PROBLEMS" || { echo 'qc1: preflight.json could not be written' >&2; exit 1; }
+  jq '{ok, problems, instruments, appPeakMemory}' "$WORK/preflight.json"
+fi
+if [[ -n "$CAL_PROBLEMS" ]]; then
+  echo 'qc1: an instrument is not proven, so nothing was measured:' >&2
+  printf '  - %s\n' "${CAL_PROBLEMS//$'\n'/$'\n  - '}" >&2
+  exit 1
+fi
+if (( PREFLIGHT_ONLY )); then
+  note "instrument preflight passed (preflight.json): this is not evidence and nothing was measured"
+  exit 0
+fi
 
 psql_stdin() { docker exec -i "$DB_CID" psql -X -U church -d fold -At -v ON_ERROR_STOP=1 -f -; }
 # An account made in this shell (fresh_user runs in a subshell): sets USER_ID and USER_EMAIL.

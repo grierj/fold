@@ -32,7 +32,8 @@
 # qc1-measure.sh repeat the preflight themselves. A failure ends the run before
 # the stack is built. The drill has no switch to skip this; for --qc1 only,
 # --no-browser (after --) skips it on purpose, which leaves the browser rows
-# missing and the evidence incomplete. The preflight's result is kept in
+# missing and the evidence incomplete; --calibrate-only (the instrument preflight, which
+# measures nothing and drives no browser) skips it too. The preflight's result is kept in
 # <out>/prep/browser-runtime.json and, for the drill, <out>/browser-preflight.json.
 #
 # What it refuses or never does:
@@ -690,7 +691,7 @@ rc=0
 if (( QC1 )); then what=qc1; elif (( CROSS )); then what=crossings-only; else what=drill; fi
 skip_browser=0
 if (( QC1 )); then
-  for a in "${drill_args[@]}"; do [[ "$a" != --no-browser ]] || skip_browser=1; done
+  for a in "${drill_args[@]}"; do case "$a" in --no-browser|--calibrate-only) skip_browser=1 ;; esac; done
 fi
 # Both modes need a browser: the restore drill's recovery proof (restore-browser.cjs) and the QC-1 panel measurement each drive Chromium through
 # web/node_modules. It is installed and proved BEFORE anything is built, drilled or measured, in this runner and nowhere else. Only a QC-1 run given
