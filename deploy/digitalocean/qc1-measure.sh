@@ -31,8 +31,10 @@
 #
 # --legacy-only (T-292, R4-C06 items 4 and 5): measure ONLY the deleted-accounts review (qc1/legacy.sh) at each size, 9 rows per size, judged by the same qc1_judge and counted by the same
 # qc1_evidence_status (settings.mode legacy-only). It needs --no-browser and refuses --layout, --counts, --dense-counts, --charset multibyte, the next-changed options, the browser fallback and a
-# size below 10,000. It is never FULL and never release evidence; its evidence-status.json says so. Run it as two invocations on one head: --sizes 10000,100000 and then --sizes 1000000
-# (docs/agents/testing.md). Fixtures that forge decision markers run only in the disposable database this script creates (qc1/legacy-markers.sql and its guard).
+# size below 10,000. It is never FULL and never release evidence; its evidence-status.json says so. Run it as ONE invocation on one head with --sizes 10000,100000,1000000
+# (docs/agents/testing.md): every nested invocation builds its own image in its own anonymous image store, so two invocations cannot share an image id and the same
+# revision alone never establishes the same image. One invocation resolves one image id for every row. Fixtures that forge decision markers run only in the disposable
+# database this script creates (qc1/legacy-markers.sql and its guard).
 #
 # --charset: the text of the reasons, background and target alike (default ascii). multibyte is a 21-rune unit of 1- to 4-byte UTF-8 runes (2-byte accented letters and Omega,
 # 3-byte euro sign, CJK and a zero-width joiner, 4-byte emoji, combining marks) repeated and cut to the requested RUNE length with the row's ASCII ordinal at the end, 61 bytes per
@@ -272,7 +274,15 @@ write_environment() { # incomplete(true|false) reason
   fi
   calib="$(jraw "$(cat "$WORK/calibration.json" 2>/dev/null || true)")"
   if (( LEGACY_ONLY )); then
-    env_LEGACY="$(jq -nc --arg sha "$(sha256sum <"$HERE/qc1/legacy-markers.sql" 2>/dev/null | cut -d' ' -f1)" --argjson smoke "$(jraw "$(cat "$WORK/legacy-smoke.json" 2>/dev/null || true)")" '{sizesFloor:10000, seedLayout:"spread", markersSha256:$sha, smoke:$smoke}')"
+    env_LEGACY="$(jq -nc --argjson floor "$QC1_LEGACY_SIZES_FLOOR" --arg layout "$QC1_LEGACY_SEED_LAYOUT" --arg sha "$(sha256sum <"$HERE/qc1/legacy-markers.sql" 2>/dev/null | cut -d' ' -f1)" --argjson smoke "$(jraw "$(cat "$WORK/legacy-smoke.json" 2>/dev/null || true)")" '{sizesFloor:$floor, seedLayout:$layout, markersSha256:$sha, smoke:$smoke}')"
+    # Fail closed: without the passing smoke the run has no provenance, so it
+    # is recorded incomplete even when every row measured clean. The status
+    # validator (qc1_environment_problems) names the missing block; this keeps
+    # a lost or unreadable smoke file from ever reading as a clean run.
+    if ! jq -e '.smoke.ok == true' <<<"$env_LEGACY" >/dev/null 2>&1; then
+      incomplete=true
+      ireason="${ireason:+$ireason; }the legacy-only smoke did not pass, so this run carries no legacy provenance"
+    fi
   fi
 jq -n --argjson database "$database" --argjson incomplete "$incomplete" --arg ireason "$ireason" --arg image "$IMAGE" --arg imageId "$IMAGE_ID" --arg revision "$REVISION" --argjson level "$env_LEVEL" --arg droplet "$DROPLET" --arg dbMemory "$DB_MEMORY" --arg appMemory "$APP_MEMORY" \
   --arg cpuset "$CPUSET" --arg layout "$LAYOUT" --arg charset "$CHARSET" --argjson reasonLen "$env_REASON_LEN" --argjson maxRequestBytes "$env_MAX_REQUEST_BYTES" \

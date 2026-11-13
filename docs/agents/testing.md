@@ -595,11 +595,13 @@ status (`qc1_evidence_status`, which reads `settings.mode` from `environment.jso
 and is **never FULL and never release evidence**: its status says `legacy-only run: the live matrix rows were not run` in its coverage
 reasons. A matrix run still records the two legacy placeholders as pending, with text that names this mode.
 
-- **Run it as two invocations on one head**, each through the T-297 entry point (a dedicated nested daemon, never `--keep`):
-  `scripts/reason-review-scale.sh --only qc1 --evidence-dir <new dir outside the checkout> --qc1-arg --legacy-only --qc1-arg --no-browser --qc1-arg --sizes --qc1-arg 10000,100000`,
-  then the same with `1000000` once the first is complete. One invocation of all three sizes is equivalent. Each is judged on its own
-  `evidence-status.json`; the head, image id and source hashes in the two `environment.json` files must be equal. A size is rerun only when
-  its invocation was incomplete (invalid or aborted), in a new directory; a complete invocation is never superseded, and every attempt is listed.
+- **Run it as one invocation on one head** through the T-297 entry point (a dedicated nested daemon, never `--keep`):
+  `scripts/reason-review-scale.sh --only qc1 --evidence-dir <new dir outside the checkout> --qc1-arg --legacy-only --qc1-arg --no-browser --qc1-arg --sizes --qc1-arg 10000,100000,1000000`.
+  One invocation resolves one image id for every row, which is what the acceptance comparison needs. Each nested invocation builds its own
+  image in its own anonymous image store, so two separate invocations cannot share an image id: the same revision and the same source hashes
+  never establish the same image id, and there is no transfer of the built image between the disposable daemons. Do not accept two invocations
+  as one acceptance set. If the invocation aborts at a size, rerun all three sizes in a new directory (the 10k and 100k work is minutes); a
+  complete invocation is never superseded, and every attempt is listed. The run is judged on its own `evidence-status.json`.
 - **The wrapper says `partial`** (exit 10) for a successful legacy-only run, by design: pass-through arguments and the pilot coverage make
   every run partial. Read `qc1/evidence-status.json` (`complete`, `coverage.reasons`), `environment.json` (`revision`, `settings.mode`,
   `settings.legacy.smoke`) and the rows, never the wrapper's verdict. An abort, an invalid finding or a missing row is `fail`.
@@ -617,8 +619,12 @@ reasons. A matrix run still records the two legacy placeholders as pending, with
 - **Judged more tightly than the contracted rows ask**: the pairs a walk lists are compared with the database (`pairSetExact`, no duplicate), discovery
   and the probe carry no reason key or text and write no view audit, an account's pages write exactly one view audit per non-empty page, the decided
   history must list nothing and its probe find nothing over exactly the declared size, and the save's effects, receipts and refusal are read from the
-  database. A 503 at a route's own deadline (10 s a unit, 40 s the save) is the unchanged `status` **invalid**, not a budget finding: it makes the
-  invocation incomplete and means a unit did not finish in its budget. No budget, class or want of the live matrix changed.
+  database. The marker lookup is one unit of review work: a measured 200 probe over the existing 10 s unit line is the `probe` **budget** finding
+  (the run stays complete), because the recorded HTTP time also covers authentication, the response serialization and the transport, which sit
+  outside the route's own 10 s context and can push a finished read past the line. A 503 at a route's own deadline (10 s a unit, 40 s the save)
+  is the unchanged `status` **invalid**, not a budget finding: it makes the invocation incomplete and means a unit did not finish in its budget.
+  The decided row also proves which marker file it ran with: its `forgedMarkers.sha256` must be the run's own `settings.legacy.markersSha256`,
+  itself bound to the recorded `legacy-markers.sql` source hash. No budget, class or want of the live matrix changed.
 - **Forged markers are the one hazard.** `qc1/legacy-markers.sql` writes audit rows that say a deleted account's reasons were decided, which
   hides them from the review list. It runs only through `forge_markers` in `qc1/legacy.sh`: `psql` into the harness's own database container, by id.
   Its guard refuses unless the run's own sentinel (`qc1_disposable`, written by the harness into its own cluster, with the run's token and that cluster's
@@ -627,18 +633,21 @@ reasons. A matrix run still records the two legacy placeholders as pending, with
   the guard to make a test pass. The smoke (below) refuses a live account and a wrong token before anything is loaded.
 - **The smoke** runs before any background load, in the same invocation: 101 pairs through the real routes (discovery, an account's pages, the attempt
   mint, the refused 101st decision, the 100-decision save and its effects, the probe, a forged marker and the guard's refusals). A mismatch exits 1 naming the
-  check and the run is finalized as aborted. A size's last step is a gate: any invalid finding at that size stops the run before a larger one is paid for.
-- **Cost (an estimate, not a budget):** the 10k and 100k invocation takes minutes beyond the fixed start-up; the 1M invocation loads the background rows
+  check and the run is finalized as aborted. The written smoke record is read back (passing, the defined check set, 101 pairs) before anything is loaded;
+  a lost or unreadable smoke file is recorded incomplete, and the status holds a missing, failed or mismatched smoke or marker hash invalid. A size's
+  last step is a gate: any invalid finding at that size stops the run before a larger one is paid for.
+- **Cost (an estimate, not a budget):** the 10k and 100k sizes take minutes beyond the fixed start-up; the 1M size loads the background rows
   twice and writes 1,000,000 forged markers into `audit_logs` (four indexes), so allow tens of minutes. Walks of a 1M table are given a longer scheduler
   window than a minute (`LEGACY_NEED_MS`) so an hourly edge is waited out, not crossed.
 - **What it does not prove**: n=1 per row on one local cgroup model (no rate, no margin, not a real droplet); ASCII reasons only; contact-purpose
   markers and requests with both parties deleted are covered by the Go selector tests, not measured at scale; the browser's wait on a sparse account is
   proxied by `timeToFirstItemsMs`; the marker lookup is measured at 0 markers, at 100 and at 100%, not at intermediate mixes; parse time is not separated
-  from request time. Close #292's measurement part only with both invocations `complete: true` and every budget finding either absent or carrying its
+  from request time. Close #292's measurement part only with the invocation `complete: true` and every budget finding either absent or carrying its
   reviewed R4-C06 disposition; otherwise the PR says `Refs`.
-- **Checks that run without Docker**: the legacy-only block of `qc1-fixtures.sh` (the nine-row set per size passes the judge; every added rule has a
-  mutation that fails it by name, including the 503, the slow unit and a sequential marker plan, which must stay what they were; the status mode; the
-  helpers; the refusals; and that the marker file runs in one place) and `go test -run 'TestQC1LegacyMarkersSQL|TestQC1LegacyPlanMarkersAreWhatTheApplicationSends|TestQC1AppFacts' .`
+- **Checks that run without Docker**: the legacy-only block of `qc1-fixtures.sh` (the nine-row set per size passes the judge and the status
+  with its provenance; every added rule has a mutation that fails it by name, including the 503, the slow unit, the slow 200 probe and a sequential
+  marker plan, which must stay what they were; the missing, failed and mismatched smoke and marker-source provenance, each invalid; the status mode;
+  the helpers; the refusals; and that the marker file runs in one place) and `go test -run 'TestQC1LegacyMarkersSQL|TestQC1LegacyPlanMarkersAreWhatTheApplicationSends|TestQC1AppFacts' .`
   (needs `DATABASE_URL`).
 
 ### Sampling Next changed reason (#298)

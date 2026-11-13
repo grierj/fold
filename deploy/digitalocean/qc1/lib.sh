@@ -55,6 +55,14 @@ QC1_SOURCE_FILES=(deploy/digitalocean/qc1-measure.sh deploy/digitalocean/qc1/lib
 QC1_PLAN_KINDS=(scanner-initial scanner-continuation page-items delete-set blank-batch)
 # The legacy-only plan row (item 11) records these instead; QC1_PLAN_KINDS stays what every live item-8 row carries.
 QC1_LEGACY_PLAN_KINDS=(scanner-initial scanner-continuation legacy-facts legacy-markers)
+# The legacy-only provenance a run records in settings.legacy (qc1-measure.sh
+# write_environment) and what the validator below holds it to: the seed floor
+# and layout the run refused to vary, the smoke's pair count, and the smoke's
+# defined check set in run order (legacy.sh writes SMOKE_CHECKS in this order).
+QC1_LEGACY_SIZES_FLOOR=10000
+QC1_LEGACY_SEED_LAYOUT=spread
+QC1_LEGACY_SMOKE_PAIRS=101
+QC1_LEGACY_SMOKE_CHECKS=(discovery-lists-the-seeded-pairs account-pages-are-audited-once-each attempt-id-mint count-refusal-bound-and-nothing-changed save-effects-exact save-decides-pairs-and-probe-finds-the-rest forged-marker-is-recognized-and-shaped-like-the-applications guard-refuses-a-live-account-and-a-wrong-token)
 
 # comma list -> one positive integer per line; fails on anything else.
 qc1_list() {
@@ -309,7 +317,9 @@ qc1_source_hashes() { # repo-root
 # measurement to HEAD and to immutable image ids and its instruments were
 # proved before use. head is HEAD's full SHA.
 qc1_environment_problems() { # environment.json head
-  jq -r --arg head "$2" --argjson sources "$(printf '%s\n' "${QC1_SOURCE_FILES[@]}" | jq -R . | jq -sc .)" '
+  jq -r --arg head "$2" --argjson sources "$(printf '%s\n' "${QC1_SOURCE_FILES[@]}" | jq -R . | jq -sc .)" \
+    --argjson smokeChecks "$(printf '%s\n' "${QC1_LEGACY_SMOKE_CHECKS[@]}" | jq -R . | jq -sc .)" \
+    --argjson legacyFloor "$QC1_LEGACY_SIZES_FLOOR" --arg legacyLayout "$QC1_LEGACY_SEED_LAYOUT" --argjson smokePairs "$QC1_LEGACY_SMOKE_PAIRS" '
     def hex64: test("^[0-9a-f]{64}$");
     def sha256id: test("^sha256:[0-9a-f]{64}$");
     ( if .revision != $head then "revision \(.revision) is not HEAD \($head)" else empty end ),
@@ -337,14 +347,40 @@ qc1_environment_problems() { # environment.json head
     ( if .calibration.wal.ok != true then "the WAL position is unreadable" else empty end ),
     ( if .calibration.commit.ok != true then "commit statistics are unreadable" else empty end ),
     ( if .settings.browser == true and (.browserRuntime.ok != true or ((.browserRuntime.chromium // "") == "") or ((.browserRuntime.playwright // "") == "")) then "the browser preflight is not recorded as passing" else empty end ),
-    ( if (.calibration.dbMemory.samples // 0) < 3 then "database memory sampling is too sparse to trust (fewer than 3 samples in the calibration half second)" else empty end )' "$1"
+    ( if (.calibration.dbMemory.samples // 0) < 3 then "database memory sampling is too sparse to trust (fewer than 3 samples in the calibration half second)" else empty end ),
+    # Legacy-only provenance (R4-C06 items 4 and 5 are measured only in that
+    # mode): the run refused anything but the seed floor, the spread layout,
+    # ASCII reasons and no browser, so the record must say exactly that, with
+    # the passing smoke (its defined check set and pair count) and the marker
+    # file hash bound to the recorded source entry. A missing, null, failed
+    # or mismatched block is not provenance: it is an invalid environment.
+    ( if .settings.mode == "legacy-only" and (.settings.browser // false) != false then "legacy-only run must not measure the browser (it refused everything but --no-browser)" else empty end ),
+    ( if .settings.mode == "legacy-only" and ((.settings.charset // "ascii") != "ascii") then "legacy-only run measures ASCII reasons only (it refused --charset multibyte)" else empty end ),
+    ( if .settings.mode == "legacy-only" and (.settings.sizes | type) == "string" and ([.settings.sizes | split(",")[] | tonumber? // -1] | any(. < $legacyFloor)) then "legacy-only run names a size below its \($legacyFloor)-pair seed floor" else empty end ),
+    ( if .settings.mode == "legacy-only" and (.settings.legacy | type) != "object" then "legacy-only run records no legacy provenance (settings.legacy is missing)" else empty end ),
+    ( if .settings.mode == "legacy-only" and (.settings.legacy | type) == "object" and .settings.legacy.sizesFloor != $legacyFloor then "legacy-only provenance names sizesFloor \(.settings.legacy.sizesFloor), not \($legacyFloor)" else empty end ),
+    ( if .settings.mode == "legacy-only" and (.settings.legacy | type) == "object" and .settings.legacy.seedLayout != $legacyLayout then "legacy-only provenance names seedLayout \(.settings.legacy.seedLayout), not \($legacyLayout)" else empty end ),
+    ( if .settings.mode == "legacy-only" and (.settings.legacy | type) == "object"
+      then (.settings.legacy.markersSha256 // null) as $m
+           | (.sources[] | select(.path == "deploy/digitalocean/qc1/legacy-markers.sql") | .sha256) as $src
+           | if ($m | type) != "string" or ($m | test("^[0-9a-f]{64}$") | not) then "legacy-only provenance records no markersSha256 for qc1/legacy-markers.sql"
+             elif $src == null or ($src | test("^[0-9a-f]{64}$") | not) then "legacy-only provenance cannot be bound: the recorded legacy-markers.sql source hash is not a sha256"
+             elif $m != $src then "legacy-only markersSha256 does not match the recorded legacy-markers.sql source hash" else empty end
+      else empty end ),
+    ( if .settings.mode == "legacy-only" and (.settings.legacy | type) == "object"
+      then (.settings.legacy.smoke // null) as $sm
+           | if ($sm | type) != "object" or $sm.ok != true then "legacy-only smoke did not pass (settings.legacy.smoke.ok is not true)"
+             elif ($sm.pairs // null) != $smokePairs then "legacy-only smoke names \($sm.pairs) pairs, not \($smokePairs)"
+             elif (($sm.checks // null) | type) != "array" or ([($sm.checks // [])[] | select(type == "string")] | sort) != ($smokeChecks | sort) then "legacy-only smoke does not carry the defined check set" else empty end
+      else empty end )' "$1"
 }
 
 # Judge a measurements file (one JSON object per line). Each finding is a JSON
 # object with a class:
 #   budget   a measured failure of R4-C06 for a reviewed engineering
 #            disposition: a unit or page above 10 s, a deletion above 40 s, a
-#            full traversal above 2 minutes, a valid history whose body
+#            full traversal above 2 minutes, the marker lookup (probe) above
+#            10 s of measured HTTP time on a 200, a valid history whose body
 #            exceeds maxRequestBytes;
 #   invalid  the measurement itself cannot be trusted: an unexpected HTTP
 #            status; an instrument that read nothing (WAL, process or database
@@ -677,6 +713,13 @@ qc1_judge_rules() { cat <<'JQ'
       ( if ($m.traversal.slowestUnitMs // 0) > $unit then bud("unit"; {ms:$m.traversal.slowestUnitMs, budget:$unit}) else empty end ),
       ( if ($m.traversal.totalMs // 0) > $trav then bud("traversal"; {ms:$m.traversal.totalMs, budget:$trav}) else empty end ),
       ( if ($m.delete.ms // 0) > $del then bud("delete"; {ms:$m.delete.ms, budget:$del}) else empty end ),
+      # The marker lookup is one unit of review work, held to the same 10 s
+      # line. A 200 over it is a budget finding, not a broken measurement: the
+      # route's own 10 s context bounds the database work, while the recorded
+      # HTTP time also covers authentication, the response serialization and
+      # the transport, which can push a finished read past the line. A 503 at
+      # the deadline stays the existing "status" invalid below, never a budget.
+      ( if ($m.probe | type) == "object" and $m.probe.status == "200" and ($m.probe.ms | type) == "number" and $m.probe.ms > $unit then bud("probe"; {ms:$m.probe.ms, budget:$unit}) else empty end ),
       ( if $m.item == 5 and $m.case == "request-size" and $m.request != null and (($m.request.maxRequestBytes | type) != "number" or ($m.request.capacity.reasons | type) != "number" or ($m.request.largest.reasons | type) != "number" or ($m.request.largest.bodyBytes | type) != "number") then inv("request-incomplete"; {}) else empty end ),
       ( if $m.item == 5 and $m.case == "request-size" and ($m.request.largest.bodyBytes | type) == "number" and ($m.request.capacity.reasons | type) == "number" and ((($m.request.largest.bodyBytes) > $m.request.maxRequestBytes) or ($m.request.capacity.reasons < $m.request.largest.reasons)) then bud("body"; {reasons:$m.request.largest.reasons, bytes:$m.request.largest.bodyBytes, capacityReasons:$m.request.capacity.reasons, cap:$m.request.maxRequestBytes}) else empty end ),
       ( if $m.traversal != null and ($m.traversal.lastStatus // "") != "200" then inv("status"; {route:"page", status:$m.traversal.lastStatus}) else empty end ),
@@ -981,7 +1024,12 @@ qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head 
          # a row of a case that loads the scenario of the cell (discovery, deletion, workers, browser) must carry the layout the settings name: a row of another layout, or of none, is not
          # the measurement of that cell, however the saved coverage reads. (The request-size and plan rows load their own layouts and are not held to this.)
          ($rows[] | select((type == "object") and (.status == "measured" or .status == "observation") and (.item == 3 or .item == 6 or .item == 9 or .item == 10) and $s.layout != null and (.layout != $s.layout))
-            | {what:"layout", settings:$s.layout, row:{item, size, case, layout}}) ]) as $disagree
+            | {what:"layout", settings:$s.layout, row:{item, size, case, layout}}),
+         # a decided-history row proves which marker file it ran with: its forgedMarkers.sha256 must be the settings.legacy.markersSha256 of this run, itself
+         # bound to the recorded legacy-markers.sql source hash by the environment check. A row that names another file, or none, is not the decided history of this run.
+         ($rows[] | select((type == "object") and (.status == "measured" or .status == "observation") and .item == 4 and .case == "legacy-decided-discovery"
+            and ((.legacy.forgedMarkers.sha256 | type) != "string" or .legacy.forgedMarkers.sha256 != $s.legacy.markersSha256))
+            | {what:"marker source", settings:($s.legacy.markersSha256 // null), row:{item, size, case, sha256:(.legacy.forgedMarkers.sha256 // null)}}) ]) as $disagree
     | ([ $fullWant[] | select(clean(.) | not) ]) as $fullGaps
     | ([ $rows[] | select((type == "object") and (.item == 3 or .item == 6 or .item == 10) and (.status == "measured" or .status == "observation") and .targetReasonLen != 1000) ] | length) as $shortTargets
     | ([ (if ($env == null) then "environment record unreadable" else empty end),

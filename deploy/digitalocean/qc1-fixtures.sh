@@ -2714,6 +2714,11 @@ grep -q 'qc1_delete_attempt "\$WORK/delete-attempts"' "$HERE/qc1-measure.sh"
 # One size's nine rows, as the code in qc1/legacy.sh writes them. Every figure follows from the size and the seed (10,000 pairs: 9,900 spread over the table for the dense account, 100 after
 # every background row for the sparse one), the way a real run's would.
 LO_SEED=10000
+LO_SHA="$(printf 'f%.0s' {1..64})"   # the fake sources hash gen_env records for every measurement file, the marker file included
+# The validator holds the smoke to the check set legacy.sh writes, and the
+# producer writes the pair count the validator holds: one list, one number.
+[[ "$(printf '%s\n' "${QC1_LEGACY_SMOKE_CHECKS[@]}" | sort | paste -sd,)" == "$(grep -o 'smoke_ok [^ ]*' "$HERE/qc1/legacy.sh" | awk '{print $2}' | sort | paste -sd,)" ]]
+[[ "$QC1_LEGACY_SMOKE_PAIRS" == 101 && "$QC1_LEGACY_SIZES_FLOOR" == 10000 && "$QC1_LEGACY_SEED_LAYOUT" == spread ]]
 insv() { # rows views: the instrument fragment for a table of `rows`, with `views` account-page view audits in its audit delta
   local f from to; f="$(ins "$1")"
   from='"auditActionsDelta":{"x.view":10,"add.reason_kept":5}'; to="\"auditActionsDelta\":{\"user.erasure_reasons_viewed\":$2}"
@@ -2739,19 +2744,30 @@ lo_rows() { # size
     "$s" "$LO_PRIV" "$s" "$LO_SEED" "$(ins "$((s + LO_SEED))")"
   printf '{"status":"measured","item":5,"case":"legacy-put","size":%s,"workers":0,"put":{"status":"200","ms":50,"route":"PUT /api/v1/admin/erasure-reasons/legacy/:userId","decisions":100,"accepted":100,"bodyBytes":17500,"mints":2,"workload":{"backgroundRows":%s,"loadedPairs":%s,"tombstoneId":7},"effects":{"dbOk":true,"kept":50,"blanked":50,"rowsBlank":50,"rowsWithText":50,"textExact":true,"othersUntouched":true,"markers":{"count":100,"party":7,"partyQualified":true,"source":"legacy_review","byAction":{"add.reason_kept":50,"add.reason_removed":50}},"audits":{"count":100,"source":"legacy_review"},"receipts":{"before":3,"after":4,"delta":1}},"countRefusal":{"decisions":101,"status":"400","error":"invalid decisions","authenticated":true,"reason":"decision_count","bodyBytes":17600,"unchanged":true,"receiptsDelta":0},%s},"legacy":{"source":"T07B-3a"}}\n' \
     "$s" "$s" "$LO_SEED" "$(ins "$((s + LO_SEED))")"
-  printf '{"status":"measured","item":4,"case":"legacy-decided-discovery","size":%s,"workers":0,"reasons":0,"expect":{"items":0},"traversal":%s,"probe":{"ms":3,"status":"200","found":false,"route":"GET /api/v1/admin/erasure-reasons/legacy/probe","privacy":%s,%s},"legacy":{"route":"GET /api/v1/admin/erasure-reasons/legacy","source":"T07B-3a","tombstoneId":9,"backgroundRequester":9,"candidatePairs":%s,"markersSeeded":%s,"privacy":%s,"forgedMarkers":{"file":"deploy/digitalocean/qc1/legacy-markers.sql","keysMatch":true}}}\n' \
-    "$s" "$(lo_trav "$s" 0 0 0)" "$LO_PRIV" "$(ins "$s")" "$s" "$s" "$LO_PRIV"
+  printf '{"status":"measured","item":4,"case":"legacy-decided-discovery","size":%s,"workers":0,"reasons":0,"expect":{"items":0},"traversal":%s,"probe":{"ms":3,"status":"200","found":false,"route":"GET /api/v1/admin/erasure-reasons/legacy/probe","privacy":%s,%s},"legacy":{"route":"GET /api/v1/admin/erasure-reasons/legacy","source":"T07B-3a","tombstoneId":9,"backgroundRequester":9,"candidatePairs":%s,"markersSeeded":%s,"privacy":%s,"forgedMarkers":{"file":"deploy/digitalocean/qc1/legacy-markers.sql","sha256":"%s","keysMatch":true}}}\n' \
+    "$s" "$(lo_trav "$s" 0 0 0)" "$LO_PRIV" "$(ins "$s")" "$s" "$s" "$LO_PRIV" "$LO_SHA"
   printf '{"status":"measured","item":11,"case":"legacy-plans","size":%s,"workers":0,"plans":{"scanner-initial":2,"scanner-continuation":5,"legacy-facts":4,"legacy-markers":4},"markerPlans":{"executions":4,"auditLogsAccess":{"targetIndex":4,"seqScan":0,"other":0}},"request":{"status":"200","ms":900},"state":{"tombstoneId":9,"contactRequests":%s,"markers":%s,"auditRows":%s},"legacy":{"source":"T07B-3a"},"autoExplain":{"scope":"on for one discovery page","caveats":["a","b","c","d"]}}\n' \
     "$s" "$s" "$s" "$((s + 200))"
 }
 lo_env() { jq -c --arg sizes "${1:-10000}" '.settings += {mode:"legacy-only", browser:false, sizes:$sizes, counts:"0,10,100,1000,10000", denseCounts:"100000", deleteCounts:"0,10,100,1000,10000,100000", layout:"spread", targetReasonLen:1000, wire:"set-v1"} | del(.browserRuntime)' "$WORK/env.json" >"$WORK/env.lo$([[ -n "${1:-}" ]] && echo ."$1")"; }
+# The happy environment: the same record with the passing smoke and the marker
+# file hash, the way write_environment writes them on a real run.
+lo_env_ok() { jq -c --arg sizes "${1:-10000}" --arg sha "$LO_SHA" --argjson checks "$(printf '%s\n' "${QC1_LEGACY_SMOKE_CHECKS[@]}" | jq -R . | jq -sc .)" \
+  --argjson pairs "$QC1_LEGACY_SMOKE_PAIRS" --argjson floor "$QC1_LEGACY_SIZES_FLOOR" --arg layout "$QC1_LEGACY_SEED_LAYOUT" \
+  '.settings += {mode:"legacy-only", browser:false, charset:"ascii", sizes:$sizes, counts:"0,10,100,1000,10000", denseCounts:"100000", deleteCounts:"0,10,100,1000,10000,100000", layout:"spread", targetReasonLen:1000, wire:"set-v1"} | .settings.legacy = {sizesFloor:$floor, seedLayout:$layout, markersSha256:$sha, smoke:{ok:true, checks:$checks, pairs:$pairs}} | del(.browserRuntime)' \
+  "$WORK/env.json" >"$WORK/env.lo.ok$([[ -n "${1:-}" ]] && echo ."$1")"; }
 lo_env
 lo_env 10000,100000,1000000
-lo_status() { qc1_evidence_status "$1" "${2:-10000}" 0,10,100,1000,10000 "${3:-$WORK/env.lo}" "$HEAD_FAKE" 6291456 100000; }
+lo_env_ok
+lo_env_ok 10000,100000,1000000
+lo_status() { qc1_evidence_status "$1" "${2:-10000}" 0,10,100,1000,10000 "${3:-$WORK/env.lo.ok}" "$HEAD_FAKE" 6291456 100000; }
 lo_rows 10000 >"$WORK/lo.jsonl"
 [[ "$(wc -l <"$WORK/lo.jsonl")" == 9 ]]
 # A clean set is judged clean and complete, in legacy-only mode: nothing missing, nothing pending, no invalid finding, a pilot that says why, never release evidence.
 [[ -z "$(qc1_judge "$WORK/lo.jsonl" 6291456 | jq -c 'select(.class == "invalid")')" ]] || { qc1_judge "$WORK/lo.jsonl" 6291456 >&2; echo 'qc1: the clean legacy-only rows are not clean' >&2; exit 1; }
+# The happy environment carries the provenance and passes the validator clean.
+[[ -z "$(qc1_environment_problems "$WORK/env.lo.ok" "$HEAD_FAKE")" ]] || { qc1_environment_problems "$WORK/env.lo.ok" "$HEAD_FAKE" >&2; echo 'qc1: the happy legacy-only environment is not clean' >&2; exit 1; }
+[[ -z "$(qc1_environment_problems "$WORK/env.lo.ok.10000,100000,1000000" "$HEAD_FAKE")" ]]
 st="$(lo_status "$WORK/lo.jsonl")"
 [[ "$(jq -r .complete <<<"$st")" == true && "$(jq -c '[.missing, .pending, .invalid] | map(length)' <<<"$st")" == '[0,0,0]' && "$(jq -r '.coverage.kind' <<<"$st")" == pilot && "$(jq -r .releaseEvidence <<<"$st")" == false ]] || { echo "legacy-only status: $st" >&2; exit 1; }
 jq -e '[.coverage.reasons[] | test("legacy-only run: the live matrix rows were not run")] | any' <<<"$st" >/dev/null
@@ -2761,8 +2777,13 @@ jq -e '[.coverage.reasons[] | test("legacy-only run: the live matrix rows were n
 { lo_rows 10000; lo_rows 100000; lo_rows 1000000; } >"$WORK/lo3.jsonl"
 [[ "$(qc1_legacy_only_want_json 10000,100000,1000000 | jq 'length')" == 27 && "$(qc1_legacy_only_want_json 10000 | jq 'length')" == 9 ]]
 [[ "$(qc1_legacy_only_want_json 10000,100000,1000000 | jq -c 'group_by(.size) | map(length)')" == '[9,9,9]' ]]
-st3="$(lo_status "$WORK/lo3.jsonl" 10000,100000,1000000 "$WORK/env.lo.10000,100000,1000000")"
+st3="$(lo_status "$WORK/lo3.jsonl" 10000,100000,1000000 "$WORK/env.lo.ok.10000,100000,1000000")"
 [[ "$(jq -r .complete <<<"$st3")" == true && "$(jq '.missing | length' <<<"$st3")" == 0 ]]
+# Legacy-only provenance is fail-closed: the bare legacy-only record with no
+# smoke and no marker hash, the case the review found complete, is now an
+# invalid environment and an incomplete run.
+qc1_environment_problems "$WORK/env.lo" "$HEAD_FAKE" | grep -F -- 'no legacy provenance' >/dev/null
+[[ "$(jq -r .complete <<<"$(lo_status "$WORK/lo.jsonl" 10000 "$WORK/env.lo")")" == false ]]
 nomode="$(lo_status "$WORK/lo.jsonl" 10000 "$WORK/env.json")"
 [[ "$(jq -r .complete <<<"$nomode")" == false && "$(jq '[.missing[] | select(.item == 4 or .item == 5 or .item == 11) | select(.case | startswith("legacy-"))] | length' <<<"$nomode")" == 0 && "$(jq '.missing | length' <<<"$nomode")" -gt 40 ]]
 jq -c '.settings.mode = "something-else"' "$WORK/env.lo" >"$WORK/env.lo.bad"
@@ -2773,6 +2794,27 @@ for drop in '"case":"legacy-discovery-0"' '"case":"legacy-discovery-100"' '"case
   d="$(lo_status "$WORK/lo.drop")"
   [[ "$(jq -r .complete <<<"$d")" == false && "$(jq '.missing | length' <<<"$d")" == 1 && "$(jq '.pending | length' <<<"$d")" == 0 ]] || { echo "dropping $drop: $d" >&2; exit 1; }
 done
+# A missing, null, failed or mismatched smoke or marker hash is an invalid
+# environment and an incomplete run: every way the provenance can be absent,
+# forged or inconsistent fails closed, never as a clean pilot.
+lo_prov() { # name jq-filter needle: the mutated provenance is refused and the problem named
+  jq -c "$2" "$WORK/env.lo.ok" >"$WORK/env.lo.$1"
+  qc1_environment_problems "$WORK/env.lo.$1" "$HEAD_FAKE" | grep -F -- "$3" >/dev/null || { echo "legacy provenance mutation $1 not named ($3): $(qc1_environment_problems "$WORK/env.lo.$1" "$HEAD_FAKE")" >&2; exit 1; }
+  [[ "$(jq -r .complete <<<"$(lo_status "$WORK/lo.jsonl" 10000 "$WORK/env.lo.$1")")" == false ]]
+}
+lo_prov legacynull '.settings.legacy = null' 'no legacy provenance'
+lo_prov smoke-missing 'del(.settings.legacy.smoke)' 'did not pass'
+lo_prov smoke-fail '.settings.legacy.smoke.ok = false' 'did not pass'
+lo_prov smoke-checks '.settings.legacy.smoke.checks |= .[1:]' 'defined check set'
+lo_prov smoke-bogus '.settings.legacy.smoke.checks += ["not-a-check"]' 'defined check set'
+lo_prov smoke-pairs '.settings.legacy.smoke.pairs = 100' 'pairs, not'
+lo_prov sha-wrong '.settings.legacy.markersSha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' 'does not match'
+lo_prov sha-bad '.settings.legacy.markersSha256 = "x"' 'no markersSha256'
+lo_prov floor '.settings.legacy.sizesFloor = 9999' 'sizesFloor'
+lo_prov layout '.settings.legacy.seedLayout = "tail"' 'seedLayout'
+lo_prov browser '.settings.browser = true' 'must not measure the browser'
+lo_prov charset '.settings.charset = "multibyte"' 'ASCII reasons only'
+lo_prov sizes '.settings.sizes = "5000,10000"' 'seed floor'
 # The matrix placeholders say what a matrix run does not do.
 grep -q 'qc1-measure.sh --legacy-only measures it' <<<"$QC1_PENDING_4 $QC1_PENDING_5"
 # Each mutation of the clean set fails the named rule, and the rule is not the one that fails on the clean set.
@@ -2785,6 +2827,28 @@ lo_bad() { # name failure: the mutation makes exactly this failure appear (and t
 D0='.item == 4 and .case == "legacy-discovery-0"'; D100='.item == 4 and .case == "legacy-discovery-100"'; D10K='.item == 4 and .case == "legacy-discovery-10000"'
 ACC='.item == 4 and .case == "legacy-account-dense"'; SPA='.item == 4 and .case == "legacy-account-sparse-tail"'; PRB='.item == 4 and .case == "legacy-discovery-probe"'
 PUT='.item == 5 and .case == "legacy-put"'; DEC='.item == 4 and .case == "legacy-decided-discovery"'; PLN='.item == 11'
+# The decided row names the marker file it ran with: another hash, or none,
+# is not the decided history of this run (a forged or inconsistent marker source).
+lo_mut dec-sha "if $DEC then .legacy.forgedMarkers.sha256 = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" else . end"
+dsha="$(lo_status "$WORK/lo.dec-sha")"
+jq -e '[.invalid[] | select(.failure == "settings-disagreement" and .what == "marker source")] | length >= 1' <<<"$dsha" >/dev/null || { echo "dec-sha not named: $(jq -c '[.invalid[] | {failure, what}]' <<<"$dsha")" >&2; exit 1; }
+[[ "$(jq -r .complete <<<"$dsha")" == false ]]
+lo_mut dec-nosha "if $DEC then del(.legacy.forgedMarkers.sha256) else . end"
+dnosha="$(lo_status "$WORK/lo.dec-nosha")"
+jq -e '[.invalid[] | select(.failure == "settings-disagreement" and .what == "marker source")] | length >= 1' <<<"$dnosha" >/dev/null || { echo "dec-nosha not named: $(jq -c '[.invalid[] | {failure, what}]' <<<"$dnosha")" >&2; exit 1; }
+[[ "$(jq -r .complete <<<"$dnosha")" == false ]]
+# The marker lookup is one unit of review work: a measured 200 probe over the
+# existing 10 s line is a budget finding and the run stays complete, while a
+# 503 at the deadline stays the existing invalid, never a budget.
+lo_mut probeslow "if $PRB then .probe.ms = 10001 | .probe.gateTicks = 120 | .probe.dbMemSamples = 120 else . end"
+[[ "$(qc1_judge "$WORK/lo.probeslow" 6291456 | jq -c 'select(.failure == "probe") | .class')" == '"budget"' ]]
+pslow="$(lo_status "$WORK/lo.probeslow")"
+[[ "$(jq -r .complete <<<"$pslow")" == true && "$(jq -c '[.budgetFailures[] | .failure]' <<<"$pslow")" == '["probe"]' && "$(jq '.invalid | length' <<<"$pslow")" == 0 ]]
+lo_mut dprobeslow "if $DEC then .probe.ms = 10001 | .probe.gateTicks = 120 | .probe.dbMemSamples = 120 else . end"
+[[ "$(qc1_judge "$WORK/lo.dprobeslow" 6291456 | jq -c 'select(.failure == "probe") | .class')" == '"budget"' ]]
+dpslow="$(lo_status "$WORK/lo.dprobeslow")"
+[[ "$(jq -r .complete <<<"$dpslow")" == true && "$(jq -c '[.budgetFailures[] | .failure]' <<<"$dpslow")" == '["probe"]' ]]
+lo_mut p503 "if $PRB then .probe.status = \"503\" else . end"; lo_bad p503 legacy-no-metrics
 lo_mut pairs "if $D10K then .legacy.pairSetExact = false else . end"; lo_bad pairs legacy-pairs-inexact
 lo_mut pairs-missing "if $D100 then del(.legacy.pairSetExact) else . end"; lo_bad pairs-missing legacy-pairs-inexact
 lo_mut dup "if $D100 then .legacy.duplicates = 1 else . end"; lo_bad dup legacy-pairs-inexact

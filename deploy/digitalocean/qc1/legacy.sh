@@ -16,7 +16,8 @@ LEGACY_ROUTE_PROBE='GET /api/v1/admin/erasure-reasons/legacy/probe'
 LEGACY_ROUTE_PAGE='POST /api/v1/admin/erasure-reasons/legacy/:userId/page'
 LEGACY_ROUTE_SAVE='PUT /api/v1/admin/erasure-reasons/legacy/:userId'
 # Pairs the sizes seed for the account the discovery and the save walk (spread over the table) and for the account whose pairs all lie after the background rows (tail).
-LEGACY_A_PAIRS=9900 LEGACY_B_PAIRS=100 LEGACY_SEED_PAIRS=10000 LEGACY_SMOKE_PAIRS=101
+# The smoke pair count is the one qc1/lib.sh validates the smoke record against (QC1_LEGACY_SMOKE_PAIRS).
+LEGACY_A_PAIRS=9900 LEGACY_B_PAIRS=100 LEGACY_SEED_PAIRS=10000 LEGACY_SMOKE_PAIRS="$QC1_LEGACY_SMOKE_PAIRS"
 LEGACY_REASON_ACTIONS="'contact.reason_kept','contact.reason_removed','add.reason_kept','add.reason_removed'"
 
 # --- the disposable-database sentinel and the forged markers --------------------------------------------------------------------------------------------------
@@ -391,5 +392,11 @@ legacy_smoke() {
   [[ "$live_rc" == 0 && "$wrong_rc" == 0 && "$audit0" == "$audit1" ]] || smoke_fail 'the marker guard let a live account or a wrong token through, or wrote rows'
   smoke_ok guard-refuses-a-live-account-and-a-wrong-token
   qc1_reset_contact_requests || exit 1
-  jq -nc --argjson checks "$(printf '%s\n' "${SMOKE_CHECKS[@]}" | jq -R . | jq -sc .)" '{ok:true, checks:$checks, pairs:101}' >"$WORK/legacy-smoke.json"
+  jq -nc --argjson checks "$(printf '%s\n' "${SMOKE_CHECKS[@]}" | jq -R . | jq -sc .)" --argjson pairs "$QC1_LEGACY_SMOKE_PAIRS" '{ok:true, checks:$checks, pairs:$pairs}' >"$WORK/legacy-smoke.json"
+  # Fail closed: the record the judge validates (settings.legacy.smoke) is
+  # read back before any background load. A truncated write or a check set
+  # that drifted from the defined one aborts the run here, never as rows.
+  jq -e --argjson want "$(printf '%s\n' "${QC1_LEGACY_SMOKE_CHECKS[@]}" | jq -R . | jq -sc .)" --argjson pairs "$QC1_LEGACY_SMOKE_PAIRS" \
+    '.ok == true and .pairs == $pairs and ((.checks | sort) == ($want | sort))' "$WORK/legacy-smoke.json" >/dev/null \
+    || { echo 'qc1: legacy smoke record failed its read-back: it does not carry the passing smoke' >&2; exit 1; }
 }
