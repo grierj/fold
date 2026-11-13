@@ -78,8 +78,6 @@ milestones until a first church is live (DEC-145).
   The personal-IP gate (G-9) and the owner's Nov 3 answer on conversion IPs are recorded in
   inventory section 6.5.2 and owner decision 5.
 - Open work:
-  - [#300](https://github.com/grierj/fold/issues/300) verify the slices that landed together at
-    one exact head, with the separate-agent review `AGENTS.md` requires.
   - [#301](https://github.com/grierj/fold/issues/301) and
     [#302](https://github.com/grierj/fold/issues/302) the one-time review list for reasons of
     accounts deleted before the review step existed (owner decision 7): API, then page.
