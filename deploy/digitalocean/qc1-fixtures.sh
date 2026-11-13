@@ -2752,15 +2752,25 @@ d="$(atom completed)"; printf '11|%s|0|0\n13|%s|21|61\n' "$H3" "$H2" >"$d/text.a
 [[ "$(class "$d")" == nonAtomic:reasons-changed,account-changed,erasure-audits-written ]]   # what the runner expects of its own completed template deletion (a positive control)
 
 # The summary: classes, the single-client flags beside the statement time, bytes against seq 164's, nothing read as a cause.
-prow() { # replicate arm status code atomicity
+prow() { # replicate arm status code atomicity: one probe row shaped like the runner's, with the full instrument set the ordinary judge reads
   jq -nc --argjson r "$1" --arg arm "$2" --arg st "$3" --arg code "$4" --arg at "$5" --argjson target "$QC1_PROBE_AUDIT_TARGET" '
     (if $st == "200" then 21000 else 39000 end) as $ms
+    | (if $st == "200" then {dbOk:true, accountDeleted:"true", reasonsBlank:100000, reasonsWithText:0, decisionAudits:100000, textExact:true}
+       else {dbOk:false, accountDeleted:"false", reasonsBlank:0, reasonsWithText:100000, decisionAudits:0, textExact:true} end) as $outcome
     | {status:"measured", item:6, case:("delete-subject-100000-remove-probe" + $arm + "-r" + ($r | tostring)), size:1000000, workers:0, reasons:100000,
-     outcome:{dbOk:($st == "200"), textExact:($st == "200")},
-     delete:{status:$st, ms:$ms, schedulerOverlap:false, schedulerRows:0, gateHolders:1, maxActiveClients:1, autovacuumWorkers:0, tableRowsBefore:1100000,
+     layout:"spread", charset:"multibyte", targetReasonLen:1000,
+     expect:{items:100000, kept:0, removed:100000}, roles:{requester:0, subject:100000}, outcome:$outcome,
+     textShape:{rows:100000, runesMin:1000, runesMax:1000, bytesMin:2000, bytesMax:4000, bytesPerRune:2.5, charset:"multibyte",
+       sample:{rows:20, width2:100, width3:50, width4:25, combining:10}},
+     delete:{status:$st, ms:$ms, schedulerOverlap:false, schedulerRows:0, gateHolders:1, maxActiveClients:1, autovacuumWorkers:0, tableRowsBefore:1100000, tableRowsAfter:1000000,
+             walBytes:1000000, appPeakKb:5000, appHwmReset:true, dbPeakKb:7000,
              commitCalls:1, commitMsMax:5, commitMsTotal:12, gateTicks:($ms / 100 | floor), gateMaxGapMs:25, gateMeanGapMs:22, gateHoles:0, dbMemSamples:($ms / 100 | floor),
-             auditRowsBefore:(if $arm == "M" then 1330578 else 1001 end), auditBytesBefore:(if $arm == "M" then 480305152 else 2000000 end),
+             auditRowsBefore:(if $arm == "M" then 1330578 else 1001 end), auditRowsAfter:(if $arm == "M" then 1330578 else 1001 end),
+             auditBytesBefore:(if $arm == "M" then 480305152 else 2000000 end), auditBytesAfter:(if $arm == "M" then 480305152 else 2000000 end),
              auditActionsBefore:(if $arm == "M" then $target else {"user.created":1, "user.erasure_reasons_viewed":1000} end),
+             auditActionsAfter:(if $arm == "M" then $target else {"user.created":1, "user.erasure_reasons_viewed":1000} end),
+             auditActionsDelta:{},
+             reasonsKept:(if $st == "200" then 0 else null end), reasonsRemoved:(if $st == "200" then 100000 else null end),
              topStatements:[{query:"UPDATE contact_requests SET reason = $1", isAudit:false, totalMs:9000, blkReadMs:10}, {query:"SELECT x FROM audit_logs WHERE ip <> $1", isAudit:true, totalMs:3400.5, blkReadMs:120.2}, {query:"UPDATE audit_logs SET ip = $1", isAudit:true, totalMs:800, blkReadMs:5}]},
      diag:{arm:$arm, replicate:$r, code:$code, atomicity:$at,
        physical:{heapBytes:1000, indexBytes:500, totalBytes:1500, relpages:10, deadTuples:0},
@@ -2813,13 +2823,29 @@ grep -qF '(query ~* '"'"'audit_logs'"'"') AS "isAudit"' "$HERE/qc1/top-statement
 grep -qF "left(regexp_replace(query, '\s+', ' ', 'g'), 200) AS query" "$HERE/qc1/top-statements.sql"
 # R3: unreadable or partial statement evidence never reads as measured zero cost, and missing commit/sampler evidence on a 200 is said.
 prow 1 M 503 delete_timed_out clean | jq -c '.delete.topStatements = null' >"$WORK/r3null.jsonl"
-[[ "$(qc1_probe_summary "$WORK/r3null.jsonl" | jq -c '.replicates[0] | [.class, .statementsAvailable, .statements.topN, .statements.auditStatementsMs, .measurementInvalid, .usable]')" == '["timedOutAtomic",false,null,null,["statements-unavailable"],false]' ]]
+[[ "$(qc1_probe_summary "$WORK/r3null.jsonl" | jq -c '.replicates[0] | [.class, .statementsAvailable, .statements.topN, .statements.auditStatementsMs, .measurementInvalid, .usable]')" == '["timedOutAtomic",false,null,null,["statements-unavailable","judge:metric-missing"],false]' ]]
 prow 1 F 200 none notNeeded | jq -c 'del(.delete.topStatements)' >"$WORK/r3missing.jsonl"
-[[ "$(qc1_probe_summary "$WORK/r3missing.jsonl" | jq -c '.replicates[0] | [.class, .statementsAvailable, .statements.topN, .statements.auditStatementsMs, .measurementInvalid, .usable]')" == '["completed",false,null,null,["statements-unavailable"],false]' ]]
+[[ "$(qc1_probe_summary "$WORK/r3missing.jsonl" | jq -c '.replicates[0] | [.class, .statementsAvailable, .statements.topN, .statements.auditStatementsMs, .measurementInvalid, .usable]')" == '["completed",false,null,null,["statements-unavailable","judge:metric-missing"],false]' ]]
 prow 1 F 200 none notNeeded | jq -c 'del(.delete.topStatements[1].totalMs)' >"$WORK/r3timing.jsonl"
 [[ "$(qc1_probe_summary "$WORK/r3timing.jsonl" | jq -c '.replicates[0] | [.statementsAvailable, .statements.topN, .statements.auditStatementsMs, .measurementInvalid, .usable]')" == '[true,null,null,["statement-timing-missing"],false]' ]]
 prow 1 F 200 none notNeeded | jq -c '.delete.commitCalls = 0 | .delete.gateTicks = 2 | .delete.dbMemSamples = 1' >"$WORK/r3commit.jsonl"
-[[ "$(qc1_probe_summary "$WORK/r3commit.jsonl" | jq -c '.replicates[0] | [.class, .measurementInvalid, .usable]')" == '["completed",["no-commit-seen","sampler-starved","memory-undersampled"],false]' ]]
+[[ "$(qc1_probe_summary "$WORK/r3commit.jsonl" | jq -c '.replicates[0] | [.class, .measurementInvalid, .usable]')" == '["completed",["no-commit-seen","sampler-starved","memory-undersampled","judge:sampler-starved","judge:memory-undersampled","judge:no-commit-seen"],false]' ]]
+# R3: usability reuses the ordinary judge. An instrument finding the judge raises stays unusable; only the expected refusal shape is waived.
+prow 1 F 200 none notNeeded | jq -c '.delete.appHwmReset = false' >"$WORK/r3peak.jsonl"
+[[ "$(qc1_probe_summary "$WORK/r3peak.jsonl" | jq -c '.replicates[0] | [.class, .measurementInvalid, .usable]')" == '["completed",["judge:peak-reset-failed"],false]' ]]
+prow 1 F 200 none notNeeded | jq -c '.delete.gateMaxGapMs = 20000' >"$WORK/r3gap.jsonl"
+[[ "$(qc1_probe_summary "$WORK/r3gap.jsonl" | jq -c '.replicates[0] | [.class, .measurementInvalid, .usable]')" == '["completed",["judge:sampler-gap"],false]' ]]
+prow 1 F 200 none notNeeded | jq -c '.delete.gateHolders = 0' >"$WORK/r3gate.jsonl"
+[[ "$(qc1_probe_summary "$WORK/r3gate.jsonl" | jq -c '.replicates[0] | [.class, .measurementInvalid, .usable]')" == '["completed",["judge:gate-unobserved"],false]' ]]
+prow 1 F 200 none notNeeded | jq -c 'del(.delete.walBytes)' >"$WORK/r3wal.jsonl"
+[[ "$(qc1_probe_summary "$WORK/r3wal.jsonl" | jq -c '.replicates[0] | [.class, .measurementInvalid, .usable]')" == '["completed",["judge:metric-missing"],false]' ]]
+# A refused replicate with clean rollback evidence is usable only when its instruments are sound: a sampler gap is not waived.
+prow 1 M 503 delete_timed_out clean | jq -c '.delete.gateMaxGapMs = 30000' >"$WORK/r3refused.jsonl"
+[[ "$(qc1_probe_summary "$WORK/r3refused.jsonl" | jq -c '.replicates[0] | [.class, .measurementInvalid, .usable]')" == '["timedOutAtomic",["judge:sampler-gap"],false]' ]]
+# The honest positive: an emitted 200 with sound instruments draws no judge finding and stays usable.
+prow 1 F 200 none notNeeded >"$WORK/r3honest.jsonl"
+[[ -z "$(qc1_judge "$WORK/r3honest.jsonl" 6291456)" ]]
+[[ "$(qc1_probe_summary "$WORK/r3honest.jsonl" | jq -c '.replicates[0] | [.class, .measurementInvalid, .usable]')" == '["completed",[],true]' ]]
 # R2: the diagnostic metadata rides beside the instruments, never as one: the judge sees no probe object on the row.
 drow() { # status ms kept removed code atomicity
   jq -nc --argjson ins "{$(ins 1100000)}" --arg st "$1" --argjson ms "$2" --argjson kept "$3" --argjson removed "$4" --arg code "$5" --arg at "$6" '
@@ -2827,7 +2853,9 @@ drow() { # status ms kept removed code atomicity
       gateTicks:($ms / 100 | floor), dbMemSamples:($ms / 100 | floor), gateHolders:1}) as $del
     | {status:"measured", item:6, case:"delete-subject-100000-remove-probeF-r1", size:1000000, workers:0, reasons:100000,
        expect:{items:100000, kept:$kept, removed:$removed}, roles:{requester:0, subject:100000},
-       outcome:{dbOk:($st == "200"), textExact:($st == "200")},
+       outcome:{dbOk:($st == "200"), accountDeleted:(if $st == "200" then "true" else "false" end),
+         reasonsBlank:(if $st == "200" then $removed else 0 end), reasonsWithText:(if $st == "200" then $kept else 100000 end),
+         decisionAudits:(if $st == "200" then ($kept + $removed) else 0 end), textExact:true},
        delete:$del,
        diag:{arm:"F", replicate:1, code:$code, atomicity:$at,
          physical:{heapBytes:1000, indexBytes:500, totalBytes:1500, relpages:10, deadTuples:0},
@@ -2838,30 +2866,140 @@ drow 200 21000 0 100000 none notNeeded >"$WORK/diag-ok.jsonl"
 [[ -z "$(qc1_judge "$WORK/diag-ok.jsonl" 6291456)" ]]   # a clean 200 with the exact emitted metadata draws no invalid finding
 drow 503 39000 0 0 delete_timed_out clean >"$WORK/diag-503.jsonl"
 [[ "$(qc1_judge "$WORK/diag-503.jsonl" 6291456 | jq -r 'select(.failure == "status") | .class')" == invalid ]]   # a 503 on the same shape keeps the ordinary refusal findings
-# R4: four rows are coverage, not a reading. Readiness needs the finalized records and an intact copy.
-readyBase() { # dir
+# R4/R5: four rows are coverage, not a reading. Readiness binds the finalized records and the outer run: every record is one typed
+# object, the summary and the status are recomputed from the raw measurements and must match, the replicates are exactly F,M,M,F, and the
+# directory is the finished qc1 step of the scale record beside it at the same revision. The fixtures below build synthetic collected
+# directories (not runs) and the scale parent that binds them; the reader logic is what they exercise.
+readySources() {
+  local f h
+  for f in "${QC1_SOURCE_FILES[@]}"; do
+    h="$(git -C "$ROOT" show "HEAD:$f" 2>/dev/null | sha256sum | cut -d' ' -f1)"
+    jq -nc --arg p "$f" --arg h "$h" '{path:$p, sha256:$h, matches:true}'
+  done | jq -cs .
+}
+readyEnv() { # dir: a finalized probe environment at this HEAD with a clean instrument record, so the status recompute binds
+  local id64 rev srcs
+  id64="$(printf 'a%.0s' {1..64})"
+  rev="$(git -C "$ROOT" rev-parse HEAD)"
+  srcs="$(readySources)"
+  jq -n --arg rev "$rev" --argjson sources "$srcs" --arg id64 "$id64" '{
+    revision:$rev, image:"qc1-fixture", imageId:("sha256:" + $id64), appImageId:("sha256:" + $id64),
+    postgresImage:"postgres:16", postgresImageId:("sha256:" + $id64), postgresVersion:"16.9", dbImageId:("sha256:" + $id64),
+    appContainerId:$id64, dbContainerId:$id64,
+    appContainers:[{id:$id64, imageId:("sha256:" + $id64), memoryLimitBytes:2147483648}],
+    limits:{droplet:"fixture", dbMemory:"1g", appMemory:"1g", cpuset:"", dbMemoryLimitBytes:1073741824, appMemoryLimitBytes:1073741824},
+    limitsApplied:true, daemon:{rootless:false, sharedDaemon:false}, sources:$sources,
+    calibration:{gate:{ok:true}, dbMemory:{ok:true, samples:3}, appMemory:{ok:true, hwmReset:true}, wal:{ok:true}, commit:{ok:true}},
+    settings:{workers:0, schedulerAppRuns:true, browser:false, autovacuum:"off", checkpointTimeout:"1d", maxWalSize:"4GB", appEnv:"dev",
+      layout:"spread", charset:"multibyte", reasonLen:1000, targetReasonLen:1000,
+      deleteCounts:"0,10,100,1000,10000", secondsPerReason:1, sittingMinutes:1, sizes:"1000000", counts:"0", denseCounts:"none", clicksPerCase:30,
+      nextChangedPresses:1, nextChangedRuns:1, nextChangedOnly:false, profileNextChanged:false, wire:"set-v1", setV1Selftest:"",
+      deleteProbe:{diagnostic:true, order:["F","M","M","F"]}},
+    maxRequestBytes:6291456, database:null, incomplete:false, incompleteReason:"",
+    labels:{}}' >"$1/environment.json"
+}
+readyParent() { # dir parent-file: the scale record binding dir as its finished qc1 step at the same revision
+  local rev
+  rev="$(jq -r .revision "$1/environment.json")"
+  jq -nc --arg rev "$rev" --arg dir "$1" '{revision:$rev, requested:{steps:["qc1"]},
+    steps:[{name:"qc1", command:"qc1-measure.sh --delete-probe", startedAt:"fixture", finishedAt:"fixture", seconds:1, exit:1, verdict:"fail",
+      log:"qc1.log", artifacts:$dir,
+      summary:{complete:false, coverage:"pilot"}}]}' >"$2"
+}
+readyBase() { # dir parent-file
   mkdir -p "$1"
   { prow 1 F 200 none notNeeded; prow 2 M 503 delete_timed_out clean; prow 3 M 503 delete_timed_out clean; prow 4 F 200 none notNeeded; } >"$1/measurements.jsonl"
   qc1_probe_summary "$1/measurements.jsonl" >"$1/probe-summary.json"
-  printf '{"incomplete":false}\n' >"$1/environment.json"
-  printf '{"complete":false}\n' >"$1/evidence-status.json"
+  readyEnv "$1"
+  qc1_evidence_status "$1/measurements.jsonl" 1000000 0 "$1/environment.json" "$(jq -r .revision "$1/environment.json")" 6291456 "" >"$1/evidence-status.json"
+  readyParent "$1" "$2"
 }
-readyBase "$WORK/ready"; [[ "$(qc1_probe_readiness "$WORK/ready")" == ready ]]
-readyBase "$WORK/aborted"; printf '{"outcome":"aborted"}\n' >"$WORK/aborted/abort.json"; [[ "$(qc1_probe_readiness "$WORK/aborted")" == not-ready:aborted ]]
-readyBase "$WORK/failed-copy"; printf 'the run inside could not be confirmed stopped\n' >"$WORK/failed-copy/COLLECTION-FAILED.txt"
-[[ "$(qc1_probe_readiness "$WORK/failed-copy")" == not-ready:collection-failed ]]
-readyBase "$WORK/unfinished"; printf '{"incomplete":true}\n' >"$WORK/unfinished/environment.json"; [[ "$(qc1_probe_readiness "$WORK/unfinished")" == not-ready:environment:incomplete ]]
+readyBase "$WORK/ready" "$WORK/ready-parent.json"; [[ "$(qc1_probe_readiness "$WORK/ready" "$WORK/ready-parent.json")" == ready ]]
+readyBase "$WORK/aborted" "$WORK/aborted-parent.json"; printf '{"outcome":"aborted"}\n' >"$WORK/aborted/abort.json"
+qc1_evidence_status "$WORK/aborted/measurements.jsonl" 1000000 0 "$WORK/aborted/environment.json" "$(jq -r .revision "$WORK/aborted/environment.json")" 6291456 "" "$WORK/aborted/abort.json" >"$WORK/aborted/evidence-status.json"
+[[ "$(qc1_probe_readiness "$WORK/aborted" "$WORK/aborted-parent.json")" == not-ready:aborted ]]
+readyBase "$WORK/failed-copy" "$WORK/failed-copy-parent.json"; printf 'the run inside could not be confirmed stopped\n' >"$WORK/failed-copy/COLLECTION-FAILED.txt"
+[[ "$(qc1_probe_readiness "$WORK/failed-copy" "$WORK/failed-copy-parent.json")" == not-ready:collection-failed ]]
+readyBase "$WORK/unfinished" "$WORK/unfinished-parent.json"
+jq -c '.incomplete = true' "$WORK/unfinished/environment.json" >"$WORK/unfinished/env.json" && mv "$WORK/unfinished/env.json" "$WORK/unfinished/environment.json"
+qc1_evidence_status "$WORK/unfinished/measurements.jsonl" 1000000 0 "$WORK/unfinished/environment.json" "$(jq -r .revision "$WORK/unfinished/environment.json")" 6291456 "" >"$WORK/unfinished/evidence-status.json"
+[[ "$(qc1_probe_readiness "$WORK/unfinished" "$WORK/unfinished-parent.json")" == not-ready:environment:incomplete ]]
 mkdir -p "$WORK/short"; head -n 2 "$WORK/ready/measurements.jsonl" >"$WORK/short/measurements.jsonl"
 qc1_probe_summary "$WORK/short/measurements.jsonl" >"$WORK/short/probe-summary.json"
 cp "$WORK/ready/environment.json" "$WORK/ready/evidence-status.json" "$WORK/short/"
-[[ "$(qc1_probe_readiness "$WORK/short")" == not-ready:incomplete:rows ]]
-readyBase "$WORK/nonatomic"; { prow 1 F 200 none notNeeded; prow 2 M 503 delete_timed_out clean; prow 3 M 503 delete_timed_out nonAtomic:account-changed; prow 4 F 200 none notNeeded; } >"$WORK/nonatomic/measurements.jsonl"
+jq -c --arg dir "$WORK/short" '.steps[0].artifacts = $dir' "$WORK/ready-parent.json" >"$WORK/short/evidence.json"
+[[ "$(qc1_probe_readiness "$WORK/short" "$WORK/short/evidence.json")" == not-ready:measurements:changed,incomplete:rows,summary:order,summary:replicates,status:mismatch ]]
+readyBase "$WORK/nonatomic" "$WORK/nonatomic-parent.json"
+{ prow 1 F 200 none notNeeded; prow 2 M 503 delete_timed_out clean; prow 3 M 503 delete_timed_out nonAtomic:account-changed; prow 4 F 200 none notNeeded; } >"$WORK/nonatomic/measurements.jsonl"
 qc1_probe_summary "$WORK/nonatomic/measurements.jsonl" >"$WORK/nonatomic/probe-summary.json"
-[[ "$(qc1_probe_readiness "$WORK/nonatomic")" == not-ready:replicate-3:nonAtomic:account-changed ]]
-readyBase "$WORK/refused"; { prow 1 F 200 none notNeeded; prow 2 M 503 reason_review_busy clean; prow 3 M 503 delete_timed_out clean; prow 4 F 200 none notNeeded; } >"$WORK/refused/measurements.jsonl"
+qc1_evidence_status "$WORK/nonatomic/measurements.jsonl" 1000000 0 "$WORK/nonatomic/environment.json" "$(jq -r .revision "$WORK/nonatomic/environment.json")" 6291456 "" >"$WORK/nonatomic/evidence-status.json"
+[[ "$(qc1_probe_readiness "$WORK/nonatomic" "$WORK/nonatomic-parent.json")" == not-ready:replicate-3:nonAtomic:account-changed,status:unexpected-invalid ]]
+readyBase "$WORK/refused" "$WORK/refused-parent.json"
+{ prow 1 F 200 none notNeeded; prow 2 M 503 reason_review_busy clean; prow 3 M 503 delete_timed_out clean; prow 4 F 200 none notNeeded; } >"$WORK/refused/measurements.jsonl"
 qc1_probe_summary "$WORK/refused/measurements.jsonl" >"$WORK/refused/probe-summary.json"
-[[ "$(qc1_probe_readiness "$WORK/refused")" == ready ]]   # a known refusal with clean rollback evidence is an expected reason
-readyBase "$WORK/noenv"; rm "$WORK/noenv/environment.json"; [[ "$(qc1_probe_readiness "$WORK/noenv")" == not-ready:missing:environment.json ]]
+qc1_evidence_status "$WORK/refused/measurements.jsonl" 1000000 0 "$WORK/refused/environment.json" "$(jq -r .revision "$WORK/refused/environment.json")" 6291456 "" >"$WORK/refused/evidence-status.json"
+[[ "$(qc1_probe_readiness "$WORK/refused" "$WORK/refused-parent.json")" == ready ]]   # a known refusal with clean rollback evidence is an expected reason
+readyBase "$WORK/noenv" "$WORK/noenv-parent.json"; rm "$WORK/noenv/environment.json"
+[[ "$(qc1_probe_readiness "$WORK/noenv" "$WORK/noenv-parent.json")" == not-ready:missing:environment.json,outer:revision-mismatch ]]
+# R5: the finalized mark is a typed boolean. A string "false", null or a missing field is not finished.
+readyBase "$WORK/strfalse" "$WORK/strfalse-parent.json"
+jq -c '.incomplete = "false"' "$WORK/strfalse/environment.json" >"$WORK/strfalse/env.json" && mv "$WORK/strfalse/env.json" "$WORK/strfalse/environment.json"
+qc1_evidence_status "$WORK/strfalse/measurements.jsonl" 1000000 0 "$WORK/strfalse/environment.json" "$(jq -r .revision "$WORK/strfalse/environment.json")" 6291456 "" >"$WORK/strfalse/evidence-status.json"
+[[ "$(qc1_probe_readiness "$WORK/strfalse" "$WORK/strfalse-parent.json")" == not-ready:environment:incomplete ]]
+readyBase "$WORK/nullfalse" "$WORK/nullfalse-parent.json"
+jq -c '.incomplete = null' "$WORK/nullfalse/environment.json" >"$WORK/nullfalse/env.json" && mv "$WORK/nullfalse/env.json" "$WORK/nullfalse/environment.json"
+qc1_evidence_status "$WORK/nullfalse/measurements.jsonl" 1000000 0 "$WORK/nullfalse/environment.json" "$(jq -r .revision "$WORK/nullfalse/environment.json")" 6291456 "" >"$WORK/nullfalse/evidence-status.json"
+[[ "$(qc1_probe_readiness "$WORK/nullfalse" "$WORK/nullfalse-parent.json")" == not-ready:environment:incomplete ]]
+readyBase "$WORK/multienv" "$WORK/multienv-parent.json"
+{ cat "$WORK/multienv/environment.json"; cat "$WORK/multienv/environment.json"; } >"$WORK/multienv/env.json" && mv "$WORK/multienv/env.json" "$WORK/multienv/environment.json"
+[[ "$(qc1_probe_readiness "$WORK/multienv" "$WORK/multienv-parent.json")" == not-ready:environment:unreadable,environment:incomplete,status:mismatch,outer:revision-mismatch ]]
+readyBase "$WORK/badstatus" "$WORK/badstatus-parent.json"; printf 'not json\n' >"$WORK/badstatus/evidence-status.json"
+[[ "$(qc1_probe_readiness "$WORK/badstatus" "$WORK/badstatus-parent.json")" == not-ready:status:unreadable ]]
+readyBase "$WORK/badline" "$WORK/badline-parent.json"; printf '{oops\n' >>"$WORK/badline/measurements.jsonl"
+[[ "$(qc1_probe_readiness "$WORK/badline" "$WORK/badline-parent.json")" == not-ready:measurements:unreadable,summary:mismatch,status:mismatch ]]
+readyBase "$WORK/empty" "$WORK/empty-parent.json"; : >"$WORK/empty/measurements.jsonl"
+[[ "$(qc1_probe_readiness "$WORK/empty" "$WORK/empty-parent.json")" == not-ready:measurements:changed,summary:mismatch,status:mismatch ]]
+# A fabricated summary with zero figures and usable:true cannot pass: the recompute from the raw rows disagrees.
+readyBase "$WORK/fakezero" "$WORK/fakezero-parent.json"
+jq -c '.replicates[0].statements.auditStatementsMs = 0 | .replicates[0].statements.topN = 0' "$WORK/fakezero/probe-summary.json" >"$WORK/fakezero/sum.json" && mv "$WORK/fakezero/sum.json" "$WORK/fakezero/probe-summary.json"
+[[ "$(qc1_probe_readiness "$WORK/fakezero" "$WORK/fakezero-parent.json")" == not-ready:summary:mismatch ]]
+# Edited measurements without a fresh summary are stale: the recompute disagrees with both saved records.
+readyBase "$WORK/stale" "$WORK/stale-parent.json"
+{ prow 1 F 200 none notNeeded; prow 2 M 503 delete_timed_out clean; prow 3 M 503 delete_timed_out clean; prow 4 F 200 none notNeeded | jq -c '.delete.ms = 50000'; } >"$WORK/stale/measurements.jsonl"
+[[ "$(qc1_probe_readiness "$WORK/stale" "$WORK/stale-parent.json")" == not-ready:summary:mismatch,status:mismatch ]]
+# A duplicated replicate is not four measurements: the status names the duplicate.
+readyBase "$WORK/dupe" "$WORK/dupe-parent.json"
+{ prow 1 F 200 none notNeeded; prow 2 M 503 delete_timed_out clean; prow 2 M 503 delete_timed_out clean; prow 4 F 200 none notNeeded; } >"$WORK/dupe/measurements.jsonl"
+qc1_probe_summary "$WORK/dupe/measurements.jsonl" >"$WORK/dupe/probe-summary.json"
+qc1_evidence_status "$WORK/dupe/measurements.jsonl" 1000000 0 "$WORK/dupe/environment.json" "$(jq -r .revision "$WORK/dupe/environment.json")" 6291456 "" >"$WORK/dupe/evidence-status.json"
+[[ "$(qc1_probe_readiness "$WORK/dupe" "$WORK/dupe-parent.json")" == not-ready:summary:replicates,status:unexpected-invalid ]]
+# A mislabelled replicate (third arm reads F, not M) fails the order check.
+readyBase "$WORK/mislabel" "$WORK/mislabel-parent.json"
+{ prow 1 F 200 none notNeeded; prow 2 M 503 delete_timed_out clean; prow 3 F 503 delete_timed_out clean; prow 4 F 200 none notNeeded; } >"$WORK/mislabel/measurements.jsonl"
+qc1_probe_summary "$WORK/mislabel/measurements.jsonl" >"$WORK/mislabel/probe-summary.json"
+qc1_evidence_status "$WORK/mislabel/measurements.jsonl" 1000000 0 "$WORK/mislabel/environment.json" "$(jq -r .revision "$WORK/mislabel/environment.json")" 6291456 "" >"$WORK/mislabel/evidence-status.json"
+[[ "$(qc1_probe_readiness "$WORK/mislabel" "$WORK/mislabel-parent.json")" == not-ready:summary:order,summary:replicates ]]
+# An aborted status without its separate marker file is a mismatch, not a reading.
+readyBase "$WORK/nostatus" "$WORK/nostatus-parent.json"
+jq -c '.aborted = {outcome:"aborted", exitCode:143}' "$WORK/nostatus/evidence-status.json" >"$WORK/nostatus/st.json" && mv "$WORK/nostatus/st.json" "$WORK/nostatus/evidence-status.json"
+[[ "$(qc1_probe_readiness "$WORK/nostatus" "$WORK/nostatus-parent.json")" == not-ready:status:mismatch ]]
+# The outer record must exist, parse, name this revision, and hold this directory as a finished qc1 step.
+readyBase "$WORK/noparent" "$WORK/noparent-parent.json"; rm "$WORK/noparent-parent.json"
+[[ "$(qc1_probe_readiness "$WORK/noparent" "$WORK/noparent-parent.json")" == not-ready:outer:missing ]]
+readyBase "$WORK/badparent" "$WORK/badparent-parent.json"; printf 'not json\n' >"$WORK/badparent-parent.json"
+[[ "$(qc1_probe_readiness "$WORK/badparent" "$WORK/badparent-parent.json")" == not-ready:outer:unreadable ]]
+readyBase "$WORK/wrongrev" "$WORK/wrongrev-parent.json"
+jq -c '.revision = "0000000000000000000000000000000000000000"' "$WORK/wrongrev-parent.json" >"$WORK/wrongrev-parent2.json" && mv "$WORK/wrongrev-parent2.json" "$WORK/wrongrev-parent.json"
+[[ "$(qc1_probe_readiness "$WORK/wrongrev" "$WORK/wrongrev-parent.json")" == not-ready:outer:revision-mismatch ]]
+readyBase "$WORK/unbound" "$WORK/unbound-parent.json"
+jq -c '.steps[0].artifacts = "/elsewhere/qc1"' "$WORK/unbound-parent.json" >"$WORK/unbound-parent2.json" && mv "$WORK/unbound-parent2.json" "$WORK/unbound-parent.json"
+[[ "$(qc1_probe_readiness "$WORK/unbound" "$WORK/unbound-parent.json")" == not-ready:outer:unbound ]]
+readyBase "$WORK/interrupted" "$WORK/interrupted-parent.json"
+jq -c '.steps[0].verdict = "interrupted"' "$WORK/interrupted-parent.json" >"$WORK/interrupted-parent2.json" && mv "$WORK/interrupted-parent2.json" "$WORK/interrupted-parent.json"
+[[ "$(qc1_probe_readiness "$WORK/interrupted" "$WORK/interrupted-parent.json")" == not-ready:outer:interrupted ]]
+# The parent defaults to the evidence.json beside the directory: one argument is enough on a collected tree.
+mkdir -p "$WORK/auto/qc1"; readyBase "$WORK/auto/qc1" "$WORK/auto/evidence.json"
+[[ "$(qc1_probe_readiness "$WORK/auto/qc1")" == ready ]]
 # The judge is unchanged: a probe-labelled 503 is judged like any 503.
 mut probe503 "$DEL then .case = \"delete-subject-100-mixed-probeM-r2\" | .delete.status = \"503\" else . end"; expect_invalid probe503 status
 

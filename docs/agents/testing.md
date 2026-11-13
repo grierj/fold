@@ -728,16 +728,32 @@ says why. Read `$E/qc1/probe-summary.json` (`qc1_probe_summary` recomputes it fr
 - **Reading it.** Two replicates per arm on one host report what happened; they give no rate and no cause,
   sufficiency or necessity, whatever the split. `differences` and `limits` in the summary name what the
   fixture does not reproduce (no churn, a rebuilt `audit_logs`, one shared filler, no host counters). Before
-  reading, run `qc1_probe_readiness` on the collected evidence directory: it must print `ready`. It refuses
-  a stopped run (`abort.json`), a failed or inconsistent copy (`COLLECTION-FAILED.txt`), an unfinished
-  finalization (`environment.json` incomplete), missing records, row coverage under four replicates, and any
-  replicate that is not `usable` — only `completed`, `timedOutAtomic` and `refused:<known code>` with clean
-  measurement evidence are expected reasons. A run that stops early is `incomplete` and gets no reading.
-  Record the result in `docs/plan/M7.4-ERASURE-INVENTORY.md` 12.3 beside seq 164 as DIAGNOSTIC.
+  reading, bind the collected directory to its records from a fresh shell (no workload running: sourcing
+  inside the workload's own shell does not define the function in yours):
+  ```bash
+  source deploy/digitalocean/qc1/lib.sh && qc1_probe_readiness "$E/qc1"
+  ```
+  It must print `ready`. The second argument, when given, is the scale record to bind against instead of
+  `$E/evidence.json` (the directory's default parent). The gate recomputes `probe-summary.json` and
+  `evidence-status.json` from the raw `measurements.jsonl` with the functions that wrote them and requires
+  an exact match, so a stale, edited or fabricated record cannot pass; it requires the four replicates to be
+  exactly F,M,M,F with every one `usable` — only `completed`, `timedOutAtomic` and `refused:<known code>`
+  with clean measurement evidence are expected reasons, and only the refusal's own status and outcome
+  findings are waived. It refuses a stopped run (`abort.json`), an interrupted or unbound outer run, a
+  failed or inconsistent copy (`COLLECTION-FAILED.txt`), an unfinished finalization (a typed
+  `environment.json` `incomplete` of exactly boolean `false` is required; the string `"false"` is not
+  finished), malformed or changed records, and any unexpected invalid finding. A run that stops early is
+  `incomplete` and gets no reading. A non-zero wrapper exit with no collection failure is the tool's own
+  verdict (the evidence is incomplete by construction); a `COLLECTION-FAILED.txt` is the outer copy failing
+  to bring the evidence out, whatever the tool exited. Record the result in
+  `docs/plan/M7.4-ERASURE-INVENTORY.md` 12.3 beside seq 164 as DIAGNOSTIC.
 - **Checks that run without Docker**: `qc1-fixtures.sh` (the flag refusals, every rollback class and failed
   read, every outcome class and competitor, the full-text audit flag with the long retention shape, invalid
   measurement evidence that never reads as zero, the judge on the exact diagnostic metadata of a 200 and a
-  503, every readiness state, and the order of the reset in the source). The SQL runs only under Docker: the template, the top-up and the scan are first proven by the real
+  503, usability reusing the ordinary judge's instrument findings with only the expected refusal shape waived,
+  every readiness state including recomputed-record mismatches, fabricated and stale records, duplicate and
+  mislabelled replicates, string-typed finalization marks, and missing or unbound outer records, and the order
+  of the reset in the source). The SQL runs only under Docker: the template, the top-up and the scan are first proven by the real
   run, and a mismatch shows as `stateUnmatched` or ends the run.
 
 ### Source guards

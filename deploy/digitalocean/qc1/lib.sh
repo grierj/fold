@@ -1580,9 +1580,16 @@ qc1_probe_atomicity() { # dir
 # A replicate's class, the first that applies: invalid:<why> (no status; a competitor in the window; a refusal with no allow-listed code; a rollback that could not
 # be read), stateUnmatched (an M run whose audit histogram at the start of the window is not the target), nonAtomic:<what>, completed, completedWrong (200 but the
 # database or text is not as asked), timedOutAtomic (503 delete_timed_out, nothing left behind) and refused:<code>.
+# Usability reuses the ordinary judge instead of cloning its thresholds: an instrument or environment finding the judge raises against a probe row (a failed peak
+# reset, a sampler gap or starvation, missing metrics) makes that replicate unusable. The only waiver is the expected shape of a refused deletion with clean
+# rollback evidence: its non-200 status and the refusal's outcome findings. Anything else the judge calls invalid stays unusable.
 qc1_probe_summary() { # measurements.jsonl
+  local judge_invalid cap
+  cap="$(qc1_max_request_bytes 2>/dev/null || printf '0')"
+  judge_invalid="$({ qc1_judge "$1" "$cap" 2>/dev/null || true; } | jq -sc 'map(select(type == "object" and .class == "invalid" and (.case | type) == "string") | {key: "\(.item)|\(.size)|\(.case)", value: .failure}) | group_by(.key) | map({key: .[0].key, value: map(.value)}) | from_entries' 2>/dev/null)"
+  [[ "$judge_invalid" == '{'* ]] || judge_invalid='{}'
   jq -sc --argjson target "$QC1_PROBE_AUDIT_TARGET" --argjson seq164 "$QC1_PROBE_SEQ164_AUDIT_BYTES" --argjson budget "$QC1_DELETE_BUDGET_MS" --argjson tableRows "$QC1_PROBE_TABLE_ROWS" \
-    --argjson differences "$QC1_PROBE_DIFFERENCES" --argjson limits "$QC1_PROBE_LIMITS" '
+    --argjson differences "$QC1_PROBE_DIFFERENCES" --argjson limits "$QC1_PROBE_LIMITS" --argjson judgeInvalid "$judge_invalid" '
     def known: ["delete_timed_out", "reason_review_busy", "reason_review_changed", "restore_detected", "server_error"];
     def num($v): ($v | type) == "number";
     def competitors: [
@@ -1615,16 +1622,21 @@ qc1_probe_summary() { # measurements.jsonl
           else ((if .delete.status == "200" and ((.delete.commitCalls // 0) < 1) then ["no-commit-seen"] else [] end)
                 + (if (.delete.gateTicks // 0) < want then ["sampler-starved"] else [] end)
                 + (if (.delete.dbMemSamples // 0) < ([2, want] | max) then ["memory-undersampled"] else [] end)) end));
+    def judgeWaived:
+      if .delete.status != "200" and .diag.atomicity == "clean" then ["status", "outcome-count", "outcome-db", "outcome-unverified"] else [] end;
     [.[] | select(.item == 6 and ((.case // "") | startswith("delete-subject-100000-remove-probe")))] | sort_by(.diag.replicate) as $rows
-    | ($rows | map({replicate: .diag.replicate, arm: .diag.arm, case: .case, class: klass,
+    | ($rows | map(. as $row
+        | ($judgeInvalid[("\($row.item)|\($row.size)|\($row.case)")] // []) as $jf
+        | (measInvalid + (($jf - judgeWaived) | map("judge:" + .))) as $mi
+        | {replicate: .diag.replicate, arm: .diag.arm, case: .case, class: klass,
         status: .delete.status, code: .diag.code, requestMs: .delete.ms, budgetMs: $budget,
         auditMatchesSeq164Counts: (if .diag.arm == "M" then (.delete.auditActionsBefore == $target) else null end),
         auditActionsBefore: .delete.auditActionsBefore, auditRowsBefore: .delete.auditRowsBefore, auditBytesBefore: .delete.auditBytesBefore,
         auditBytesVsSeq164: (if num(.delete.auditBytesBefore) then ((.delete.auditBytesBefore / $seq164) * 1000 | round / 1000) else null end),
         auditScan: .diag.audit,
         statementsAvailable: ((.delete.topStatements | type) == "array"),
-        measurementInvalid: measInvalid,
-        usable: (((klass == "completed" or klass == "timedOutAtomic") or (klass | startswith("refused:"))) and (measInvalid | length) == 0),
+        measurementInvalid: $mi,
+        usable: (((klass == "completed" or klass == "timedOutAtomic") or (klass | startswith("refused:"))) and ($mi | length) == 0),
         statements: {topN: (if stmtsOk then (.delete.topStatements | length) else null end),
                      auditStatementsMs: (if stmtsOk then ([audit[].totalMs] | add // null) else null end),
                      auditStatementsBlkReadMs: (if stmtsOk then ([audit[].blkReadMs] | add // null) else null end),
@@ -1641,27 +1653,107 @@ qc1_probe_summary() { # measurements.jsonl
 }
 
 # Whether a collected diagnostic directory is fit to read: row coverage alone is
-# not enough. Prints ready, or not-ready:<reasons>. It needs the finalized
-# probe-summary.json with all four replicates usable, no abort.json, no
-# COLLECTION-FAILED.txt from the outer copy, and the finalized environment and
-# evidence records with the run marked finished. The only expected replicate
-# outcomes are completed, timedOutAtomic and refused:<known code> (usable says
-# so per replicate); a stopped run, a failed copy and any other class or
-# invalid measurement stay unusable for interpretation. The deliberate
-# by-construction gaps (no browser, counts 0, dense none, an incomplete matrix)
-# are in settings.deleteProbe and the summary's differences, not failures here.
-qc1_probe_readiness() { # dir
-  local d="$1" gaps=() s r
+# not enough. Prints ready, or not-ready:<reasons>. Each finalized record must
+# be one typed object, and the saved summary and status are recomputed from the
+# raw measurements with the functions that wrote them and must match, so a
+# stale, edited or fabricated record cannot pass. The four replicates must be
+# exactly F,M,M,F in order with every one usable, and the directory must be the
+# finished qc1 step of the scale record beside it at the same revision. Only the
+# deliberate diagnostic omissions (the matrix the probe never runs) and the
+# expected refusal findings of a non-200 with clean rollback stay allowed; a
+# stopped or interrupted run, a failed copy, an aborted or unfinished
+# finalization and any other invalid finding stay fatal. The scale step's own
+# verdict is not judged here: the probe wrapper exits non-zero by construction,
+# so the matrix verdict of that step is fail while its diagnostic records are
+# what this gate reads. The by-construction gaps (no browser, counts 0, dense
+# none, an incomplete matrix) are in settings.deleteProbe and the summary's
+# differences, not failures here.
+qc1_probe_readiness() { # dir [parent-evidence.json]
+  local d parent gaps n rows4 measured_ok recomputed status2 sizes counts dense cap rev penv match dart art v a r
+  d="${1%/}"
+  parent="${2:-}"
+  gaps=()
+  measured_ok=0
+  match=0
+  [[ -n "$parent" ]] || parent="$(dirname "$d")/evidence.json"
   [[ -f "$d/probe-summary.json" ]] || { echo 'not-ready:no-probe-summary'; return 0; }
   [[ -f "$d/measurements.jsonl" ]] || gaps+=('missing:measurements.jsonl')
   [[ -f "$d/environment.json" ]] || gaps+=('missing:environment.json')
   [[ -f "$d/evidence-status.json" ]] || gaps+=('missing:evidence-status.json')
-  if [[ -f "$d/environment.json" ]] && [[ "$(jq -r '.incomplete // true' "$d/environment.json" 2>/dev/null)" != false ]]; then gaps+=('environment:incomplete'); fi
+  if [[ -f "$d/environment.json" ]] && [[ "$(jq -c 'type' "$d/environment.json" 2>/dev/null)" != '"object"' ]]; then gaps+=('environment:unreadable'); fi
+  if [[ -f "$d/evidence-status.json" ]] && [[ "$(jq -c 'type' "$d/evidence-status.json" 2>/dev/null)" != '"object"' ]]; then gaps+=('status:unreadable'); fi
+  if [[ -f "$d/probe-summary.json" ]] && [[ "$(jq -c 'type' "$d/probe-summary.json" 2>/dev/null)" != '"object"' ]]; then gaps+=('summary:unreadable'); fi
+  # The finalized mark is a typed boolean: a string "false", null or a missing
+  # field must not read as finished.
+  if [[ -f "$d/environment.json" ]] && [[ "$(jq -r 'if type == "object" and .incomplete == false then "finalized" else "open" end' "$d/environment.json" 2>/dev/null)" != finalized ]]; then gaps+=('environment:incomplete'); fi
+  if [[ -f "$d/measurements.jsonl" ]]; then
+    if n="$(jq -sc 'length' "$d/measurements.jsonl" 2>/dev/null)"; then
+      rows4="$(jq -sc '[.[] | select(type == "object" and .item == 6 and ((.case // "") | startswith("delete-subject-100000-remove-probe")))] | length' "$d/measurements.jsonl" 2>/dev/null || echo -1)"
+      if [[ "$n" == 4 && "$rows4" == 4 ]]; then measured_ok=1; else gaps+=('measurements:changed'); fi
+    else gaps+=('measurements:unreadable'); fi
+  fi
+  if [[ -f "$d/probe-summary.json" ]] && [[ "$(jq -c 'type' "$d/probe-summary.json" 2>/dev/null)" == '"object"' ]]; then
+    [[ "$(jq -r 'if .incomplete == false then "closed" else "open" end' "$d/probe-summary.json" 2>/dev/null)" == closed ]] || gaps+=('incomplete:rows')
+    [[ "$(jq -c '.order' "$d/probe-summary.json" 2>/dev/null)" == '["F","M","M","F"]' ]] || gaps+=('summary:order')
+    [[ "$(jq -c '[(.replicates // [])[] | [.replicate, .arm]]' "$d/probe-summary.json" 2>/dev/null)" == '[[1,"F"],[2,"M"],[3,"M"],[4,"F"]]' ]] || gaps+=('summary:replicates')
+    if recomputed="$(qc1_probe_summary "$d/measurements.jsonl" 2>/dev/null)" && [[ -n "$recomputed" ]]; then
+      [[ "$(jq -S -c . "$d/probe-summary.json" 2>/dev/null)" == "$(jq -S -c . <<<"$recomputed" 2>/dev/null)" ]] || gaps+=('summary:mismatch')
+    else gaps+=('summary:mismatch'); fi
+    while IFS= read -r r; do gaps+=("replicate-$r"); done < <(jq -r '.replicates[]? | select(.usable != true) | "\(.replicate // "?"):\(.class // "unknown")"' "$d/probe-summary.json" 2>/dev/null)
+  fi
+  if [[ -f "$d/evidence-status.json" ]] && [[ "$(jq -c 'type' "$d/evidence-status.json" 2>/dev/null)" == '"object"' ]] \
+    && [[ -f "$d/environment.json" ]] && [[ -f "$d/measurements.jsonl" ]]; then
+    sizes="$(jq -r '.settings.sizes // ""' "$d/environment.json" 2>/dev/null)"
+    counts="$(jq -r '.settings.counts // ""' "$d/environment.json" 2>/dev/null)"
+    dense="$(jq -r '.settings.denseCounts // ""' "$d/environment.json" 2>/dev/null)"
+    cap="$(jq -c '.maxRequestBytes // 0' "$d/environment.json" 2>/dev/null)"
+    rev="$(jq -r '.revision // ""' "$d/environment.json" 2>/dev/null)"
+    [[ "$dense" == none ]] && dense=""
+    if [[ -s "$d/abort.json" ]]; then status2="$(qc1_evidence_status "$d/measurements.jsonl" "$sizes" "$counts" "$d/environment.json" "$rev" "$cap" "$dense" "$d/abort.json" 2>/dev/null)" || status2=""
+    else status2="$(qc1_evidence_status "$d/measurements.jsonl" "$sizes" "$counts" "$d/environment.json" "$rev" "$cap" "$dense" 2>/dev/null)" || status2=""; fi
+    if [[ -z "${status2:-}" ]]; then gaps+=('status:mismatch')
+    else
+      [[ "$(jq -S -c . "$d/evidence-status.json" 2>/dev/null)" == "$(jq -S -c . <<<"$status2" 2>/dev/null)" ]] || gaps+=('status:mismatch')
+      # Only the expected refusal shape may be invalid: a probe row that did not
+      # answer 200, with clean rollback evidence, may carry the non-200 status
+      # and the refusal's outcome findings. Anything else invalid (a duplicate
+      # row, an environment or settings disagreement, an instrument finding, a
+      # refusal without a clean rollback) fails the read.
+      if (( measured_ok )); then
+        [[ "$(jq --slurpfile m "$d/measurements.jsonl" -c '
+          ($m | map(select(type == "object") | {key: "\(.item)|\(.size)|\(.case)", value: {st: (.delete.status // ""), at: (.diag.atomicity // "")}}) | from_entries) as $rows
+          | [.invalid[]? | (.item // null) as $i | (.size // null) as $z | (.case // "") as $c | (.failure // "") as $f
+            | select($i != 6
+              or ($c | startswith("delete-subject-100000-remove-probe") | not)
+              or ((["status", "outcome-count", "outcome-db", "outcome-unverified"] | index($f)) | not)
+              or (($rows["\($i)|\($z)|\($c)"] // null) | not)
+              or $rows["\($i)|\($z)|\($c)"].st == "200"
+              or $rows["\($i)|\($z)|\($c)"].at != "clean")] | length' "$d/evidence-status.json" 2>/dev/null)" == 0 ]] || gaps+=('status:unexpected-invalid')
+      fi
+    fi
+  fi
+  if [[ ! -f "$parent" ]]; then gaps+=('outer:missing')
+  elif [[ "$(jq -c 'type' "$parent" 2>/dev/null)" != '"object"' ]]; then gaps+=('outer:unreadable')
+  else
+    rev=""
+    [[ -f "$d/environment.json" ]] && rev="$(jq -r '.revision // ""' "$d/environment.json" 2>/dev/null)"
+    penv="$(jq -r '.revision // ""' "$parent" 2>/dev/null)"
+    if [[ -z "$rev" || -z "$penv" || "$rev" != "$penv" ]]; then gaps+=('outer:revision-mismatch')
+    else
+      dart="$(cd "$d" 2>/dev/null && pwd -P || printf '%s' "$d")"
+      while IFS=$'\t' read -r v a; do
+        [[ -n "$a" ]] || continue
+        art="$(cd "$a" 2>/dev/null && pwd -P || printf '%s' "$a")"
+        if [[ "$art" == "$dart" ]]; then
+          match=1
+          [[ "$v" == interrupted ]] && gaps+=('outer:interrupted')
+          break
+        fi
+      done < <(jq -r '.steps[]? | select(.name == "qc1") | "\(.verdict // "")\t\(.artifacts // "")"' "$parent" 2>/dev/null)
+      (( match )) || gaps+=('outer:unbound')
+    fi
+  fi
   [[ ! -e "$d/abort.json" ]] || gaps+=('aborted')
   [[ ! -e "$d/COLLECTION-FAILED.txt" ]] || gaps+=('collection-failed')
-  s="$(jq -c '.incomplete, (.replicates // [] | length)' "$d/probe-summary.json" 2>/dev/null || true)"
-  if [[ "$s" != 'false
-4' ]]; then gaps+=('incomplete:rows'); fi
-  while IFS= read -r r; do gaps+=("replicate-$r"); done < <(jq -r '.replicates[]? | select(.usable != true) | "\(.replicate // "?"):\(.class // "unknown")"' "$d/probe-summary.json" 2>/dev/null)
   if (( ${#gaps[@]} )); then echo "not-ready:$(IFS=,; echo "${gaps[*]}")"; else echo ready; fi
 }
