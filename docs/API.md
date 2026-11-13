@@ -1379,15 +1379,19 @@ the same ID and never reads as "not saved". Limits:
   list is an aid, not proof that no reasons remain.
 - A readable 404 from an account page shows "This account no longer exists." with
   no retry, because the server answers the same for a missing id and for a live
-  account. The page cannot tell which. Any other failed read, an unreadable 404
-  included, shows `reason_review_busy` copy and retries from the same cursor.
+  account. The page cannot tell which. A readable 401 or 403 locks the view with
+  sign-in or adult-admin wording and no retry. Other failed reads, including an
+  unreadable 404, show `reason_review_busy` copy and offer Try again from the
+  last accepted cursor.
 - The page keeps every id as a decimal string. The attempt routes take
   `subjectUserId` as a JSON number, so an account whose id is not a safe integer
   (beyond 2^53 − 1) can be listed and read but not saved: Save sends nothing and
-  shows "That didn't work." No sequence in the schema is expected to reach such an
-  id.
-- After `history_unavailable` or `restore_detected` the page keeps no choices and
-  locks Save until a reload succeeds.
+  shows "That didn't work."
+- After `history_unavailable` or a definitive restore response to mint or save,
+  Save is disabled and the old choices remain visible but disabled. Reload
+  discards those choices. If settle reports a restore, the attempt remains
+  unresolved and Check again settles the same ID. A later `history_unavailable`
+  answer leads to the reload without carrying choices.
 
 Restore limits. The save runs in the same fenced transaction as a deletion, so
 the barrier and its limits are the deletion's: only an in-memory floor detects a
