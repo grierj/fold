@@ -1277,6 +1277,50 @@ func TestCanReviewErasureReasons(t *testing.T) {
 	}
 }
 
+func TestCanReviewLegacyErasureReasons(t *testing.T) {
+	age := func(n int) *int { return &n }
+	admin := func(teen bool) *Person { return &Person{ID: 1, Admin: true, Teen: teen} }
+	for _, tc := range []struct {
+		name    string
+		actor   ContactAccount
+		deleted bool
+		want    bool
+	}{
+		{"unknown age, not a teen", ContactAccount{Person: admin(false), Active: true}, true, true},
+		{"adult 18", ContactAccount{Person: admin(false), Active: true, AgeYears: age(18)}, true, true},
+		{"adult 40", ContactAccount{Person: admin(false), Active: true, AgeYears: age(40)}, true, true},
+		{"known 17, not a teen", ContactAccount{Person: admin(false), Active: true, AgeYears: age(17)}, true, false},
+		{"teen at 13", ContactAccount{Person: admin(true), Active: true, AgeYears: age(13)}, true, false},
+		{"teen at 17", ContactAccount{Person: admin(true), Active: true, AgeYears: age(17)}, true, false},
+		{"teen with no known age", ContactAccount{Person: admin(true), Active: true}, true, false},
+		{"not active", ContactAccount{Person: admin(false)}, true, false},
+		{"not an admin", ContactAccount{Person: &Person{ID: 1}, Active: true}, true, false},
+		{"nil person", ContactAccount{Active: true}, true, false},
+		{"the account is not deleted", ContactAccount{Person: admin(false), Active: true}, false, false},
+		{"a live account and an inactive admin", ContactAccount{Person: admin(false)}, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CanReviewLegacyErasureReasons(tc.actor, tc.deleted); got != tc.want {
+				t.Fatalf("CanReviewLegacyErasureReasons=%t, want %t", got, tc.want)
+			}
+		})
+	}
+	// The legacy rule uses the live rule's adult test, so the two cannot drift
+	// on age: for every actor they agree when the live rule's account checks
+	// pass (a deletable account with enough admins).
+	target := &Person{ID: 9}
+	for _, actor := range []ContactAccount{
+		{Person: admin(false), Active: true},
+		{Person: admin(false), Active: true, AgeYears: age(17)},
+		{Person: admin(true), Active: true, AgeYears: age(30)},
+		{Person: admin(false), Active: true, AgeYears: age(18)},
+	} {
+		if CanReviewLegacyErasureReasons(actor, true) != CanReviewErasureReasons(actor, target, 2) {
+			t.Errorf("legacy and live rules disagree on the actor's age for %+v", actor)
+		}
+	}
+}
+
 func TestErasureReasonItemState(t *testing.T) {
 	for _, tc := range []struct {
 		name string

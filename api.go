@@ -340,6 +340,10 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	// leave behind, for the admin to review (T07B-2b). A POST: it writes a view
 	// audit row.
 	v1.POST("/admin/users/:id/erasure-reasons/page", a.apiAuth(), a.apiAdmin(), a.apiAdminErasureReasonsPage)
+	// The undecided reasons of already-deleted accounts (T07B-3a), and a probe for
+	// whether there are any. Both read-only: no text, no audit row.
+	v1.GET("/admin/erasure-reasons/legacy", a.apiAuth(), a.apiAdmin(), a.apiAdminLegacyReasons)
+	v1.GET("/admin/erasure-reasons/legacy/probe", a.apiAuth(), a.apiAdmin(), a.apiAdminLegacyReasonsProbe)
 	// Attempt ids for the deletion and settling a lost reply (T07B-1b). Both
 	// are CSRF-protected POSTs; the id travels in the body, never the path.
 	v1.POST("/admin/operation-attempts", a.apiAuth(), a.apiAdmin(), a.apiAdminMintOperationAttempt)

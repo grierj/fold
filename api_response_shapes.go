@@ -415,3 +415,36 @@ type contactGrantsResponseJSON struct {
 type accountRequestsResponseJSON struct {
 	Requests []accountRequestJSON `json:"requests"`
 }
+
+// legacyDiscoveryItemJSON is one undecided reason in the legacy review list:
+// only the request, as a decimal string (a request id is signed 64-bit and must
+// survive JavaScript). The text, the hash and the other person arrive only with
+// an audited per-account page.
+type legacyDiscoveryItemJSON struct {
+	RequestID string `json:"requestId"`
+}
+
+// legacyDiscoveryAccountJSON groups a page's items by deleted account. userId
+// is the account's users id as a decimal string and is the only reference a
+// person is shown beside "Deleted account"; the client merges accounts across
+// pages by it.
+type legacyDiscoveryAccountJSON struct {
+	UserID string                    `json:"userId"`
+	Name   string                    `json:"name"`
+	Items  []legacyDiscoveryItemJSON `json:"items"`
+}
+
+// legacyReasonDiscoveryJSON answers GET /admin/erasure-reasons/legacy: one
+// request-atomic unit, at most 100 requests and 200 items, both parties of a
+// request together. Accounts are in first-seen order and may continue on the
+// next page; no total is claimed. next is the cursor, null when the table ended.
+type legacyReasonDiscoveryJSON struct {
+	Accounts []legacyDiscoveryAccountJSON `json:"accounts"`
+	Next     *string                      `json:"next"`
+}
+
+// legacyReasonProbeJSON answers GET /admin/erasure-reasons/legacy/probe. found
+// false proves only that the first unit had none.
+type legacyReasonProbeJSON struct {
+	Found bool `json:"found"`
+}

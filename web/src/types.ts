@@ -1872,3 +1872,38 @@ export interface EmailChangeCancelledResponse {
 export interface RoomBookingResponse {
   booking: RoomBooking | null;
 }
+
+// ---- Deleted-accounts review list (GET /admin/erasure-reasons/legacy and its
+// probe, T07B-3a). Read-only: a request id and an account reference, never the
+// reason text. The page that consumes these is T-302. ----
+
+/** @public Used by the legacy review page (T-302) once it lands. */
+export interface LegacyDiscoveryItem {
+  // Decimal string: a request id is signed 64-bit.
+  requestId: string;
+}
+
+/** @public Used by the legacy review page (T-302) once it lands. */
+export interface LegacyDiscoveryAccount {
+  // The deleted account's users id as a decimal string; the reference shown
+  // beside "Deleted account" is derived from it. Merge accounts across pages by it.
+  userId: string;
+  name: string;
+  items: LegacyDiscoveryItem[];
+}
+
+/**
+ * @public Used by the legacy review page (T-302) once it lands. One
+ * request-atomic unit: at most 100 requests and 200 items, both parties of a
+ * request on the same page. An account may continue on the next page; no total
+ * is claimed. next is null when the table ended.
+ */
+export interface LegacyReasonDiscovery {
+  accounts: LegacyDiscoveryAccount[];
+  next: string | null;
+}
+
+/** @public Used by the legacy review page (T-302) once it lands. found false proves only that the first unit had none. */
+export interface LegacyReasonProbe {
+  found: boolean;
+}
