@@ -2,7 +2,7 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ErasureReasonItem } from "../types";
-import { ReasonReviewList, type ReasonChoice } from "./ReasonReviewList";
+import { deletedAccountLabel, ReasonReviewList, type ReasonChoice } from "./ReasonReviewList";
 
 const CHANGED_COPY = "Changed since you looked: choose again";
 
@@ -86,6 +86,13 @@ describe("ReasonReviewList", () => {
     expect(screen.getByText(/Deleted account · ref 41/)).toBeInTheDocument();
     expect(screen.getByText(/Deleted account · ref 52/)).toBeInTheDocument();
     expect(screen.queryByText(/Lee Leader/)).not.toBeInTheDocument();
+  });
+
+  it("spells a deleted account one way, with its full-width reference or none", () => {
+    expect(deletedAccountLabel("9007199254740993")).toBe("Deleted account · ref 9007199254740993");
+    expect(deletedAccountLabel()).toBe("Deleted account");
+    show([item({ counterpartDeleted: true, counterpartName: "Deleted account", counterpartRef: "9007199254740993" })]);
+    expect(screen.getByText(/Deleted account · ref 9007199254740993/)).toBeInTheDocument();
   });
 
   it("names a living counterpart and says which part the account had", () => {

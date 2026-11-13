@@ -1,5 +1,6 @@
 import { expect, type APIRequestContext, type Locator, type Page, type Request } from "@playwright/test";
 import { apiAs, email, fromMore, LONG_GROUP_NAME } from "./helpers";
+import { uiLegacyAccount } from "./legacy-reasons";
 
 // The pages the UI checks cover (a11y.spec.ts, layout.spec.ts). Each has the
 // person who opens it and a handle that shows the page has loaded.
@@ -32,6 +33,8 @@ export async function uiPages(request: APIRequestContext): Promise<UIPage[]> {
       bodyHtml: "<p>Hi {{first_name}}, we're meeting in <strong>Room 104</strong> this week.</p><ul><li>Bring a friend</li><li>Snacks at 6:45</li></ul>",
     })) as { message: { id: number; subject: string } });
   }
+  // A deleted account with undecided reasons, through the test binary's seed route (legacy-reasons.ts).
+  const legacy = await uiLegacyAccount(request);
   const heading = (name: string) => (p: Page) => p.getByRole("heading", { name, level: 1 });
   return [
     { id: "home-signed-out", who: null, path: "/", ready: (p) => p.getByText("Room 201 class").first() },
@@ -97,6 +100,11 @@ export async function uiPages(request: APIRequestContext): Promise<UIPage[]> {
         await fromMore(row, "Delete");
         await expect(row.getByRole("list", { name: "Contact-request reasons" })).toBeVisible();
       } },
+    // The deleted-accounts review (T07B-3b): the list, and one account's reasons with nothing chosen.
+    { id: "admin-deleted-reasons", who: "grier", path: "/admin/deleted-reasons", ready: heading("Deleted accounts with reasons to review"),
+      prepare: async (p) => { await expect(p.getByRole("link", { name: `Deleted account · ref ${legacy}`, exact: true })).toBeVisible(); } },
+    { id: "admin-deleted-reasons-account", who: "grier", path: `/admin/deleted-reasons?account=${legacy}`, ready: heading(`Deleted account · ref ${legacy}`),
+      prepare: async (p) => { await expect(p.getByRole("list", { name: "Contact-request reasons" }).getByRole("listitem")).toHaveCount(3); } },
     { id: "admin-system", who: "grier", path: "/admin?tab=system", ready: (p) => p.getByRole("heading", { name: "Background tasks", level: 2 }) },
     // Both the catalog and the match section (the seed types "Room 201" on its dates) are loaded before it is scanned.
     { id: "admin-rooms", who: "grier", path: "/admin?tab=rooms",

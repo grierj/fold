@@ -733,3 +733,230 @@ func TestWalkModels(t *testing.T) {
 		t.Errorf("empty: %d pages, %d statements, %d rows; want 21, 161, 1000001", pages, stmts, sent)
 	}
 }
+
+// ---- ScanParties (the batch-qualified mode, T07B-3a) ----
+
+// partiesOf is the legacy-shaped rule over the fake rows: the requester
+// qualifies when it is the target user and the row has a reason, the subject
+// when it is the other user 98 and the row has a reason, so a row can qualify
+// for none, either or both parties.
+func partiesOf(r Row) Parties {
+	if !r.HasReason {
+		return Parties{}
+	}
+	return Parties{Requester: r.RequesterID == target || r.RequesterID == 99, Subject: r.SubjectUserID == 98 && r.RequesterID == 99}
+}
+
+// perBatch lifts the per-row rule to a batch qualifier and counts its calls.
+func perBatch(calls *[]int) BatchQualifier {
+	return func(rows []Row) ([]Parties, error) {
+		if calls != nil {
+			*calls = append(*calls, len(rows))
+		}
+		out := make([]Parties, len(rows))
+		for i, r := range rows {
+			out[i] = partiesOf(r)
+		}
+		return out, nil
+	}
+}
+
+func runParties(s *source, after *int64, p Params, h Hooks) (PartyUnit, error) {
+	return ScanParties(s.query, perBatch(nil), after, p, h)
+}
+
+func requestsOf(u PartyUnit) []int64 {
+	var out []int64
+	for _, it := range u.Items {
+		if len(out) == 0 || out[len(out)-1] != it.Request {
+			out = append(out, it.Request)
+		}
+	}
+	return out
+}
+
+func statements(s *source) [][2]int64 {
+	var out [][2]int64
+	for _, st := range s.log {
+		a := int64(math.MinInt64) // nil cursor, which no test id uses
+		if st.After != nil {
+			a = *st.After
+		}
+		out = append(out, [2]int64{a, int64(st.Limit)})
+	}
+	return out
+}
+
+// The batch-qualified scan returns the per-row scan's requests, cursor and
+// statement sequence on equal inputs (a rule that decides a row from itself),
+// over random rows with the signed boundary ids, every bound, every cursor.
+func TestScanPartiesMatchesThePerRowMode(t *testing.T) {
+	rng := rand.New(rand.NewSource(301))
+	pool := []int64{math.MinInt64 + 1, -1000, -2, -1, 0, 1, 2, 3, 7, 100, 4000, math.MaxInt64 - 1, math.MaxInt64}
+	for round := 0; round < 40; round++ {
+		n := rng.Intn(36)
+		set := map[int64]bool{}
+		for len(set) < n {
+			if rng.Intn(3) == 0 {
+				set[pool[rng.Intn(len(pool))]] = true
+			} else {
+				set[rng.Int63n(2000)-1000] = true
+			}
+		}
+		ids := make([]int64, 0, len(set))
+		for id := range set {
+			ids = append(ids, id)
+		}
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+		rows := make([]Row, len(ids))
+		for i, id := range ids {
+			rows[i] = Row{ID: id, RequesterID: []int64{99, target, 5}[rng.Intn(3)], SubjectUserID: []int64{98, 4}[rng.Intn(2)], HasReason: rng.Intn(3) > 0}
+		}
+		cursors := []*int64{nil}
+		for i := range ids {
+			cursors = append(cursors, &ids[i])
+		}
+		for _, unit := range []int{3, 7, 20, 1000} {
+			for _, first := range []int{1, 2, 5, 256} {
+				for _, cap := range []int{1, 3, 100} {
+					for _, after := range cursors {
+						perRow := newSource(rows)
+						want, err := Scan(perRow.query, func(r Row) bool { return partiesOf(r).Any() }, after, params(unit, first, cap), Hooks{})
+						if err != nil {
+							t.Fatal(err)
+						}
+						batched := newSource(rows)
+						got, err := runParties(batched, after, params(unit, first, cap), Hooks{})
+						if err != nil {
+							t.Fatal(err)
+						}
+						if !ptrEq(got.Next, want.Next) || got.Requests != len(want.Requests) ||
+							(len(want.Requests) > 0 && !reflect.DeepEqual(requestsOf(got), want.Requests)) {
+							t.Fatalf("round %d unit %d first %d cap %d: batched %v next %v, per-row %s", round, unit, first, cap, requestsOf(got), got.Next, fmtUnit(want))
+						}
+						if !reflect.DeepEqual(statements(batched), statements(perRow)) {
+							t.Fatalf("round %d unit %d first %d cap %d: statements %v, per-row %v", round, unit, first, cap, statements(batched), statements(perRow))
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// A two-party request is one request: it is the 100th as a whole (101 items
+// from 100 requests) or the 101st as a whole (the next page), whichever side of
+// a batch boundary its row falls, and its parties come requester first.
+func TestScanPartiesCountsRequestsAndNeverSplitsOne(t *testing.T) {
+	both := func(id int64) Row { return Row{ID: id, RequesterID: 99, SubjectUserID: 98, HasReason: true} }
+	single := func(id int64) Row { return Row{ID: id, RequesterID: target, SubjectUserID: 5, HasReason: true} }
+	for _, first := range []int{1, 7, 99, 100, 101, 256} {
+		for pos := 0; pos < 2; pos++ {
+			// pos 0: the two-party request is the 100th; pos 1: the 101st.
+			var rows []Row
+			id := int64(-50)
+			add := func(r Row) { rows = append(rows, r) }
+			for i := 0; i < 99; i++ {
+				add(single(id))
+				id++
+				if i%9 == 0 { // rows that qualify for nobody, so the batch edge is not the request edge
+					add(Row{ID: id, RequesterID: 5, SubjectUserID: 4, HasReason: true})
+					id++
+				}
+			}
+			if pos == 1 {
+				add(single(id))
+				id++
+			}
+			twoID := id
+			add(both(twoID))
+			id++
+			add(single(id))
+			s := newSource(rows)
+			u, err := runParties(s, nil, params(1000, first, 100), Hooks{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if u.Requests != 100 {
+				t.Fatalf("first %d pos %d: %d requests, want 100", first, pos, u.Requests)
+			}
+			if pos == 0 {
+				if len(u.Items) != 101 || u.Next == nil || *u.Next != twoID {
+					t.Fatalf("first %d: the 100th two-party request: %d items next %v, want 101 items and next %d", first, len(u.Items), u.Next, twoID)
+				}
+				a, b := u.Items[99], u.Items[100]
+				if a != (Item{twoID, 99}) || b != (Item{twoID, 98}) {
+					t.Fatalf("first %d: the two parties are %v then %v, want requester 99 then subject 98", first, a, b)
+				}
+			} else {
+				if len(u.Items) != 100 || u.Next == nil || *u.Next == twoID {
+					t.Fatalf("first %d: the 101st two-party request leaked into page 1: %d items next %v", first, len(u.Items), u.Next)
+				}
+				// Page 2 starts after the cursor and holds the whole request.
+				u2, err := runParties(newSource(rows), u.Next, params(1000, first, 100), Hooks{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(u2.Items) != 3 || u2.Items[0] != (Item{twoID, 99}) || u2.Items[1] != (Item{twoID, 98}) {
+					t.Fatalf("first %d: page 2 = %v, want the two-party request whole then the last single", first, u2.Items)
+				}
+			}
+		}
+	}
+}
+
+// A request with one qualifying party is one item and one request, a request
+// with none is skipped, and the qualifier is called once per statement batch
+// with exactly that batch's rows.
+func TestScanPartiesQualifierSeesWholeBatches(t *testing.T) {
+	var rows []Row
+	for i := int64(0); i < 10; i++ {
+		rows = append(rows, Row{ID: i, RequesterID: target, SubjectUserID: 5, HasReason: i%2 == 0})
+	}
+	var calls []int
+	s := newSource(rows)
+	u, err := ScanParties(s.query, perBatch(&calls), nil, params(10, 2, 100), Hooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(calls, []int{2, 4, 4}) || u.Requests != 5 || len(u.Items) != 5 {
+		t.Fatalf("calls %v requests %d items %d, want batches 2,4,4 and 5 single-party requests", calls, u.Requests, len(u.Items))
+	}
+	if u.Next == nil || *u.Next != 9 {
+		t.Fatalf("a whole unit read without a full page ends at the last id read: %v", u.Next)
+	}
+}
+
+func TestScanPartiesFailuresNeverMakeAPage(t *testing.T) {
+	rows := mkRows(seq(10, 1, 1), func(int) bool { return true })
+	boom := errors.New("lookup failed")
+	// A qualifier error fails the scan; it is never an empty or partial page.
+	s := newSource(rows)
+	_, err := ScanParties(s.query, func([]Row) ([]Parties, error) { return nil, boom }, nil, params(10, 4, 100), Hooks{})
+	if !errors.Is(err, boom) {
+		t.Fatalf("qualifier error: %v", err)
+	}
+	// A qualifier that answers for the wrong number of rows is refused.
+	s = newSource(rows)
+	_, err = ScanParties(s.query, func(r []Row) ([]Parties, error) { return make([]Parties, len(r)-1), nil }, nil, params(10, 4, 100), Hooks{})
+	if err == nil {
+		t.Fatal("a short qualifier answer was accepted")
+	}
+	// Query, scan and drain failures behave as in Scan.
+	for name, set := range map[string]func(*source){
+		"query":  func(s *source) { s.failQuery = map[int]error{1: boom} },
+		"scan":   func(s *source) { s.failScanAt = map[int]int{0: 2} },
+		"drain":  func(s *source) { s.failDrain = map[int]int{0: 1} },
+		"close":  func(s *source) { s.failCloseOK = map[int]error{0: boom} },
+		"postok": func(s *source) { s.postCloseErr = map[int]error{0: boom} },
+	} {
+		s := newSource(rows)
+		set(s)
+		if u, err := runParties(s, nil, params(10, 4, 100), Hooks{}); err == nil || len(u.Items) != 0 {
+			t.Errorf("%s failure: %v items %d, want an error and no items", name, err, len(u.Items))
+		}
+	}
+	if _, err := ScanParties(newSource(rows).query, perBatch(nil), nil, Params{}, Hooks{}); err == nil {
+		t.Fatal("zero bounds accepted")
+	}
+}

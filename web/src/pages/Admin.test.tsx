@@ -25,7 +25,7 @@ vi.mock("../api/people", async (actual) => ({ ...(await actual<typeof import("..
 vi.mock("../api/invitations", async (actual) => ({ ...(await actual<typeof import("../api/invitations")>()), Invitations: { create: vi.fn() } }));
 vi.mock("../api/groups", async (actual) => ({ ...(await actual<typeof import("../api/groups")>()), Groups: { list: vi.fn(), members: vi.fn().mockResolvedValue({ members: [] }), memberDeparturePreview: vi.fn(), confirmMemberDeparture: vi.fn() } }));
 vi.mock("../api/admin", async (actual) => ({ ...(await actual<typeof import("../api/admin")>()), AdminGroups: { list: vi.fn(), addMember: vi.fn() }, Admin: { pending: vi.fn().mockResolvedValue({ groups: [] }), deletions: vi.fn().mockResolvedValue({ groups: [] }), approve: vi.fn(), reject: vi.fn(), deleteGroup: vi.fn(), churchAddress: vi.fn().mockResolvedValue({ address: "Grace Church" }), setChurchAddress: vi.fn(), guardianCopies: vi.fn().mockResolvedValue({ on: false }), setGuardianCopies: vi.fn(), replyTo: vi.fn().mockResolvedValue({ address: "" }), setReplyTo: vi.fn(), pushEnabled: vi.fn().mockResolvedValue({ on: true }), setPushEnabled: vi.fn() }, AdminJobs: { list: vi.fn(), retry: vi.fn(), dismiss: vi.fn() } }));
-vi.mock("../api/adminUsers", async (actual) => ({ ...(await actual<typeof import("../api/adminUsers")>()), AdminUsers: { list: vi.fn().mockResolvedValue({ users: [] }), clearEmailSuppression: vi.fn() } }));
+vi.mock("../api/adminUsers", async (actual) => ({ ...(await actual<typeof import("../api/adminUsers")>()), AdminUsers: { list: vi.fn().mockResolvedValue({ users: [] }), clearEmailSuppression: vi.fn(), legacyReasonsProbe: vi.fn() } }));
 vi.mock("../api/guardians", async (actual) => ({ ...(await actual<typeof import("../api/guardians")>()), AdminGuardianLinks: { list: vi.fn().mockResolvedValue({ guardianLinks: [], nominations: [] }) } }));
 vi.mock("../api/accountRequests", async (actual) => ({ ...(await actual<typeof import("../api/accountRequests")>()), AdminAccountRequests: { list: vi.fn(), approve: vi.fn(), setSelfSignup: vi.fn() } }));
 vi.mock("../api/rooms", async (actual) => ({ ...(await actual<typeof import("../api/rooms")>()), AdminRooms: { list: vi.fn(), create: vi.fn(), update: vi.fn(), setEnabled: vi.fn(), setApproval: vi.fn(), locations: vi.fn(), matchLocation: vi.fn() }, RoomRequests: { list: vi.fn(), confirm: vi.fn(), reject: vi.fn() } }));
@@ -60,6 +60,7 @@ beforeEach(() => {
   vi.mocked(Admin.reject).mockReset();
   vi.mocked(Admin.deleteGroup).mockReset();
   vi.mocked(ContactHistory.people).mockReset().mockResolvedValue({ people: [] });
+  vi.mocked(AdminUsers.legacyReasonsProbe).mockReset().mockResolvedValue({ found: false });
   vi.mocked(AdminUsers.list).mockResolvedValue({ users: [] });
   vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [] });
   vi.mocked(AdminAccountRequests.list).mockResolvedValue({ requests: [request] });
@@ -1023,5 +1024,44 @@ describe("email suppressions on the Users tab (M3.2c, DEC-113)", () => {
     expect(await screen.findByText(errorText(new ApiError(500, "boom"), "We couldn't clear that. Please try again."))).toBeInTheDocument();
     expect(screen.getByText("Email bouncing")).toBeInTheDocument();
     expect(screen.queryByText("Fold will email Bo Bounce again.")).not.toBeInTheDocument();
+  });
+});
+
+describe("the deleted-accounts review link on the Users tab", () => {
+  const openUsers = () => render(<MemoryRouter initialEntries={["/admin?tab=users"]}><AdminPage /></MemoryRouter>);
+  const link = () => screen.findByRole("link", { name: /Deleted accounts with reasons to review/ });
+
+  it("is always there and leads to the review page, with no badge when the first unit is empty", async () => {
+    openUsers();
+    const found = await link();
+    expect(found).toHaveAttribute("href", "/admin/deleted-reasons");
+    await waitFor(() => expect(AdminUsers.legacyReasonsProbe).toHaveBeenCalledTimes(1));
+    expect(found).toHaveAccessibleName("Deleted accounts with reasons to review");
+    expect(screen.queryByText("Needs review")).not.toBeInTheDocument();
+  });
+
+  it("shows a text badge inside the link, and in its name, only when the probe found something", async () => {
+    vi.mocked(AdminUsers.legacyReasonsProbe).mockResolvedValue({ found: true });
+    openUsers();
+    const badge = await screen.findByText("Needs review");
+    const found = await link();
+    expect(found).toContainElement(badge);
+    expect(found).toHaveAccessibleName("Deleted accounts with reasons to review Needs review");
+    expect(found).toHaveAttribute("href", "/admin/deleted-reasons");
+  });
+
+  it.each([
+    ["a refused admin", new ApiError(403, "forbidden", { code: "reason_review_not_allowed" })],
+    ["a signed-out session", new ApiError(401, "signed out")],
+    ["a malformed answer", new ApiError(502, "unexpected answer to a deleted-accounts probe")],
+    ["a dropped connection", new TypeError("Failed to fetch")],
+  ])("keeps the link and shows no badge and no error for %s", async (_name, failure) => {
+    vi.mocked(AdminUsers.legacyReasonsProbe).mockRejectedValue(failure);
+    openUsers();
+    await link();
+    await waitFor(() => expect(AdminUsers.legacyReasonsProbe).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText("Needs review")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(/unexpected answer|Failed to fetch|forbidden|signed out/);
   });
 });

@@ -179,3 +179,135 @@ func Batches(p Params) []int {
 	}
 	return out
 }
+
+// Parties says which parties of one request qualify. A request's parties are
+// emitted together or not at all (R4-C01).
+type Parties struct{ Requester, Subject bool }
+
+// Any reports whether the request qualifies at all.
+func (p Parties) Any() bool { return p.Requester || p.Subject }
+
+// BatchQualifier decides one fully read batch: it returns one Parties per row,
+// in row order, and may run lookups for the batch's rows. It decides each
+// request from its own parties and is never asked about a partial batch.
+type BatchQualifier func(rows []Row) ([]Parties, error)
+
+// Item is one qualifying (request, party) pair.
+type Item struct{ Request, Party int64 }
+
+// PartyUnit is what ScanParties found: the qualifying pairs in request id
+// order, the requester before the subject within a request, how many requests
+// they come from (at most PageRequests) and the cursor to continue from.
+type PartyUnit struct {
+	Items    []Item
+	Requests int
+	Next     *int64
+}
+
+// ScanParties reads one unit like Scan, for a rule that needs a lookup over a
+// whole batch before it can say which parties of a request qualify (the legacy
+// filter, T07B-3a: each deleted party's deletion marker). Each batch is read
+// whole (Close drains whatever is not consumed in any case), handed to qb, and
+// then walked in id order counting requests, never items: a request's parties
+// are emitted together and the walk stops right after the PageRequests-th
+// qualifying request, so a request is never split by a page or a batch boundary
+// and a page holds at most PageRequests requests (twice as many items when both
+// parties qualify). The statement sequence, the cursor rule and the UnitRows
+// bound are Scan's: the cursor is that request's id, else the last id read when
+// the unit budget is spent, else nil when the table ended. The only difference
+// is that rows after the stopping request in the same batch were already read
+// and qualified, but their results are dropped: the next page starts after
+// the stopping request's id, so it reads those rows again and reconsiders
+// them.
+//
+// BatchEvent.Consumed is every row of the batch and Stopped is decided after qb
+// ran, so After fires once the batch's lookups are done.
+func ScanParties(q Query, qb BatchQualifier, after *int64, p Params, h Hooks) (PartyUnit, error) {
+	if p.UnitRows < 1 || p.PageRequests < 1 || p.FirstBatch < 1 || p.Growth < 1 {
+		return PartyUnit{}, fmt.Errorf("reasonscan: invalid bounds %+v", p)
+	}
+	var unit PartyUnit
+	budget, batch, cur := p.UnitRows, p.FirstBatch, after
+	var last int64
+	for index := 0; budget > 0; index++ {
+		n := batch
+		if n > budget {
+			n = budget
+		}
+		if h.Before != nil {
+			h.Before(index)
+		}
+		ev := BatchEvent{Index: index, After: cur, Limit: n}
+		rows, err := q(cur, n)
+		if err != nil {
+			ev.Err = err
+			if h.After != nil {
+				h.After(ev)
+			}
+			return PartyUnit{}, err
+		}
+		read := make([]Row, 0, min(n, 1024))
+		var scanErr error
+		for rows.Next() {
+			row, err := rows.Scan()
+			if err != nil {
+				scanErr = err
+				break
+			}
+			ev.Consumed++
+			read = append(read, row)
+		}
+		iterErr := scanErr
+		if iterErr == nil {
+			iterErr = rows.Err()
+		}
+		closeErr := rows.Close()
+		ev.Err = errors.Join(iterErr, closeErr, rows.Err())
+		ev.Short = ev.Err == nil && ev.Consumed < n
+		var parties []Parties
+		if ev.Err == nil && len(read) > 0 {
+			parties, ev.Err = qb(read)
+			if ev.Err == nil && len(parties) != len(read) {
+				ev.Err = fmt.Errorf("reasonscan: qualifier answered %d rows for %d", len(parties), len(read))
+			}
+		}
+		if ev.Err == nil {
+			for i, row := range read {
+				last = row.ID
+				if !parties[i].Any() {
+					continue
+				}
+				if parties[i].Requester {
+					unit.Items = append(unit.Items, Item{Request: row.ID, Party: row.RequesterID})
+				}
+				if parties[i].Subject {
+					unit.Items = append(unit.Items, Item{Request: row.ID, Party: row.SubjectUserID})
+				}
+				unit.Requests++
+				if unit.Requests == p.PageRequests {
+					next := row.ID
+					unit.Next = &next
+					ev.Stopped = true
+					break
+				}
+			}
+			ev.Short = ev.Short && !ev.Stopped
+		}
+		if h.After != nil {
+			h.After(ev)
+		}
+		if ev.Err != nil {
+			return PartyUnit{}, ev.Err
+		}
+		if ev.Stopped || ev.Short {
+			return unit, nil
+		}
+		budget -= n
+		lc := last
+		cur = &lc
+		batch *= p.Growth
+	}
+	lc := last
+	unit.Next = &lc
+	return unit, nil
+}

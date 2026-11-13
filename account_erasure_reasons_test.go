@@ -1883,7 +1883,9 @@ func TestReasonReviewCensus(t *testing.T) {
 // requestWriters by literal or inline model: the ages-note blank and the reason
 // blank, each guarded by TestContactRequestTextChangesStayInTheirHelpers. The
 // creation and decision writers go through variables the guard binds; this
-// census does not see them.
+// census does not see them. internal/dbopen's isExpectedLegacyBusy is a false
+// positive by literal: it only compares a failed statement's text, to keep one
+// expected busy retry out of the database log, and writes no row.
 //
 // auditReaders, each shown not to read the new decision rows (targets
 // contact_request and add_request, actions contact.reason_* and add.reason_*)
@@ -1897,13 +1899,22 @@ func TestReasonReviewCensus(t *testing.T) {
 // are classified in auditIPAttribution); contactHistoryQuery selects only the
 // actions in contactHistoryActions, which has no decision action.
 //
-// gatedFenced: the three callers of a.contactMutationCtx. The reason review adds
-// no fourth: its consume step is a statement of apiAdminDeleteUser's callback and
-// its pages are ungated reads that end with the actor seal.
+// legacySavePlanIn (T-301) is the deleted-accounts save's one row locker: inside
+// apiAdminLegacyReasonSave's fenced callback, under the exclusive gate, it locks
+// the tombstone's users row FOR UPDATE and then the named requests FOR UPDATE in
+// ascending id, with nothing but NOWAIT statements after them.
+//
+// gatedFenced: the callers of a.contactMutationCtx and the fenced wrapper. The
+// reason review adds none for the deletion: its consume step is a statement of
+// apiAdminDeleteUser's callback and its pages are ungated reads that end with
+// the actor seal. The deleted-accounts save (apiAdminLegacyReasonSave) is the
+// third fenced route (with the deletion and settle): ticket, receipt, plan, the one reason writer, the
+// reconcile of the tombstone and the actor seal last.
 var reasonCensusPinned = map[string][]string{
 	"rowLockers": {
 		"account_erasure.go:eraseContactRequestTextIn",
 		"account_erasure_reasons.go:planReasonReviewIn",
+		"api_admin_reasons_legacy.go:legacySavePlanIn",
 		"api_contact.go:useContactGrant",
 		"api_registrations.go:apiAddRegistration",
 		"contact_lifecycle.go:reconcileContacts",
@@ -1912,6 +1923,7 @@ var reasonCensusPinned = map[string][]string{
 	"requestWriters": {
 		"account_erasure.go:eraseContactRequestTextIn",
 		"account_erasure_reasons.go:eraseContactRequestReasonsIn",
+		"internal/dbopen/dbopen.go:isExpectedLegacyBusy",
 	},
 	"auditReaders": {
 		"account_erasure.go:captureErasureSetsIn",
@@ -1934,6 +1946,7 @@ var reasonCensusPinned = map[string][]string{
 		"account_erasure_tombstones.go:eraseTombstoneOnce",
 		"admin_operation_attempts.go:apiAdminSettleOperationAttempt",
 		"api_admin.go:apiAdminDeleteUser",
+		"api_admin_reasons_legacy.go:apiAdminLegacyReasonSave",
 		"restore_fence.go:fencedContactMutation",
 	},
 }
@@ -2428,6 +2441,8 @@ var reasonReviewRepeatSet = []string{
 	"TestAgesNoteErasureRaceReasonedLifecycleFirst",
 	"TestAgesNoteErasureRaceReasonedErasureFirst",
 	"TestActorSealVsConversion",
+	"TestLegacySaveVsConversion",
+	"TestAttemptLifecycle",
 	"TestActorSealBusy",
 	"TestSettleBusyWindowClosesAfterBackoff",
 }

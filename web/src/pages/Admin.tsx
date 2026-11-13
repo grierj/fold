@@ -46,6 +46,7 @@ import { ErrorNotice } from "../components/ErrorNotice";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Chip } from "../components/ui/Chip";
 import { usePage } from "../lib/usePage";
+import { LEGACY_REVIEW_PATH, LEGACY_REVIEW_TITLE } from "../lib/legacyReview";
 import { useLoad } from "../lib/useLoad";
 import { invalidateSite, useSite } from "../lib/useSite";
 import { PageCount, Pagination } from "../components/ui/Pagination";
@@ -914,6 +915,10 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [feedStatus, setFeedStatus] = useState("");
   const feedStatusRef = useRef<HTMLParagraphElement>(null);
+  // Whether the first unit of the deleted-accounts review holds anything. A failure
+  // (an admin the server refuses, a bad answer) shows no badge and no message, and
+  // false proves only that the first unit was empty, so nothing here says "none".
+  const legacyProbe = useLoad(() => AdminUsers.legacyReasonsProbe(), []);
   // The list is long at 390; bring the result into view (M17-REVIEW M3).
   useEffect(() => {
     if (feedStatus) feedStatusRef.current?.scrollIntoView?.({ block: "nearest" });
@@ -1028,6 +1033,10 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
     <div>
       <div className="flex flex-wrap justify-end gap-2 mb-4">
         <ButtonLink variant="secondary" to="/admin/contact-history">Find contact access history</ButtonLink>
+        <ButtonLink variant="secondary" to={LEGACY_REVIEW_PATH} layout="text-center">
+          <span>{LEGACY_REVIEW_TITLE}</span>
+          {legacyProbe.data?.found === true && <>{" "}<Badge>Needs review</Badge></>}
+        </ButtonLink>
         <Button variant="primary" onClick={() => { setCreating(true); setEditingId(null); }}>
           New user
         </Button>

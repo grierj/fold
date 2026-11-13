@@ -878,7 +878,9 @@ var auditWriterCensus = map[string]string{
 	"account_erasure_households.go:eraseHouseholdRecordsIn": "d8b7f12b5e706b009ed3a108794de19320ae4a0e2b2704d010c6e0e624a45c5e",
 	// T07B-2b: the page-view row of the reason review (no IP, actor the admin;
 	// meta keys count and source). Decision rows go through audit.WriteAll.
-	"account_erasure_reasons.go:reasonPageAttempt":                "082539d5d3b5760bdd1da6e34182135498af4857c2b0d630042e62e263d16b23",
+	"account_erasure_reasons.go:reasonPageAttempt": "082539d5d3b5760bdd1da6e34182135498af4857c2b0d630042e62e263d16b23",
+	// Legacy view: the admin is the actor; no IP or reason text is stored.
+	"api_admin_reasons_legacy.go:legacyPageIn":                    "133083e02fdac6fc98ca70715bf597db2a87dd80bfec7b3491f18bf0b7417fd4",
 	"age_rollover.go:flagHouseholdChild13":                        "1804d1f969590562b8e2282f42635834e8f5a3841b0c9679f4b400a4efe5d866",
 	"age_rollover.go:rolloverTeen":                                "4139500705a3da764c067accd4f73fefed8e9c88aa696be6dbc26978d7dbe20b",
 	"api_account_requests.go:apiSetSelfSignup":                    "46f34cd7e73d9cf344b3e9378c76b811b88b06d10a20b7f495aadac78da63e82",
@@ -1241,8 +1243,8 @@ func TestAuditErasureWriterCensus(t *testing.T) {
 	if p := auditCensusProblems(c); len(p) > 0 {
 		t.Fatal(strings.Join(p, "\n"))
 	}
-	if len(c.Sites) != 111 {
-		t.Fatalf("audit.Write sites = %d, expected 111; review every changed site", len(c.Sites))
+	if len(c.Sites) != 112 {
+		t.Fatalf("audit.Write sites = %d, expected 112; review every changed site", len(c.Sites))
 	}
 	for _, site := range c.Sites {
 		t.Log(site)
@@ -1269,6 +1271,7 @@ func TestAuditErasureCensusRejectsMutations(t *testing.T) {
 		{"new guardian source", "api_teen_guardians.go", "apiClaimTeenGuardian", `"claim", c.ClientIP()`, `"new_source", c.ClientIP()`},
 		{"actor expression", "api_profile.go", "apiUpdateMe", "Actor: &u.ID, Action: audit.ContactPrivacyChanged", "Actor: nil, Action: audit.ContactPrivacyChanged"},
 		{"direct IP source", "api_profile.go", "apiUpdateMe", "IP: c.ClientIP()", `IP: ""`},
+		{"legacy view actor", "api_admin_reasons_legacy.go", "legacyPageIn", "Actor: &actor.ID", "Actor: nil"},
 		{"indirect metadata key", "api_households.go", "apiAddHouseholdPerson", `meta["guardianLinkId"]`, `meta["renamedGuardianLinkId"]`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -824,6 +824,19 @@ func CanReviewErasureReasons(actor ContactAccount, target *Person, activeAdmins 
 	return actor.Active && actor.adult() && IsAdmin(actor.Person) && CanDemoteOrDelete(actor.Person, target, activeAdmins)
 }
 
+// CanReviewLegacyErasureReasons decides who may list and decide the reasons a
+// deleted account left undecided (M7.4 T07B-3a, owner decision 7): an active
+// adult admin, and only for an account that is already deleted. It is the live
+// rule's actor test without the account rules of a deletion (CanDemoteOrDelete
+// has nothing to protect once the account is gone), with the same adult()
+// predicate and no other age rule. Discovery and probe have no single account
+// and pass targetDeleted true; a per-account page or save passes what it read.
+// Every legacy read decides it on the early read and again on the locked actor
+// row at its seal, an empty unit included.
+func CanReviewLegacyErasureReasons(actor ContactAccount, targetDeleted bool) bool {
+	return targetDeleted && actor.Active && actor.adult() && IsAdmin(actor.Person)
+}
+
 type ErasureReasonFacts struct {
 	// PartyDeleted: the party's account is soft deleted.
 	PartyDeleted bool

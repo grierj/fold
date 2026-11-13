@@ -32,7 +32,7 @@ const ctgLimits = "This guard is parse-only, like the mail and suppression guard
 	"a string, E-string, dollar quote or double-quoted identifier does not end a statement, and a comment or an unclosed quote makes " +
 	"the rest of the literal one statement. Same-file string constants resolve by the same lexical rule as variables (a constant that " +
 	"a closure or block redeclares is its own; a map-literal key constant must be declared before its use). The callback's *gorm.DB " +
-	"argument to eraseContactRequestTextIn must resolve to eraseAccountIn's own parameter, and the one to eraseAccountIn to the erasure callback's own parameter. It does not see SQL built from non-literal pieces (computed-table-name SQL such as " +
+	"argument to eraseContactRequestTextIn must resolve to eraseAccountIn's own parameter, the one to eraseAccountIn to the erasure callback's own parameter, and the one to the reason helper's second call to the fenced callback's own parameter in apiAdminLegacyReasonSave. It does not see SQL built from non-literal pieces (computed-table-name SQL such as " +
 	"internal/testdb's 'DELETE FROM ' + t is not seen, nor is fmt.Sprintf with non-constant arguments), constants from other files " +
 	"or packages, table or column names held in variables, reflection, generics, type aliases, embedded structs, ContactRequest " +
 	"values or *gorm.DB chains that arrive from another function's result, a parameter, a field or an interface, reassigned chain " +
@@ -1214,9 +1214,13 @@ func (run *ctgRun) text(f *ctgFile, n ast.Node, raw string, parents []ast.Node) 
 	run.add(f, "R-5", n, parents, "raw SQL writes reason or add_childcare_ages_note on contact_requests (%s); the only allowances are the single UPDATE literal in eraseContactRequestTextIn (account_erasure.go) whose SET list is add_childcare_ages_note = '' and the single one in eraseContactRequestReasonsIn (account_erasure_reasons.go) whose SET list is reason = ''", writes[0].kind)
 }
 
-// ident is R-6. The two scrubs, eraseContactRequestTextIn and
-// eraseContactRequestReasonsIn, are each called exactly once, directly in the
-// body of eraseAccountIn (account_erasure.go), after its soft delete; and
+// ident is R-6. The ages-note scrub, eraseContactRequestTextIn, is called
+// exactly once, directly in the body of eraseAccountIn (account_erasure.go),
+// after its soft delete. The reason helper, eraseContactRequestReasonsIn, is
+// called exactly twice: once in eraseAccountIn directly after the ages-note
+// call, and once directly in the a.fencedContactMutation callback of
+// apiAdminLegacyReasonSave (api_admin_reasons_legacy.go), on the callback's own
+// transaction, where the callback's last statement returns a.legacySaveSeal.
 // eraseAccountIn is called exactly twice, directly in the admin deletion's
 // a.fencedContactMutation callback and in the tombstone sweep's
 // a.contactMutationCtx callback. A use as a value is never allowed.
@@ -1311,9 +1315,96 @@ func ctgStatementOf(parents []ast.Node, ci, stop int) (int, string) {
 	return stmt, ""
 }
 
+// ctgLegacyReasonFile and ctgLegacyReasonFunc name the reason helper's second
+// call site: the deleted-accounts save.
+const (
+	ctgLegacyReasonFile = "api_admin_reasons_legacy.go"
+	ctgLegacyReasonFunc = "apiAdminLegacyReasonSave"
+)
+
+// ctgLegacyReasonCallProblem checks the reason helper's call in the legacy
+// file against R-6. parents ends with the identifier; the call is its parent.
+// The call must be a statement of the callback of a.fencedContactMutation (the
+// callback is that call's last argument, on the allowed method's own App
+// receiver), passing the callback's own *gorm.DB parameter, and the callback's
+// last statement must return a call of a.legacySaveSeal, so the actor is decided
+// last on the locked row.
+func ctgLegacyReasonCallProblem(parents []ast.Node, call *ast.CallExpr) string {
+	ci := len(parents) - 2
+	lit := -1
+	for i := ci - 1; i >= 0 && lit < 0; i-- {
+		switch parents[i].(type) {
+		case *ast.GoStmt, *ast.DeferStmt:
+			return "called in a go or defer statement"
+		case *ast.FuncLit:
+			lit = i
+		}
+	}
+	if lit < 1 {
+		return "called outside the legacy save's transaction callback"
+	}
+	fl, ok := parents[lit].(*ast.FuncLit)
+	if !ok {
+		return "called outside the legacy save's transaction callback"
+	}
+	outer, ok := parents[lit-1].(*ast.CallExpr)
+	if !ok {
+		return "called in a func literal that is not the legacy save's transaction callback"
+	}
+	osel, ok := outer.Fun.(*ast.SelectorExpr)
+	if !ok || osel.Sel.Name != "fencedContactMutation" || len(outer.Args) == 0 || outer.Args[len(outer.Args)-1] != ast.Expr(fl) {
+		return "called in a func literal that is not the last argument of a.fencedContactMutation"
+	}
+	var decl *ast.FuncDecl
+	for i := lit - 2; i >= 0 && decl == nil; i-- {
+		switch n := parents[i].(type) {
+		case *ast.FuncLit:
+			return "the transaction call is itself inside a func literal"
+		case *ast.FuncDecl:
+			decl = n
+		}
+	}
+	if decl == nil || decl.Name.Name != ctgLegacyReasonFunc {
+		return "called from a function other than " + ctgLegacyReasonFunc + " in " + ctgLegacyReasonFile
+	}
+	if !ctgIsAppReceiver(decl, osel.X) {
+		return "the callback must be passed on " + ctgLegacyReasonFunc + "'s own App receiver, not on another value that has a method of that name"
+	}
+	stmt, why := ctgStatementOf(parents, ci, lit)
+	if why != "" {
+		return why
+	}
+	if stmt != lit+2 || parents[lit+1] != ast.Node(fl.Body) {
+		return "call must be a statement of the callback body itself, not nested in a block"
+	}
+	if fl.Type.Params == nil || len(fl.Type.Params.List) != 1 || len(fl.Type.Params.List[0].Names) != 1 {
+		return "the callback must take one named *gorm.DB parameter"
+	}
+	param := ctgObj(fl.Type.Params.List[0].Names[0])
+	if arg, ok := ctgFirstArg(call).(*ast.Ident); !ok || param == nil || ctgObj(arg) != param {
+		return "the first argument must be the callback's own *gorm.DB parameter, not a local that reuses its name"
+	}
+	last, ok := fl.Body.List[len(fl.Body.List)-1].(*ast.ReturnStmt)
+	if !ok || len(last.Results) != 2 {
+		return "the callback's last statement must return the actor seal and nil"
+	}
+	seal, ok := last.Results[0].(*ast.CallExpr)
+	if !ok {
+		return "the callback's last statement must return a call of a.legacySaveSeal"
+	}
+	ssel, ok := seal.Fun.(*ast.SelectorExpr)
+	if !ok || ssel.Sel.Name != "legacySaveSeal" || !ctgIsAppReceiver(decl, ssel.X) {
+		return "the callback's last statement must return a call of a.legacySaveSeal on the method's own App receiver"
+	}
+	return ""
+}
+
 // ctgScrubCallProblem checks one call of a scrub against R-6. parents ends
 // with the identifier; the call is its parent.
 func ctgScrubCallProblem(f *ctgFile, parents []ast.Node, call *ast.CallExpr, reasons bool) string {
+	if reasons && f.path == ctgLegacyReasonFile {
+		return ctgLegacyReasonCallProblem(parents, call)
+	}
 	ci := len(parents) - 2
 	di := -1
 	for i := ci - 1; i >= 0 && di < 0; i-- {
@@ -1649,8 +1740,8 @@ func ctgViolations(sources map[string]string) []string {
 	if run.eraseCalls != 1 || run.eraseSites[ctgPipelineFile] != 1 {
 		run.bad = append(run.bad, fmt.Sprintf("production tree: package level: R-6: eraseContactRequestTextIn is called %d times, want exactly one call, in eraseAccountIn (account_erasure.go), after the soft delete", run.eraseCalls))
 	}
-	if run.reasonCalls != 1 || run.reasonSites[ctgPipelineFile] != 1 {
-		run.bad = append(run.bad, fmt.Sprintf("production tree: package level: R-6: eraseContactRequestReasonsIn is called %d times, want exactly one call, in eraseAccountIn (account_erasure.go), directly after eraseContactRequestTextIn", run.reasonCalls))
+	if run.reasonCalls != 2 || run.reasonSites[ctgPipelineFile] != 1 || run.reasonSites[ctgLegacyReasonFile] != 1 {
+		run.bad = append(run.bad, fmt.Sprintf("production tree: package level: R-6: eraseContactRequestReasonsIn is called %d times, want exactly two calls: one in eraseAccountIn (account_erasure.go), directly after eraseContactRequestTextIn, and one in the fenced callback of apiAdminLegacyReasonSave (api_admin_reasons_legacy.go)", run.reasonCalls))
 	}
 	if run.pipelineCalls != 2 || run.pipelineSites["api_admin.go"] != 1 || run.pipelineSites["account_erasure_tombstones.go"] != 1 {
 		run.bad = append(run.bad, fmt.Sprintf("production tree: package level: R-6: eraseAccountIn is called %d times, want exactly two calls, one in apiAdminDeleteUser (api_admin.go) in its a.fencedContactMutation callback and one in eraseTombstoneOnce (account_erasure_tombstones.go) in its a.contactMutationCtx callback", run.pipelineCalls))
@@ -1918,6 +2009,32 @@ func finishRequests(tx *gorm.DB, r *models.ContactRequest, rs []models.ContactRe
 }
 `
 
+// ctgLegacyCallback is the legacy save's fenced callback with body between the
+// receipt and the reason helper's call, and with the last statement returning
+// the seal.
+func ctgLegacyFileWith(call, last string) string {
+	return `package main
+
+import "gorm.io/gorm"
+
+func (a *App) apiAdminLegacyReasonSave(c *gin.Context) {
+	var err error
+	for {
+		err = a.fencedContactMutation(ctx, contactChange{UserID: account}, func(tx *gorm.DB) (*contactSeal, error) {
+			` + call + `
+			` + last + `
+		})
+	}
+	_ = err
+}
+`
+}
+
+const (
+	ctgLegacyCall = "if err := eraseContactRequestReasonsIn(tx, erasureSubject{ID: account}, plan); err != nil {\n\t\t\t\treturn nil, err\n\t\t\t}"
+	ctgLegacyLast = "return a.legacySaveSeal(me, rule.allows), nil"
+)
+
 const ctgTimeoutFile = `package main
 
 import "gorm.io/gorm"
@@ -1959,6 +2076,7 @@ func ctgClean() map[string]string {
 		"account_erasure_reasons.go":    ctgReasonsFile(ctgReasonLoop),
 		"account_erasure_tombstones.go": ctgTombstoneFile("", ctgTombstonePipelineCall),
 		"api_admin.go":                  ctgAdminFile("", ""),
+		ctgLegacyReasonFile:             ctgLegacyFileWith(ctgLegacyCall, ctgLegacyLast),
 		"api_contact.go":                ctgContactFile,
 		"contact_lifecycle.go":          ctgLifecycleFile,
 		"internal/testdb/testdb.go":     ctgTestdbFile(""),
@@ -2358,6 +2476,59 @@ func TestContactRequestTextGuardCatchesBypasses(t *testing.T) {
 		}),
 		ctgSource("the reason helper used as a value", "R-6", "other.go", map[string]string{
 			"other.go": "package main\n\nfunc other() {\n\tf := eraseContactRequestReasonsIn\n\t_ = f\n}\n",
+		}),
+		// The second call: the legacy save's fenced callback, and nowhere else.
+		ctgSource("no legacy call", "R-6", "production tree", map[string]string{
+			ctgLegacyReasonFile: ctgLegacyFileWith("_ = plan", ctgLegacyLast),
+		}),
+		ctgSource("the legacy file gone", "R-6", "production tree", map[string]string{ctgLegacyReasonFile: "-"}),
+		ctgSource("a third reason call in the legacy callback", "R-6", "production tree", map[string]string{
+			ctgLegacyReasonFile: ctgLegacyFileWith(ctgLegacyCall+"\n\t\t\t"+ctgLegacyCall, ctgLegacyLast),
+		}),
+		ctgSource("a third reason call in another file", "R-6", "other.go", map[string]string{
+			"other.go": "package main\n\nfunc (a *App) other(tx *gorm.DB, s erasureSubject, plan reasonPlan) error {\n\treturn eraseContactRequestReasonsIn(tx, s, plan)\n}\n",
+		}),
+		ctgSource("the legacy call passing a.DB", "R-6", ctgLegacyReasonFile, map[string]string{
+			ctgLegacyReasonFile: ctgLegacyFileWith(strings.Replace(ctgLegacyCall, "(tx,", "(a.DB,", 1), ctgLegacyLast),
+		}),
+		ctgSource("the legacy call on a copy of the callback's tx", "R-6", ctgLegacyReasonFile, map[string]string{
+			ctgLegacyReasonFile: ctgLegacyFileWith("tx2 := tx\n\t\t\t"+strings.Replace(ctgLegacyCall, "(tx,", "(tx2,", 1), ctgLegacyLast),
+		}),
+		ctgSource("the legacy call nested in a block", "R-6", ctgLegacyReasonFile, map[string]string{
+			ctgLegacyReasonFile: ctgLegacyFileWith("if true {\n\t\t\t\t_ = eraseContactRequestReasonsIn(tx, erasureSubject{ID: account}, plan)\n\t\t\t}", ctgLegacyLast),
+		}),
+		ctgSource("the legacy call in a go statement", "R-6", ctgLegacyReasonFile, map[string]string{
+			ctgLegacyReasonFile: ctgLegacyFileWith("go eraseContactRequestReasonsIn(tx, erasureSubject{ID: account}, plan)", ctgLegacyLast),
+		}),
+		ctgSource("the legacy call in a defer statement", "R-6", ctgLegacyReasonFile, map[string]string{
+			ctgLegacyReasonFile: ctgLegacyFileWith("defer eraseContactRequestReasonsIn(tx, erasureSubject{ID: account}, plan)", ctgLegacyLast),
+		}),
+		ctgSource("the legacy call in a closure inside the callback", "R-6", ctgLegacyReasonFile, map[string]string{
+			ctgLegacyReasonFile: ctgLegacyFileWith("func() { _ = eraseContactRequestReasonsIn(tx, erasureSubject{ID: account}, plan) }()", ctgLegacyLast),
+		}),
+		ctgSource("the legacy call outside any callback", "R-6", ctgLegacyReasonFile, map[string]string{
+			ctgLegacyReasonFile: strings.Replace(ctgLegacyFileWith(ctgLegacyCall, ctgLegacyLast), "func (a *App) apiAdminLegacyReasonSave(c *gin.Context) {\n", "func (a *App) apiAdminLegacyReasonSave(c *gin.Context) {\n\ttx := a.DB\n\t"+ctgLegacyCall+"\n", 1),
+		}),
+		ctgSource("the legacy call in a transaction that is not fenced", "R-6", ctgLegacyReasonFile, map[string]string{
+			ctgLegacyReasonFile: strings.Replace(ctgLegacyFileWith(ctgLegacyCall, ctgLegacyLast), "a.fencedContactMutation(", "a.contactMutationCtx(", 1),
+		}),
+		ctgSource("the legacy call in a callback that is not the last argument", "R-6", ctgLegacyReasonFile, map[string]string{
+			ctgLegacyReasonFile: strings.Replace(ctgLegacyFileWith(ctgLegacyCall, ctgLegacyLast), "\t\t})\n\t}\n\t_ = err", "\t\t}, nil)\n\t}\n\t_ = err", 1),
+		}),
+		ctgSource("the legacy call in another function of the file", "R-6", ctgLegacyReasonFile, map[string]string{
+			ctgLegacyReasonFile: strings.Replace(ctgLegacyFileWith(ctgLegacyCall, ctgLegacyLast), "func (a *App) apiAdminLegacyReasonSave(", "func (a *App) otherLegacySave(", 1),
+		}),
+		ctgSource("the legacy call without the seal as the last statement", "R-6", ctgLegacyReasonFile, map[string]string{
+			ctgLegacyReasonFile: ctgLegacyFileWith(ctgLegacyCall, "return a.deletionSeal(me, nil), nil"),
+		}),
+		ctgSource("the legacy callback returning no seal", "R-6", ctgLegacyReasonFile, map[string]string{
+			ctgLegacyReasonFile: ctgLegacyFileWith(ctgLegacyCall, "return nil, nil"),
+		}),
+		ctgSource("a statement after the legacy callback's seal return", "R-6", ctgLegacyReasonFile, map[string]string{
+			ctgLegacyReasonFile: ctgLegacyFileWith(ctgLegacyCall+"\n\t\t\t_ = plan", ctgLegacyLast+"\n\t\t\t_ = rule"),
+		}),
+		ctgSource("the legacy callback in another file", "R-6", "api_admin.go", map[string]string{
+			"api_admin.go": ctgLegacyFileWith(ctgLegacyCall, ctgLegacyLast),
 		}),
 	)
 
