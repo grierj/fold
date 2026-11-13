@@ -1173,12 +1173,54 @@ PUT  /api/v1/admin/users/:id               → 200 {user}                (admin;
      body: any of {name, displayName, email, phone, role, status: "active"|"disabled", successors}
 POST /api/v1/admin/users/:id/password      → 200 {}                    (admin; also activates an invited account)
      body: {password (≥10 chars)}
-DELETE /api/v1/admin/users/:id             → 200 {}                    (admin; soft delete, frees the email)
-     body: {successors: {"<groupId>": <userId>}, hostSuccessors: {"<eventId>": <userId>}}
+DELETE /api/v1/admin/users/:id             → 200 {erasure}             (admin; soft delete, frees the email)
+     body: {attemptId?, successors: {"<groupId>": <userId>}, hostSuccessors: {"<eventId>": <userId>}, reasonReview?}
      — successors: required for every group they lead alone
      — hostSuccessors: required for every church-wide event they host alone
      — 400 {error, groups} | 400 {error, code: "needs_host_successor", events, candidates} | 400 invalid | 401 | 404
 ```
+
+The `erasure` report contains counts: `householdsKept`, `householdsScrubbed`,
+`peopleAnonymized`, `guardianLinksRevoked`, `activityEntriesKept`, `reasonsKept`,
+and `reasonsRemoved`. Retained activity entries are a count, not a complete census
+of personal addresses in activity logs. Erasure does not remove backups or copies
+already sent to other people.
+
+An active adult admin reviews the target's contact-request reasons before deleting
+an account that has them. `POST /api/v1/admin/users/:id/erasure-reasons/page` takes
+`{after: null}` for the first unit or `{after: "<cursor>"}` for the next. It writes
+a view audit and returns `{items, next, reviewRequired?}`. Each item contains
+`requestId`, `reviewHash`, `role`, `purpose`, `status`, `createdAt`,
+`counterpartName`, `counterpartDeleted`, `reviewerIsParty`, `reason`, and optional
+`counterpartRef` and `contextLabel`. IDs and cursors are decimal strings. An empty
+unit does not prove that no reasons remain: continue until `next` is null. A 503
+`reason_review_busy` means the unit could not be read; retry the same cursor.
+
+For a nonempty review, `reasonReview` is `{format: "set-v1", count, digest, choices}`;
+all four values are strings. `count` is the canonical decimal number of items.
+`digest` is lowercase SHA-256 over `fold:erasure-reason-set:v1`, a zero byte, the
+count as a big-endian uint64, then each item in ascending signed request-ID order:
+the ID as a big-endian two's-complement int64 followed by its 32-byte decoded
+`reviewHash`. `choices` is canonical padded base64 of `ceil(count / 4)` bytes.
+Each item uses two bits, least significant pair first: 1 keeps the reason and 2
+removes it. Unchosen values and nonzero padding bits are refused. A changed set
+returns 409 `reason_review_changed`; reload and review it again. The old `items`
+envelope is refused with 409 `reason_review_outdated` when reasons exist.
+
+To track one deletion press, `POST /api/v1/admin/operation-attempts` takes
+`{kind: "account_delete", subjectUserId}` and returns `{attemptId}`. Send that ID
+as `attemptId` in the DELETE. An ID is bound to the admin, target and process;
+its first submission expires after 10 minutes and it can be settled for 60 minutes.
+The ID is optional for older clients. If a DELETE response is lost or returns an
+unknown outcome, do not submit a new deletion blindly. `POST
+/api/v1/admin/operation-attempts/settle` takes `{kind: "account_delete",
+subjectUserId, attemptId}` and returns `{result, subjectDeleted?}`. `result` is
+`applied`, `not_applied`, `checking`, or `history_unavailable`. `subjectDeleted`
+appears only when `not_applied` and the target is already deleted. `checking`
+means the result is not yet settled; `history_unavailable` does not prove that
+nothing happened. A restore can return `restore_detected`; reload the current
+state before proceeding. A deletion can also return `delete_timed_out` or
+`delete_outcome_unknown` as well as validation, permission and busy errors.
 
 `emailSuppression` says Fold stopped mailing the person's address (DEC-112, DEC-113): `hard_bounce` and `manual` stop all mail, `complaint` stops optional mail while account mail still goes; with several open reasons the stronger one shows, and `since` is when the first began. Clearing ends every open suppression on the address (kept as history) and answers how many; clearing none is 200 `{cleared: 0}` with no audit row. Postmark keeps its own list, so a hard-bounced address may also need reactivating in Postmark.
 
