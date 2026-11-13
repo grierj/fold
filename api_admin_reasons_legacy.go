@@ -687,10 +687,10 @@ func (a *App) apiAdminLegacyReasonSave(c *gin.Context) {
 	case errors.Is(err, errActorBusy):
 		// The admin's own row was held at the seal on every attempt (or the
 		// rollback after one was not acknowledged): COMMIT was never sent.
-		log.Printf("legacy reason save found the admin's own account busy (rollback confirmed: %v): %s", rollbackConfirmed(err), jobs.CleanError(err))
+		log.Printf("legacy reason save found the admin's own account busy (rollback confirmed: %v)", rollbackConfirmed(err))
 		fail(c, errActorBusy)
 	case errors.Is(err, errReasonCounterpartBusy):
-		log.Printf("legacy reason save found the other deleted person busy (rollback confirmed: %v): %s", rollbackConfirmed(err), jobs.CleanError(err))
+		log.Printf("legacy reason save found the other deleted person busy (rollback confirmed: %v)", rollbackConfirmed(err))
 		fail(c, errLegacySaveBusy)
 	default:
 		log.Printf("could not save legacy reasons (rollback confirmed: %v): %s", rollbackConfirmed(err), jobs.CleanError(err))

@@ -5,9 +5,11 @@ package main
 // query, and the read routes (discovery and probe) with their authorization.
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"math/rand"
 	"net/http"
@@ -2909,8 +2911,15 @@ func TestLegacySaveBusy(t *testing.T) {
 			t.Fatal(err)
 		}
 		before := r.written()
+		var logs bytes.Buffer
+		previous := log.Writer()
+		log.SetOutput(&logs)
+		t.Cleanup(func() { log.SetOutput(previous) })
 		id, w := r.save(gone.ID, decisions)
 		wantSaveCode(t, w, http.StatusConflict, "admin_account_busy")
+		if strings.Contains(logs.String(), "55P03") || strings.Contains(strings.ToUpper(logs.String()), "NOWAIT") {
+			t.Errorf("busy save exposed the database lock error: %s", logs.String())
+		}
 		if seals.Load() != 3 || retries.Load() != 2 {
 			t.Errorf("%d seals and %d retries, want 3 and 2", seals.Load(), retries.Load())
 		}
@@ -2940,8 +2949,15 @@ func TestLegacySaveBusy(t *testing.T) {
 			t.Fatal(err)
 		}
 		before := r.written()
+		var logs bytes.Buffer
+		previous := log.Writer()
+		log.SetOutput(&logs)
+		t.Cleanup(func() { log.SetOutput(previous) })
 		id, w := r.save(a.ID, choose(itemsA, "remove"))
 		wantSaveCode(t, w, http.StatusConflict, "legacy_save_busy")
+		if strings.Contains(logs.String(), "55P03") || strings.Contains(strings.ToUpper(logs.String()), "NOWAIT") {
+			t.Errorf("busy save exposed the database lock error: %s", logs.String())
+		}
 		if strings.Contains(w.Body.String(), "delete_reason_busy") || strings.Contains(w.Body.String(), "deleted") {
 			t.Errorf("the answer speaks of a deletion: %s", w.Body.String())
 		}
