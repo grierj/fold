@@ -96,6 +96,225 @@ qc1_traversal_times() { # total_ms request_ms units
   printf '%d %d %d\n' "$total" "$request" "$client"
 }
 
+# The failure capsule of a deletion that did not answer 200. qc1-measure.sh keeps one delete.out and one delete.body, so each deletion overwrites the
+# last one's answer: a later success erased the only copy of an earlier 503. A deletion that does not answer 200 therefore leaves a capsule of its
+# own, delete-diagnostics/seq-<N>.json (N is the seq of the row that records the case), written once and never overwritten, with a pointer in that
+# row's delete.diagnostic. It holds what the server answered as a structured, bounded record, the container states, and the filtered, redacted tail
+# of the application's and the database's logs for the window. It never holds a request body, the choices vector, a reason's text, a header, a
+# cookie or a token; a part that could not be collected says so (available:false and why), it is neither left out nor guessed. It states what was
+# observed, not why: the cause of a failure stays an inference until a capsule names it.
+QC1_DIAG_SCHEMA=fold/qc1-delete-diagnostic/v1
+QC1_DIAG_KEEP_LINES=40       # relevant log lines kept per log: the LAST ones (the server's line about a timeout comes after the work)
+QC1_DIAG_LINE_BYTES=300      # each kept line is cut to this
+QC1_DIAG_RAW_LINES=5000      # lines read from a log before it is filtered (bounds the work of a noisy window)
+QC1_DIAG_TEXT_BYTES=200      # the most of a non-JSON answer, or of an error message, that is kept
+# One awk program for both uses below, in POSIX awk (the nested runner may have busybox's): mode=redact scrubs each line; mode=filter keeps the last
+# QC1_DIAG_KEEP_LINES relevant lines, scrubbed and cut, after a count line "read<TAB>notRelevant<TAB>withheld<TAB>relevantKept". Literal secrets the
+# harness knows come in QC1_DIAG_SECRETS (one per line, environment only, never an argument).
+# shellcheck disable=SC2016
+read -r -d '' QC1_DIAG_AWK <<'AWK' || true
+function isquote(c) { return (c == "\"" || c == QUOTE || c == " " || c == "\\") }
+function isdelim(c) { return (c == " " || c == "," || c == ";" || c == "\"" || c == QUOTE || c == "&" || c == "}" || c == "\t") }
+function repl(s, p, n, w) { return substr(s, 1, p - 1) w substr(s, p + n) }
+# Every "key=value" or "key: value" for the keys in L (the value up to a delimiter, or to the end of the line when whole is 1).
+function scrubkeys(s, L, n, whole,    i, pos, p, q, v, c, low) {
+  for (i = 1; i <= n; i++) {
+    pos = 1
+    while (1) {
+      low = tolower(s)
+      p = index(substr(low, pos), L[i])
+      if (p == 0) break
+      p += pos - 1
+      q = p + length(L[i])
+      while (q <= length(s) && isquote(substr(s, q, 1))) q++
+      c = substr(s, q, 1)
+      if (c != ":" && c != "=") { pos = p + length(L[i]); continue }
+      q++
+      while (q <= length(s) && isquote(substr(s, q, 1))) q++
+      v = q
+      if (whole) q = length(s) + 1
+      else while (q <= length(s) && !isdelim(substr(s, q, 1))) q++
+      if (q > v) { s = repl(s, v, q - v, "[secret]"); pos = v + 8 } else pos = p + length(L[i])
+    }
+  }
+  return s
+}
+function scrubbearer(s,    pos, p, v, q, low) {
+  pos = 1
+  while (1) {
+    low = tolower(s)
+    p = index(substr(low, pos), "bearer ")
+    if (p == 0) break
+    p += pos - 1
+    v = p + 7
+    q = v
+    while (q <= length(s) && !isdelim(substr(s, q, 1))) q++
+    if (q > v) { s = repl(s, v, q - v, "[secret]"); pos = v + 8 } else pos = v
+  }
+  return s
+}
+# A run of 24 or more token characters with a digit in it, or 40 or more of any, is a token (a session, a CSRF value, an attempt id, a digest).
+function longtokens(s,    out, rest, t, n) {
+  out = ""; rest = s
+  while (match(rest, /[A-Za-z0-9_+=-]+/)) {
+    n = RLENGTH
+    t = substr(rest, RSTART, n)
+    if (n >= 40 || (n >= 24 && t ~ /[0-9]/)) t = "[token]"
+    out = out substr(rest, 1, RSTART - 1) t
+    rest = substr(rest, RSTART + n)
+  }
+  return out rest
+}
+function scrub(s,    i, p) {
+  for (i = 1; i <= NSEC; i++) if (length(SEC[i]) >= 4) while ((p = index(s, SEC[i])) > 0) s = repl(s, p, length(SEC[i]), "[secret]")
+  s = scrubbearer(s)
+  s = scrubkeys(s, RK, NRK, 1)
+  s = scrubkeys(s, SK, NSK, 0)
+  while (match(s, /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+/)) s = repl(s, RSTART, RLENGTH, "[email]")
+  while (match(s, /[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/)) s = repl(s, RSTART, RLENGTH, "[ip]")
+  return longtokens(s)
+}
+function haskey(low, k,    pos, p, q, c) {
+  pos = 1
+  while ((p = index(substr(low, pos), k)) > 0) {
+    p += pos - 1
+    q = p + length(k)
+    while (q <= length(low) && isquote(substr(low, q, 1))) q++
+    c = substr(low, q, 1)
+    if (c == ":" || c == "=") return 1
+    pos = p + length(k)
+  }
+  return 0
+}
+# A line is withheld, never kept in any form, when it has a byte outside printable ASCII (a multibyte reason would be one) or names a request-content key.
+function withheld(s, low,    i) {
+  if (s ~ /[^ -~]/) return 1
+  for (i = 1; i <= NWK; i++) if (haskey(low, WK[i])) return 1
+  return 0
+}
+function relevant(low,    i) {
+  if (index(low, "terminating connection due to administrator command") || index(low, "pg_terminate_backend")) return 0
+  for (i = 1; i <= NRV; i++) if (index(low, RV[i])) return 1
+  return 0
+}
+BEGIN {
+  QUOTE = sprintf("%c", 39)
+  NSEC = split(ENVIRON["QC1_DIAG_SECRETS"], SEC, "\n")
+  NSK = split("password passwd secret token apikey api_key api-key csrf attemptid attempt_id sessionid session_id session_key session_secret fold_session", SK, " ")
+  NRK = split("authorization cookie", RK, " ")
+  NWK = split("reason reasons reasonreview choices digest successors hostsuccessors payload requestbody request_body body", WK, " ")
+  NRV = split("delet|erasure|timed out|timeout|rollback|sqlstate|cancel|deadlock|lock|commit|panic|fatal|error|restor|out of memory|oom|killed|terminat|refus|fail|exit", RV, "|")
+}
+{
+  raw = substr($0, 1, 4096)
+  sub(/\r$/, "", raw)
+  gsub(/\t/, " ", raw)
+  if (mode == "redact") { print scrub(raw); next }
+  seen++
+  low = tolower(raw)
+  if (!relevant(low)) { irrelevant++; next }
+  if (withheld(raw, low)) { held++; next }
+  kept++
+  line = scrub(raw)
+  if (length(line) > width) line = substr(line, 1, width) "[cut]"
+  ring[kept % keep] = line
+}
+END {
+  if (mode != "filter") exit
+  printf "%d\t%d\t%d\t%d\n", seen, irrelevant, held, kept
+  first = (kept > keep) ? kept - keep + 1 : 1
+  for (i = first; i <= kept; i++) print ring[i % keep]
+}
+AWK
+
+# stdin -> stdout, each line scrubbed (a single string for the answer's error message).
+qc1_diag_redact() { LC_ALL=C QC1_DIAG_SECRETS="${QC1_DIAG_SECRETS:-}" awk -v mode=redact "$QC1_DIAG_AWK"; }
+
+# One string as a JSON string, at most QC1_DIAG_TEXT_BYTES long, scrubbed; text that is not printable ASCII is replaced by a marker, never kept.
+qc1_diag_text() {
+  local t
+  t="$(head -c 4096 | LC_ALL=C tr '\n\r\t' '   ')" || t=""
+  if [[ -n "$t" ]] && LC_ALL=C grep -q '[^ -~]' <<<"$t"; then printf '"[withheld: non-ASCII or non-printable text]"\n'; return 0; fi
+  t="$(printf '%s\n' "$t" | qc1_diag_redact)" || t="[withheld: the text could not be scrubbed]"
+  t="${t%"${t##*[![:space:]]}"}"
+  jq -Rn --arg t "$t" --argjson n "$QC1_DIAG_TEXT_BYTES" '$t | .[:$n]'
+}
+
+# What the server answered, as a bounded structured record, from the status curl printed and the answer file as it stands now. state: absent (no file),
+# empty, json (an object: its error code if it is a short lowercase word, its top-level key names, its error message scrubbed), text (not JSON: the
+# first bytes scrubbed), too-large (not read). An answer is never stored as it came.
+qc1_diag_response() { # status ms body-file
+  local status="$1" ms="$2" f="${3:-}" bytes=null state code=null keys='[]' err=null excerpt=null note=null
+  [[ "$ms" =~ ^[0-9]+$ ]] || ms=null
+  if [[ ! -e "$f" ]]; then state=absent
+  else
+    bytes="$(wc -c <"$f" | tr -d ' ')"
+    if (( bytes == 0 )); then state=empty
+    elif (( bytes > 65536 )); then state=too-large
+    elif jq -e 'type == "object"' "$f" >/dev/null 2>&1; then state=json
+    else state=text; fi
+  fi
+  case "$state" in
+    json)
+      code="$(jq -c 'if (.code | type) == "string" and (.code | test("^[a-z0-9_]{1,64}$")) then .code else null end' "$f")"
+      keys="$(jq -c '[keys[] | select(test("^[A-Za-z0-9_]{1,40}$"))] | .[:20]' "$f")"
+      if [[ "$(jq -r '(.error | type)' "$f")" == string ]]; then err="$(jq -r '.error' "$f" | qc1_diag_text)"; fi ;;
+    text) excerpt="$(head -c 4096 "$f" | qc1_diag_text)" ;;
+  esac
+  if [[ "$status" == 000 ]]; then note='"curl reported 000: no HTTP response was read (a refused or reset connection, a timeout, or a server that went away)"'; fi
+  jq -nc --arg status "$status" --argjson ms "$ms" --argjson bytes "$bytes" --arg state "$state" --argjson code "$code" --argjson keys "$keys" --argjson err "$err" --argjson excerpt "$excerpt" --argjson note "$note" \
+    '{status:$status, ms:$ms, bodyState:$state, bodyBytes:$bytes, code:$code, errorMessage:$err, topLevelKeys:$keys, excerpt:$excerpt, note:$note}'
+}
+
+# A container's state from the line `docker inspect --format '{{.State.Status}}|{{.State.ExitCode}}|{{.State.OOMKilled}}|{{.RestartCount}}'` prints, or "" when it did not answer.
+qc1_diag_container() {
+  jq -nc --arg s "${1:-}" 'if ($s | test("^[a-z]+\\|-?[0-9]+\\|(true|false)\\|[0-9]+$")) then ($s | split("|")) as $p | {available:true, state:$p[0], exitCode:($p[1] | tonumber), oomKilled:($p[2] == "true"), restartCount:($p[3] | tonumber)} else {available:false, reason:"docker inspect did not answer"} end'
+}
+
+# A log as the capsule keeps it: the lines that mention a deletion, an error, a rollback, a lock, a timeout, a restore or a kill, scrubbed and cut, the last
+# QC1_DIAG_KEEP_LINES of them, with the counts of what was read, ignored and withheld. A log that could not be read says why (the second argument, or an
+# unreadable file); an empty window is available:true with zero lines read, which is not the same thing.
+qc1_diag_log_slice() { # log-file [unavailable-reason]
+  local f="${1:-}" why="${2:-}" out slice
+  if [[ -n "$why" || ! -r "$f" ]]; then jq -nc --arg why "${why:-the log was not read}" '{available:false, reason:$why}'; return 0; fi
+  if out="$(LC_ALL=C QC1_DIAG_SECRETS="${QC1_DIAG_SECRETS:-}" awk -v mode=filter -v keep="$QC1_DIAG_KEEP_LINES" -v width="$QC1_DIAG_LINE_BYTES" "$QC1_DIAG_AWK" <"$f")" \
+    && slice="$(jq -Rsc --argjson keep "$QC1_DIAG_KEEP_LINES" --argjson width "$QC1_DIAG_LINE_BYTES" --argjson raw "$QC1_DIAG_RAW_LINES" '
+        split("\n") as $l | ($l[0] | split("\t") | map(tonumber)) as $c | ($l[1:] | map(select(length > 0))) as $lines
+        | {available:true, linesRead:$c[0], readLimitReached:($c[0] >= $raw), notRelevant:$c[1], withheld:$c[2], relevantKept:$c[3], lines:$lines, droppedEarlier:($c[3] - ($lines | length)),
+           limits:{keepLines:$keep, lineBytes:$width, readLines:$raw},
+           note:"the last relevant lines of the window; a line that carries request-content keys or any non-printable or non-ASCII byte is counted as withheld and never kept; lines are scrubbed of secrets, addresses and long tokens"}' <<<"$out" 2>/dev/null)"; then printf '%s\n' "$slice"
+  else jq -nc '{available:false, reason:"the log could not be filtered"}'; fi
+}
+
+# The capsule: the case's attribution (meta), the answer, the app container's state and the two log slices.
+qc1_delete_diagnostic() { # meta-json response-json container-json app-log-json db-log-json
+  jq -nc --arg schema "$QC1_DIAG_SCHEMA" --argjson meta "$1" --argjson response "$2" --argjson container "$3" --argjson appLog "$4" --argjson dbLog "$5" '
+    {schema:$schema} + $meta + {response:$response, appContainer:$container, appLog:$appLog, dbLog:$dbLog,
+      caveats:["response is the answer file as it stood when the request ended, bounded and scrubbed; the request body, the choices vector and every reason text are never stored",
+               "the log windows are every line of those containers between window.fromMs and window.toMs, not attributed to this request except by time (the row'"'"'s maxActiveClients says whether another client was active)",
+               "a failed or empty collection is recorded as such (available:false with a reason, or zero lines read): it is not evidence that nothing happened",
+               "this record states what was observed, not why the deletion failed: a cause named by no line here stays an inference"]}'
+}
+
+# Writes a capsule once: seq-<N>.json under dir, or seq-<N>-2.json and on if that name is taken. Never overwrites, never leaves a partial file under a final
+# name. Prints the pointer the row carries: {file (relative to the run directory), seq, bytes, sha256}. Fails (and prints nothing) when it cannot write.
+qc1_diag_store() { # dir seq capsule-json
+  local dir="$1" seq="$2" json="$3" name tmp n=1 sha bytes
+  [[ "$seq" =~ ^[0-9]+$ ]] || return 1
+  mkdir -p "$dir" || return 1
+  tmp="$(mktemp "$dir/.capsule.XXXXXX")" || return 1
+  printf '%s\n' "$json" >"$tmp" || { rm -f "$tmp"; return 1; }
+  name="seq-$seq.json"
+  until ln "$tmp" "$dir/$name" 2>/dev/null; do
+    n=$((n + 1))
+    (( n <= 99 )) || { rm -f "$tmp"; return 1; }
+    name="seq-$seq-$n.json"
+  done
+  rm -f "$tmp"
+  sha="$(sha256sum <"$dir/$name" | cut -d' ' -f1)"; bytes="$(wc -c <"$dir/$name" | tr -d ' ')"
+  jq -nc --arg f "$(basename "$dir")/$name" --argjson seq "$seq" --argjson bytes "$bytes" --arg sha "$sha" '{state:"captured", file:$f, seq:$seq, bytes:$bytes, sha256:$sha}'
+}
+
 # Sampler lines are "epoch_ms|gate_count|gate_pids|autovacuum_workers|active_clients"
 # (see qc1-measure.sh). Inside [start, end] this prints
 #   "spanMs grants firstMs lastMs holders autovacuum maxClients ticks maxGapMs meanGapMs holes"

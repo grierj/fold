@@ -431,6 +431,7 @@ psql_db -c "ALTER SYSTEM SET max_wal_size = '4GB'" >/dev/null
 psql_db -c 'SELECT pg_reload_conf()' >/dev/null
 [[ "$(psql_db -c 'SHOW autovacuum')" == off ]]
 SETUP_TOKEN="$(printf 'a%.0s' {1..64})"
+APP_SESSION_SECRET=qc1-disposable-session-secret-0123456789abcdef   # a disposable value; kept in one place so the failure capsules can scrub it (diag_secrets)
 
 # (Re)create the app with FOLD_WORKERS=$1, plus the helper that shares its pid
 # namespace and reads its process memory (distroless images have no shell).
@@ -442,7 +443,7 @@ start_app() { # workers
     docker rm -fv "$old_app" "$old_side" >/dev/null
   fi
   APP_CID="$(docker run -d --network "$NET_ID" "${CPUSET_ARGS[@]}" --memory "$APP_MEMORY" -p 127.0.0.1::8080 \
-    -e APP_ENV=dev -e PORT=8080 -e COOKIE_SECURE=false -e SESSION_SECRET=qc1-disposable-session-secret-0123456789abcdef \
+    -e APP_ENV=dev -e PORT=8080 -e COOKIE_SECURE=false -e "SESSION_SECRET=$APP_SESSION_SECRET" \
     -e FOLD_SETUP_TOKEN="$SETUP_TOKEN" -e FOLD_WORKERS="$workers" \
     -e "DATABASE_URL=postgres://church:qc1-disposable@qc1-db:5432/fold?sslmode=disable" "$IMAGE_ID")"
   CONTAINERS+=("$APP_CID")
@@ -747,11 +748,58 @@ traversal_json() {
       clock:"totalMs is the wall clock around the whole loop; requestMs sums the page requests; clientMs is the rest"} + $instr'
 }
 delete_json() {
-  jq -nc --arg st "$DEL_STATUS" --argjson ms "$DEL_MS" --argjson kept "${DEL_KEPT:-null}" --argjson removed "${DEL_REMOVED:-null}" --argjson instr "$(instr_json)" \
-    '{status:$st, ms:$ms, reasonsKept:$kept, reasonsRemoved:$removed, commitMs:$instr.commitMsMax} + $instr'
+  jq -nc --arg st "$DEL_STATUS" --argjson ms "$DEL_MS" --argjson kept "${DEL_KEPT:-null}" --argjson removed "${DEL_REMOVED:-null}" --argjson instr "$(instr_json)" --argjson diag "${DEL_DIAG:-null}" \
+    '{status:$st, ms:$ms, reasonsKept:$kept, reasonsRemoved:$removed, commitMs:$instr.commitMsMax} + $instr + (if $diag == null then {} else {diagnostic:$diag} end)'
 }
 do_delete() { # target bodyfile
   read -r DEL_STATUS DEL_MS <<<"$(timed DELETE "/admin/users/$1" "$2" "$WORK/delete.out")"
+}
+# A deletion that does not answer 200 leaves a failure capsule (qc1/lib.sh, "The failure capsule"): the answer, the app container's state and the filtered logs of the application and the
+# database for the window, written once under delete-diagnostics/ and pointed to from the row (delete.diagnostic). Collected straight after the request, because delete.out is overwritten
+# by the next deletion and the logs scroll away; the nested daemon's artifacts copy keeps the directory with the rest of the run, also when the run is aborted. Nothing here may stop the
+# run: every part that fails is recorded as unavailable and the measurement goes on.
+DIAG_DIR="$WORK/delete-diagnostics"
+# One literal per line, scrubbed from every capsule: the disposable secrets this harness gave the app and its accounts, and the cookie values the jar holds right now.
+diag_secrets() {
+  printf '%s\n' "$APP_SESSION_SECRET" "$SETUP_TOKEN" qc1-drill-password qc1-disposable
+  if [[ -r "$JAR" ]]; then awk -F'\t' 'NF >= 7 && ($1 !~ /^#/ || $1 ~ /^#HttpOnly_/) { print $7 }' "$JAR" 2>/dev/null || true; fi
+}
+diag_container_state() { qc1_diag_container "$(timeout 15 docker inspect --format '{{.State.Status}}|{{.State.ExitCode}}|{{.State.OOMKilled}}|{{.RestartCount}}' "$1" 2>/dev/null || true)"; }
+# One container's log from a second before the request to two after it, bounded (at most QC1_DIAG_RAW_LINES lines read), filtered and scrubbed by qc1_diag_log_slice. Prints the slice's JSON.
+diag_log() { # container-id from-ms to-ms
+  local cid="$1" from="$2" to="$3" raw="$WORK/diag.raw" since until rc=0
+  if [[ -z "$cid" ]]; then qc1_diag_log_slice "" 'no container id'; return 0; fi
+  if [[ ! "$from" =~ ^[0-9]+$ || ! "$to" =~ ^[0-9]+$ ]]; then qc1_diag_log_slice "" 'the request window was not recorded'; return 0; fi
+  since="$(awk -v m="$from" 'BEGIN { printf "%.3f", (m - 1000) / 1000 }')"; until="$(awk -v m="$to" 'BEGIN { printf "%.3f", (m + 2000) / 1000 }')"
+  rm -f "$raw"
+  timeout 30 docker logs --since "$since" --until "$until" "$cid" 2>&1 | tail -n "$QC1_DIAG_RAW_LINES" >"$raw" || rc=$?
+  if (( rc != 0 )); then qc1_diag_log_slice "" "docker logs failed (exit $rc)"; else qc1_diag_log_slice "$raw"; fi
+  rm -f "$raw"
+}
+# Sets DEL_DIAG: null for a 200, else the pointer to the capsule (or, truthfully, that it could not be written). The case is the label the row is recorded under; seq is the one record() will give
+# that row (nothing records between a deletion and its row).
+capture_delete_diagnostic() { # label target mode k kept removed request-bytes
+  local label="$1" target="$2" mode="$3" k="$4" kept="$5" removed="$6" reqbytes="$7" seq meta resp cont app db capsule=""
+  DEL_DIAG=null
+  [[ "$DEL_STATUS" != 200 ]] || return 0
+  seq=$((CASE_SEQ + 1))
+  QC1_DIAG_SECRETS="$(diag_secrets)"; export QC1_DIAG_SECRETS
+  meta="$(jq -nc --arg revision "$REVISION" --argjson seq "$seq" --arg case "$label" --argjson size "$(jnum "${CURRENT_SIZE:-}")" --arg layout "$LAYOUT" --arg charset "$CHARSET" --argjson workers "$CURRENT_WORKERS" --arg step "${CURRENT_STEP:-}" \
+    --argjson target "$(jnum "$target")" --arg mode "$mode" --argjson k "$(jnum "$k")" --argjson kept "$(jnum "$kept")" --argjson removed "$(jnum "$removed")" --argjson bytes "$(jnum "$reqbytes")" --argjson from "$(jnum "${OP_START:-}")" --argjson to "$(jnum "${OP_END:-}")" \
+    '{revision:$revision, seq:$seq, case:$case, size:$size, layout:$layout, charset:$charset, workers:$workers, step:$step,
+      request:{targetUserId:$target, mode:$mode, reasons:$k, expected:{kept:$kept, removed:$removed}, bodyBytes:$bytes, note:"counts and sizes only: the request body and the choices are not stored"},
+      window:{fromMs:$from, toMs:$to, wallMs:(if $from != null and $to != null then ($to - $from) else null end), note:"epoch milliseconds around the request; each log is read from one second before to two seconds after"}}')" \
+    || meta='{"attributionFailed":true}'
+  resp="$(qc1_diag_response "$DEL_STATUS" "$DEL_MS" "$WORK/delete.out")" || resp='{"bodyState":"unavailable"}'
+  cont="$(diag_container_state "$APP_CID")" || cont='{"available":false,"reason":"the container state could not be read"}'
+  app="$(diag_log "$APP_CID" "${OP_START:-}" "${OP_END:-}")" || app='{"available":false,"reason":"the log could not be collected"}'
+  db="$(diag_log "$DB_CID" "${OP_START:-}" "${OP_END:-}")" || db='{"available":false,"reason":"the log could not be collected"}'
+  capsule="$(qc1_delete_diagnostic "$meta" "$resp" "$cont" "$app" "$db")" || capsule=""
+  if [[ -z "$capsule" ]] || ! DEL_DIAG="$(qc1_diag_store "$DIAG_DIR" "$seq" "$capsule")"; then
+    DEL_DIAG="$(jq -nc --argjson seq "$seq" '{state:"unavailable", seq:$seq, reason:"the capsule could not be assembled or written"}')"
+  fi
+  unset QC1_DIAG_SECRETS
+  printf 'qc1: the deletion of %s answered %s: failure capsule %s\n' "$label" "$DEL_STATUS" "$(jq -r '.file // .state' <<<"$DEL_DIAG")"
 }
 ctl_request() { api GET /auth/me >/dev/null; }
 # record item case size extra-json   (RECORD_STATUS: measured, observation or failed)
@@ -859,9 +907,9 @@ text_shape() { # target
 # One full deletion as the panel sends it: mint an id, send the envelope with the
 # account's own items and the chosen mode, with the instruments around it, and check
 # the answer and the database against the split the mode implies. Sets
-# DELETE_JSON, EXPECT_JSON, OUTCOME_JSON and BODY_BYTES.
-delete_with() { # target mode items-file
-  local t="$1" mode="$2" file="$3" k id kept removed audit_mark
+# DELETE_JSON, EXPECT_JSON, OUTCOME_JSON and BODY_BYTES. A deletion that does not answer 200 also leaves a failure capsule (capture_delete_diagnostic); label is the case the row is recorded as.
+delete_with() { # target mode items-file case
+  local t="$1" mode="$2" file="$3" label="${4:?delete_with needs the case label its row is recorded under}" k id kept removed audit_mark
   k="$(jq 'length' "$file")"
   read -r kept removed <<<"$(qc1_expected_split "$mode" "$k")"
   id="$(mint_attempt "$t")"
@@ -873,12 +921,13 @@ delete_with() { # target mode items-file
   audit_mark="$(psql_db -c 'SELECT coalesce(max(id), 0) FROM audit_logs')"
   [[ "$audit_mark" =~ ^[0-9]+$ ]] || { echo "qc1: cannot read the audit watermark ('$audit_mark')" >&2; exit 1; }
   instrumented do_delete "$t" "$WORK/delete.body"
+  capture_delete_diagnostic "$label" "$t" "$mode" "$k" "$kept" "$removed" "$BODY_BYTES" || DEL_DIAG='{"state":"unavailable","reason":"the capture failed"}'
   DEL_KEPT="$(jq '.erasure.reasonsKept // null' "$WORK/delete.out" 2>/dev/null || echo null)"
   DEL_REMOVED="$(jq '.erasure.reasonsRemoved // null' "$WORK/delete.out" 2>/dev/null || echo null)"
   DELETE_JSON="$(delete_json)"
   verify_outcome "$t" "$file" "$kept" "$removed" "$audit_mark"
   EXPECT_JSON="$(jq -nc --argjson i "$k" --argjson kp "$kept" --argjson rm "$removed" '{items:$i, kept:$kp, removed:$rm}')"
-  unset DEL_KEPT DEL_REMOVED
+  unset DEL_KEPT DEL_REMOVED DEL_DIAG
 }
 
 # (5) request size, for the compact set-v1 envelope. A body is {successors, hostSuccessors, attemptId, reasonReview:{format, count, digest, choices}}:
@@ -962,7 +1011,7 @@ measure_request_size() { # n
   do_delete "$t" "$WORK/delete.body"
   over_status="$DEL_STATUS"; over_ms="$DEL_MS"; over_code="$(jq -r '.code // ""' "$WORK/delete.out" 2>/dev/null || true)"
   if [[ "$(account_untouched "$t")" == t ]]; then over_unchanged=true; fi
-  delete_with "$t" mixed "$WORK/req-items.json"
+  delete_with "$t" mixed "$WORK/req-items.json" request-size
   fit_delete="$DELETE_JSON"; fit_outcome="$OUTCOME_JSON"; fit_expect="$EXPECT_JSON"; fit_bytes="$BODY_BYTES"
   want_bytes="$(qc1_body_length "$K" "$id80")"
   (( fit_bytes <= cap && fit_bytes == want_bytes )) || { echo "qc1: the sent body is $fit_bytes bytes; the format says $want_bytes for $K reasons (cap $cap)" >&2; exit 1; }
@@ -1166,7 +1215,7 @@ observe_workers_on() { # n
   t="$(fresh_user)"
   load_scenario "$n" "$k" "$t" requester "$CPS"
   traverse "$t" "$WORK/obs-items.json"
-  delete_with "$t" mixed "$WORK/obs-items.json"
+  delete_with "$t" mixed "$WORK/obs-items.json" workers-on-delete
   RECORD_STATUS=observation record 9 workers-on-delete "$n" "$(jq -nc --argjson del "$DELETE_JSON" --argjson k "$k" --argjson expect "$EXPECT_JSON" --argjson outcome "$OUTCOME_JSON" \
     '{delete:$del, reasons:$k, expect:$expect, outcome:$outcome, attributable:false, note:"background workers on: jobs, their commits, WAL and any gate use run beside this deletion, so the instrument figures are not attributable to it"}')"
   drop_scenarios
@@ -1303,7 +1352,7 @@ order_control_delete() { # n which
   drop_scenarios
   t="$(fresh_user)"
   echo '[]' >"$WORK/items-order-delete.json"
-  delete_with "$t" keep "$WORK/items-order-delete.json"
+  delete_with "$t" keep "$WORK/items-order-delete.json" "order-control-delete-$which"
   record 6 "order-control-delete-$which" "$n" "$(jq -nc --argjson del "$DELETE_JSON" --argjson bytes "$BODY_BYTES" --argjson expect "$EXPECT_JSON" --argjson outcome "$OUTCOME_JSON" --arg which "$which" \
     '{delete:$del, reasons:0, bodyBytes:$bytes, expect:$expect, outcome:$outcome, control:{of:"a deletion of an account with no reasons", position:$which, note:"the same deletion at the start and at the end of one size run; the distance between the two is the order effect on a deletion, recorded and not judged"}}')"
 }
@@ -1418,7 +1467,7 @@ measure_size() { # n
   t="$(fresh_user)"
   instrumented traverse "$t" "$WORK/items.json"
   tr_json="$(traversal_json)"
-  delete_with "$t" keep "$WORK/items.json"
+  delete_with "$t" keep "$WORK/items.json" unrelated
   record 2 unrelated "$n" "$(jq -nc --argjson tr "$tr_json" --argjson del "$DELETE_JSON" --argjson expect "$EXPECT_JSON" --argjson outcome "$OUTCOME_JSON" '{traversal:$tr, delete:$del, expect:$expect, outcome:$outcome}')"
 
   # (3) discovery with k reasons in both party directions, and (6) deletion with
@@ -1440,7 +1489,7 @@ measure_size() { # n
           traverse "$t" "$WORK/items-$d-$k.json"
         fi
         if ! printf '%s\n' "${ALL_DELETE_LIST[@]}" | grep -qx "$k"; then continue; fi
-        delete_with "$t" "$mode" "$WORK/items-$d-$k.json"
+        delete_with "$t" "$mode" "$WORK/items-$d-$k.json" "delete-$d-$k-$mode"
         record 6 "delete-$d-$k-$mode" "$n" "$(jq -nc --argjson del "$DELETE_JSON" --argjson k "$k" --argjson bytes "$BODY_BYTES" --argjson expect "$EXPECT_JSON" --argjson outcome "$OUTCOME_JSON" --argjson roles "$(roles_json "$WORK/items-$d-$k.json")" --argjson shape "$TEXT_SHAPE_JSON" \
           '{delete:$del, reasons:$k, bodyBytes:$bytes, expect:$expect, outcome:$outcome, roles:$roles, textShape:$shape}')"
       done
@@ -1489,7 +1538,7 @@ measure_size() { # n
   t="$(fresh_user)"
   instrumented traverse "$t" "$WORK/items.json"
   tr_json="$(traversal_json)"
-  delete_with "$t" keep "$WORK/items.json"
+  delete_with "$t" keep "$WORK/items.json" sparse
   record 1 sparse "$n" "$(jq -nc --argjson tr "$tr_json" --argjson del "$DELETE_JSON" --argjson expect "$EXPECT_JSON" --argjson outcome "$OUTCOME_JSON" '{traversal:$tr, delete:$del, expect:$expect, outcome:$outcome}')"
 
   # (7) loss of in-memory human progress. What each event discards is fixed by

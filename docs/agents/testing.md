@@ -494,6 +494,24 @@ interruption, for this directory, with the summary the rows give. `COLLECTION-FA
 nested runner could not bring out of the container) is a gap of its own even when every row is
 complete.
 
+A deletion that does not answer 200 leaves a **failure capsule**, `delete-diagnostics/seq-<N>.json`
+beside `measurements.jsonl` (N is the seq of the row that records the case; a second capsule for
+the same seq gets `-2`, a capsule is written once and never overwritten). `delete.out` and
+`delete.body` are overwritten by the next deletion, so the capsule is where a 503 stays readable: the
+case, size, layout, charset, revision, step and window; the request's counts and byte size (never
+the body, the choices or a reason's text); the answer's status, time, error code, top-level key
+names and a scrubbed error message (a non-JSON answer keeps a short scrubbed excerpt, a non-ASCII
+one keeps none); the app container's state (`oomKilled`, exit code, restarts); and the last 40
+relevant lines of the app's and the database's logs from one second before to two seconds after the
+request. A log line is kept only when it mentions a deletion, an error, a rollback, a lock, a
+timeout, a restore or a kill; secrets, addresses, emails and long tokens are scrubbed, and a line
+that names a request-content key or has any byte outside printable ASCII is counted as `withheld`
+and never kept. A part that could not be collected says `available:false` and why; an empty log is
+`linesRead: 0`, which is different. The row's `delete.diagnostic` carries the file, seq and sha256.
+The capsule says what was observed, not why: a cause that no line names stays an inference. It
+changes no verdict, the 503 is still an invalid `status` finding, and the whole run directory
+(capsules included) is what the nested runner copies out, also after an abort.
+
 An explained deletion's audit-retention report (item 6, `order-control-delete-*-explained`) is tied
 to its deletion by what the application sends around it, not by a statement the harness remembers:
 the report is the Go source text with its complete parameter list, it follows the erasure's own
