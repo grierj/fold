@@ -712,22 +712,32 @@ says why. Read `$E/qc1/probe-summary.json` (`qc1_probe_summary` recomputes it fr
   database this run made; the top-up never uses replica mode and `TRUNCATE` has no `CASCADE`.
 - **What it reports.** Per replicate: outcome class, request ms beside the 40 s budget, `audit_logs` bytes
   beside seq 164's 480,305,152 (the ratio is reported, not matched), the audit histogram at the start of the
-  window, the top 40 statements with `blkReadMs`, and the single-client flags. Statement times are
+  window, the top 40 statements with `blkReadMs`, the single-client flags, and whether the replicate is
+  `usable` for comparison. The audit flag (`isAudit`) is decided from the full query text before the
+  200-character display cut, so the long retention report counts even though `audit_logs` falls outside its
+  display. Unavailable statement evidence stays `null`, never zero; missing commit or sampler evidence is
+  named in `measurementInvalid` and makes the replicate unusable. Statement times are
   cluster-wide `pg_stat_statements` counters, not attributed to the deletion; they belong to it only when
-  `singleClient` shows one client, no autovacuum and no scheduler overlap. A statement cancelled by a timeout
-  is not counted.
+  `singleClient` shows one client, no autovacuum and no scheduler overlap. Only collected statements are
+  summed: the harness text filter and `LIMIT` omit some outright, cancelled statements are absent, and ties
+  and rounding make `smallestListedMs` approximate, not a strict bound.
 - **Rollback evidence.** A non-200 reads the account's reasons, the account row and the erasure's own audit
   actions after the watermark (`qc1_probe_atomicity`). A read that fails twice or is malformed is
   `invalid:atomicity-unreadable`, never a finding; `nonAtomic:*` needs clean reads that show a change. The
   scrubs of other accounts' audit rows are not read.
 - **Reading it.** Two replicates per arm on one host report what happened; they give no rate and no cause,
   sufficiency or necessity, whatever the split. `differences` and `limits` in the summary name what the
-  fixture does not reproduce (no churn, a rebuilt `audit_logs`, one shared filler, no host counters). A run
-  that stops early is `incomplete` and gets no reading. Record the result in
-  `docs/plan/M7.4-ERASURE-INVENTORY.md` 12.3 beside seq 164 as DIAGNOSTIC.
+  fixture does not reproduce (no churn, a rebuilt `audit_logs`, one shared filler, no host counters). Before
+  reading, run `qc1_probe_readiness` on the collected evidence directory: it must print `ready`. It refuses
+  a stopped run (`abort.json`), a failed or inconsistent copy (`COLLECTION-FAILED.txt`), an unfinished
+  finalization (`environment.json` incomplete), missing records, row coverage under four replicates, and any
+  replicate that is not `usable` — only `completed`, `timedOutAtomic` and `refused:<known code>` with clean
+  measurement evidence are expected reasons. A run that stops early is `incomplete` and gets no reading.
+  Record the result in `docs/plan/M7.4-ERASURE-INVENTORY.md` 12.3 beside seq 164 as DIAGNOSTIC.
 - **Checks that run without Docker**: `qc1-fixtures.sh` (the flag refusals, every rollback class and failed
-  read, every outcome class and competitor, the judge on a probe 503, and the order of the reset in the
-  source). The SQL runs only under Docker: the template, the top-up and the scan are first proven by the real
+  read, every outcome class and competitor, the full-text audit flag with the long retention shape, invalid
+  measurement evidence that never reads as zero, the judge on the exact diagnostic metadata of a 200 and a
+  503, every readiness state, and the order of the reset in the source). The SQL runs only under Docker: the template, the top-up and the scan are first proven by the real
   run, and a mismatch shows as `stateUnmatched` or ends the run.
 
 ### Source guards

@@ -1545,8 +1545,8 @@ QC1_PROBE_DIFFERENCES='[
  "one filler load and one template deletion serve all four replicates; the cache regime, host load, run position, app uptime, the earlier 10k and 100k sizes and the users and jobs table sizes are not reproduced"]'
 QC1_PROBE_LIMITS='[
  "two replicates per arm on one host: this reports what these four requests did, not a rate, and not a cause, sufficiency or necessity",
- "statement times are cluster-wide pg_stat_statements counters: they belong to the deletion only when singleClient shows one client, no autovacuum and no scheduler overlap; a statement cancelled by a timeout is not counted, so a 503 can leave its slowest statement unseen",
- "auditStatementMs sums the statements whose first 200 characters name audit_logs; blkReadMs is time waiting on block reads, not CPU",
+ "statement times are cluster-wide pg_stat_statements counters: they belong to the deletion only when singleClient shows one client, no autovacuum and no scheduler overlap; a statement cancelled by a timeout is not counted, so a 503 can leave its slowest statement unseen; the harness text filter and LIMIT omit some statements outright, and ties and rounding make smallestListedMs approximate, not a strict bound",
+ "auditStatementsMs sums only collected statements flagged from the full query text as touching audit_logs (the display is 200 characters); blkReadMs is time waiting on block reads, not CPU",
  "no host or cgroup counters are collected: a slow replicate cannot be told apart from a busy host except through blkReadMs and the single-client flags",
  "seq 164 stays a named operation failure whatever this shows; an arm that did not time out does not clear it"]'
 qc1_probe_settings() {
@@ -1594,33 +1594,74 @@ qc1_probe_summary() { # measurements.jsonl
       (if .workers != 0 then "workers" else empty end),
       (if .delete.tableRowsBefore != $tableRows then "table-rows" else empty end)];
     def klass:
-      (.delete.status // "") as $s | (.probe.code // "none") as $c | (.probe.atomicity // "invalid:atomicity-unreadable") as $a | competitors as $comp |
+      (.delete.status // "") as $s | (.diag.code // "none") as $c | (.diag.atomicity // "invalid:atomicity-unreadable") as $a | competitors as $comp |
       if ($s | test("^[1-5][0-9]{2}$") | not) then "invalid:no-status"
       elif ($comp | length) > 0 then "invalid:" + ($comp | join(","))
       elif $s != "200" and (known | index($c)) == null then "invalid:no-code"
       elif $s != "200" and ($a | startswith("invalid")) then $a
-      elif .probe.arm == "M" and .delete.auditActionsBefore != $target then "stateUnmatched"
+      elif .diag.arm == "M" and .delete.auditActionsBefore != $target then "stateUnmatched"
       elif $s != "200" and ($a | startswith("nonAtomic")) then $a
       elif $s != "200" and $a != "clean" then "invalid:atomicity-unreadable"
       elif $s == "200" then (if .outcome.dbOk == true and .outcome.textExact == true then "completed" else "completedWrong" end)
       elif $c == "delete_timed_out" then "timedOutAtomic"
       else "refused:" + $c end;
-    def audit: [.delete.topStatements[]? | select(.query | test("audit_logs"; "i"))];
-    [.[] | select(.item == 6 and ((.case // "") | startswith("delete-subject-100000-remove-probe")))] | sort_by(.probe.replicate) as $rows
-    | ($rows | map({replicate: .probe.replicate, arm: .probe.arm, case: .case, class: klass,
-        status: .delete.status, code: .probe.code, requestMs: .delete.ms, budgetMs: $budget,
-        auditMatchesSeq164Counts: (if .probe.arm == "M" then (.delete.auditActionsBefore == $target) else null end),
+    def audit: [.delete.topStatements[]? | select(if (.isAudit | type) == "boolean" then .isAudit else (.query | test("audit_logs"; "i")) end)];
+    def stmtsOk: ((.delete.topStatements | type) == "array" and ([.delete.topStatements[] | select((.totalMs | type) != "number" or (.blkReadMs | type) != "number")] | length) == 0);
+    def want: ((.delete.ms // 0) / 100 | floor);
+    def measInvalid:
+      ((if (.delete.topStatements | type) != "array" then ["statements-unavailable"] else [] end)
+       + (if (.delete.topStatements | type) == "array" and (stmtsOk | not) then ["statement-timing-missing"] else [] end)
+       + (if (.delete.ms | type) != "number" then ["delete-ms-missing"]
+          else ((if .delete.status == "200" and ((.delete.commitCalls // 0) < 1) then ["no-commit-seen"] else [] end)
+                + (if (.delete.gateTicks // 0) < want then ["sampler-starved"] else [] end)
+                + (if (.delete.dbMemSamples // 0) < ([2, want] | max) then ["memory-undersampled"] else [] end)) end));
+    [.[] | select(.item == 6 and ((.case // "") | startswith("delete-subject-100000-remove-probe")))] | sort_by(.diag.replicate) as $rows
+    | ($rows | map({replicate: .diag.replicate, arm: .diag.arm, case: .case, class: klass,
+        status: .delete.status, code: .diag.code, requestMs: .delete.ms, budgetMs: $budget,
+        auditMatchesSeq164Counts: (if .diag.arm == "M" then (.delete.auditActionsBefore == $target) else null end),
         auditActionsBefore: .delete.auditActionsBefore, auditRowsBefore: .delete.auditRowsBefore, auditBytesBefore: .delete.auditBytesBefore,
         auditBytesVsSeq164: (if num(.delete.auditBytesBefore) then ((.delete.auditBytesBefore / $seq164) * 1000 | round / 1000) else null end),
-        auditScan: .probe.audit,
-        statements: {topN: (.delete.topStatements | length), auditStatementsMs: ([audit[].totalMs] | add // 0), auditStatementsBlkReadMs: ([audit[].blkReadMs] | add // 0),
-                     allTopBlkReadMs: ([.delete.topStatements[]?.blkReadMs] | add // 0), smallestListedMs: (.delete.topStatements | if length > 0 then .[-1].totalMs else null end),
-                     note: "cluster-wide pg_stat_statements over the window, not attributed to the deletion; a statement not listed took less than smallestListedMs"},
+        auditScan: .diag.audit,
+        statementsAvailable: ((.delete.topStatements | type) == "array"),
+        measurementInvalid: measInvalid,
+        usable: (((klass == "completed" or klass == "timedOutAtomic") or (klass | startswith("refused:"))) and (measInvalid | length) == 0),
+        statements: {topN: (if stmtsOk then (.delete.topStatements | length) else null end),
+                     auditStatementsMs: (if stmtsOk then ([audit[].totalMs] | add // null) else null end),
+                     auditStatementsBlkReadMs: (if stmtsOk then ([audit[].blkReadMs] | add // null) else null end),
+                     allTopBlkReadMs: (if stmtsOk then ([.delete.topStatements[]?.blkReadMs] | add // null) else null end),
+                     smallestListedMs: (if stmtsOk and (.delete.topStatements | length) > 0 then .delete.topStatements[-1].totalMs else null end),
+                     note: "cluster-wide pg_stat_statements over the window, not attributed to the deletion; auditStatements* cover only collected statements flagged from the full query text (the display is 200 characters); an eligible collected statement not listed took about smallestListedMs or less (ties and rounding are approximate; the harness text filter and cancelled statements are absent outright)"},
         singleClient: {maxActiveClients: .delete.maxActiveClients, gateHolders: .delete.gateHolders, autovacuumWorkers: .delete.autovacuumWorkers, schedulerOverlap: .delete.schedulerOverlap, schedulerRows: .delete.schedulerRows, workers: .workers},
-        atomicity: .probe.atomicity, physicalBefore: .probe.physical, startedMs: .probe.startedMs, endedMs: .probe.endedMs})) as $reps
+        atomicity: .diag.atomicity, physicalBefore: .diag.physical, startedMs: .diag.startedMs, endedMs: .diag.endedMs})) as $reps
     | {schema: "fold/qc1-delete-probe-summary/v1", diagnostic: true,
        label: "audit-count-matched (M) against fresh (F) audit_logs, churn-free 1M multibyte fixture; never QC-1 evidence",
        order: ($reps | map(.arm)), incomplete: (($reps | length) != 4), replicates: $reps,
        byArm: {F: ($reps | map(select(.arm == "F") | .class)), M: ($reps | map(select(.arm == "M") | .class))},
        differences: $differences, limits: $limits}'  "$1"
+}
+
+# Whether a collected diagnostic directory is fit to read: row coverage alone is
+# not enough. Prints ready, or not-ready:<reasons>. It needs the finalized
+# probe-summary.json with all four replicates usable, no abort.json, no
+# COLLECTION-FAILED.txt from the outer copy, and the finalized environment and
+# evidence records with the run marked finished. The only expected replicate
+# outcomes are completed, timedOutAtomic and refused:<known code> (usable says
+# so per replicate); a stopped run, a failed copy and any other class or
+# invalid measurement stay unusable for interpretation. The deliberate
+# by-construction gaps (no browser, counts 0, dense none, an incomplete matrix)
+# are in settings.deleteProbe and the summary's differences, not failures here.
+qc1_probe_readiness() { # dir
+  local d="$1" gaps=() s r
+  [[ -f "$d/probe-summary.json" ]] || { echo 'not-ready:no-probe-summary'; return 0; }
+  [[ -f "$d/measurements.jsonl" ]] || gaps+=('missing:measurements.jsonl')
+  [[ -f "$d/environment.json" ]] || gaps+=('missing:environment.json')
+  [[ -f "$d/evidence-status.json" ]] || gaps+=('missing:evidence-status.json')
+  if [[ -f "$d/environment.json" ]] && [[ "$(jq -r '.incomplete // true' "$d/environment.json" 2>/dev/null)" != false ]]; then gaps+=('environment:incomplete'); fi
+  [[ ! -e "$d/abort.json" ]] || gaps+=('aborted')
+  [[ ! -e "$d/COLLECTION-FAILED.txt" ]] || gaps+=('collection-failed')
+  s="$(jq -c '.incomplete, (.replicates // [] | length)' "$d/probe-summary.json" 2>/dev/null || true)"
+  if [[ "$s" != 'false
+4' ]]; then gaps+=('incomplete:rows'); fi
+  while IFS= read -r r; do gaps+=("replicate-$r"); done < <(jq -r '.replicates[]? | select(.usable != true) | "\(.replicate // "?"):\(.class // "unknown")"' "$d/probe-summary.json" 2>/dev/null)
+  if (( ${#gaps[@]} )); then echo "not-ready:$(IFS=,; echo "${gaps[*]}")"; else echo ready; fi
 }

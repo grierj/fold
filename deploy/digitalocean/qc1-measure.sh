@@ -59,6 +59,7 @@
 # of the multibyte-spread matrix, with rows copied from one real deletion. It needs exactly --sizes 1000000 --counts 0 --dense-counts none --charset multibyte --layout spread --no-browser.
 # Its rows are named delete-subject-100000-remove-probe<F|M>-r<N>, the judge treats them like any deletion (a 503 stays a 503), the evidence is incomplete by construction, and
 # probe-summary.json says what was measured and what the fixture does not reproduce (qc1/lib.sh, QC1_PROBE_*). docs/agents/testing.md has the command.
+# Read nothing until qc1_probe_readiness on the collected directory prints ready: four rows are coverage, not a reading.
 # --browser-fallback-digest: one extra rendered-panel case at the largest browser count of the first size with crypto.subtle removed, so the bundled
 # SHA-256 runs (not required by the matrix).
 #
@@ -1456,6 +1457,7 @@ probe_atomicity() { # target ids mark   -> PROBE_ATOMICITY
   rm -rf "$d"
 }
 probe_replicate() { # arm replicate n
+  # The row's diagnostic metadata lives under "diag": "probe" is the judge's instrumented legacy tombstone probe (lib.sh ran), which demands instrument metrics this metadata does not carry.
   local arm="$1" r="$2" n="$3" label t started physical audit ids code atomicity=notNeeded
   label="delete-subject-100000-remove-probe$arm-r$r"
   started="$(ms)"
@@ -1481,7 +1483,7 @@ probe_replicate() { # arm replicate n
   record 6 "$label" "$n" "$(jq -nc --argjson del "$DELETE_JSON" --argjson bytes "$BODY_BYTES" --argjson expect "$EXPECT_JSON" --argjson outcome "$OUTCOME_JSON" --argjson roles "$(roles_json "$WORK/items-probe.json")" --argjson shape "$TEXT_SHAPE_JSON" \
     --arg arm "$arm" --argjson r "$r" --arg code "$code" --arg atomicity "$atomicity" --argjson physical "$physical" --argjson audit "$audit" --argjson started "$started" --argjson ended "$(ms)" \
     '{delete:$del, reasons:100000, bodyBytes:$bytes, expect:$expect, outcome:$outcome, roles:$roles, textShape:$shape,
-      probe:{arm:$arm, replicate:$r, code:$code, atomicity:$atomicity, physical:$physical, audit:$audit, startedMs:$started, endedMs:$ended}}')"
+      diag:{arm:$arm, replicate:$r, code:$code, atomicity:$atomicity, physical:$physical, audit:$audit, startedMs:$started, endedMs:$ended}}')"
   note "diagnostic replicate $r ($arm): status $DEL_STATUS in $DEL_MS ms, $atomicity"
 }
 measure_delete_probe() { # n

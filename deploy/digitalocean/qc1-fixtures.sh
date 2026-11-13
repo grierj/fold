@@ -2754,19 +2754,25 @@ d="$(atom completed)"; printf '11|%s|0|0\n13|%s|21|61\n' "$H3" "$H2" >"$d/text.a
 # The summary: classes, the single-client flags beside the statement time, bytes against seq 164's, nothing read as a cause.
 prow() { # replicate arm status code atomicity
   jq -nc --argjson r "$1" --arg arm "$2" --arg st "$3" --arg code "$4" --arg at "$5" --argjson target "$QC1_PROBE_AUDIT_TARGET" '
-    {status:"measured", item:6, case:("delete-subject-100000-remove-probe" + $arm + "-r" + ($r | tostring)), size:1000000, workers:0, reasons:100000,
+    (if $st == "200" then 21000 else 39000 end) as $ms
+    | {status:"measured", item:6, case:("delete-subject-100000-remove-probe" + $arm + "-r" + ($r | tostring)), size:1000000, workers:0, reasons:100000,
      outcome:{dbOk:($st == "200"), textExact:($st == "200")},
-     delete:{status:$st, ms:(if $st == "200" then 21000 else 39000 end), schedulerOverlap:false, schedulerRows:0, gateHolders:1, maxActiveClients:1, autovacuumWorkers:0, tableRowsBefore:1100000,
+     delete:{status:$st, ms:$ms, schedulerOverlap:false, schedulerRows:0, gateHolders:1, maxActiveClients:1, autovacuumWorkers:0, tableRowsBefore:1100000,
+             commitCalls:1, commitMsMax:5, commitMsTotal:12, gateTicks:($ms / 100 | floor), gateMaxGapMs:25, gateMeanGapMs:22, gateHoles:0, dbMemSamples:($ms / 100 | floor),
              auditRowsBefore:(if $arm == "M" then 1330578 else 1001 end), auditBytesBefore:(if $arm == "M" then 480305152 else 2000000 end),
              auditActionsBefore:(if $arm == "M" then $target else {"user.created":1, "user.erasure_reasons_viewed":1000} end),
-             topStatements:[{query:"UPDATE contact_requests SET reason = $1", totalMs:9000, blkReadMs:10}, {query:"SELECT x FROM audit_logs WHERE ip <> $1", totalMs:3400.5, blkReadMs:120.2}, {query:"UPDATE audit_logs SET ip = $1", totalMs:800, blkReadMs:5}]},
-     probe:{arm:$arm, replicate:$r, code:$code, atomicity:$at}}'
+             topStatements:[{query:"UPDATE contact_requests SET reason = $1", isAudit:false, totalMs:9000, blkReadMs:10}, {query:"SELECT x FROM audit_logs WHERE ip <> $1", isAudit:true, totalMs:3400.5, blkReadMs:120.2}, {query:"UPDATE audit_logs SET ip = $1", isAudit:true, totalMs:800, blkReadMs:5}]},
+     diag:{arm:$arm, replicate:$r, code:$code, atomicity:$at,
+       physical:{heapBytes:1000, indexBytes:500, totalBytes:1500, relpages:10, deadTuples:0},
+       audit:{totalBytes:(if $arm == "M" then 480305152 else 2000000 end), heapBytes:1000, indexBytes:500, byAction:{}},
+       startedMs:1700000000000, endedMs:1700000021000}}'
 }
 { prow 1 F 200 none notNeeded; prow 2 M 503 delete_timed_out clean; prow 3 M 503 delete_timed_out clean; prow 4 F 200 none notNeeded
   jq -nc '{status:"pending", item:4, case:"legacy-discovery", size:null}'; } >"$WORK/probe.jsonl"
 s="$(qc1_probe_summary "$WORK/probe.jsonl")"
 [[ "$(jq -c '[.incomplete, .order, .byArm]' <<<"$s")" == '[false,["F","M","M","F"],{"F":["completed","completed"],"M":["timedOutAtomic","timedOutAtomic"]}]' ]]
-[[ "$(jq -c '.replicates[1] | [.requestMs, .budgetMs, .auditMatchesSeq164Counts, .auditBytesVsSeq164, .statements.auditStatementsMs, .statements.auditStatementsBlkReadMs, .statements.allTopBlkReadMs, .statements.topN, .statements.smallestListedMs]' <<<"$s")" == '[39000,40000,true,1,4200.5,125.2,135.2,3,800]' ]]   # only statements that name audit_logs are summed
+[[ "$(jq -c '.replicates[1] | [.requestMs, .budgetMs, .auditMatchesSeq164Counts, .auditBytesVsSeq164, .statements.auditStatementsMs, .statements.auditStatementsBlkReadMs, .statements.allTopBlkReadMs, .statements.topN, .statements.smallestListedMs]' <<<"$s")" == '[39000,40000,true,1,4200.5,125.2,135.2,3,800]' ]]   # only statements flagged from the full query text are summed
+[[ "$(jq -c '[.replicates[] | [.class, .usable, .measurementInvalid, .statementsAvailable]]' <<<"$s")" == '[["completed",true,[],true],["timedOutAtomic",true,[],true],["timedOutAtomic",true,[],true],["completed",true,[],true]]' ]]
 [[ "$(jq -c '.replicates[0] | [.auditMatchesSeq164Counts, .auditBytesVsSeq164, .singleClient.maxActiveClients]' <<<"$s")" == '[null,0.004,1]' ]]
 [[ "$(jq -r '.replicates[0].statements.note' <<<"$s")" == *'not attributed to the deletion'* ]]
 jq -e '.diagnostic == true and (.label | contains("never QC-1 evidence")) and (.differences | length) == 4 and (.limits | length) == 5' <<<"$s" >/dev/null
@@ -2792,6 +2798,70 @@ for bad in none withheld server_error_x ""; do [[ "$(cls "$(prow 1 F 503 "$bad" 
 for tweak in '.delete.schedulerOverlap = true' '.delete.schedulerOverlap = null' '.delete.schedulerRows = 1' '.delete.gateHolders = 2' 'del(.delete.gateHolders)' 'del(.delete.maxActiveClients)' '.workers = 1' '.delete.tableRowsBefore = 1099999'; do
   [[ "$(cls "$(prow 1 F 503 delete_timed_out clean | jq -c "$tweak")")" == invalid:* ]] || { echo "qc1: a competitor was not invalid: $tweak" >&2; exit 1; }
 done
+# R1: the audit flag is read from the full query text, not the 200-character display. The retention report names audit_logs past the display cut.
+LONGRET="SELECT class, action, count(*) FROM (SELECT action, CASE WHEN ip IS NULL OR ip = '' THEN 'NONE' WHEN (action = 'user.created' AND (actor_id = 7)) THEN 'RETAIN_ESSENTIAL' ELSE 'RETAIN_UNATTRIBUTED' END AS cl"
+[[ "$(jq -n --arg q "$LONGRET" '$q | test("audit_logs"; "i")')" == false ]]   # the display genuinely does not name the table
+prow 1 M 200 none notNeeded | jq -c --arg q "$LONGRET" '.delete.topStatements = [{query:$q, isAudit:true, totalMs:1500.5, blkReadMs:44.4}]' >"$WORK/r1.jsonl"
+[[ "$(qc1_probe_summary "$WORK/r1.jsonl" | jq -c '.replicates[0] | [.class, .statements.topN, .statements.auditStatementsMs, .statements.auditStatementsBlkReadMs, .usable]')" == '["completed",1,1500.5,44.4,true]' ]]
+# A row from before the flag keeps the display-text match; an explicit false wins over a matching display.
+prow 1 F 200 none notNeeded | jq -c 'del(.delete.topStatements[].isAudit)' >"$WORK/r1old.jsonl"
+[[ "$(qc1_probe_summary "$WORK/r1old.jsonl" | jq -r '.replicates[0].statements.auditStatementsMs')" == '4200.5' ]]
+prow 1 F 200 none notNeeded | jq -c '.delete.topStatements[1].isAudit = false | .delete.topStatements[2].isAudit = false' >"$WORK/r1false.jsonl"
+[[ "$(qc1_probe_summary "$WORK/r1false.jsonl" | jq -c '.replicates[0] | [.statements.auditStatementsMs, .usable]')" == '[null,true]' ]]
+# The collector flags from the full text while the display stays capped.
+grep -qF '(query ~* '"'"'audit_logs'"'"') AS "isAudit"' "$HERE/qc1/top-statements.sql"
+grep -qF "left(regexp_replace(query, '\s+', ' ', 'g'), 200) AS query" "$HERE/qc1/top-statements.sql"
+# R3: unreadable or partial statement evidence never reads as measured zero cost, and missing commit/sampler evidence on a 200 is said.
+prow 1 M 503 delete_timed_out clean | jq -c '.delete.topStatements = null' >"$WORK/r3null.jsonl"
+[[ "$(qc1_probe_summary "$WORK/r3null.jsonl" | jq -c '.replicates[0] | [.class, .statementsAvailable, .statements.topN, .statements.auditStatementsMs, .measurementInvalid, .usable]')" == '["timedOutAtomic",false,null,null,["statements-unavailable"],false]' ]]
+prow 1 F 200 none notNeeded | jq -c 'del(.delete.topStatements)' >"$WORK/r3missing.jsonl"
+[[ "$(qc1_probe_summary "$WORK/r3missing.jsonl" | jq -c '.replicates[0] | [.class, .statementsAvailable, .statements.topN, .statements.auditStatementsMs, .measurementInvalid, .usable]')" == '["completed",false,null,null,["statements-unavailable"],false]' ]]
+prow 1 F 200 none notNeeded | jq -c 'del(.delete.topStatements[1].totalMs)' >"$WORK/r3timing.jsonl"
+[[ "$(qc1_probe_summary "$WORK/r3timing.jsonl" | jq -c '.replicates[0] | [.statementsAvailable, .statements.topN, .statements.auditStatementsMs, .measurementInvalid, .usable]')" == '[true,null,null,["statement-timing-missing"],false]' ]]
+prow 1 F 200 none notNeeded | jq -c '.delete.commitCalls = 0 | .delete.gateTicks = 2 | .delete.dbMemSamples = 1' >"$WORK/r3commit.jsonl"
+[[ "$(qc1_probe_summary "$WORK/r3commit.jsonl" | jq -c '.replicates[0] | [.class, .measurementInvalid, .usable]')" == '["completed",["no-commit-seen","sampler-starved","memory-undersampled"],false]' ]]
+# R2: the diagnostic metadata rides beside the instruments, never as one: the judge sees no probe object on the row.
+drow() { # status ms kept removed code atomicity
+  jq -nc --argjson ins "{$(ins 1100000)}" --arg st "$1" --argjson ms "$2" --argjson kept "$3" --argjson removed "$4" --arg code "$5" --arg at "$6" '
+    ($ins + {status:$st, ms:$ms, reasonsKept:$kept, reasonsRemoved:$removed,
+      gateTicks:($ms / 100 | floor), dbMemSamples:($ms / 100 | floor), gateHolders:1}) as $del
+    | {status:"measured", item:6, case:"delete-subject-100000-remove-probeF-r1", size:1000000, workers:0, reasons:100000,
+       expect:{items:100000, kept:$kept, removed:$removed}, roles:{requester:0, subject:100000},
+       outcome:{dbOk:($st == "200"), textExact:($st == "200")},
+       delete:$del,
+       diag:{arm:"F", replicate:1, code:$code, atomicity:$at,
+         physical:{heapBytes:1000, indexBytes:500, totalBytes:1500, relpages:10, deadTuples:0},
+         audit:{totalBytes:2000000, heapBytes:1000, indexBytes:500, byAction:{}},
+         startedMs:1700000000000, endedMs:1700000021000}}'
+}
+drow 200 21000 0 100000 none notNeeded >"$WORK/diag-ok.jsonl"
+[[ -z "$(qc1_judge "$WORK/diag-ok.jsonl" 6291456)" ]]   # a clean 200 with the exact emitted metadata draws no invalid finding
+drow 503 39000 0 0 delete_timed_out clean >"$WORK/diag-503.jsonl"
+[[ "$(qc1_judge "$WORK/diag-503.jsonl" 6291456 | jq -r 'select(.failure == "status") | .class')" == invalid ]]   # a 503 on the same shape keeps the ordinary refusal findings
+# R4: four rows are coverage, not a reading. Readiness needs the finalized records and an intact copy.
+readyBase() { # dir
+  mkdir -p "$1"
+  { prow 1 F 200 none notNeeded; prow 2 M 503 delete_timed_out clean; prow 3 M 503 delete_timed_out clean; prow 4 F 200 none notNeeded; } >"$1/measurements.jsonl"
+  qc1_probe_summary "$1/measurements.jsonl" >"$1/probe-summary.json"
+  printf '{"incomplete":false}\n' >"$1/environment.json"
+  printf '{"complete":false}\n' >"$1/evidence-status.json"
+}
+readyBase "$WORK/ready"; [[ "$(qc1_probe_readiness "$WORK/ready")" == ready ]]
+readyBase "$WORK/aborted"; printf '{"outcome":"aborted"}\n' >"$WORK/aborted/abort.json"; [[ "$(qc1_probe_readiness "$WORK/aborted")" == not-ready:aborted ]]
+readyBase "$WORK/failed-copy"; printf 'the run inside could not be confirmed stopped\n' >"$WORK/failed-copy/COLLECTION-FAILED.txt"
+[[ "$(qc1_probe_readiness "$WORK/failed-copy")" == not-ready:collection-failed ]]
+readyBase "$WORK/unfinished"; printf '{"incomplete":true}\n' >"$WORK/unfinished/environment.json"; [[ "$(qc1_probe_readiness "$WORK/unfinished")" == not-ready:environment:incomplete ]]
+mkdir -p "$WORK/short"; head -n 2 "$WORK/ready/measurements.jsonl" >"$WORK/short/measurements.jsonl"
+qc1_probe_summary "$WORK/short/measurements.jsonl" >"$WORK/short/probe-summary.json"
+cp "$WORK/ready/environment.json" "$WORK/ready/evidence-status.json" "$WORK/short/"
+[[ "$(qc1_probe_readiness "$WORK/short")" == not-ready:incomplete:rows ]]
+readyBase "$WORK/nonatomic"; { prow 1 F 200 none notNeeded; prow 2 M 503 delete_timed_out clean; prow 3 M 503 delete_timed_out nonAtomic:account-changed; prow 4 F 200 none notNeeded; } >"$WORK/nonatomic/measurements.jsonl"
+qc1_probe_summary "$WORK/nonatomic/measurements.jsonl" >"$WORK/nonatomic/probe-summary.json"
+[[ "$(qc1_probe_readiness "$WORK/nonatomic")" == not-ready:replicate-3:nonAtomic:account-changed ]]
+readyBase "$WORK/refused"; { prow 1 F 200 none notNeeded; prow 2 M 503 reason_review_busy clean; prow 3 M 503 delete_timed_out clean; prow 4 F 200 none notNeeded; } >"$WORK/refused/measurements.jsonl"
+qc1_probe_summary "$WORK/refused/measurements.jsonl" >"$WORK/refused/probe-summary.json"
+[[ "$(qc1_probe_readiness "$WORK/refused")" == ready ]]   # a known refusal with clean rollback evidence is an expected reason
+readyBase "$WORK/noenv"; rm "$WORK/noenv/environment.json"; [[ "$(qc1_probe_readiness "$WORK/noenv")" == not-ready:missing:environment.json ]]
 # The judge is unchanged: a probe-labelled 503 is judged like any 503.
 mut probe503 "$DEL then .case = \"delete-subject-100-mixed-probeM-r2\" | .delete.status = \"503\" else . end"; expect_invalid probe503 status
 

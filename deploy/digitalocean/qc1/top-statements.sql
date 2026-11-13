@@ -5,9 +5,11 @@
 -- here is NOT attributed to the operation. The harness's own sampler, bookkeeping (audit rows and bytes, audit rows by action, the row count, the scheduler-row count) and transaction-control statements are filtered out by their text (the filter
 -- is a text match, not a proof). pg_stat_statements itself costs a little on every statement; it is on for the COMMIT figures already.
 -- :lim is the number of statements kept (psql -v lim=; 8 unless a diagnostic asks for more). blkReadMs and blkWriteMs are track_io_timing, which the harness turns on: the time a statement waited on block I/O.
+-- isAudit is decided from the full query text before the 200-character display cut, so a long statement that names audit_logs late still counts.
 SELECT coalesce(json_agg(t), '[]'::json)::text
 FROM (
   SELECT left(regexp_replace(query, '\s+', ' ', 'g'), 200) AS query,
+         (query ~* 'audit_logs') AS "isAudit",
          calls,
          round(total_exec_time::numeric, 1) AS "totalMs",
          round(mean_exec_time::numeric, 2) AS "meanMs",
