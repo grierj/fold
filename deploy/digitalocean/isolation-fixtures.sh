@@ -12,14 +12,63 @@ HERE="$ROOT/deploy/digitalocean"
 source "$HERE/isolation.sh"
 WORK="$(mktemp -d /tmp/fold-isolation-fixture.XXXXXX)"
 active_runner=""
+fixture_launching=0 fixture_pending=0
+fixture_signal() {
+  if (( fixture_launching )); then
+    (( fixture_pending != 0 )) || fixture_pending=$1
+    return
+  fi
+  exit "$1"
+}
+start_owned_runner() {
+  fixture_launching=1
+  "$@" &
+  active_runner=$!
+  fixture_launching=0
+  if (( fixture_pending )); then exit "$fixture_pending"; fi
+}
 # shellcheck disable=SC2329 # EXIT trap.
 finish() { local rc=$?; trap '' INT TERM HUP; if [[ -n "$active_runner" ]]; then wait "$active_runner" 2>/dev/null || true; fi; rm -rf -- "$WORK"; exit "$rc"; }
 trap finish EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
-trap 'exit 129' HUP
+trap 'fixture_signal 130' INT
+trap 'fixture_signal 143' TERM
+trap 'fixture_signal 129' HUP
 trap 'printf "isolation fixture failed at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 refused() { local needle="$1" rc=0; shift; "$@" >"$WORK/out" 2>&1 || rc=$?; [[ "$rc" != 0 ]]; [[ -z "$needle" ]] || grep -qF -- "$needle" "$WORK/out"; }
+
+# Interrupt the actual ownership helpers at registration and during wait. The child
+# can only write its completion marker while the fixture's tools still exist.
+declare -f fixture_signal start_owned_runner finish >"$WORK/owner-functions"
+cat >"$WORK/owner-hook" <<'HOOK'
+[[ ${0##*/} == fixture-owner.sh ]] || return 0
+set -T
+owner_interrupt() {
+  [[ $BASHPID == "$$" && ! -e $OWNER_SIGNAL ]] || return 0
+  if [[ $OWNER_MODE == launch && $BASH_COMMAND == 'active_runner=$!' ]] ||
+     [[ $OWNER_MODE == registered && $BASH_COMMAND == 'wait "$active_runner"' ]]; then
+    : >"$OWNER_SIGNAL"
+    builtin kill -TERM "$$"
+  fi
+}
+trap owner_interrupt DEBUG
+HOOK
+cat >"$WORK/fixture-owner.sh" <<'OWNER'
+set -Eeuo pipefail
+source "$OWNER_FUNCTIONS"
+WORK=$OWNER_DIR; active_runner=""; fixture_launching=0; fixture_pending=0
+trap finish EXIT
+trap 'fixture_signal 143' TERM
+start_owned_runner bash -c 'sleep 0.5; [[ -f $1/tool ]] && : >"$2"' _ "$WORK" "$OWNER_SETTLED"
+wait "$active_runner"
+active_runner=""
+OWNER
+for owner_mode in launch registered; do
+  owner_dir="$WORK/owner-$owner_mode"; mkdir "$owner_dir"; : >"$owner_dir/tool"
+  owner_rc=0
+  timeout --foreground -s KILL 10 env BASH_ENV="$WORK/owner-hook" OWNER_MODE="$owner_mode" OWNER_FUNCTIONS="$WORK/owner-functions" OWNER_DIR="$owner_dir" OWNER_SIGNAL="$WORK/owner-$owner_mode.signal" OWNER_SETTLED="$WORK/owner-$owner_mode.settled" \
+    bash "$WORK/fixture-owner.sh" || owner_rc=$?
+  [[ "$owner_rc" == 143 && -e "$WORK/owner-$owner_mode.signal" && -e "$WORK/owner-$owner_mode.settled" && ! -e "$owner_dir" ]] || { echo "isolation: owner interruption failed at $owner_mode" >&2; exit 1; }
+done
 
 rc=0; bash "$HERE/isolation.sh" >"$WORK/direct.log" 2>&1 || rc=$?
 [[ "$rc" == 1 ]]; grep -q 'source from a drill only' "$WORK/direct.log"
@@ -279,8 +328,8 @@ for mode in timeout term; do
   start=$SECONDS
   hook=""; call_timeout=2
   if [[ "$mode" == term ]]; then hook="$WORK/signal-probe.sh"; call_timeout=15; fi
-  timeout --foreground -s KILL 30 env STUB_LOG="$WORK/stub.log" STUB_PIDS="$WORK/probe-pids" SIGNAL_MARK="$WORK/probe-signalled" BASH_ENV="$hook" STUB_LISTEN_HANG=1 FOLD_NESTED_CALL_TIMEOUT="$call_timeout" FOLD_NESTED_CLEANUP_BUDGET=12 PATH="$WORK/stubbin:$PATH" \
-    bash "$CLONE/deploy/digitalocean/restore-drill-nested.sh" --out "$WORK/ev-hang-$mode" >"$WORK/hang-$mode.out" 2>&1 & active_runner=$!
+  start_owned_runner timeout --foreground -s KILL 30 env STUB_LOG="$WORK/stub.log" STUB_PIDS="$WORK/probe-pids" SIGNAL_MARK="$WORK/probe-signalled" BASH_ENV="$hook" STUB_LISTEN_HANG=1 FOLD_NESTED_CALL_TIMEOUT="$call_timeout" FOLD_NESTED_CLEANUP_BUDGET=12 PATH="$WORK/stubbin:$PATH" \
+    bash "$CLONE/deploy/digitalocean/restore-drill-nested.sh" --out "$WORK/ev-hang-$mode" >"$WORK/hang-$mode.out" 2>&1
   rc=0; wait "$active_runner" || rc=$?; active_runner=""
   [[ -s "$WORK/probe-pids" ]] || { echo 'isolation: listener probe did not start' >&2; exit 1; }
   if [[ "$mode" == term ]]; then [[ "$rc" == 143 && -e "$WORK/probe-signalled" ]]; else [[ "$rc" == 1 && ! -e "$WORK/probe-signalled" ]]; fi
