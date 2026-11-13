@@ -408,13 +408,25 @@ test.describe("the deleted-accounts review", () => {
     await loseFirstPut(page, fx.id, true);
     const release = await holdSettle(page);
 
-    await save(page).click();
-    await expect(page.getByRole("status").filter({ hasText: "Checking what happened" })).toBeVisible();
-    await page.getByRole("link", { name: TITLE }).click();
-    await expect(page.getByRole("heading", { name: TITLE, level: 1 })).toBeVisible();
-    release();
-    // The late answer changes nothing here: no "Saved." appears on the list.
-    await expect.poll(() => watch.seen.settled.length).toBe(1);
+    try {
+      await save(page).click();
+      await expect(page.getByRole("status").filter({ hasText: "Checking what happened" })).toBeVisible();
+      await page.getByRole("link", { name: TITLE }).click();
+      await expect(page.getByRole("heading", { name: TITLE, level: 1 })).toBeVisible();
+      const response = page.waitForResponse((r) =>
+        new URL(r.url()).pathname === SETTLE && r.request().method() === "POST"
+        && recordOf(JSON.parse(r.request().postData() ?? "{}")).attemptId === watch.seen.put[0],
+      );
+      release();
+      const settled = await response;
+      expect(await settled.finished()).toBeNull();
+      expect(await settled.json()).toEqual({ result: "applied" });
+      // Let the browser process the completed response and its React updates.
+      await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    } finally {
+      release();
+    }
+    expect(watch.seen.settled).toEqual([watch.seen.put[0]]);
     await expect(page.getByText(SAVED)).toHaveCount(0);
 
     // Opening it again reads a fresh audited page, which is empty, and the entry leaves the list.
