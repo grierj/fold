@@ -1189,12 +1189,14 @@ already sent to other people.
 An active adult admin reviews the target's contact-request reasons before deleting
 an account that has them. `POST /api/v1/admin/users/:id/erasure-reasons/page` takes
 `{after: null}` for the first unit or `{after: "<cursor>"}` for the next. It writes
-a view audit and returns `{items, next, reviewRequired?}`. Each item contains
+a view audit for a nonempty unit and returns `{items, next, reviewRequired?}`.
+`reviewRequired` is true on a nonempty unit and omitted on an empty one. Each item contains
 `requestId`, `reviewHash`, `role`, `purpose`, `status`, `createdAt`,
 `counterpartName`, `counterpartDeleted`, `reviewerIsParty`, `reason`, and optional
 `counterpartRef` and `contextLabel`. IDs and cursors are decimal strings. An empty
 unit does not prove that no reasons remain: continue until `next` is null. A 503
-`reason_review_busy` means the unit could not be read; retry the same cursor.
+`reason_review_busy` means the unit could not be read; retry the same cursor. A
+403 `reason_review_not_allowed` can include `reviewRequired: true`.
 
 For a nonempty review, `reasonReview` is `{format: "set-v1", count, digest, choices}`;
 all four values are strings. `count` is the canonical decimal number of items.
@@ -1203,24 +1205,47 @@ count as a big-endian uint64, then each item in ascending signed request-ID orde
 the ID as a big-endian two's-complement int64 followed by its 32-byte decoded
 `reviewHash`. `choices` is canonical padded base64 of `ceil(count / 4)` bytes.
 Each item uses two bits, least significant pair first: 1 keeps the reason and 2
-removes it. Unchosen values and nonzero padding bits are refused. A changed set
-returns 409 `reason_review_changed`; reload and review it again. The old `items`
-envelope is refused with 409 `reason_review_outdated` when reasons exist.
+removes it. Unchosen values and nonzero padding bits are refused. A malformed
+envelope returns 400. When the current set is nonempty, an absent review returns
+409 `needs_reason_review`, a changed count or digest returns 409
+`reason_review_changed`, and the old `items` envelope returns 409
+`reason_review_outdated`. Reload and review a changed set again. When the current
+set is empty, a syntactically valid supplied review is ignored and both reason
+counts are zero. Omit `reasonReview` after an empty traversal: `set-v1` requires
+a positive count.
 
 To track one deletion press, `POST /api/v1/admin/operation-attempts` takes
 `{kind: "account_delete", subjectUserId}` and returns `{attemptId}`. Send that ID
 as `attemptId` in the DELETE. An ID is bound to the admin, target and process;
-its first submission expires after 10 minutes and it can be settled for 60 minutes.
+its first submission expires after 10 minutes from minting and it can be settled
+for 60 minutes from minting.
 The ID is optional for older clients. If a DELETE response is lost or returns an
 unknown outcome, do not submit a new deletion blindly. `POST
 /api/v1/admin/operation-attempts/settle` takes `{kind: "account_delete",
 subjectUserId, attemptId}` and returns `{result, subjectDeleted?}`. `result` is
 `applied`, `not_applied`, `checking`, or `history_unavailable`. `subjectDeleted`
 appears only when `not_applied` and the target is already deleted. `checking`
-means the result is not yet settled; `history_unavailable` does not prove that
-nothing happened. A restore can return `restore_detected`; reload the current
-state before proceeding. A deletion can also return `delete_timed_out` or
-`delete_outcome_unknown` as well as validation, permission and busy errors.
+means the result is not yet settled; settle the same ID again rather than issuing
+a new DELETE. `history_unavailable` does not prove that nothing happened. A restart
+or another process cannot recognize the ID and returns `history_unavailable`,
+even if a receipt remains. A definitive refusal consumes a claimed ID; do not
+reuse it. A 409 `attempt_closed` or `attempt_expired` says only that this
+submission did not run and does not rule out an earlier outcome. A 503
+`attempt_busy` means the attempt ledger could not accept the request.
+
+Deletion has a 40-second budget independent of the client connection. A
+pre-COMMIT timeout returns 503 `delete_timed_out`; a COMMIT error returns 500
+`delete_outcome_unknown`. A lost reply is also an unknown outcome: settle the
+same ID. A 409 `delete_household_busy`, `delete_reason_busy`, or
+`admin_account_busy` is a refusal of that deletion attempt. The page and settle
+operations each have a 10-second budget. These handler budgets do not prove that
+database locks have been released when the handler returns.
+
+A restore can return 503 `restore_detected`; reload the current state before
+proceeding. The in-memory fence detects loss of an acknowledged fenced commit
+seen by the same running process. It does not detect every restore, including
+one while Fold was stopped, loss of only an unknown commit, or a dump made after
+the latest acknowledged fenced commit.
 
 `emailSuppression` says Fold stopped mailing the person's address (DEC-112, DEC-113): `hard_bounce` and `manual` stop all mail, `complaint` stops optional mail while account mail still goes; with several open reasons the stronger one shows, and `since` is when the first began. Clearing ends every open suppression on the address (kept as history) and answers how many; clearing none is 200 `{cleared: 0}` with no audit row. Postmark keeps its own list, so a hard-bounced address may also need reactivating in Postmark.
 
