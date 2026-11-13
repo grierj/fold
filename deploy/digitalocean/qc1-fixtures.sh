@@ -2698,6 +2698,13 @@ attempt 3 req_down; jq -e '.code == "none" and .responseBytes == 0 and .status =
 attempt 1 req_down 2>"$WORK/dup.err"; grep -q 'delete attempt 1 was not written' "$WORK/dup.err"; jq -e '.code == "delete_timed_out"' "$AD/0001.json" >/dev/null
 # the record is there when what runs after the request fails
 REQ_BODY='{"code":"reason_review_busy"}'; if ( attempt 4 req; false ); then exit 1; fi; jq -e '.code == "reason_review_busy"' "$AD/0004.json" >/dev/null
+# A valid prefix is not a complete response, and partial transfers never establish a code.
+REQ_BODY='{"code":"delete_timed_out"} {'; attempt 5 req
+jq -e '.code == "withheld" and .transport == "ok"' "$AD/0005.json" >/dev/null
+REQ_BODY='{"code":"delete_timed_out"} {"code":"reason_review_busy"}'; attempt 6 req
+jq -e '.code == "withheld"' "$AD/0006.json" >/dev/null
+req_partial() { printf '%s' '{"code":"delete_timed_out"}' >"$AR"; echo '503 1'; return 7; }
+attempt 7 req_partial; jq -e '.code == "withheld" and .transport == "failed" and .responseBytes > 0' "$AD/0007.json" >/dev/null
 grep -q 'qc1_delete_attempt "\$WORK/delete-attempts"' "$HERE/qc1-measure.sh"
 
 echo 'qc1 fixtures: ok'

@@ -180,8 +180,9 @@ qc1_delete_attempt() {
   read -r DEL_STATUS DEL_MS <<<"$out"
   if [[ -s "$resp" ]]; then
     rbytes="$(wc -c <"$resp")" code=withheld
-    c="$(jq -r 'if type == "object" and (.code | type) == "string" then .code else "" end' "$resp" 2>/dev/null || true)"
-    case "$c" in delete_timed_out | reason_review_busy | reason_review_changed | restore_detected | server_error) code="$c" ;; esac
+    if (( rc == 0 )) && c="$(jq -ers 'select(length == 1 and (.[0] | type) == "object" and (.[0].code | type) == "string") | .[0].code' "$resp" 2>/dev/null)"; then
+      case "$c" in delete_timed_out | reason_review_busy | reason_review_changed | restore_detected | server_error) code="$c" ;; esac
+    fi
   fi
   (( rc == 0 )) || transport=failed
   dst="$(printf '%s/%04d.json' "$dir" "$n")"
