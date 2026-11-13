@@ -31,14 +31,35 @@ are in `docs/plan/M7.4-ERASURE-INVENTORY.md` (section numbers below point there)
   `eraseContactRequestTextIn` (`account_erasure.go`), which the two request triggers allow only
   for a soft-deleted subject (`00004_ages_note_erasure_scrub.sql`).
 - `reason` is blanked only by `eraseContactRequestReasonsIn` (`account_erasure_reasons.go`),
-  which `eraseAccountIn` calls right after it and which has work only on the admin path. The
-  admin's keep or remove decisions (`planReasonReviewIn`, the `set-v1` envelope) write one signed
-  audit row each, then the removed reasons are blanked in batches inside the deletion's
-  transaction. `00007` licenses that blank in the two request triggers for non-contact,
+  which is called from two places, each with its own `reasonPlan.Source`:
+  - `eraseAccountIn`, right after it, which has work only on the admin path (source
+    `deletion`). The admin's keep or remove decisions (`planReasonReviewIn`, the `set-v1`
+    envelope) write one signed audit row each, then the removed reasons are blanked in batches
+    inside the deletion's transaction.
+  - The legacy save, `apiAdminLegacyReasonSave` (`api_admin_reasons_legacy.go`), for an
+    account that is already deleted (source `legacy_review`). It calls the helper directly in
+    its `a.fencedContactMutation` callback, on the callback's own `tx`, with
+    `erasureSubject{ID: tombstone}`, after `legacySavePlanIn` has locked the tombstone and the
+    named requests and rechecked them; the callback's last statement returns
+    `a.legacySaveSeal`. Same signed rows, same blanking, same trigger license.
+- `00007` licenses that blank in the two request triggers for non-contact,
   non-pending rows with a soft-deleted party; contact and pending rows keep the baseline, which
   still lets `reason` change on `contact` rows and pending add rows, and the source guard stops
-  new writers. A legacy `{"items": [...]}` body is answered `reason_review_outdated` without
+  new writers. An old-envelope `{"items": [...]}` body is answered `reason_review_outdated` without
   reading its entries.
+- A reason is **undecided** for a deleted account when the request still has one and no audit row
+  marks `(request, account)`. The one marker selector is `legacyMarkersIn`
+  (`account_erasure_reasons_scan.go`): the request's own `requestKindOf` target type and kept or
+  removed action, `reviewVersion` the JSON number 1 (not `1.0`, `"1"` or null) and
+  `erasedUserId` the account. Discovery, the per-account page and the save's recheck all use it;
+  never write a second form, and never read a decision from anywhere but the audit log. The
+  scan is `scanLegacyUnit` (`reasonscan.ScanParties`, one batch-qualified read with two batched
+  lookups per batch).
+- The legacy routes hide the reason text from everything but the audited account page
+  (`user.erasure_reasons_viewed`, `source: legacy_review`). A list or probe answer carries ids
+  only, an account is "Deleted account" plus its id, and a refused admin is refused before any
+  read, empty unit included. Decision audit metadata never holds text, a hash, a length or an
+  attempt id.
 - The two creation functions stay in `api_contact.go`: the contact-text guard pins them.
 - Enforced by `TestContactRequestTextChangesStayInTheirHelpers`,
   `TestContactRequestTextGuardCatchesBypasses`, `TestContactRequestTextGuardReadsTheRealTree`
@@ -46,7 +67,14 @@ are in `docs/plan/M7.4-ERASURE-INVENTORY.md` (section numbers below point there)
   cannot see) and `TestAgesNoteMigrationFileHasNoTriggerBypass`. In short: the scrubs are called
   once each, inside `eraseAccountIn` after the soft delete, and `eraseAccountIn` is called
   exactly twice (`apiAdminDeleteUser` inside `a.fencedContactMutation`, `eraseTombstoneOnce`
-  inside `a.contactMutationCtx`). No production code disables or replaces the request triggers or
+  inside `a.contactMutationCtx`). `eraseContactRequestReasonsIn` (R-6) is called exactly twice:
+  once in `eraseAccountIn` right after `eraseContactRequestTextIn`, and once in the fenced
+  callback of `apiAdminLegacyReasonSave` on the callback's own `tx`, whose last statement returns
+  `a.legacySaveSeal`; a third call, or the legacy call outside that callback, in another
+  function or on another handle, fails the guard. The legacy save's lock order and statement
+  order are pinned by `TestLegacySaveStatementOrder`, its seal by `TestActorSealIsLast`
+  (`guards_seal_test.go`, which also covers `legacySaveSeal`), its fence by `TestFencedTransactionsTakeTheTicketFirst`, and the marker selector by
+  `TestLegacyMarkerSelector`. No production code disables or replaces the request triggers or
   sets `session_replication_role`; only `internal/testdb` may, and nothing else imports it.
 
 ## Households
@@ -119,7 +147,8 @@ see `deploy.md`).
   `restore_fence`; only an acknowledged COMMIT sets the in-memory floor, and any failure exits
   non-zero. A restart is the restart boundary: ids and the floor belong to one process.
   (`TestRestoreFenceBoot`; the call's position in `serve` is checked by review.)
-- **Commit-aware fence.** A fenced transaction (`apiAdminDeleteUser`, the settle route) runs only
+- **Commit-aware fence.** A fenced transaction (`apiAdminDeleteUser`, the settle route,
+  `apiAdminLegacyReasonSave`) runs only
   through `a.fencedContactMutation(ctx, change, fn)`, the one place the ticket protocol is
   written. Its callback takes `a.takeRestoreTicket(tx)` first (the one-slot turn under the
   contact gate, then the counter) and then runs `fn`, which returns the actor seal the wrapper
@@ -145,7 +174,12 @@ see `deploy.md`).
 
 - `POST /api/v1/admin/operation-attempts` mints an id under a per-process key; only that process
   mints or verifies it, and it runs at most once, in that process, if first submitted within 10
-  minutes.
+  minutes. There are two kinds, one list (`attemptKindAllowed`): `account_delete` (subject the
+  account to delete) and `legacy_reason_save` (subject the deleted account whose reasons the legacy
+  save decides). The kind is in the id's mac, so an id never opens for the other kind, and any
+  other kind is a 400 before anything runs. Settle's transaction and seal are the same for both;
+  only the answer differs: a `legacy_reason_save` `not_applied` never carries `subjectDeleted`,
+  because its subject is deleted by definition.
 - The ledger is memory only (its mutex never waits: `TestLedgerMutexHoldsNoWait`) and is checked
   before an id's age.
 - The receipt row (`admin_operation_attempts`) is inserted right after the ticket in the
@@ -155,15 +189,27 @@ see `deploy.md`).
   account is already gone), `history_unavailable` or `checking`. `not_applied` comes only from the
   ledger in memory. `attempt_expired` means only that this submission ran nothing; its copy never
   says "nothing was deleted". After a restart or 60 minutes an id settles `history_unavailable`.
+- The legacy save's retry rules are the deletion's (`classifyContactErr`, commit phase first; retry
+  only a 55P03 with `rollbackConfirmed`, at most three tries within `busyRetryWindow`), with its own
+  answers: busy on the admin's row is `admin_account_busy`, busy on the other deleted person's row
+  is `legacy_save_busy` (never `delete_reason_busy`, which says a deletion was refused),
+  `legacy_save_timed_out` and `legacy_save_outcome_unknown`. Its budget, `legacySaveBudget`, equals
+  `adminDeleteBudget`. It decides its own admin by `lockActorIn` plus `legacyReviewRule` before it
+  reads the account or any request, and again in the seal.
 - Enforced by `TestAttemptIDCapability`, `TestAttemptLedgerRules`, `TestAttemptLifecycle`,
+  `TestAttemptKindsMintAndOpen`, `TestAttemptKindsNeverCross`, `TestLegacySettleNeverCarriesSubjectDeleted`,
+  `TestLegacySaveOutcomes`, `TestLegacySaveVsConversion`,
   `TestDefinitiveResponsesEndTheAttempt`, `TestOutcomeClassification`, `TestSettleAuthorization`,
   `TestSettleUnknownCommit`, `TestRestoreFenceFencedIdAcrossARestart`.
 
 ## Actor seal
 
 `contactChange.Seal` runs `currentAdminIn` (`FOR SHARE NOWAIT` on the actor's own row, decided by
-`sessionCurrent`) as the last locking statement before COMMIT, with or without an attempt id. A
-busy seal retries at most three times and answers 409 `admin_account_busy`; settle makes at most
+`sessionCurrent`) as the last locking statement before COMMIT, with or without an attempt id. The
+legacy save seals with `legacySaveSeal` (the same statement, the legacy review rule as its predicate);
+the legacy reads end with the same statement after their `readBeforeSeal` seam. A
+busy seal retries at most three times and answers 409 `admin_account_busy` (a legacy read answers 503
+`reason_review_busy` instead); settle makes at most
 three sealed tries in two seconds and then answers `checking`. (`TestActorSealIsLast`,
 `TestCurrentAdminInFacts`, `TestActorSealBusy`, `TestActorSealVsConversion`.)
 

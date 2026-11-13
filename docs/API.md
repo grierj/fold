@@ -1216,15 +1216,20 @@ a positive count.
 
 To track one deletion press, `POST /api/v1/admin/operation-attempts` takes
 `{kind: "account_delete", subjectUserId}` and returns `{attemptId}`. Send that ID
-as `attemptId` in the DELETE. An ID is bound to the admin, target and process;
-its first submission expires after 10 minutes from minting and it can be settled
-for 60 minutes from minting.
-The ID is optional for older clients. If a DELETE response is lost or returns an
+as `attemptId` in the DELETE. An ID is bound to the admin, kind, target and
+process; its first submission expires after 10 minutes from minting and it can
+be settled for 60 minutes from minting. A save of a deleted account's reasons
+(below) mints and settles the same way with `kind: "legacy_reason_save"` and the
+deleted account as `subjectUserId`; an ID never opens for the other kind, and any
+other `kind` is a 400. `subjectUserId` is a JSON number.
+The ID is optional for older clients on a DELETE; the save requires it. If a
+DELETE response is lost or returns an
 unknown outcome, do not submit a new deletion blindly. `POST
 /api/v1/admin/operation-attempts/settle` takes `{kind: "account_delete",
 subjectUserId, attemptId}` and returns `{result, subjectDeleted?}`. `result` is
 `applied`, `not_applied`, `checking`, or `history_unavailable`. `subjectDeleted`
-appears only when `not_applied` and the target is already deleted. `checking`
+appears only when `not_applied`, the kind is `account_delete` and the target is
+already deleted; a `legacy_reason_save` answer never carries it. `checking`
 means the result is not yet settled; settle the same ID again rather than issuing
 a new DELETE. `history_unavailable` does not prove that nothing happened. A restart
 or another process cannot recognize the ID and returns `history_unavailable`,
@@ -1246,6 +1251,122 @@ proceeding. The in-memory fence detects loss of an acknowledged fenced commit
 seen by the same running process. It does not detect every restore, including
 one while Fold was stopped, loss of only an unknown commit, or a dump made after
 the latest acknowledged fenced commit.
+
+**Deleted accounts' reasons (legacy review, T07B-3a).** An account deleted before
+reasons were reviewed, or by a path that never asked, can leave contact-request
+reasons nobody decided. A reason is undecided for a deleted account when its
+request still has text in `reason`, the account is a party (requester or subject),
+and the audit log holds no decision for that request and account: an audit row for
+the request's own target type, with the purpose's kept or removed action, whose
+metadata has `reviewVersion` as the number 1 and `erasedUserId` as the account.
+Only the canonical number 1 counts; `1.0`, `"1"`, `null` and a missing key are not a
+decision. Four routes read and decide them. All need a signed-in admin
+(a non-admin gets a plain 403 with no code), and an admin who is not an active
+adult (a teen, a known age under 18, a disabled account) gets 403
+`reason_review_not_allowed` before anything is read, an empty list included, so
+the refusal never hints whether reasons exist. A stale or ended session is 401.
+The rule is decided on an early read and again on the locked admin row at the end
+of every read and save. These routes have no `reviewRequired` on a 403 and no
+default, bulk, age or count rule: a reason is decided only by an explicit choice.
+
+```
+GET  /api/v1/admin/erasure-reasons/legacy?after=<cursor>   → 200 {accounts, next}
+GET  /api/v1/admin/erasure-reasons/legacy/probe            → 200 {found}
+POST /api/v1/admin/erasure-reasons/legacy/:userId/page     → 200 {items, next, reviewRequired?}
+PUT  /api/v1/admin/erasure-reasons/legacy/:userId          → 200 {kept, removed}
+```
+
+- **List.** `after` is the previous answer's `next`, a canonical signed decimal
+  string; leave it out for the first unit. A malformed one, an empty one included,
+  is 400 `invalid cursor`. One unit is at most 100 requests and 200 items, with both
+  deleted parties of a request on the same unit, the requester first. `accounts` is
+  `[{userId, name, items: [{requestId}]}]` in first-seen order. `userId` and
+  `requestId` are decimal strings (a request id is signed 64-bit); `name` is always
+  `"Deleted account"` and `userId` is the reference shown beside it. An account can
+  continue on a later unit, so merge accounts by `userId`. The list carries no
+  text, no name and no total. `next` is null only when the walk reached the end of
+  the table: an empty unit with a `next` proves nothing, so keep walking. The
+  units are read in separate statements without one snapshot, so a request decided
+  or deleted mid-walk can show up or be missed once; no unit is authoritative, and
+  the save rechecks everything under locks.
+- **Probe.** `{found}` says whether the first unit holds anything. `false` proves
+  only that the first unit had none, not that no reasons remain.
+- **Account page.** The body is `{after: null}` for the first page or `{after:
+  "<cursor>"}` for the next, with the same walk rules. It returns up to 100 items,
+  one per request, of that account's side only, shaped as the live page's items
+  (`requestId`, `reviewHash`, `role`, `purpose`, `status`, `createdAt`,
+  `counterpartName`, `counterpartDeleted`, `reviewerIsParty`, `reason`, optional
+  `counterpartRef` and `contextLabel`) plus `partyRef`, the account's id as a decimal
+  string. This is the only route that returns text, so it is a POST that writes a
+  `user.erasure_reasons_viewed` audit row (target the account, metadata `{count,
+  source: "legacy_review"}`) in the same transaction, for a page with items and never
+  for an empty one. A live counterpart is named by its public name; a deleted one is
+  `"Deleted account"` with `counterpartRef`; `contextLabel` appears only when the
+  viewer may see that group or event. `reviewHash` is bound to the signed-in admin,
+  the account and the request's fields, so it fits only this admin's save and changes
+  when a field does. `reviewRequired` is true when the unit found requests (even if
+  every reason was blanked since) and omitted on an empty page. Answers: 404
+  `user not found` for an id that is malformed, missing or still a live account
+  (checked after the admin is, so an admin who may not review cannot tell which ids
+  are deleted accounts); 400 `invalid body` or `invalid cursor`; 503
+  `reason_review_busy` when the page could not be read, which is never "no reasons":
+  retry the same cursor. A page has a 10-second budget.
+- **Save.** The body is `{attemptId, decisions: [{requestId, reviewHash, choice}]}`
+  with 1 to 100 decisions, any subset of what the admin was shown, no request twice,
+  and `choice` exactly `"keep"` or `"remove"`. `attemptId` is a `legacy_reason_save`
+  ID minted for this press for this account; it travels in the body only and the
+  save has no mode without one. Every decision writes a signed audit row (metadata
+  `erasedUserId`, `erasedRole`, `purpose`, `status`, `reviewerIsParty`, `source:
+  "legacy_review"`, `reviewVersion: 1`; never text, hash, length or attempt ID) and a
+  remove also blanks `reason`, all in one transaction through the one reason writer,
+  `eraseContactRequestReasonsIn`, so either every decision lands or none does. The
+  answer is `{kept, removed}`, counts only. The set is checked exactly under locks:
+  each named request must still be this account's, still have text, still have no
+  decision and still match its `reviewHash`, or the save answers 409
+  `reason_review_changed` with nothing written. Repeating a save whose decisions
+  already landed is refused the same way and never writes twice. After such a
+  refusal, reload the account's page and mint a new ID.
+
+Order of save answers. Nothing is recorded, and the ID is not claimed, for a
+`:userId` that is not a canonical positive decimal (404 `user not found`) and for a
+body that does not decode, has no `attemptId`, or names `attemptId` or `decisions`
+twice or in another case (400 `invalid body`). Then the ID is submitted: 409
+`attempt_closed` or `attempt_expired` and 503 `attempt_busy` ran nothing. From then
+on the ID is claimed and every refusal consumes it, so a new press needs a new ID:
+503 `restore_detected`, 400 `invalid decisions` (wrong count, an id or hash that is
+not canonical, a duplicate, a missing or other choice), 409 `reason_review_changed`,
+403 `reason_review_not_allowed` (also a plain 403 if the admin lost admin rights), 404
+`user not found` (missing, or not deleted), 401 for a stale session, 409
+`admin_account_busy` (the admin's own account was being updated on every try), 409
+`legacy_save_busy` (another transaction held the other deleted person of a shared
+request on every try; never `delete_reason_busy`, which is a deletion's), 503
+`legacy_save_timed_out` and any other failure as a logged 500 `could not save` with no
+detail. Each of those means COMMIT was never sent, so nothing was saved. A COMMIT
+that may have reached the server is 500 `legacy_save_outcome_unknown`, which never
+says nothing was saved.
+
+Retries. The server retries only a busy answer, only after the ROLLBACK was
+acknowledged, up to three tries within 2 seconds, then answers the busy code. The
+save has its own 40-second budget, made independent of the client connection and
+equal to a deletion's; a disconnecting browser cannot abort a commit. A client must
+not resend a refused save with the same ID, and must not mint a new ID after a lost
+reply, `legacy_save_outcome_unknown` or a response with no readable body: settle
+the same ID with `{kind: "legacy_reason_save", subjectUserId: <account>, attemptId}`.
+On `applied` or `history_unavailable`, reload the account's page: what was
+decided no longer lists, and anything still listed is undecided. `not_applied` means
+the save did not run and cannot run later; reload and decide again with a new ID.
+`checking` means settle the same ID again. These are the answers of a deletion's
+settle, except that `subjectDeleted` is never sent.
+
+Restore limits. The save runs in the same fenced transaction as a deletion, so
+the barrier and its limits are the deletion's: only an in-memory floor detects a
+restore, and only one that loses a commit this process saw acknowledged. A database
+restored from a dump taken before a save brings that dump's reasons back with its
+earlier decisions: text blanked after the dump is back and listed again, a decision
+made after it is gone, and nothing says so unless the barrier fires. A restart or
+another process cannot recognize an ID, so `history_unavailable` is not evidence
+that nothing happened. Reading the page after any restore is how to know what is
+decided.
 
 `emailSuppression` says Fold stopped mailing the person's address (DEC-112, DEC-113): `hard_bounce` and `manual` stop all mail, `complaint` stops optional mail while account mail still goes; with several open reasons the stronger one shows, and `since` is when the first began. Clearing ends every open suppression on the address (kept as history) and answers how many; clearing none is 200 `{cleared: 0}` with no audit row. Postmark keeps its own list, so a hard-bounced address may also need reactivating in Postmark.
 

@@ -1404,9 +1404,16 @@ export interface MessagePreview {
 }
 
 /**
- * POST /admin/operation-attempts answers one id per press of Delete (mirrors
- * attemptMintJSON in admin_operation_attempts.go). The id is a capability: send
- * it in the DELETE body and the settle body, never in a URL, and never show it.
+ * What an attempt id is for (the kind in a mint and a settle body). The id is
+ * bound to its kind: one minted for a deletion never opens for a save.
+ */
+export type AttemptKind = "account_delete" | "legacy_reason_save";
+
+/**
+ * POST /admin/operation-attempts answers one id per press of Delete, or of Save
+ * on a deleted account's reasons (mirrors attemptMintJSON in
+ * admin_operation_attempts.go). The id is a capability: send it in the DELETE or
+ * PUT body and the settle body, never in a URL, and never show it.
  */
 export interface AttemptMintResponse {
   attemptId: string;
@@ -1415,8 +1422,10 @@ export interface AttemptMintResponse {
 /**
  * POST /admin/operation-attempts/settle: what became of an id (mirrors
  * attemptSettleJSON). "checking" asks the client to check again with the same
- * id; subjectDeleted is sent, as true, only on "not_applied" when the account is
- * already deleted (it is absent otherwise) and never says who deleted it.
+ * id; subjectDeleted is sent, as true, only on "not_applied" for an
+ * "account_delete" id when the account is already deleted (it is absent
+ * otherwise, and never present for "legacy_reason_save") and never says who
+ * deleted it.
  */
 export interface AttemptSettleResponse {
   result: "applied" | "not_applied" | "history_unavailable" | "checking";
@@ -1882,13 +1891,13 @@ export interface RoomBookingResponse {
 // probe, T07B-3a). Read-only: a request id and an account reference, never the
 // reason text. The page that consumes these is T-302. ----
 
-/** @public Used by the legacy review page (T-302) once it lands. */
+/** @public Read through LegacyReasonDiscovery by the legacy review page (T-302), which does not import it by name yet. */
 export interface LegacyDiscoveryItem {
   // Decimal string: a request id is signed 64-bit.
   requestId: string;
 }
 
-/** @public Used by the legacy review page (T-302) once it lands. */
+/** @public Read through LegacyReasonDiscovery by the legacy review page (T-302), which does not import it by name yet. */
 export interface LegacyDiscoveryAccount {
   // The deleted account's users id as a decimal string; the reference shown
   // beside "Deleted account" is derived from it. Merge accounts across pages by it.
@@ -1898,23 +1907,30 @@ export interface LegacyDiscoveryAccount {
 }
 
 /**
- * @public Used by the legacy review page (T-302) once it lands. One
- * request-atomic unit: at most 100 requests and 200 items, both parties of a
- * request on the same page. An account may continue on the next page; no total
- * is claimed. next is null when the table ended.
+ * One request-atomic unit: at most 100 requests and 200 items, both parties of
+ * a request on the same page. An account may continue on the next page; no
+ * total is claimed. next is null when the table ended.
  */
 export interface LegacyReasonDiscovery {
   accounts: LegacyDiscoveryAccount[];
   next: string | null;
 }
 
-/** @public Used by the legacy review page (T-302) once it lands. found false proves only that the first unit had none. */
+/** found false proves only that the first unit had none. */
 export interface LegacyReasonProbe {
   found: boolean;
 }
 
-/** @public Used by the legacy review page (T-302) once it lands. Counts only: no ids and no text. */
+/** PUT /admin/erasure-reasons/legacy/:userId answers counts only: no ids and no text. */
 export interface LegacyReasonSaveResponse {
   kept: number;
   removed: number;
+}
+
+// One decision in the save's body: the request and the reviewHash the admin
+// was shown, with an explicit choice. The server applies no default.
+export interface LegacyReasonDecision {
+  requestId: string;
+  reviewHash: string;
+  choice: "keep" | "remove";
 }
