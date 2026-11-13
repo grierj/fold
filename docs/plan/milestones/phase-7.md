@@ -69,6 +69,15 @@ milestones until a first church is live (DEC-145).
   - Deletion outcomes: attempt ids with a settle route, the restore barrier, the actor seal and
     the delete panel's outcome states. The panel tells the admin what a delete cannot reach
     (backups until they expire, copies already sent, some activity-log IP addresses).
+  - Deleted accounts' reasons (owner decision 7, #383): Admin → Users always links "Deleted accounts
+    with reasons to review", with a "Needs review" badge when a probe finds work. The page lists
+    each account as "Deleted account · ref N", never a former name. The admin picks Keep or Blank
+    for every reason and saves up to 100 at a time under a `legacy_reason_save` attempt id. There is
+    no default and no bulk choice.
+  - The T07B aggregate (1a, 1b, 1c, 2a, 2b, 2c, 3a and 3b; not T07B-6) is on master: 1a to 2c in
+    #299 (`9e8bddb4`), 3a and 3b in #383 (`d93d0825`). That is the T07B half of C4's merge
+    condition; R4-T07A (#282) is the other. The inventory's section 15.12 holds the evidence and
+    its limits. It does not sign C4 or M7.4: #311's audit does that.
   - Operator recovery: `deploy/digitalocean/restore.sh` and `compose.recovery.yml` restore a
     nightly dump into a private recovery instance. Scripted provision, upgrade and rollback refuse
     a lower recovery level. The tree is at recovery level 2 (`deploy/recovery-policy`).
@@ -80,7 +89,9 @@ milestones until a first church is live (DEC-145).
 - Open work:
   - [#301](https://github.com/grierj/fold/issues/301) and
     [#302](https://github.com/grierj/fold/issues/302) the one-time review list for reasons of
-    accounts deleted before the review step existed (owner decision 7): API, then page.
+    accounts deleted before the review step existed (owner decision 7): the API and page are built
+    in #383. Still unmeasured or unchecked: the QC4/5 scale measurements ([#292](https://github.com/grierj/fold/issues/292)),
+    and the real-phone and real-restore hand checks in `docs/FIRST-CHURCH-CHECKS.md`.
   - [#303](https://github.com/grierj/fold/issues/303) and
     [#305](https://github.com/grierj/fold/issues/305) design, review and build conversion-IP
     minimisation (R4-4b).
