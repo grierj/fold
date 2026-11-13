@@ -1889,15 +1889,14 @@ export interface RoomBookingResponse {
 
 // ---- Deleted-accounts review list (GET /admin/erasure-reasons/legacy and its
 // probe, T07B-3a). Read-only: a request id and an account reference, never the
-// reason text. The page that consumes these is T-302. ----
+// reason text. pages/ReasonReviewLegacy.tsx consumes these. ----
 
-/** @public Read through LegacyReasonDiscovery by the legacy review page (T-302), which does not import it by name yet. */
+/** @public Reached through LegacyDiscoveryAccount.items; the page never imports it by name. */
 export interface LegacyDiscoveryItem {
   // Decimal string: a request id is signed 64-bit.
   requestId: string;
 }
 
-/** @public Read through LegacyReasonDiscovery by the legacy review page (T-302), which does not import it by name yet. */
 export interface LegacyDiscoveryAccount {
   // The deleted account's users id as a decimal string; the reference shown
   // beside "Deleted account" is derived from it. Merge accounts across pages by it.

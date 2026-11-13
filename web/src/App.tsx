@@ -31,6 +31,7 @@ const GuestManage = lazy(() => import("./pages/GuestManage").then((m) => ({ defa
 const EmailSettingsPage = lazy(() => import("./pages/EmailSettings").then((m) => ({ default: m.EmailSettingsPage })));
 const GuardianConsentPage = lazy(() => import("./pages/GuardianConsent").then((m) => ({ default: m.GuardianConsentPage })));
 const ContactHistoryPage = lazy(() => import("./pages/ContactHistory").then((m) => ({ default: m.ContactHistoryPage })));
+const ReasonReviewLegacyPage = lazy(() => import("./pages/ReasonReviewLegacy").then((m) => ({ default: m.ReasonReviewLegacyPage })));
 const AdminPage = lazy(() => import("./pages/Admin").then((module) => ({ default: module.AdminPage })));
 const ContactRequestsPage = lazy(() => import("./pages/ContactRequests").then((m) => ({ default: m.ContactRequestsPage })));
 const AddRequestsPage = lazy(() => import("./pages/AddRequests").then((m) => ({ default: m.AddRequestsPage })));
@@ -89,6 +90,7 @@ export default function App() {
         <Route path="/contact-requests/:id" element={<RequireUser><Suspense fallback={<Skeleton kind="page" label="Loading contact request…" />}><ContactRequestsPage /></Suspense></RequireUser>} />
         <Route path="/admin/contact-history" element={<RequireUser><Suspense fallback={<Skeleton kind="page" label="Loading contact history…" />}><ContactHistoryPage /></Suspense></RequireUser>} />
         <Route path="/admin/users/:id/contact-history" element={<RequireUser><Suspense fallback={<Skeleton kind="page" label="Loading contact history…" />}><ContactHistoryPage /></Suspense></RequireUser>} />
+        <Route path="/admin/deleted-reasons" element={<RequireUser><Suspense fallback={<Skeleton kind="page" label="Loading deleted accounts…" />}><ReasonReviewLegacyPage /></Suspense></RequireUser>} />
         <Route path="/admin" element={<Suspense fallback={<div className="max-w-6xl mx-auto px-4 py-8"><Skeleton kind="page" label="Loading admin…" /></div>}><AdminPage /></Suspense>} />
         <Route path="/notifications" element={<NotificationsPage />} />
         <Route path="/notifications/setup" element={<NotificationsSetupPage />} />

@@ -71,8 +71,9 @@ function isCanonicalSigned(s: string): boolean {
     return false;
   }
 }
-// A deleted account's id on a route: positive, unsigned, fits int64.
-function isCanonicalAccountRef(s: string): boolean {
+// A deleted account's id on a route: positive, unsigned, fits int64. Exported for the
+// legacy page, which checks its ?account= before showing or requesting anything.
+export function isCanonicalAccountRef(s: string): boolean {
   if (!/^[1-9][0-9]*$/.test(s)) return false;
   try {
     return BigInt(s) <= maxSigned64;

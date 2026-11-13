@@ -24,11 +24,16 @@ const PURPOSES: Record<string, string> = {
   occurrence_add: "Request to sign up for a date",
 };
 
-// A deleted counterpart is never named, only told apart by the reference of
-// their deleted account (R4-C07). The server already sends "Deleted account".
+// A deleted account is never named, only told apart by its reference (R4-C07).
+// The one spelling, shared by the reasons, the deleted-accounts list and its
+// account heading so they cannot drift.
+export function deletedAccountLabel(ref?: string): string {
+  return ref ? `Deleted account · ref ${ref}` : "Deleted account";
+}
+
+// The server already sends "Deleted account" as the name of a deleted counterpart.
 function counterpartLabel(item: ErasureReasonItem): string {
-  if (!item.counterpartDeleted) return item.counterpartName;
-  return item.counterpartRef ? `Deleted account · ref ${item.counterpartRef}` : "Deleted account";
+  return item.counterpartDeleted ? deletedAccountLabel(item.counterpartRef) : item.counterpartName;
 }
 
 function whoDid(item: ErasureReasonItem): string {
