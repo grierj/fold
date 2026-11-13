@@ -284,18 +284,25 @@ echo "$n"
 SCAN
 )
 # The lookup that shows the daemon has no TCP API: it runs in the container (busybox sh and awk) on the files given as arguments, /proc/net/tcp and /proc/net/tcp6, which
-# are the container's own network namespace, and prints a line for each socket in LISTEN state (0A) on port 2375 (0x0947) or 2376 (0x0948), on any address, then "checked N",
-# N being how many of the files it could read. Nothing is signalled or written. A listener on another port is none of its business (the drill's own containers publish 80 and 443
+# are the container's own network namespace, and prints a line for each socket in LISTEN state (0A) on port 2375 (0x0947) or 2376 (0x0948), on any address, then the checked
+# families. IPv4 is required; IPv6 may be absent but must be readable if present. Nothing is signalled or written. A listener on another port is none of its business (the drill's own containers publish 80 and 443
 # through the daemon, after this has run).
 # shellcheck disable=SC2016 # the script runs inside the container
 LISTEN_SCAN=$(cat <<'LISTEN'
-n=0
+v4=$1; v6=$2
+[ -f "$v4" ] && [ -r "$v4" ] || exit 1
+families=ipv4
+if [ -e "$v6" ] || [ -L "$v6" ]; then
+  [ -f "$v6" ] && [ -r "$v6" ] || exit 1
+  families='ipv4 ipv6'
+  set -- "$v4" "$v6"
+else
+  set -- "$v4"
+fi
 for f; do
-  [ -r "$f" ] || continue
-  n=$((n+1))
   awk 'NR > 1 && $4 == "0A" { c = split($2, a, ":"); p = toupper(a[c]); if (p == "0947" || p == "0948") print FILENAME " listens on tcp " $2 }' "$f" || exit 1
 done
-echo "checked $n"
+echo "checked $families"
 LISTEN
 )
 # WRAP is what each docker exec runs the workload under (bash -c "$WRAP" _ COMMAND...). It loads the Chromium the preparation found, then runs COMMAND in a process group of
@@ -661,10 +668,11 @@ if [[ "$(docker inspect --format '{{.HostConfig.NetworkMode}}' "$CID")" == host 
 for ((i=0;i<120;i++)); do docker exec "$CID" docker info >/dev/null 2>&1 && break; sleep 1; done
 docker exec "$CID" docker info >/dev/null
 # The daemon has bound its sockets by the time it answers, so this is the moment a TCP listener would exist. A probe that cannot read /proc/net/tcp, fails or prints
-# anything else proves nothing and refuses the run just as a listener does (only "checked 1" or "checked 2" passes: tcp always, tcp6 where the kernel has it).
+# anything else proves nothing and refuses the run just as a listener does. The held client has a deadline and is ended on cancellation.
 tcp_probe_rc=0
-tcp_probe="$(docker exec "$CID" sh -c "$LISTEN_SCAN" fold-listener-scan /proc/net/tcp /proc/net/tcp6 2>&1)" || tcp_probe_rc=$?
-if (( tcp_probe_rc != 0 )) || [[ "$tcp_probe" != 'checked 1' && "$tcp_probe" != 'checked 2' ]]; then
+limited "$((SECONDS + CALL_T))" "$TMP/listener.out" bash -c 'exec "$@" 2>&1' _ docker exec "$CID" sh -c "$LISTEN_SCAN" fold-listener-scan /proc/net/tcp /proc/net/tcp6 || tcp_probe_rc=$?
+tcp_probe="$(cat "$TMP/listener.out" 2>/dev/null || true)"
+if (( tcp_probe_rc != 0 )) || [[ "$tcp_probe" != 'checked ipv4' && "$tcp_probe" != 'checked ipv4 ipv6' ]]; then
   echo 'restore-drill-nested: the inner daemon is not shown to listen on its unix socket only (TCP 2375 or 2376 is open, or the listening sockets could not be read); refusing:' >&2
   printf '%s\n' "$tcp_probe" >&2
   exit 1

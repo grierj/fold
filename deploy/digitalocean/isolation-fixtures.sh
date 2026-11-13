@@ -114,7 +114,17 @@ case "$1" in
       *NetworkMode*) echo "${STUB_NET:-bridge}" ;;
       *Mounts*) printf '%b' "${STUB_MOUNTS:-/var/lib/docker /var/lib/docker/volumes/x/_data\n}" ;;
     esac ;;
-  exec) case "$*" in *fold-owned-scan*) echo 0 ;; *fold-listener-scan*) printf "%s\n" "${STUB_LISTEN-checked 2}"; exit "${STUB_LISTEN_RC:-0}" ;; esac ;;
+  exec) case "$*" in
+    *fold-owned-scan*) echo 0 ;;
+    *fold-listener-scan*)
+      if [[ "${STUB_LISTEN_HANG:-0}" == 1 ]]; then
+        trap '' TERM
+        sleep 60 & child=$!
+        printf '%s\n%s\n' "$$" "$child" >"$STUB_PIDS"
+        wait "$child"
+      fi
+      printf "%s\n" "${STUB_LISTEN-checked ipv4 ipv6}"; exit "${STUB_LISTEN_RC:-0}" ;;
+  esac ;;
 esac
 exit 0
 STUB
@@ -210,12 +220,13 @@ row() { printf '   0: %s 00000000:0000 %s 00000000:00000000 00:00000000 00000000
 { echo "$tcp_hdr"; row 00000000000000000000000000000000:0947 0A; } >"$WORK/proc/bad6"
 echo "$tcp_hdr" >"$WORK/proc/empty"
 scan() { sh -c "$LISTEN_TXT" fold-listener-scan "$@"; }
-[[ "$(scan "$WORK/proc/clean4" "$WORK/proc/clean6")" == 'checked 2' ]]
-[[ "$(scan "$WORK/proc/empty" "$WORK/proc/absent")" == 'checked 1' ]]
-[[ "$(scan "$WORK/proc/absent" "$WORK/proc/absent2")" == 'checked 0' ]]
-[[ "$(scan "$WORK/proc/bad4" "$WORK/proc/clean6")" == "$WORK/proc/bad4 listens on tcp 00000000:0947"$'\n''checked 2' ]]
-[[ "$(scan "$WORK/proc/clean4" "$WORK/proc/bad6")" == "$WORK/proc/bad6 listens on tcp 00000000000000000000000000000000:0947"$'\n''checked 2' ]]
-[[ "$(scan "$WORK/proc/loop4" "$WORK/proc/clean6")" == "$WORK/proc/loop4 listens on tcp 0100007F:0948"$'\n''checked 2' ]]
+[[ "$(scan "$WORK/proc/clean4" "$WORK/proc/clean6")" == 'checked ipv4 ipv6' ]]
+[[ "$(scan "$WORK/proc/empty" "$WORK/proc/absent")" == 'checked ipv4' ]]
+if scan "$WORK/proc/absent" "$WORK/proc/clean6" >"$WORK/scan.out" 2>&1; then echo 'isolation: missing IPv4 table was accepted' >&2; exit 1; fi
+if scan "$WORK/proc/clean4" "$WORK/proc" >"$WORK/scan.out" 2>&1; then echo 'isolation: unreadable IPv6 table was accepted' >&2; exit 1; fi
+[[ "$(scan "$WORK/proc/bad4" "$WORK/proc/clean6")" == "$WORK/proc/bad4 listens on tcp 00000000:0947"$'\n''checked ipv4 ipv6' ]]
+[[ "$(scan "$WORK/proc/clean4" "$WORK/proc/bad6")" == "$WORK/proc/bad6 listens on tcp 00000000000000000000000000000000:0947"$'\n''checked ipv4 ipv6' ]]
+[[ "$(scan "$WORK/proc/loop4" "$WORK/proc/clean6")" == "$WORK/proc/loop4 listens on tcp 0100007F:0948"$'\n''checked ipv4 ipv6' ]]
 # The repository goes in as a bundle by cp, the drill runs inside with the flag, the evidence comes out by cp, and the container is removed by id.
 grep -q '^cp .*fold.bundle ccc' "$WORK/stub.log"; grep -q "^cp ccc[c]*:/work/out/. $WORK/ev1/" "$WORK/stub.log"
 grep -q '^exec -e FOLD_NESTED_RUN=[0-9a-f]\{12\} -e FOLD_DRILL_ISOLATED_DAEMON=1 -e QC1_NO_SANDBOX=1 -e QC1_WEB_DIR=/work/fold/web -w /work/fold c\{64\} bash -c .* _ bash deploy/digitalocean/restore-drill.sh --dir /work/out --keep$' "$WORK/stub.log"
@@ -239,14 +250,33 @@ refuse_tcp() { # NAME OUTPUT [RC]
   grep -q ' fold-listener-scan /proc/net/tcp /proc/net/tcp6$' "$WORK/stub.log"
   if grep -qE 'apk add|restore-drill.sh|qc1-measure.sh|browser-prepare.sh|^cp .*fold.bundle' "$WORK/stub.log"; then echo "isolation: $1: the run went on after the TCP check refused it" >&2; exit 1; fi
 }
-refuse_tcp tcp2375 $'/proc/net/tcp listens on tcp 00000000:0947\nchecked 2'
+refuse_tcp tcp2375 $'/proc/net/tcp listens on tcp 00000000:0947\nchecked ipv4 ipv6'
 grep -q 'listens on tcp 00000000:0947' "$WORK/lr.out"
-refuse_tcp tcp2376 $'/proc/net/tcp6 listens on tcp 00000000000000000000000000000000:0948\nchecked 2'
+refuse_tcp tcp2376 $'/proc/net/tcp6 listens on tcp 00000000000000000000000000000000:0948\nchecked ipv4 ipv6'
 refuse_tcp silent ''
 refuse_tcp none 'checked 0'
 refuse_tcp odd 'checked 3'
-refuse_tcp noise $'warning\nchecked 2'
-refuse_tcp failed 'checked 2' 1
+refuse_tcp noise $'warning\nchecked ipv4 ipv6'
+refuse_tcp failed 'checked ipv4 ipv6' 1
+# A stalled client and its child must not outlive the call or cancellation of the runner alone.
+for mode in timeout term; do
+  : >"$WORK/stub.log"; rm -f "$WORK/probe-pids"
+  start=$SECONDS
+  env STUB_LOG="$WORK/stub.log" STUB_PIDS="$WORK/probe-pids" STUB_LISTEN_HANG=1 FOLD_NESTED_CALL_TIMEOUT=2 FOLD_NESTED_CLEANUP_BUDGET=12 PATH="$WORK/stubbin:$PATH" \
+    bash "$CLONE/deploy/digitalocean/restore-drill-nested.sh" --out "$WORK/ev-hang-$mode" >"$WORK/hang-$mode.out" 2>&1 & runner=$!
+  for ((i=0; i<100; i++)); do [[ ! -s "$WORK/probe-pids" ]] || break; sleep 0.1; done
+  [[ -s "$WORK/probe-pids" ]] || { echo 'isolation: listener probe did not start' >&2; exit 1; }
+  [[ "$mode" != term ]] || kill -TERM "$runner"
+  rc=0; wait "$runner" || rc=$?
+  if [[ "$mode" == term ]]; then [[ "$rc" == 143 ]]; else [[ "$rc" == 1 ]]; fi
+  (( SECONDS - start < 20 ))
+  grep -qE '^rm -fv c{64}$' "$WORK/stub.log"
+  if grep -qE 'apk add|restore-drill.sh|qc1-measure.sh|browser-prepare.sh|^cp .*fold.bundle' "$WORK/stub.log"; then echo "isolation: $mode continued after a stalled probe" >&2; exit 1; fi
+  while IFS= read -r p; do
+    state="$(ps -o stat= -p "$p" 2>/dev/null || true)"
+    [[ -z "$state" || "$state" == Z* ]] || { echo "isolation: $mode left a probe process alive" >&2; exit 1; }
+  done <"$WORK/probe-pids"
+done
 STUB_MOUNTS='/var/run/docker.sock /var/run/docker.sock\n' refuse_launch launch --out "$WORK/ev2"
 grep -q 'mounts beyond its own /var/lib/docker' "$WORK/lr.out"; grep -qE '^rm -fv c{64}$' "$WORK/stub.log"; if grep -q 'restore-drill.sh' "$WORK/stub.log"; then exit 1; fi
 STUB_MOUNTS='/var/lib/docker /v\n/work /home/me/work\n' refuse_launch launch --out "$WORK/ev3"
@@ -268,7 +298,7 @@ case "$1" in
   info) echo '{"Name":"x","ContainersRunning":0}' ;;
   run) printf 'c%.0s' {1..64}; echo ;;
   inspect) case "$*" in *NetworkMode*) echo bridge ;; *Mounts*) echo '/var/lib/docker /v' ;; esac ;;
-  exec) case "$*" in *fold-owned-scan*) echo 0 ;; *fold-listener-scan*) echo "checked 2" ;; *restore-drill.sh*) exit 7 ;; esac ;;
+  exec) case "$*" in *fold-owned-scan*) echo 0 ;; *fold-listener-scan*) echo "checked ipv4 ipv6" ;; *restore-drill.sh*) exit 7 ;; esac ;;
 esac
 exit 0
 STUB

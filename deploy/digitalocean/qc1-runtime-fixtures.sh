@@ -292,7 +292,7 @@ case "$1" in
   info) printf '{"Name":"x","ContainersRunning":0}\n' ;;
   run) printf 'c%.0s' {1..64}; echo ;;
   inspect) case "$*" in *NetworkMode*) echo bridge ;; *Mounts*) echo '/var/lib/docker /v' ;; esac ;;
-  exec) case "$*" in *fold-owned-scan*) echo 0 ;; *fold-listener-scan*) echo "checked 2" ;; *browser-prepare.sh*) exit "${STUB_PREP_RC:-0}" ;; *qc1-measure.sh*) exit "${STUB_QC1_RC:-0}" ;; *restore-drill.sh*) exit "${STUB_DRILL_RC:-0}" ;; esac ;;
+  exec) case "$*" in *fold-owned-scan*) echo 0 ;; *fold-listener-scan*) echo "checked ipv4 ipv6" ;; *browser-prepare.sh*) exit "${STUB_PREP_RC:-0}" ;; *qc1-measure.sh*) exit "${STUB_QC1_RC:-0}" ;; *restore-drill.sh*) exit "${STUB_DRILL_RC:-0}" ;; esac ;;
 esac
 exit 0
 STUB
@@ -344,7 +344,8 @@ grep -q -- '_ bash deploy/digitalocean/qc1-measure.sh --dir /work/out --sizes 10
 if grep -q 'restore-drill.sh' "$WORK/stub.log"; then echo 'the qc1 mode ran the restore drill' >&2; exit 1; fi
 # No mount, host network or socket on the run line in either mode.
 run_line="$(grep '^run ' "$WORK/stub.log")"; [[ "$(grep -c '^run ' "$WORK/stub.log")" == 1 ]]
-if grep -qE -- ' -v |--volume|--mount|--network|docker\.sock|--cap-add' <<<"$run_line"; then echo "the runner is given more than it needs: $run_line" >&2; exit 1; fi
+if grep -qE -- ' -v |--volume|--mount|--network|--cap-add' <<<"$run_line"; then echo "the runner is given more than it needs: $run_line" >&2; exit 1; fi
+grep -qF -- 'dockerd --host=unix:///var/run/docker.sock' <<<"$run_line"
 # A runtime that cannot be prepared ends EITHER mode before anything runs, with the preparation's exit code and its evidence copied out.
 : >"$WORK/stub.log"; rc=0; STUB_PREP_RC=9 launch --out "$WORK/m-drill-fail" >"$WORK/l2.out" 2>&1 || rc=$?
 [[ "$rc" == 9 ]] && grep -q 'nothing was run (drill)' "$WORK/l2.out"

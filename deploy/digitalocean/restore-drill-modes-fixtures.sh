@@ -216,7 +216,7 @@ case "$1" in
   info) printf '{"Name":"x","ContainersRunning":0}\n' ;;
   run) printf 'c%.0s' {1..64}; echo ;;
   inspect) case "$*" in *NetworkMode*) echo bridge ;; *Mounts*) echo '/var/lib/docker /v' ;; esac ;;
-  exec) case "$*" in *fold-owned-scan*) echo 0 ;; *fold-listener-scan*) echo "checked 2" ;; *browser-prepare.sh*) exit "${STUB_PREP_RC:-0}" ;; *restore-drill.sh*) exit "${STUB_DRILL_RC:-0}" ;; esac ;;
+  exec) case "$*" in *fold-owned-scan*) echo 0 ;; *fold-listener-scan*) echo "checked ipv4 ipv6" ;; *browser-prepare.sh*) exit "${STUB_PREP_RC:-0}" ;; *restore-drill.sh*) exit "${STUB_DRILL_RC:-0}" ;; esac ;;
 esac
 exit 0
 STUB

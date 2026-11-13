@@ -718,7 +718,7 @@ exec)
 	case "$*" in
 	*fold-listener-scan*)
 		# The launcher's check that the inner daemon has no TCP API: the container is a simulation with no daemon, so it answers as a daemon with unix sockets only would.
-		echo 'checked 2'
+		echo 'checked ipv4 ipv6'
 		exit 0
 		;;
 	*fold-owned-scan*)
