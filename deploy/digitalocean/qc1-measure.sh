@@ -697,7 +697,7 @@ instr_json() {
 # result is part of the evidence (environment.json), and a failed instrument
 # makes the run incomplete instead of leaving nulls to be noticed later.
 calibrate() {
-  local t0 t1 hold samples holders ticks maxgap meangap holes memsamples=0 gate_ok=false mem_ok=false hwm_ok=false wal_ok=false commit_ok=false lsn rss hwm0 hwm1 reset=false calls cur
+  local t0 t1 hold samples holders ticks maxgap meangap holes memsamples=0 gate_ok=false mem_ok=false wal_ok=false commit_ok=false lsn rss hwm0 reset_rc hwm1 app_mem_json calls cur
   : >"$WORK/cal.gate"
   gate_sampler_start "$WORK/cal.gate"
   t0="$(ms)"
@@ -717,10 +717,14 @@ calibrate() {
   fi
   rss="$(app_status_kb VmRSS || true)"
   hwm0="$(app_status_kb VmHWM || true)"
+  reset_rc="" hwm1=""
   if [[ "$rss" =~ ^[0-9]+$ && "$hwm0" =~ ^[0-9]+$ ]]; then
-    hwm_ok=true
-    if app_reset_hwm; then hwm1="$(app_status_kb VmHWM || true)"; [[ "$hwm1" =~ ^[0-9]+$ ]] && (( hwm1 <= hwm0 )) && reset=true; fi
+    if app_reset_hwm; then reset_rc=0; else reset_rc=$?; fi
+    hwm1="$(app_status_kb VmHWM || true)"
   fi
+  # The verdict rule is unchanged (a failed write never verifies; the later mark
+  # must not exceed the earlier one); the raw readings ride along in the record.
+  app_mem_json="$(qc1_calibration_app_record "$rss" "$hwm0" "$reset_rc" "$hwm1")"
   lsn="$(psql_db -c 'SELECT pg_current_wal_lsn()')"
   [[ "$lsn" =~ ^[0-9A-F]+/[0-9A-F]+$ ]] && wal_ok=true
   psql_db -c 'SELECT pg_stat_statements_reset()' >/dev/null
@@ -728,12 +732,28 @@ calibrate() {
   calls="$(psql_db -c "SELECT coalesce(sum(calls), 0) FROM pg_stat_statements WHERE query ~* '^commit'")"
   [[ "$calls" =~ ^[0-9]+$ ]] && (( calls >= 1 )) && commit_ok=true
   jq -nc --argjson gate "$gate_ok" --argjson hold "${hold:-0}" --argjson holders "${holders:-0}" --argjson grants "${samples:-0}" --argjson ticks "${ticks:-0}" --argjson maxgap "${maxgap:-0}" --argjson meangap "${meangap:-0}" --argjson holes "${holes:-0}" --argjson memsamples "$memsamples" \
-    --argjson mem "$mem_ok" --arg memFile "${DB_MEM_FILE:-}" --argjson hwm "$hwm_ok" --argjson reset "$reset" --argjson wal "$wal_ok" --argjson commit "$commit_ok" \
+    --argjson mem "$mem_ok" --arg memFile "${DB_MEM_FILE:-}" --argjson appMem "$app_mem_json" --argjson wal "$wal_ok" --argjson commit "$commit_ok" \
     '{gate:{ok:$gate, spanMs:$hold, holders:$holders, grants:$grants, ticks:$ticks, maxGapMs:$maxgap, meanGapMs:$meangap, holes:$holes, expected:"one backend holding the gate continuously for 400 ms"},
       dbMemory:{ok:$mem, samples:$memsamples, source:("container cgroup file " + $memFile + ", sampled through docker exec; samples is the count in half a second")},
-      appMemory:{ok:$hwm, hwmReset:$reset, source:"/proc/1/status VmHWM of the app, read from a helper sharing its pid namespace"},
+      appMemory:($appMem + {source:"/proc/1/status VmHWM of the app, read from a helper sharing its pid namespace"}),
       wal:{ok:$wal, source:"pg_current_wal_lsn difference (cluster-wide)"},
       commit:{ok:$commit, source:"pg_stat_statements COMMIT entries (cluster-wide)"}}' >"$WORK/calibration.json"
+}
+
+# Stop before any measurement when the startup calibration already fails the
+# judge's verdict on it (a doomed run costs minutes, not hours): the aborted
+# evidence goes through the normal finalizer and the exit is 1, with nothing
+# measured. A passing calibration returns 0 and the run goes on. Reads only
+# $WORK/calibration.json; changes no threshold, tolerance or judge.
+calibration_gate() {
+  local bad
+  bad="$(qc1_calibration_problems "$WORK/calibration.json")" || bad="the calibration record is unreadable"
+  if [[ -n "$bad" ]]; then
+    note "calibration failed; stopping before any measurement"
+    printf 'qc1: calibration failed, stopping before any measurement:\n%s\n' "$bad" >&2
+    finalize_evidence aborted 1 || echo 'qc1: WARNING: the evidence of this aborted run could not be fully written' >&2
+    exit 1
+  fi
 }
 
 # Page traversal as the client does it: units from a null cursor until next is
@@ -836,6 +856,7 @@ CPS="${CPS%,}"
 note "calibrating the instruments"
 calibrate
 jq -c . "$WORK/calibration.json"
+calibration_gate
 FIRST_APP_CID="$APP_CID"
 
 psql_stdin() { docker exec -i "$DB_CID" psql -X -U church -d fold -At -v ON_ERROR_STOP=1 -f -; }

@@ -2284,6 +2284,54 @@ grep -qF "APP_HWM_RESET\" == true ]] || APP_PEAK_KB=null" <<<"$i_body"        # 
 sed -n '/^app_status_kb() {/,/^}/p' "$RUNNER_SRC" | grep 'for i in 1 2 3' >/dev/null
 grep -qF 'appMemSamples:$appSamples, appHwmBelowBaseline:$appBelow' "$RUNNER_SRC"
 
+# (2b) The startup app-memory calibration: the raw readings ride along, the verdict rule is unchanged.
+# A genuine lowering passes with its numbers; growth, a failed write and an unreadable re-read each
+# fail with the numbers that tell them apart. A failed write never verifies, even when the later mark
+# is below the earlier one; malformed reads are not "ok". An unchanged mark still passes the old rule,
+# so the record carries the numbers without calling equality a demonstrated reset.
+[[ "$(qc1_calibration_app_record 10000 10000 0 10000)" == '{"ok":true,"hwmReset":true,"rssKb":10000,"hwmBeforeKb":10000,"resetWriteRc":0,"hwmAfterKb":10000}' ]]
+[[ "$(qc1_calibration_app_record 12000 15000 0 9000)" == '{"ok":true,"hwmReset":true,"rssKb":12000,"hwmBeforeKb":15000,"resetWriteRc":0,"hwmAfterKb":9000}' ]]
+[[ "$(qc1_calibration_app_record 10000 10000 0 11000)" == '{"ok":true,"hwmReset":false,"rssKb":10000,"hwmBeforeKb":10000,"resetWriteRc":0,"hwmAfterKb":11000}' ]]
+[[ "$(qc1_calibration_app_record 40000 50000 0 50000)" == '{"ok":true,"hwmReset":true,"rssKb":40000,"hwmBeforeKb":50000,"resetWriteRc":0,"hwmAfterKb":50000}' ]]
+[[ "$(qc1_calibration_app_record 10000 12000 1 9000)" == '{"ok":true,"hwmReset":false,"rssKb":10000,"hwmBeforeKb":12000,"resetWriteRc":1,"hwmAfterKb":9000}' ]]
+[[ "$(qc1_calibration_app_record 10000 12000 0 "")" == '{"ok":true,"hwmReset":false,"rssKb":10000,"hwmBeforeKb":12000,"resetWriteRc":0,"hwmAfterKb":null}' ]]
+[[ "$(qc1_calibration_app_record 10000 12000 2 abc)" == '{"ok":true,"hwmReset":false,"rssKb":10000,"hwmBeforeKb":12000,"resetWriteRc":2,"hwmAfterKb":null}' ]]
+[[ "$(qc1_calibration_app_record "" 12000 "" "")" == '{"ok":false,"hwmReset":false,"rssKb":null,"hwmBeforeKb":12000,"resetWriteRc":null,"hwmAfterKb":null}' ]]
+[[ "$(qc1_calibration_app_record 10000 x 0 9000)" == '{"ok":false,"hwmReset":false,"rssKb":10000,"hwmBeforeKb":null,"resetWriteRc":0,"hwmAfterKb":9000}' ]]
+# The verdict the judge will reach on the calibration block alone: empty when it passes, naming each
+# block in the judge's own words when it fails, and failing closed on an unreadable record.
+jq -nc '{gate:{ok:true},dbMemory:{ok:true,samples:10},appMemory:{ok:true,hwmReset:true},wal:{ok:true},commit:{ok:true}}' >"$WORK/cal.ok.json"
+[[ -z "$(qc1_calibration_problems "$WORK/cal.ok.json")" ]]
+jq -c '.appMemory.hwmReset = false' "$WORK/cal.ok.json" >"$WORK/cal.reset.json"
+[[ "$(qc1_calibration_problems "$WORK/cal.reset.json")" == 'the app peak-memory reset failed' ]]
+jq -c '.appMemory.hwmReset = false | .dbMemory.samples = 2' "$WORK/cal.ok.json" >"$WORK/cal.two.json"
+[[ "$(qc1_calibration_problems "$WORK/cal.two.json")" == $'database memory sampling is too sparse to trust (fewer than 3 samples in the calibration half second)\nthe app peak-memory reset failed' ]]
+jq -c '.gate.ok = false' "$WORK/cal.ok.json" >"$WORK/cal.gate.json"
+[[ "$(qc1_calibration_problems "$WORK/cal.gate.json")" == 'the gate sampler did not see a known hold' ]]
+refused '' qc1_calibration_problems "$WORK/no-such-cal.json"
+# The judge reads the same flags with or without the additive fields: the record stays compatible both ways.
+jq -c '.calibration.appMemory += {rssKb:10000, hwmBeforeKb:12000, resetWriteRc:0, hwmAfterKb:9000}' "$WORK/env.json" >"$WORK/env.plus.json"
+[[ -z "$(qc1_environment_problems "$WORK/env.plus.json" "$HEAD_FAKE")" ]]
+jq -c '.calibration.appMemory.hwmReset = false' "$WORK/env.json" >"$WORK/env.bad.json"
+jq -c '.calibration.appMemory += {rssKb:10000, hwmBeforeKb:12000, resetWriteRc:0, hwmAfterKb:13000}' "$WORK/env.bad.json" >"$WORK/env.badplus.json"
+[[ "$(qc1_environment_problems "$WORK/env.bad.json" "$HEAD_FAKE")" == "$(qc1_environment_problems "$WORK/env.badplus.json" "$HEAD_FAKE")" ]]
+[[ "$(qc1_environment_problems "$WORK/env.badplus.json" "$HEAD_FAKE")" == *'peak-memory reset'* ]]
+# The runner records through the helper and gates before measuring: the helper decides the verdict,
+# the gate stops on the judge's own verdict through the aborted-evidence finalizer, before the smoke
+# and before any size is measured. No new process, PID file, tolerance or judge change rides along.
+grep -qF 'app_mem_json="$(qc1_calibration_app_record "$rss" "$hwm0" "$reset_rc" "$hwm1")"' "$RUNNER_SRC"
+grep -qF '(( hwm1 <= hwm0 ))' "$HERE/qc1/lib.sh"
+g_def="$(grep -n '^calibration_gate() {' "$RUNNER_SRC" | cut -d: -f1)"
+g_call="$(grep -n '^calibration_gate$' "$RUNNER_SRC" | cut -d: -f1)"
+smoke_l="$(grep -n '^  legacy_smoke$' "$RUNNER_SRC" | cut -d: -f1)"
+sizes_l="$(grep -n 'for n in "${SIZE_LIST\[@\]}"' "$RUNNER_SRC" | head -n 1 | cut -d: -f1)"
+[[ -n "$g_def$g_call$smoke_l$sizes_l" && "$g_def" -lt "$g_call" && "$g_call" -lt "$smoke_l" && "$g_call" -lt "$sizes_l" ]]
+g_body="$(sed -n '/^calibration_gate() {/,/^}/p' "$RUNNER_SRC")"
+grep -qF 'qc1_calibration_problems "$WORK/calibration.json"' <<<"$g_body"
+grep -qF 'finalize_evidence aborted 1' <<<"$g_body"
+grep -qF 'exit 1' <<<"$g_body"
+if grep -qF 'appMemory:{ok:$hwm, hwmReset:$reset' "$RUNNER_SRC"; then echo 'qc1: calibrate still writes the bare flag record' >&2; exit 1; fi
+
 # (3) auto_explain: the capture's ALTER SYSTEM must not be outranked by the command line (pilot2 logged no plan at all).
 db_run="$(sed -n '/^DB_CID="\$(docker run -d/,/CONTAINERS+=("\$DB_CID")/p' "$RUNNER_SRC")"
 [[ -n "$db_run" ]]

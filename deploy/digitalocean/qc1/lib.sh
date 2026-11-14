@@ -1651,3 +1651,42 @@ qc1_app_peak() { # baseline_kb end_kb samples_file
       print (m > base + 0 ? m - base : 0), n + 0, ((e && endv + 0 < base + 0) ? "true" : "false")
     }' "$3"
 }
+
+# --- the startup app-memory calibration record -------------------------------------------------------------------------------
+# From the readings calibrate() already takes: VmRSS and VmHWM before the
+# reset, the clear_refs write exit status (0 wrote, anything else did not) and
+# VmHWM after it. The verdict rule is unchanged: a failed write never verifies,
+# and the later mark must not exceed the earlier one. The raw readings ride
+# along so a false names its shape (write/exec failure, unreadable re-read,
+# intervening growth, stale mark); no mechanism is claimed, and a non-increase
+# alone is not called a demonstrated reset. Prints the appMemory object.
+qc1_calibration_app_record() { # rss hwm0 write_rc hwm1
+  local rss="${1:-}" hwm0="${2:-}" rc="${3:-}" hwm1="${4:-}" ok=false reset=false
+  local jrss=null jhwm0=null jrc=null jhwm1=null
+  [[ "$rss" =~ ^[0-9]+$ ]] && jrss="$rss"
+  [[ "$hwm0" =~ ^[0-9]+$ ]] && jhwm0="$hwm0"
+  [[ "$rc" =~ ^[0-9]+$ ]] && jrc="$rc"
+  [[ "$hwm1" =~ ^[0-9]+$ ]] && jhwm1="$hwm1"
+  if [[ "$rss" =~ ^[0-9]+$ && "$hwm0" =~ ^[0-9]+$ ]]; then
+    ok=true
+    if [[ "$rc" == 0 && "$hwm1" =~ ^[0-9]+$ ]] && (( hwm1 <= hwm0 )); then reset=true; fi
+  fi
+  jq -nc --argjson ok "$ok" --argjson reset "$reset" --argjson rss "$jrss" --argjson hwm0 "$jhwm0" --argjson rc "$jrc" --argjson hwm1 "$jhwm1" \
+    '{ok:$ok, hwmReset:$reset, rssKb:$rss, hwmBeforeKb:$hwm0, resetWriteRc:$rc, hwmAfterKb:$hwm1}'
+}
+
+# The startup verdict the judge will reach on the calibration block alone (the
+# gate, the database memory source with its sample floor, the app memory source
+# with its reset, WAL, commit): lines of problem text, empty when calibration
+# passes. The wording repeats the judge's (qc1_environment_problems) so an
+# early stop names what the judge would name. An unreadable record fails closed.
+qc1_calibration_problems() { # calibration.json
+  jq -r '
+    ( if .gate.ok != true then "the gate sampler did not see a known hold" else empty end ),
+    ( if .dbMemory.ok != true then "the database memory source is unreadable" else empty end ),
+    ( if (.dbMemory.samples // 0) < 3 then "database memory sampling is too sparse to trust (fewer than 3 samples in the calibration half second)" else empty end ),
+    ( if .appMemory.ok != true then "the app process memory source is unreadable" else empty end ),
+    ( if .appMemory.hwmReset != true then "the app peak-memory reset failed" else empty end ),
+    ( if .wal.ok != true then "the WAL position is unreadable" else empty end ),
+    ( if .commit.ok != true then "commit statistics are unreadable" else empty end )' "$1" 2>/dev/null
+}

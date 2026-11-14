@@ -772,7 +772,7 @@ SECONDS_PER_REASON=10; SITTING_MINUTES=15; PG_REPO_DIGESTS='["pg-digest"]'; APP_
 APP_CONTAINERS='[{"imageId":"sha256:test","memoryLimitBytes":1024}]'; DAEMON_JSON='{"rootless":false}'; SOURCES='["source"]'; BROWSER_RUNTIME='{"ok":true}'
 sleep() { :; }
 src() { awk -v f="$1" '$0 ~ "^" f "\\(\\) \\{" { on = 1 } on { print } on && (/^}$/ || /^[a-z_]+\(\) \{.*\}$/) { exit }' "$RUNNER"; }
-for fn in jnum jraw fin_psql db_settings_json write_environment write_abort_record finalize_evidence autoexplain_reset cleanup note psql_db; do eval "$(src "$fn")"; done
+for fn in jnum jraw fin_psql db_settings_json write_environment write_abort_record finalize_evidence autoexplain_reset cleanup note psql_db calibration_gate; do eval "$(src "$fn")"; done
 eval "$(grep -E '^FINALIZED=0 CURRENT_STEP=' "$RUNNER")"
 eval "$(grep -E "^trap 'ERR_CMD=" "$RUNNER")"
 eval "$(grep -E "^trap (cleanup EXIT|'exit (130|143|129)' (INT|TERM|HUP))\$" "$RUNNER")"
@@ -788,6 +788,12 @@ case "$MODE" in
   idem)         note "size 100000: a step"; finalize_evidence aborted 5 ""; sha256sum "$WORK"/*.json >"$WORK/first.sha"; wc -l <"$STUB_LOG" >"$WORK/first.calls"; finalize_evidence aborted 5 ""; sha256sum "$WORK"/*.json >"$WORK/second.sha"; wc -l <"$STUB_LOG" >"$WORK/second.calls"; exit 5 ;;
   complete)     finalize_evidence complete 0; exit 0 ;;
   legacy)       LEGACY_ONLY=1; finalize_evidence complete 0; exit 0 ;;
+  calibfail)  note "calibrating the instruments"; : >"$OUT/measurements.jsonl"
+    jq -nc '{gate:{ok:true,spanMs:380,holders:1,grants:20,ticks:22,maxGapMs:21,meanGapMs:20,holes:0},dbMemory:{ok:true,samples:10},appMemory:{ok:true,hwmReset:false,rssKb:10000,hwmBeforeKb:12000,resetWriteRc:0,hwmAfterKb:13000},wal:{ok:true},commit:{ok:true}}' >"$OUT/calibration.json"
+    calibration_gate; echo "qc1: calibration_gate returned on a failing record" >"$OUT/gate-returned"; exit 0 ;;
+  calibok)    note "calibrating the instruments"; : >"$OUT/measurements.jsonl"
+    jq -nc '{gate:{ok:true,spanMs:380,holders:1,grants:20,ticks:22,maxGapMs:21,meanGapMs:20,holes:0},dbMemory:{ok:true,samples:10},appMemory:{ok:true,hwmReset:true,rssKb:10000,hwmBeforeKb:12000,resetWriteRc:0,hwmAfterKb:9000},wal:{ok:true},commit:{ok:true}}' >"$OUT/calibration.json"
+    calibration_gate; echo "gate-pass" >"$OUT/gate-returned"; exit 0 ;;
   early)        exit 0 ;;
 esac
 DRV
@@ -836,6 +842,19 @@ fin_run complete; [[ "$rc" == 0 ]]; jq -e 'has("aborted") | not' "$FD/evidence-s
 jq -e '.incomplete == false and .recoveryPolicy == 2 and .maxRequestBytes == 6291456 and .settings.reasonLen == 200 and .settings.targetReasonLen == 1000 and .settings.secondsPerReason == 10 and .settings.sittingMinutes == 15 and .appImageId == "sha256:test" and .limits.appMemoryLimitBytes == 1024 and .daemon.rootless == false and .sources == ["source"] and .browserRuntime.ok == true and .postgresRepoDigests == ["pg-digest"] and .appRepoDigests == ["app-digest"]' "$FD/environment.json" >/dev/null
 [[ ! -e "$FD/abort.json" ]]
 fin_run early; [[ "$rc" == 0 && ! -e "$FD/abort.json" ]]
+# (5c) A failing calibration stops before any measurement: nothing measured, the aborted evidence names the
+# judge's problem in the abort step and the log and carries the raw record, through the same finalizer.
+# A passing one lets the run go on. An empty measurements file is unjudgeable rows, the pre-existing
+# status for any abort before the first row (a smoke failure aborts the same way); the judge is unchanged.
+fin_run calibfail; [[ "$rc" == 1 ]]
+[[ ! -e "$FD/gate-returned" && "$(wc -l <"$FD/measurements.jsonl")" == 0 ]]
+jq -e '.outcome == "aborted" and .exitCode == 1 and .step == "calibration failed; stopping before any measurement" and .rowsMeasured == 0' "$FD/abort.json" >/dev/null
+jq -e '.complete == false and ([.invalid[] | select(.failure == "unparsable-measurements")] | length) == 1' "$FD/evidence-status.json" >/dev/null
+jq -e '.calibration.appMemory == {ok:true, hwmReset:false, rssKb:10000, hwmBeforeKb:12000, resetWriteRc:0, hwmAfterKb:13000}' "$FD/environment.json" >/dev/null
+jq -e '.evidence.complete == false and .judgeRan == true' "$FD/summary.json" >/dev/null
+grep -qF 'the app peak-memory reset failed' "$FD/harness.log"
+grep -qx 'qc1 evidence=finalized' "$FD/harness.log"; grep -qx 'qc1 result=1 artifacts=.* retained_stack=0' "$FD/harness.log"
+fin_run calibok; [[ "$rc" == 0 ]]; [[ -f "$FD/gate-returned" ]]; [[ ! -e "$FD/abort.json" && ! -e "$FD/evidence-status.json" ]]
 # (5b) A matrix run's environment record has no mode and no legacy block; a legacy-only run records both, and its evidence status is read in that mode (the run asked for nine rows a
 # size, so they are MISSING when absent, nothing is pending, and the coverage says why it is a pilot).
 fin_run complete; [[ "$rc" == 0 ]]; jq -e '(.settings | has("mode") or has("legacy")) | not' "$FD/environment.json" >/dev/null
