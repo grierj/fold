@@ -162,16 +162,25 @@ type legacyCandidate struct {
 // reviewVersion 1, both as JSON numbers. Only the canonical integer 1 counts:
 // a stored 1.0, "1", null or a missing key is not a marker, so a writer that
 // changed the encoding would make decided pairs reappear in the list loudly
-// instead of unreviewing them silently. The row is found through
-// idx_audit_logs_target (target_type, target_id); malformed metadata is never
-// cast.
+// instead of unreviewing them silently. Malformed metadata is never cast.
+//
+// The marker is probed once per candidate: a LATERAL subquery with LIMIT 1 is
+// not flattened into a join over one scan of audit_logs. The jsonb predicates
+// have no statistics, so the semi-join this replaced was costed as if almost no
+// row matched, and a batch of about a thousand candidates could be planned as
+// one scan of audit_logs read again for every candidate. The access of each
+// probe is still the planner's choice (a table of a few pages is read
+// sequentially, an unanalyzed one through a bitmap); on the analyzed table of
+// the test it picks idx_audit_logs_target (target_type, target_id) in every
+// plan-cache mode (TestLegacyMarkerLookupUsesTargetIndexInEveryPlanMode).
 const legacyMarkersSQL = `SELECT c.req, c.party
 FROM unnest(?::bigint[], ?::bigint[], ?::text[], ?::text[], ?::text[]) AS c(req, party, target_type, kept, removed)
-WHERE EXISTS (
+CROSS JOIN LATERAL (
 	SELECT 1 FROM audit_logs a
 	WHERE a.target_type = c.target_type AND a.target_id = c.req AND a.action IN (c.kept, c.removed)
 	AND jsonb_typeof(a.meta_json->'reviewVersion') = 'number' AND a.meta_json->>'reviewVersion' = '1'
-	AND jsonb_typeof(a.meta_json->'erasedUserId') = 'number' AND a.meta_json->>'erasedUserId' = c.party::text)`
+	AND jsonb_typeof(a.meta_json->'erasedUserId') = 'number' AND a.meta_json->>'erasedUserId' = c.party::text
+	LIMIT 1) m`
 
 // legacyMarkersIn returns the candidates that already have a decision marker.
 // It is the only production form of the selector: discovery, per-account pages
