@@ -605,6 +605,8 @@ reasons. A matrix run still records the two legacy placeholders as pending, with
 - **The wrapper says `partial`** (exit 10) for a successful legacy-only run, by design: pass-through arguments and the pilot coverage make
   every run partial. Read `qc1/evidence-status.json` (`complete`, `coverage.reasons`), `environment.json` (`revision`, `settings.mode`,
   `settings.legacy.smoke`) and the rows, never the wrapper's verdict. An abort, an invalid finding or a missing row is `fail`.
+- **Where a result goes**: `docs/plan/M7.4-ERASURE-INVENTORY.md`, section 12.3, "#292 legacy QC4/5 focused run": the revision, image ids,
+  per-case times, plan counts, limits, every attempt (a failed one stays listed) and the sha256 of each artifact. The artifacts stay outside the checkout.
 - **Refused before any daemon call**: it needs `--no-browser` and refuses `--layout`, `--counts`, `--dense-counts`, `--charset multibyte`,
   the next-changed options, `--browser-fallback-digest` and any size below 10,000 (the seed is 10,000 pairs). `--droplet` and the reason lengths are
   recorded in `settings`; the acceptance runs use their defaults (`2gb`, 200 and 1,000).
