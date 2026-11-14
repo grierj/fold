@@ -234,14 +234,15 @@ func TestAdminDeleteUserScrubsAuditDetails(t *testing.T) {
 	add(audit.AccountRequested, "account_request", self.ID, nil, map[string]any{"source": "self_signup"}, true)
 	add(audit.GuardianLinkRequested, "guardian_link", 9001, nil, map[string]any{"source": "signup", "teenUserId": teen.ID}, true)
 	add(audit.GuardianLinkRequested, "guardian_link", 9002, &living.ID, map[string]any{"source": "household_conversion", "teenUserId": teen.ID}, true)
-	// The inviter is the actor on CONVERSION rows, but G-8 keeps both IPs.
+	// The erased admin decided this conversion (K1), and its group is identified,
+	// so the conversion step clears its address. The transfer row's is already empty.
 	add(audit.HouseholdPersonConverted, "household", h.ID, &u.ID, map[string]any{
 		"personId": p.ID, "householdId": h.ID, "invitationId": conversionInv, "userId": teen.ID,
-		"accountType": "adult", "transferCount": 1}, false)
+		"accountType": "adult", "transferCount": 1}, true)
 	transfer := add(audit.RegistrationChanged, "registration", 9003, &u.ID, map[string]any{
 		"personId": p.ID, "invitationId": conversionInv, "userId": teen.ID,
 		"formerRegisteredBy": living.ID, "clearedChildcareRequested": false}, false)
-	// Conversion.Retained counts entries, including an already-empty IP.
+	// A cleared row is not retained, an already-empty address included (Retained + cleared = Discovered).
 	if err := db.Model(&models.AuditLog{}).Where("id = ?", transfer.ID).Update("ip", "").Error; err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +288,8 @@ func TestAdminDeleteUserScrubsAuditDetails(t *testing.T) {
 	if err := dec.Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	want := erasureReportJSON{ActivityEntriesKept: 4}
+	// Two subject-linked retained-IP rows are left; the conversion group is cleared.
+	want := erasureReportJSON{ActivityEntriesKept: 2}
 	if body.Erasure != want {
 		t.Fatalf("report %+v, want %+v", body.Erasure, want)
 	}

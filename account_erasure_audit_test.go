@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -574,13 +575,13 @@ func TestAuditHistoricalActorStatementShape(t *testing.T) {
 		t.Fatal("S5 must bind the registry key list built for the classification")
 	}
 	// No other production file writes audit_logs.ip, and this file has only the
-	// class loop and S5.
+	// class loop, S5 and the conversion step (TestAuditConversionClearingStatementShape).
 	update := regexp.MustCompile(`(?i)UPDATE\s+audit_logs\s+SET\s+ip\b`)
 	for path, text := range guardkit.Production(t) {
 		n := len(update.FindAllString(text, -1))
 		switch {
-		case path == "account_erasure_audit.go" && n != 2:
-			t.Fatalf("%s has %d audit_logs.ip writers, want the class loop and S5", path, n)
+		case path == "account_erasure_audit.go" && n != 3:
+			t.Fatalf("%s has %d audit_logs.ip writers, want the class loop, S5 and the conversion step", path, n)
 		case path != "account_erasure_audit.go" && n != 0:
 			t.Fatalf("%s writes audit_logs.ip", path)
 		}
@@ -764,7 +765,7 @@ func newAuditAdultFixtureWithInviter(t *testing.T, approverInvites bool) auditAd
 
 func auditGroupInput(f auditAdultFixture) auditConversionRequestRow {
 	h := f.person.HouseholdID
-	return auditConversionRequestRow{ID: f.request.ID, PersonID: f.person.ID, InvitationID: *f.request.InvitationID, UserID: f.user.ID, HouseholdID: &h}
+	return auditConversionRequestRow{ID: f.request.ID, PersonID: ptr(f.person.ID), InvitationID: ptr(*f.request.InvitationID), UserID: ptr(f.user.ID), HouseholdID: &h}
 }
 
 func TestAuditErasureConversionDiscoveryFallbacks(t *testing.T) {
@@ -849,34 +850,49 @@ func TestAuditErasureConversionDiscoveryFallbacks(t *testing.T) {
 			if tc.mutate != nil {
 				tc.mutate(t, f)
 			}
-			before := dumpRows(t, f.app.DB, "audit_logs", "id", "action = ? OR (action = ? AND target_type IN ('registration','event'))", audit.HouseholdPersonConverted, audit.RegistrationChanged)
-			requestBefore := dumpRows(t, f.app.DB, "account_requests", "id", "id = ?", f.request.ID)
-			out := runAuditErasure(t, f.app.DB, erasureSubject{ID: f.admin.ID})
+			const where = "action = ? OR (action = ? AND target_type IN ('registration','event'))"
+			run := eraseProbe(t, f.app.DB, erasureSubject{ID: f.admin.ID}, true)
+			out := run.out
 			if out.Conversion.Groups != 1 || len(out.Conversion.Details) != 1 {
 				t.Fatalf("discovery: %+v", out.Conversion)
 			}
+			// A group that passes V0-V2, G4 and G5 is identified and cleared whole
+			// (P2). The rest, valid rows included, are retained as they always were.
+			// Rows no key reaches (15d) keep their address beside a cleared group.
+			wantRetainedC, wantRetainedT, wantBlanked := tc.c, tc.t, int64(0)
+			var wantChanged []uint
+			if clearedCases[tc.name] {
+				wantRetainedC, wantRetainedT, wantBlanked = 0, 0, tc.c+tc.t
+				for _, r := range f.rows {
+					wantChanged = append(wantChanged, r.ID)
+				}
+			}
 			detail := out.Conversion.Details[0]
-			if detail.Reason != tc.reason || detail.ConvertedFound != tc.c || detail.TransfersFound != tc.t || detail.ConvertedRetained != tc.c || detail.TransfersRetained != tc.t || detail.Blanked != 0 || out.Conversion.Retained != tc.c+tc.t || out.Conversion.ByReason[tc.reason] != tc.c+tc.t {
+			if detail.Reason != tc.reason || detail.ConvertedFound != tc.c || detail.TransfersFound != tc.t || detail.ConvertedRetained != wantRetainedC || detail.TransfersRetained != wantRetainedT || detail.Blanked != wantBlanked || detail.Identified != clearedCases[tc.name] ||
+				out.Conversion.Retained != wantRetainedC+wantRetainedT || out.Conversion.Blanked != wantBlanked || out.BlankedByClass[auditIPConversion] != wantBlanked || out.Conversion.ByReason[tc.reason] != tc.c+tc.t {
 				t.Fatalf("report: %+v detail %+v", out.Conversion, detail)
 			}
-			if before != dumpRows(t, f.app.DB, "audit_logs", "id", "action = ? OR (action = ? AND target_type IN ('registration','event'))", audit.HouseholdPersonConverted, audit.RegistrationChanged) {
-				t.Fatal("retained conversion candidates changed")
+			if got := changedIDs(run, conversionRowsOf(t, f.app.DB)); !reflect.DeepEqual(got, wantChanged) {
+				t.Fatalf("changed conversion rows %v, want %v", got, wantChanged)
 			}
-			if requestBefore != dumpRows(t, f.app.DB, "account_requests", "id", "id = ?", f.request.ID) {
-				t.Fatal("selector inputs changed")
-			}
+			after := dumpRows(t, f.app.DB, "audit_logs", "id", where, audit.HouseholdPersonConverted, audit.RegistrationChanged)
 			for _, uid := range []uint{f.admin.ID, f.inviter.ID, f.user.ID, f.admin.ID} {
 				again := runAuditErasure(t, f.app.DB, erasureSubject{ID: uid})
-				if uid == f.admin.ID && !reflect.DeepEqual(out.Conversion, again.Conversion) {
+				if uid == f.admin.ID && !reflect.DeepEqual(rerunShape(out.Conversion), again.Conversion) {
 					t.Fatalf("15h retry discovery drifted: %+v -> %+v", out.Conversion, again.Conversion)
 				}
-				if before != dumpRows(t, f.app.DB, "audit_logs", "id", "action = ? OR (action = ? AND target_type IN ('registration','event'))", audit.HouseholdPersonConverted, audit.RegistrationChanged) {
+				if after != dumpRows(t, f.app.DB, "audit_logs", "id", where, audit.HouseholdPersonConverted, audit.RegistrationChanged) {
 					t.Fatal("role erasure changed conversion rows")
 				}
 			}
 		})
 	}
 }
+
+// The groups cleared are the ones that pass V0-V2 and G4-G5: L1, the ones with
+// rows no key reaches (15d) and the one with another numeric tuple (15e).
+// Every anomaly V0-V2 judge is retained whole, valid rows included.
+var clearedCases = map[string]bool{"L1_G8_unestablished": true, "15d_unreachable_T": true, "15d_wrong_target_T": true, "15e_other_numeric_tuple": true}
 
 func TestAuditErasureConversionTextDiscoveryLimit(t *testing.T) {
 	f := newAuditAdultFixture(t)
@@ -893,13 +909,19 @@ func TestAuditErasureConversionTextDiscoveryLimit(t *testing.T) {
 		m["userId"] = json.Number(itoa(f.user.ID) + ".0e0")
 		m["invitationId"] = json.Number(itoa(*f.request.InvitationID) + ".0")
 	})
-	before := dumpRows(t, f.app.DB, "audit_logs", "id", "action = ? OR (action = ? AND target_type = 'registration')", audit.HouseholdPersonConverted, audit.RegistrationChanged)
-	out := runAuditErasure(t, f.app.DB, erasureSubject{ID: f.admin.ID})
-	if out.Conversion.Discovered != 3 || out.Conversion.Retained != 3 || out.Conversion.Blanked != 0 || out.Conversion.ByReason["history_unestablished"] != 3 {
-		t.Fatalf("text discovery limit or G-8 default changed: %+v", out.Conversion)
+	run := eraseProbe(t, f.app.DB, erasureSubject{ID: f.admin.ID}, true)
+	out := run.out
+	// The three rows the text arms reach are an identified group and are cleared;
+	// the two spelled with a scale are never discovered, so they keep their address.
+	if out.Conversion.Discovered != 3 || out.Conversion.Retained != 0 || out.Conversion.Blanked != 3 || out.Conversion.ByReason["history_unestablished"] != 3 {
+		t.Fatalf("text discovery limit or the cleared group changed: %+v", out.Conversion)
 	}
-	if before != dumpRows(t, f.app.DB, "audit_logs", "id", "action = ? OR (action = ? AND target_type = 'registration')", audit.HouseholdPersonConverted, audit.RegistrationChanged) {
-		t.Fatal("unreachable numeric spellings or retained candidates changed")
+	var want []uint
+	for _, r := range f.rows {
+		want = append(want, r.ID)
+	}
+	if got := changedIDs(run, conversionRowsOf(t, f.app.DB)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("changed conversion rows %v, want only the discovered group %v", got, want)
 	}
 }
 
@@ -1025,11 +1047,52 @@ func TestAuditConversionV0ThroughV4Classification(t *testing.T) {
 			}
 		})
 	}
-	// Unknown household skips only arm d, not shape validation or identity arms.
+	// Identified is G1 to G5, set by the classifier and not read off the reason.
+	if got := classifyAuditConversion(input, f.rows); !got.Identified {
+		t.Fatalf("a valid, fully linked group with its household read is identified: %+v", got)
+	}
+	// Unknown household skips only arm d, not shape validation or identity arms,
+	// but the household check of the converted row was not real, so G4 fails: the
+	// reason is the one it always was and the group is not identified (N-4).
 	input.HouseholdID = nil
 	got := classifyAuditConversion(input, f.rows)
-	if got.HouseholdFallbackSkipped != 1 || got.Reason != "history_unestablished" {
+	if got.HouseholdFallbackSkipped != 1 || got.Reason != "history_unestablished" || got.Identified {
 		t.Fatalf("missing household: %+v", got)
+	}
+	// A missing identity link (G5, N-3b) is never identified, even when every row
+	// passes every shape, and the group is reported malformed (R303-01).
+	for name, mutate := range map[string]func(*auditConversionRequestRow){
+		"person":     func(r *auditConversionRequestRow) { r.PersonID = nil },
+		"invitation": func(r *auditConversionRequestRow) { r.InvitationID = nil },
+		"user":       func(r *auditConversionRequestRow) { r.UserID = nil },
+	} {
+		linked := auditGroupInput(f)
+		mutate(&linked)
+		if got := classifyAuditConversion(linked, f.rows); got.Identified || got.Reason != "malformed_candidate" || got.ConvertedFound != 1 || got.TransfersFound != 2 || got.ConvertedRetained != 1 || got.TransfersRetained != 2 {
+			t.Fatalf("NULL %s link: %+v", name, got)
+		}
+		// Even with no row at all the group is malformed, never "no_converted_row".
+		if got := classifyAuditConversion(linked, nil); got.Identified || got.Reason != "malformed_candidate" {
+			t.Fatalf("NULL %s link, no rows: %+v", name, got)
+		}
+	}
+	// Each of V0 to V2 alone also keeps it out of the set.
+	var converted, transfers []models.AuditLog
+	for _, r := range f.rows {
+		if r.Action == audit.HouseholdPersonConverted {
+			converted = append(converted, r)
+		} else {
+			transfers = append(transfers, r)
+		}
+	}
+	for name, rows := range map[string][]models.AuditLog{
+		"no converted row": transfers,
+		"missing transfer": append(append([]models.AuditLog(nil), converted...), transfers[:1]...),
+		"duplicate C":      append(append(append([]models.AuditLog(nil), converted...), converted...), transfers...),
+	} {
+		if got := classifyAuditConversion(auditGroupInput(f), rows); got.Identified {
+			t.Fatalf("%s: %+v", name, got)
+		}
 	}
 }
 
@@ -1046,16 +1109,16 @@ func TestAuditErasureConversionRollbackAndOrder(t *testing.T) {
 		}
 		return aborted
 	})
-	if !errors.Is(err, aborted) || snapshot != dumpRows(t, f.app.DB, "audit_logs", "id", "true") {
-		t.Fatal("audit transaction didn't roll back", err)
-	}
-	again := runAuditErasure(t, f.app.DB, erasureSubject{ID: f.admin.ID})
-	if !reflect.DeepEqual(first, again) {
-		t.Fatalf("retry changed counts: %+v %+v", first, again)
+	// Step 5 ran inside the aborted transaction and its blanks went with it (I-3).
+	if !errors.Is(err, aborted) || snapshot != dumpRows(t, f.app.DB, "audit_logs", "id", "true") || first.Conversion.Blanked != 3 || first.IPsBlanked < 3 {
+		t.Fatal("audit transaction didn't roll back", err, first.Conversion)
 	}
 	// Roll back each order so both traverse the very same real-writer history.
+	// Every order that includes a candidate ends in the same rows, and the group
+	// is blanked exactly once, whichever candidate comes first (I-2).
 	var finals []string
-	for _, order := range [][]uint{{f.inviter.ID, f.user.ID, f.admin.ID}, {f.admin.ID, f.inviter.ID, f.user.ID}, {f.user.ID, f.admin.ID, f.inviter.ID}} {
+	for _, order := range [][]uint{{f.inviter.ID, f.user.ID, f.admin.ID}, {f.admin.ID, f.inviter.ID, f.user.ID}, {f.user.ID, f.admin.ID, f.inviter.ID}, {f.admin.ID, f.user.ID, f.inviter.ID}} {
+		var blanked int64
 		err := f.app.DB.Transaction(func(tx *gorm.DB) error {
 			for _, uid := range order {
 				s := erasureSubject{ID: uid}
@@ -1064,87 +1127,185 @@ func TestAuditErasureConversionRollbackAndOrder(t *testing.T) {
 					s.Invitations = []uint{*f.request.InvitationID}
 					s.People = []uint{f.person.ID}
 				}
-				if _, err := eraseAuditDetailsIn(tx, s); err != nil {
+				out, err := eraseAuditDetailsIn(tx, s)
+				if err != nil {
 					return err
 				}
+				blanked += out.Conversion.Blanked
 			}
 			finals = append(finals, dumpRows(t, tx, "audit_logs", "id", "true"))
 			return aborted
 		})
-		if !errors.Is(err, aborted) {
-			t.Fatal(err)
+		if !errors.Is(err, aborted) || blanked != 3 {
+			t.Fatal(err, blanked)
 		}
 	}
-	if finals[0] != finals[1] || finals[1] != finals[2] {
-		t.Fatal("erasure order changed final audit rows")
+	for _, other := range finals[1:] {
+		if finals[0] != other {
+			t.Fatal("erasure order changed final audit rows")
+		}
+	}
+	again := runAuditErasure(t, f.app.DB, erasureSubject{ID: f.admin.ID})
+	if !reflect.DeepEqual(first, again) {
+		t.Fatalf("retry changed counts: %+v %+v", first, again)
+	}
+	// The committed run blanked once; a second run finds the same group and no address (I-1).
+	if next := runAuditErasure(t, f.app.DB, erasureSubject{ID: f.admin.ID}); next.Conversion.Blanked != 0 || next.Conversion.Retained != 0 || next.Conversion.Groups != 1 || next.BlankedByClass[auditIPConversion] != 0 || !reflect.DeepEqual(next.Conversion, rerunShape(again.Conversion)) {
+		t.Fatalf("second run: %+v", next.Conversion)
 	}
 }
 
+// auditLifecycle is one real conversion of a teen (L2 to L5 and variants), built
+// through the real handlers with a distinct address per caller: the inviter .1,
+// D .2, the redeemer .3, the guardian G .4, the enabler E .5, the link
+// confirmer L .6 and the consenter K .7.
+type auditLifecycle struct {
+	app                                       *App
+	f                                         teenConversionFixture
+	d, inviter, enabler, confirmer, consenter *models.User
+	rows                                      []models.AuditLog // the group once completed
+	marker                                    bool
+}
+
+func newAuditLifecycle(t *testing.T, lifecycle string) auditLifecycle {
+	t.Helper()
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "Teen audit lifecycle")
+	admin.ip = "192.0.2.2"
+	enabler := newTestUser(t, app, "audit-enable", erasurePW, models.RoleAdmin)
+	ec := loginAPI(t, app, enabler.Email, erasurePW)
+	ec.ip = "192.0.2.5"
+	confirmer := newTestUser(t, app, "audit-confirm", erasurePW, models.RoleAdmin)
+	lc := loginAPI(t, app, confirmer.Email, erasurePW)
+	lc.ip = "192.0.2.6"
+	consenter := newTestUser(t, app, "audit-consent", erasurePW, models.RoleAdmin)
+	kc := loginAPI(t, app, consenter.Email, erasurePW)
+	kc.ip = "192.0.2.7"
+	f := newAuditTeenFixture(t, app, admin, gid, "audit-"+strings.ToLower(lifecycle))
+	// Approvals and staged completion are real writers; only setting the birthday
+	// is clock setup, shared with the age-rollover tests.
+	switch lifecycle {
+	case "L2", "L2_late_enable":
+		apiDo(t, kc, "POST", consentPath(&f.user), map[string]string{"scope": "account", "status": "granted", "evidenceText": "Signed consent"}, 200)
+		apiDo(t, lc, "POST", "/api/v1/admin/guardian-links/"+itoa(f.link.ID)+"/confirm", map[string]string{"checkNote": "Relationship verified"}, 200)
+		if lifecycle == "L2_late_enable" {
+			// An admin who enables the account long after completion is still a key (J5).
+			apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(f.user.ID), map[string]string{"status": "disabled"}, 200)
+			apiDo(t, ec, "PUT", "/api/v1/admin/users/"+itoa(f.user.ID), map[string]string{"status": "active"}, 200)
+		}
+	case "L3":
+		if n, err := app.rolloverAges(setStagedBirthdayToday(t, app, f)); err != nil || n != 1 {
+			t.Fatalf("birthday: %d %v", n, err)
+		}
+	case "L4":
+		apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(f.user.ID), map[string]string{"status": "disabled"}, 200)
+		if n, err := app.rolloverAges(setStagedBirthdayToday(t, app, f)); err != nil || n != 1 {
+			t.Fatalf("suspended birthday: %d %v", n, err)
+		}
+		apiDo(t, ec, "PUT", "/api/v1/admin/users/"+itoa(f.user.ID), map[string]string{"status": "active"}, 200)
+	case "L5", "L5_D_is_E":
+		if lifecycle == "L5_D_is_E" {
+			ec = admin
+		}
+		apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(f.user.ID), map[string]string{"status": "disabled"}, 200)
+		apiDo(t, kc, "POST", consentPath(&f.user), map[string]string{"scope": "account", "status": "granted", "evidenceText": "Signed consent"}, 200)
+		apiDo(t, lc, "POST", "/api/v1/admin/guardian-links/"+itoa(f.link.ID)+"/confirm", map[string]string{"checkNote": "Relationship verified"}, 200)
+		apiDo(t, ec, "PUT", "/api/v1/admin/users/"+itoa(f.user.ID), map[string]string{"status": "active"}, 200)
+	}
+	var rows []models.AuditLog
+	if err := app.DB.Where("action = ? OR (action = ? AND target_type = 'registration')", audit.HouseholdPersonConverted, audit.RegistrationChanged).Order("id").Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != len(f.rows)+1 {
+		t.Fatalf("lifecycle transfer rows %d, want %d", len(rows), len(f.rows)+1)
+	}
+	var d, inviter models.User
+	if err := app.DB.Where("email = ?", "admin@example.com").First(&d).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.First(&inviter, *f.request.RequestedBy).Error; err != nil {
+		t.Fatal(err)
+	}
+	return auditLifecycle{app: app, f: f, d: &d, inviter: &inviter, enabler: enabler, confirmer: confirmer, consenter: consenter, rows: rows, marker: lifecycle == "L3" || lifecycle == "L4"}
+}
+
+// Which of the people of a lifecycle a retained key names. G (the guardian who
+// confirmed no link and granted no consent) and S (the converted account) are
+// named by none, in every lifecycle. L3's group already holds no address, so
+// its callers change nothing, but they are still callers.
+var lifecycleCallers = map[string][]string{
+	"L2":             {"D", "inviter", "L", "K"},
+	"L2_late_enable": {"D", "inviter", "L", "K", "E"},
+	"L3":             {"D", "inviter"},
+	"L4":             {"D", "inviter", "E"},
+	"L5":             {"D", "inviter", "E", "L", "K"},
+	"L5_D_is_E":      {"D", "inviter", "L", "K"},
+}
+
+// P2-2 to P2-5 and P2-9, with the keys of K1 to K5 each alone: erasing a person
+// a key names clears the group's addresses and nothing else; erasing anyone
+// else changes no conversion row. Every case is tried against the same state,
+// so each erasure is rolled back.
 func TestAuditErasureTeenRealLifecycles(t *testing.T) {
-	for _, lifecycle := range []string{"L2", "L3", "L4", "L5", "L5_D_is_E"} {
+	for _, lifecycle := range []string{"L2", "L2_late_enable", "L3", "L4", "L5", "L5_D_is_E"} {
 		t.Run(lifecycle, func(t *testing.T) {
-			app := testApp(t)
-			admin, gid := openGroup(t, app, "Teen audit lifecycle")
-			admin.ip = "192.0.2.2"
-			enabler := newTestUser(t, app, "audit-enable", erasurePW, models.RoleAdmin)
-			ec := loginAPI(t, app, enabler.Email, erasurePW)
-			ec.ip = "192.0.2.5"
-			confirmer := newTestUser(t, app, "audit-confirm", erasurePW, models.RoleAdmin)
-			lc := loginAPI(t, app, confirmer.Email, erasurePW)
-			lc.ip = "192.0.2.6"
-			consenter := newTestUser(t, app, "audit-consent", erasurePW, models.RoleAdmin)
-			kc := loginAPI(t, app, consenter.Email, erasurePW)
-			kc.ip = "192.0.2.7"
-			f := newAuditTeenFixture(t, app, admin, gid, "audit-"+strings.ToLower(lifecycle))
-			// Approvals and staged completion are real writers; only setting the birthday
-			// is clock setup, shared with the age-rollover tests.
-			switch lifecycle {
-			case "L2":
-				apiDo(t, kc, "POST", consentPath(&f.user), map[string]string{"scope": "account", "status": "granted", "evidenceText": "Signed consent"}, 200)
-				apiDo(t, lc, "POST", "/api/v1/admin/guardian-links/"+itoa(f.link.ID)+"/confirm", map[string]string{"checkNote": "Relationship verified"}, 200)
-			case "L3":
-				if n, err := app.rolloverAges(setStagedBirthdayToday(t, app, f)); err != nil || n != 1 {
-					t.Fatalf("birthday: %d %v", n, err)
-				}
-			case "L4":
-				apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(f.user.ID), map[string]string{"status": "disabled"}, 200)
-				if n, err := app.rolloverAges(setStagedBirthdayToday(t, app, f)); err != nil || n != 1 {
-					t.Fatalf("suspended birthday: %d %v", n, err)
-				}
-				apiDo(t, ec, "PUT", "/api/v1/admin/users/"+itoa(f.user.ID), map[string]string{"status": "active"}, 200)
-			case "L5", "L5_D_is_E":
-				if lifecycle == "L5_D_is_E" {
-					ec = admin
-				}
-				apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(f.user.ID), map[string]string{"status": "disabled"}, 200)
-				apiDo(t, kc, "POST", consentPath(&f.user), map[string]string{"scope": "account", "status": "granted", "evidenceText": "Signed consent"}, 200)
-				apiDo(t, lc, "POST", "/api/v1/admin/guardian-links/"+itoa(f.link.ID)+"/confirm", map[string]string{"checkNote": "Relationship verified"}, 200)
-				apiDo(t, ec, "PUT", "/api/v1/admin/users/"+itoa(f.user.ID), map[string]string{"status": "active"}, 200)
-			}
-			var rows []models.AuditLog
-			if err := app.DB.Where("action = ? OR (action = ? AND target_type = 'registration')", audit.HouseholdPersonConverted, audit.RegistrationChanged).Order("id").Find(&rows).Error; err != nil {
-				t.Fatal(err)
-			}
-			if len(rows) != len(f.rows)+1 {
-				t.Fatalf("lifecycle transfer rows %d, want %d", len(rows), len(f.rows)+1)
-			}
-			var d models.User
-			if err := app.DB.Where("email = ?", "admin@example.com").First(&d).Error; err != nil {
-				t.Fatal(err)
-			}
-			h := f.person.HouseholdID
-			r := auditConversionRequestRow{PersonID: f.person.ID, InvitationID: *f.request.InvitationID, UserID: f.user.ID, HouseholdID: &h, Marker: lifecycle == "L3" || lifecycle == "L4"}
-			if got := classifyEstablishedConversion(r, rows); got.Reason != "completion" {
+			l := newAuditLifecycle(t, lifecycle)
+			h := l.f.person.HouseholdID
+			r := auditConversionRequestRow{PersonID: ptr(l.f.person.ID), InvitationID: l.f.request.InvitationID, UserID: ptr(l.f.user.ID), HouseholdID: &h, Marker: l.marker}
+			if got := classifyEstablishedConversion(r, l.rows); got.Reason != "completion" {
 				t.Fatalf("current-history classification %+v", got)
 			}
-			before := dumpRows(t, app.DB, "audit_logs", "id", "action = ? OR (action = ? AND target_type = 'registration')", audit.HouseholdPersonConverted, audit.RegistrationChanged)
-			for _, uid := range []uint{*f.request.RequestedBy, f.holder.ID, enabler.ID, confirmer.ID, consenter.ID, f.user.ID, d.ID, d.ID} {
-				out := runAuditErasure(t, app.DB, erasureSubject{ID: uid})
-				if uid == d.ID && (out.Conversion.ByReason["history_unestablished"] != int64(len(rows)) || out.Conversion.Blanked != 0) {
-					t.Fatalf("default G-8 report %+v", out.Conversion)
+			if got := classifyAuditConversion(r, l.rows); !got.Identified {
+				t.Fatalf("a real completed conversion is an identified group: %+v", got)
+			}
+			people := map[string]*models.User{"D": l.d, "inviter": l.inviter, "E": l.enabler, "L": l.confirmer, "K": l.consenter, "G": l.f.holder, "S": &l.f.user}
+			callers := map[string]bool{}
+			for _, name := range lifecycleCallers[lifecycle] {
+				callers[name] = true
+			}
+			held := nonEmptyIDs(l.rows)
+			for _, name := range []string{"D", "inviter", "E", "L", "K", "G", "S"} {
+				run := eraseProbe(t, l.app.DB, erasureSubject{ID: people[name].ID}, false)
+				var want []uint
+				if callers[name] {
+					want = held
 				}
-				if before != dumpRows(t, app.DB, "audit_logs", "id", "action = ? OR (action = ? AND target_type = 'registration')", audit.HouseholdPersonConverted, audit.RegistrationChanged) {
-					t.Fatal("completion IP changed")
+				if got := changedIDs(run, l.rows); !reflect.DeepEqual(got, want) {
+					t.Fatalf("%s: changed conversion rows %v, want %v (held %v)", name, got, want, held)
+				}
+				requireLivingStepRowsKeepIP(t, run, people[name].ID)
+				c := run.out.Conversion
+				if !callers[name] {
+					if c.Groups != 0 || c.Discovered != 0 || c.Retained != 0 || c.Blanked != 0 || len(c.Details) != 0 || run.out.BlankedByClass[auditIPConversion] != 0 {
+						t.Fatalf("%s is no caller but the report found a group: %+v", name, c)
+					}
+					continue
+				}
+				// Identified groups are retained by nothing, whatever their reason; the reason
+				// stays the diagnostic it always was (history_unestablished, G-8 unestablished).
+				if c.Groups != 1 || c.Discovered != 3 || c.Retained != 0 || c.Blanked != int64(len(held)) || run.out.BlankedByClass[auditIPConversion] != int64(len(held)) ||
+					c.ByReason["history_unestablished"] != 3 || len(c.Details) != 1 {
+					t.Fatalf("%s: group counts %+v", name, c)
+				}
+				if d := c.Details[0]; !d.Identified || d.ConvertedFound != 1 || d.TransfersFound != 2 || d.ConvertedRetained != 0 || d.TransfersRetained != 0 || d.Blanked != int64(len(held)) || d.TransferCount != 2 || d.Reason != "history_unestablished" {
+					t.Fatalf("%s: detail %+v", name, d)
+				}
+			}
+			// E's own step row keeps its address when D is erased (P2-5), and D's own
+			// step rows are blanked only by the existing attribution rules.
+			if lifecycle == "L5" || lifecycle == "L4" {
+				run := eraseProbe(t, l.app.DB, erasureSubject{ID: l.d.ID}, false)
+				enabled := 0
+				for id, b := range run.before {
+					if b.Action == audit.UserEnabled && b.ActorID != nil && *b.ActorID == l.enabler.ID && b.IP != "" {
+						enabled++
+						if run.changed[id] {
+							t.Fatalf("D's erasure blanked E's own user.enabled row %d", id)
+						}
+					}
+				}
+				if enabled != 1 {
+					t.Fatalf("expected E's one user.enabled row, found %d", enabled)
 				}
 			}
 		})
@@ -1790,13 +1951,15 @@ func TestAuditErasureCoincidentApproverAndInviter(t *testing.T) {
 	if f.inviter.ID != f.admin.ID {
 		t.Fatal("fixture must use the same inviter and approver")
 	}
-	before := dumpRows(t, f.app.DB, "audit_logs", "id", "action = ? OR (action = ? AND target_type = 'registration')", audit.HouseholdPersonConverted, audit.RegistrationChanged)
-	out := runAuditErasure(t, f.app.DB, erasureSubject{ID: f.admin.ID})
-	if out.Conversion.ByReason["history_unestablished"] != 3 {
-		t.Fatalf("coincident roles: %+v", out.Conversion)
+	// K1 and K2 both name the admin: one request, one group, found once and
+	// cleared once, and nothing is counted twice (P2-6).
+	run := eraseProbe(t, f.app.DB, erasureSubject{ID: f.admin.ID}, true)
+	c := run.out.Conversion
+	if c.Groups != 1 || len(c.Details) != 1 || c.Discovered != 3 || c.Retained != 0 || c.Blanked != 3 || c.ByReason["history_unestablished"] != 3 || run.out.BlankedByClass[auditIPConversion] != 3 || c.Details[0].Blanked != 3 {
+		t.Fatalf("coincident roles: %+v", c)
 	}
-	if before != dumpRows(t, f.app.DB, "audit_logs", "id", "action = ? OR (action = ? AND target_type = 'registration')", audit.HouseholdPersonConverted, audit.RegistrationChanged) {
-		t.Fatal("coincident actor was treated as conversion caller")
+	if got := changedIDs(run, conversionRowsOf(t, f.app.DB)); len(got) != 3 {
+		t.Fatalf("coincident approver and inviter: changed %v", got)
 	}
 }
 
@@ -1819,8 +1982,811 @@ func TestAuditErasureConversionFallbackTotalsCountRowsOnce(t *testing.T) {
 	var groupRows int64
 	for _, d := range out.Conversion.Details {
 		groupRows += d.ConvertedFound + d.TransfersFound
+		if d.Identified || d.Blanked != 0 {
+			t.Fatalf("a group with a malformed row in common is never identified or cleared: %+v", d)
+		}
 	}
 	if groupRows != 6 {
 		t.Fatalf("per-request overlap was lost: %+v", out.Conversion.Details)
+	}
+	// The inviter reaches the same two requests through K2 and gets the same totals.
+	viaInviter := runAuditErasure(t, f.app.DB, erasureSubject{ID: f.inviter.ID})
+	if viaInviter.Conversion.Groups != 2 || viaInviter.Conversion.Discovered != 5 || viaInviter.Conversion.Retained != 5 || viaInviter.Conversion.Blanked != 0 || viaInviter.Conversion.ByReason["malformed_candidate"] != 5 {
+		t.Fatalf("K2 totals: %+v", viaInviter.Conversion)
+	}
+}
+
+// --- P2: clearing the conversion IPs of the candidate callers ---------------
+
+var errProbeRollback = errors.New("erasure probe rolled back")
+
+// convRun is one run of eraseAuditDetailsIn: its counts, every audit row before
+// and after, and the ids whose ip it changed.
+type convRun struct {
+	out     auditErasureCounts
+	changed map[uint]bool
+	before  map[uint]models.AuditLog
+	after   map[uint]models.AuditLog
+}
+
+func isConversionRow(r models.AuditLog) bool {
+	return r.Action == audit.HouseholdPersonConverted || (r.Action == audit.RegistrationChanged && r.TargetType == "registration")
+}
+
+// selectorInputs is every table a selector or a join reads, so that "the step
+// changed no input" is one string comparison.
+func selectorInputs(t *testing.T, db *gorm.DB) string {
+	t.Helper()
+	var b strings.Builder
+	for _, table := range []string{"account_requests", "guardian_links", "teen_consents", "invitations", "household_people"} {
+		b.WriteString(dumpRows(t, db, table, "id", "true"))
+	}
+	return b.String()
+}
+
+// eraseProbe runs the audit erasure of s and checks what no erasure may change
+// (N-8): every column but ip of every audit row, the metadata of every
+// conversion row, and every selector input. An ip only ever changes to "". With
+// commit false the transaction is rolled back, so several subjects can be tried
+// against one state.
+func eraseProbe(t *testing.T, db *gorm.DB, s erasureSubject, commit bool) convRun {
+	t.Helper()
+	var run convRun
+	err := db.Transaction(func(tx *gorm.DB) error {
+		inputs := selectorInputs(t, tx)
+		var before []models.AuditLog
+		if err := tx.Order("id").Find(&before).Error; err != nil {
+			return err
+		}
+		out, err := eraseAuditDetailsIn(tx, s)
+		if err != nil {
+			return err
+		}
+		var after []models.AuditLog
+		if err := tx.Order("id").Find(&after).Error; err != nil {
+			return err
+		}
+		if inputs != selectorInputs(t, tx) {
+			t.Error("the erasure changed an input of the selectors")
+		}
+		if len(before) != len(after) {
+			t.Fatalf("the erasure changed the number of audit rows: %d -> %d", len(before), len(after))
+		}
+		run = convRun{out: out, changed: map[uint]bool{}, before: map[uint]models.AuditLog{}, after: map[uint]models.AuditLog{}}
+		for i := range before {
+			b, a := before[i], after[i]
+			run.before[b.ID], run.after[a.ID] = b, a
+			if b.IP != a.IP {
+				if a.IP != "" {
+					t.Errorf("audit %d (%s): ip %q became %q, not blank", b.ID, b.Action, b.IP, a.IP)
+				}
+				run.changed[b.ID] = true
+			}
+			b.IP, a.IP = "", ""
+			if !isConversionRow(b) {
+				b.MetaJSON, a.MetaJSON = "", ""
+			}
+			if !reflect.DeepEqual(b, a) {
+				t.Errorf("audit %d (%s) changed beyond its ip:\nwant %+v\ngot %+v", b.ID, b.Action, b, a)
+			}
+		}
+		if commit {
+			return nil
+		}
+		return errProbeRollback
+	})
+	if (commit && err != nil) || (!commit && !errors.Is(err, errProbeRollback)) {
+		t.Fatal(err)
+	}
+	return run
+}
+
+func conversionRowsOf(t *testing.T, db *gorm.DB) []models.AuditLog {
+	t.Helper()
+	var rows []models.AuditLog
+	if err := db.Where("action = ? OR (action = ? AND target_type = 'registration')", audit.HouseholdPersonConverted, audit.RegistrationChanged).Order("id").Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	return rows
+}
+
+// nonEmptyIDs are the ids of rows that hold an address, ascending; nil for none.
+func nonEmptyIDs(rows []models.AuditLog) []uint {
+	var ids []uint
+	for _, r := range rows {
+		if r.IP != "" {
+			ids = append(ids, r.ID)
+		}
+	}
+	return ids
+}
+
+// changedIDs are the ids among rows whose ip the run blanked, ascending; nil for none.
+func changedIDs(run convRun, rows []models.AuditLog) []uint {
+	var ids []uint
+	for _, r := range rows {
+		if run.changed[r.ID] {
+			ids = append(ids, r.ID)
+		}
+	}
+	return ids
+}
+
+// requireLivingStepRowsKeepIP is N-1: the step rows of everyone but the erased
+// person keep their address, whatever the conversion step blanks.
+func requireLivingStepRowsKeepIP(t *testing.T, run convRun, uid uint) {
+	t.Helper()
+	for id, b := range run.before {
+		switch b.Action {
+		case audit.GuardianLinkConfirmed, audit.TeenConsentGranted, audit.UserEnabled, audit.AccountApproved:
+			if b.IP != "" && b.ActorID != nil && *b.ActorID != uid && run.changed[id] {
+				t.Errorf("another person's %s row %d lost its address when %d was erased", b.Action, id, uid)
+			}
+		}
+	}
+}
+
+// rerunShape is what a second run of the same erasure reports: the same groups
+// and counts, with no address left to blank (design section 7).
+func rerunShape(c auditConversionCounts) auditConversionCounts {
+	c.Blanked = 0
+	c.Details = append([]auditConversionGroupCounts(nil), c.Details...)
+	for i := range c.Details {
+		c.Details[i].Blanked = 0
+	}
+	return c
+}
+
+// requireClearedGroup checks the section 7 counts of one identified group of
+// found rows, whose held addresses were blanked.
+func requireClearedGroup(t *testing.T, name string, c auditConversionCounts, byClass int64, found, held int64) {
+	t.Helper()
+	if c.Groups != 1 || len(c.Details) != 1 || c.Discovered != found || c.Retained != 0 || c.Blanked != held || byClass != held || c.ByReason["history_unestablished"] != found {
+		t.Fatalf("%s: counts %+v (conversion class %d)", name, c, byClass)
+	}
+	if d := c.Details[0]; !d.Identified || d.ConvertedRetained != 0 || d.TransfersRetained != 0 || d.Blanked != held || d.ConvertedFound+d.TransfersFound != found {
+		t.Fatalf("%s: detail %+v", name, c.Details[0])
+	}
+}
+
+// P2-2: in an adult conversion the approving admin (K1) and the inviter (K2)
+// are the candidates; the converted account and an unrelated admin are not.
+func TestAuditErasureAdultConversionCallers(t *testing.T) {
+	f := newAuditAdultFixture(t)
+	stranger := newTestUser(t, f.app, "audit-stranger", erasurePW, models.RoleAdmin)
+	held := nonEmptyIDs(f.rows)
+	if len(held) != 3 {
+		t.Fatalf("every real row holds an address: %v", held)
+	}
+	for name, who := range map[string]*models.User{"D (K1)": f.admin, "inviter (K2)": f.inviter, "S": &f.user, "stranger": stranger} {
+		run := eraseProbe(t, f.app.DB, erasureSubject{ID: who.ID}, false)
+		requireLivingStepRowsKeepIP(t, run, who.ID)
+		got := changedIDs(run, f.rows)
+		if name == "S" || name == "stranger" {
+			if got != nil || run.out.Conversion.Groups != 0 || run.out.Conversion.Blanked != 0 || len(run.out.Conversion.Details) != 0 {
+				t.Fatalf("%s is no caller: %v %+v", name, got, run.out.Conversion)
+			}
+			continue
+		}
+		if !reflect.DeepEqual(got, held) {
+			t.Fatalf("%s: changed %v, want %v", name, got, held)
+		}
+		requireClearedGroup(t, name, run.out.Conversion, run.out.BlankedByClass[auditIPConversion], 3, 3)
+		if run.out.IPsBlanked < 3 {
+			t.Fatalf("%s: IPsBlanked %d does not include the conversion rows", name, run.out.IPsBlanked)
+		}
+		// The approval's own step row follows the existing ACTOR rule, no more.
+		for id, b := range run.before {
+			if b.Action == audit.AccountApproved && run.changed[id] != (b.ActorID != nil && *b.ActorID == who.ID && b.IP != "") {
+				t.Fatalf("%s: account.approved row %d: %+v", name, id, b)
+			}
+		}
+	}
+}
+
+// P2-7 and P2-8: two conversions in one household. A person who is a candidate
+// of one request clears that group only; one who is a candidate of both clears
+// both, with the actual discovered counts.
+func TestAuditErasureConversionTwoRequests(t *testing.T) {
+	f := newAuditAdultFixture(t)
+	second := newTestUser(t, f.app, "audit-second-approver", erasurePW, models.RoleAdmin)
+	parent := loginAPI(t, f.app, f.inviter.Email, erasurePW)
+	person := addMyPerson(t, parent, map[string]any{"firstName": "Second adult", "kind": "adult", "birthDate": "1990-01-01"})
+	acceptConversion(t, f.app, inviteHouseholdPerson(t, f.app, parent, person.ID, "audit-two-requests@example.com"), 200)
+	req := pendingRequest(t, f.app, "audit-two-requests@example.com")
+	apiDo(t, loginAPI(t, f.app, second.Email, erasurePW), "POST", "/api/v1/admin/account-requests/"+itoa(req.ID)+"/approve", map[string]any{}, 200)
+	all := conversionRowsOf(t, f.app.DB)
+	var r1, r2 []models.AuditLog
+	first := map[uint]bool{}
+	for _, r := range f.rows {
+		first[r.ID] = true
+	}
+	for _, r := range all {
+		if first[r.ID] {
+			r1 = append(r1, r)
+		} else {
+			r2 = append(r2, r)
+		}
+	}
+	if len(r1) != 3 || len(r2) != 1 || len(nonEmptyIDs(r2)) != 1 {
+		t.Fatalf("two real conversions: %d + %d rows", len(r1), len(r2))
+	}
+	// P2-7: D is a candidate of R1 only, the second approver of R2 only.
+	run := eraseProbe(t, f.app.DB, erasureSubject{ID: f.admin.ID}, false)
+	if !reflect.DeepEqual(changedIDs(run, all), nonEmptyIDs(r1)) || !reflect.DeepEqual(changedIDs(run, r2), []uint(nil)) {
+		t.Fatalf("D cleared %v, want only R1's %v", changedIDs(run, all), nonEmptyIDs(r1))
+	}
+	requireClearedGroup(t, "D", run.out.Conversion, run.out.BlankedByClass[auditIPConversion], 3, 3)
+	run = eraseProbe(t, f.app.DB, erasureSubject{ID: second.ID}, false)
+	if !reflect.DeepEqual(changedIDs(run, all), nonEmptyIDs(r2)) {
+		t.Fatalf("second approver cleared %v, want only R2's %v", changedIDs(run, all), nonEmptyIDs(r2))
+	}
+	requireClearedGroup(t, "second approver", run.out.Conversion, run.out.BlankedByClass[auditIPConversion], 1, 1)
+	// P2-8: the inviter invited both, so both groups are discovered, in request
+	// order, with their own counts, and both are cleared.
+	run = eraseProbe(t, f.app.DB, erasureSubject{ID: f.inviter.ID}, true)
+	c := run.out.Conversion
+	if c.Groups != 2 || len(c.Details) != 2 || c.Discovered != 4 || c.Retained != 0 || c.Blanked != 4 || run.out.BlankedByClass[auditIPConversion] != 4 {
+		t.Fatalf("inviter of both: %+v", c)
+	}
+	if d := c.Details; d[0].ConvertedFound+d[0].TransfersFound != 3 || d[0].Blanked != 3 || d[1].ConvertedFound+d[1].TransfersFound != 1 || d[1].Blanked != 1 || !d[0].Identified || !d[1].Identified {
+		t.Fatalf("details in request order: %+v", c.Details)
+	}
+	// I-1: a second run finds both groups again and has nothing left to blank.
+	again := runAuditErasure(t, f.app.DB, erasureSubject{ID: f.inviter.ID})
+	if !reflect.DeepEqual(again.Conversion, rerunShape(c)) || again.BlankedByClass[auditIPConversion] != 0 {
+		t.Fatalf("rerun %+v", again.Conversion)
+	}
+}
+
+// N-2 and the keys' edges. K4 is account scope and granted only; K3 is a link
+// confirmed for the converted account; K5 is user.enabled for it. A guardian who
+// recorded account consent is a caller (labelled fallback: no handler lets a
+// guardian record it, only an admin).
+func TestAuditErasureConversionKeysAndTheirEdges(t *testing.T) {
+	l := newAuditLifecycle(t, "L3")
+	db, s := l.app.DB, l.f.user.ID
+	// L3's group holds no address; give it one so a clear shows.
+	if err := db.Exec("UPDATE audit_logs SET ip = '192.0.2.8' WHERE action = ? OR (action = ? AND target_type = 'registration')", audit.HouseholdPersonConverted, audit.RegistrationChanged).Error; err != nil {
+		t.Fatal(err)
+	}
+	rows := conversionRowsOf(t, db)
+	held := nonEmptyIDs(rows)
+	mk := func(name string) *models.User { return newTestUser(t, l.app, name, erasurePW, models.RoleMember) }
+	revokedOnly, photos, pending, otherTeen, otherEnable, sms := mk("edge-revoked"), mk("edge-photos"), mk("edge-pending"), mk("edge-other-teen"), mk("edge-other-enable"), mk("edge-sms")
+	guardian := mk("edge-guardian")
+	someone := mk("edge-someone")
+	seed := func(row any) {
+		t.Helper()
+		erasureMustCreate(t, db, row)
+	}
+	seed(&models.TeenConsent{TeenUserID: s, Scope: models.TeenConsentAccount, Status: "revoked", GrantedBy: revokedOnly.ID, GranterRole: "guardian"})
+	seed(&models.TeenConsent{TeenUserID: s, Scope: "photos", Status: "granted", GrantedBy: photos.ID, GranterRole: "guardian"})
+	seed(&models.TeenConsent{TeenUserID: s, Scope: "sms", Status: "granted", GrantedBy: sms.ID, GranterRole: "guardian"})
+	seed(&models.GuardianLink{GuardianUserID: pending.ID, TeenUserID: &s, Status: "pending"})
+	seed(&models.GuardianLink{GuardianUserID: guardian.ID, TeenUserID: &someone.ID, Status: "confirmed", ConfirmedBy: &otherTeen.ID})
+	auditErasureLog(t, db, audit.UserEnabled, "user", someone.ID, &otherEnable.ID, nil)
+	for name, who := range map[string]*models.User{"revoked-only consent": revokedOnly, "photos consent": photos, "sms consent": sms, "pending link": pending,
+		"confirmer of another teen's link": otherTeen, "enabler of another user": otherEnable, "guardian of nobody here": guardian} {
+		run := eraseProbe(t, db, erasureSubject{ID: who.ID}, false)
+		if got := changedIDs(run, rows); got != nil || run.out.Conversion.Groups != 0 {
+			t.Fatalf("%s is not a caller: changed %v, %+v", name, got, run.out.Conversion)
+		}
+	}
+	// A confirmed guardian who recorded the account consent is a caller (K4).
+	seed(&models.TeenConsent{TeenUserID: s, Scope: models.TeenConsentAccount, Status: "granted", GrantedBy: l.f.holder.ID, GranterRole: "guardian"})
+	run := eraseProbe(t, db, erasureSubject{ID: l.f.holder.ID}, false)
+	if got := changedIDs(run, rows); !reflect.DeepEqual(got, held) {
+		t.Fatalf("guardian who recorded consent: changed %v, want %v", got, held)
+	}
+	requireClearedGroup(t, "guardian K4", run.out.Conversion, run.out.BlankedByClass[auditIPConversion], 3, 3)
+}
+
+// N-3b: an approved conversion whose identity link is missing (the schema
+// permits both) is still discovered and counted, through K1 and K2, and never
+// changed: its rows are reported malformed, valid ones included.
+func TestAuditErasureConversionLinkMissing(t *testing.T) {
+	for _, column := range []string{"approved_user_id", "household_person_id", "invitation_id"} {
+		t.Run(column, func(t *testing.T) {
+			f := newAuditAdultFixture(t)
+			// Simulated anomaly: the user link is ON DELETE SET NULL, and no writer
+			// clears the other two.
+			if err := f.app.DB.Exec("UPDATE account_requests SET "+column+" = NULL WHERE id = ?", f.request.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			for name, who := range map[string]*models.User{"decider (K1)": f.admin, "inviter (K2)": f.inviter} {
+				if column == "invitation_id" && name == "inviter (K2)" {
+					continue // without the invitation link only K1 reaches the request
+				}
+				run := eraseProbe(t, f.app.DB, erasureSubject{ID: who.ID}, false)
+				c := run.out.Conversion
+				if got := changedIDs(run, conversionRowsOf(t, f.app.DB)); got != nil {
+					t.Fatalf("%s: a link-missing request changed rows %v", name, got)
+				}
+				if c.Groups != 1 || len(c.Details) != 1 || c.Discovered != 3 || c.Retained != 3 || c.Blanked != 0 || run.out.BlankedByClass[auditIPConversion] != 0 || c.ByReason["malformed_candidate"] != 3 {
+					t.Fatalf("%s: counts %+v", name, c)
+				}
+				if d := c.Details[0]; d.Identified || d.Reason != "malformed_candidate" || d.ConvertedFound != 1 || d.TransfersFound != 2 || d.ConvertedRetained != 1 || d.TransfersRetained != 2 || d.Blanked != 0 {
+					t.Fatalf("%s: detail %+v", name, d)
+				}
+				if report := newErasureReport(householdErasureCounts{}, run.out); report.ActivityEntriesKept < 3 {
+					t.Fatalf("%s: the report does not count the retained rows: %+v", name, report)
+				}
+			}
+		})
+	}
+}
+
+// N-6, N-7 and N-9: neighbours of the group keep their address, and nothing
+// about a kind, an account type, a marker, a row's time or an address value
+// moves the cleared set.
+func TestAuditErasureConversionNeighborsAndNoTimeOrKind(t *testing.T) {
+	f := newAuditAdultFixture(t)
+	db := f.app.DB
+	other := newTestUser(t, f.app, "audit-neighbor", erasurePW, models.RoleAdmin)
+	group := f.rows
+	var d models.User
+	if err := db.Where("email = ?", "admin@example.com").First(&d).Error; err != nil {
+		t.Fatal(err)
+	}
+	neighbor := func(action, target string, id uint, actor *uint, meta map[string]any) uint {
+		t.Helper()
+		if err := audit.Write(db, audit.Entry{Action: action, TargetType: target, TargetID: id, Actor: actor, IP: "192.0.2.2", Meta: meta}); err != nil {
+			t.Fatal(err)
+		}
+		var row models.AuditLog
+		if err := db.Order("id DESC").First(&row).Error; err != nil {
+			t.Fatal(err)
+		}
+		return row.ID
+	}
+	// Rows of this person and this request that are not the group, and rows of
+	// other actions that happen to hold the very same address (never compared).
+	kept := []uint{
+		neighbor(audit.RegistrationChanged, "event", 1, &other.ID, map[string]any{"personId": f.person.ID, "invitationId": *f.request.InvitationID}),
+		neighbor(audit.UserRoleChanged, "user", f.user.ID, &other.ID, nil),
+		neighbor(audit.UserCreated, "user", f.user.ID, &other.ID, nil),
+	}
+	for _, status := range []string{"pending", "rejected", "expired", "withdrawn"} {
+		req := models.AccountRequest{Name: "Neighbour", Email: status + "-conversion@example.com", Source: "household_conversion", Status: status,
+			DecidedBy: &d.ID, HouseholdPersonID: &f.person.ID, InvitationID: f.request.InvitationID, ExpiresAt: time.Now().Add(time.Hour)}
+		erasureMustCreate(t, db, &req)
+	}
+	// N-7: flipping what the cleared set must never read.
+	for _, stmt := range []struct {
+		sql  string
+		args []any
+	}{
+		{"UPDATE household_people SET kind = 'teen' WHERE id = ?", []any{f.person.ID}},
+		{"UPDATE users SET account_type = 'teen' WHERE id = ?", []any{f.user.ID}},
+		{"UPDATE audit_logs SET at = now() - (id * interval '1 hour') WHERE action = ? OR (action = ? AND target_type = 'registration')", []any{audit.HouseholdPersonConverted, audit.RegistrationChanged}},
+	} {
+		if err := db.Exec(stmt.sql, stmt.args...).Error; err != nil {
+			t.Fatal(stmt.sql, err)
+		}
+	}
+	neighbor(audit.HouseholdPersonUpdated, "household_person", f.person.ID, &other.ID, nil)
+	run := eraseProbe(t, db, erasureSubject{ID: d.ID}, true)
+	if got := changedIDs(run, group); !reflect.DeepEqual(got, nonEmptyIDs(group)) || len(got) != 3 {
+		t.Fatalf("the group's rows changed %v", got)
+	}
+	for _, id := range kept {
+		if run.changed[id] || run.after[id].IP != "192.0.2.2" {
+			t.Fatalf("neighbour %d (%s) lost its address", id, run.after[id].Action)
+		}
+	}
+	// The pending, rejected, expired and withdrawn conversions of the same person
+	// are not discovered: one approved request, one group.
+	requireClearedGroup(t, "neighbours", run.out.Conversion, run.out.BlankedByClass[auditIPConversion], 3, 3)
+	requireLivingStepRowsKeepIP(t, run, d.ID)
+	// No address value is compared: the group's address on a row with no such
+	// shape, and a different address on a group row, change the result not at all.
+	for _, r := range group {
+		if run.after[r.ID].IP != "" {
+			t.Fatalf("group row %d kept %q", r.ID, run.after[r.ID].IP)
+		}
+	}
+}
+
+// N-9 and N-11, the count contract of design section 7, on groups with mixed
+// empty, NULL and held addresses, one retained malformed group and an overlap.
+func TestAuditErasureConversionCountContract(t *testing.T) {
+	retainSum := func(out auditErasureCounts) int64 {
+		var n int64
+		for _, class := range []auditIPClass{auditIPRetainEssential, auditIPRetainUnattributed} {
+			for _, c := range out.KeptByClassAndAction[class] {
+				n += c
+			}
+		}
+		return n
+	}
+	t.Run("mixed_addresses", func(t *testing.T) {
+		f := newAuditAdultFixture(t)
+		var c, t1, t2 models.AuditLog
+		for _, r := range f.rows {
+			switch {
+			case r.Action == audit.HouseholdPersonConverted:
+				c = r
+			case t1.ID == 0:
+				t1 = r
+			default:
+				t2 = r
+			}
+		}
+		if err := f.app.DB.Exec("UPDATE audit_logs SET ip = NULL WHERE id = ?", t1.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := f.app.DB.Exec("UPDATE audit_logs SET ip = '' WHERE id = ?", t2.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		run := eraseProbe(t, f.app.DB, erasureSubject{ID: f.admin.ID}, true)
+		// A NULL or empty address is neither rewritten nor counted as blanked, yet
+		// the row is cleared (not retained): Retained + |cleared| = Discovered.
+		if got := changedIDs(run, f.rows); !reflect.DeepEqual(got, []uint{c.ID}) {
+			t.Fatalf("changed %v, want only the converted row %d", got, c.ID)
+		}
+		requireClearedGroup(t, "mixed", run.out.Conversion, run.out.BlankedByClass[auditIPConversion], 3, 1)
+		if report := newErasureReport(householdErasureCounts{}, run.out); report.ActivityEntriesKept != retainSum(run.out) {
+			t.Fatalf("cleared rows are counted as kept: %+v", report)
+		}
+		after := dumpRows(t, f.app.DB, "audit_logs", "id", "id IN (?, ?)", t1.ID, t2.ID)
+		again := runAuditErasure(t, f.app.DB, erasureSubject{ID: f.admin.ID})
+		if !reflect.DeepEqual(again.Conversion, rerunShape(run.out.Conversion)) || again.IPsBlanked != 0 || after != dumpRows(t, f.app.DB, "audit_logs", "id", "id IN (?, ?)", t1.ID, t2.ID) {
+			t.Fatalf("rerun: %+v", again.Conversion)
+		}
+	})
+	t.Run("identified_and_retained_groups", func(t *testing.T) {
+		f := newAuditAdultFixture(t)
+		parent := loginAPI(t, f.app, f.inviter.Email, erasurePW)
+		person := addMyPerson(t, parent, map[string]any{"firstName": "Second adult", "kind": "adult", "birthDate": "1990-01-01"})
+		acceptConversion(t, f.app, inviteHouseholdPerson(t, f.app, parent, person.ID, "audit-contract-second@example.com"), 200)
+		req := pendingRequest(t, f.app, "audit-contract-second@example.com")
+		apiDo(t, loginAPI(t, f.app, f.admin.Email, erasurePW), "POST", "/api/v1/admin/account-requests/"+itoa(req.ID)+"/approve", map[string]any{}, 200)
+		// Simulated anomaly: the second group's count disagrees with its transfers.
+		if err := f.app.DB.Exec(`UPDATE audit_logs SET meta_json = jsonb_set(meta_json, '{transferCount}', '5') WHERE action = ? AND meta_json->>'personId' = ?`, audit.HouseholdPersonConverted, itoa(person.ID)).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := f.app.DB.Exec("UPDATE audit_logs SET ip = '' WHERE id = ?", f.rows[0].ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		all := conversionRowsOf(t, f.app.DB)
+		first := map[uint]bool{}
+		for _, r := range f.rows {
+			first[r.ID] = true
+		}
+		run := eraseProbe(t, f.app.DB, erasureSubject{ID: f.admin.ID}, true)
+		c := run.out.Conversion
+		// A: identified, cleared whole (two addresses held, one already empty). B: count_mismatch, retained whole.
+		if c.Groups != 2 || c.Discovered != 4 || c.Retained != 1 || c.Blanked != 2 || run.out.BlankedByClass[auditIPConversion] != 2 || c.ByReason["history_unestablished"] != 3 || c.ByReason["count_mismatch"] != 1 || len(c.Details) != 2 {
+			t.Fatalf("counts %+v", c)
+		}
+		a, b := c.Details[0], c.Details[1]
+		if !a.Identified || a.ConvertedFound != 1 || a.TransfersFound != 2 || a.ConvertedRetained != 0 || a.TransfersRetained != 0 || a.Blanked != 2 ||
+			b.Identified || b.Reason != "count_mismatch" || b.ConvertedFound != 1 || b.TransfersFound != 0 || b.ConvertedRetained != 1 || b.TransfersRetained != 0 || b.Blanked != 0 || a.Blanked+b.Blanked != c.Blanked {
+			t.Fatalf("details %+v", c.Details)
+		}
+		var wantChanged []uint
+		for _, r := range all {
+			if first[r.ID] && r.IP != "" {
+				wantChanged = append(wantChanged, r.ID)
+			}
+		}
+		if got := changedIDs(run, all); !reflect.DeepEqual(got, wantChanged) || int64(len(got)) != c.Blanked {
+			t.Fatalf("the rows changed %v are not the rows the report counts, want %v", got, wantChanged)
+		}
+		if report := newErasureReport(householdErasureCounts{}, run.out); report.ActivityEntriesKept != c.Retained+retainSum(run.out) {
+			t.Fatalf("activityEntriesKept %+v does not follow Retained", report)
+		}
+		again := runAuditErasure(t, f.app.DB, erasureSubject{ID: f.admin.ID})
+		if !reflect.DeepEqual(again.Conversion, rerunShape(c)) || again.BlankedByClass[auditIPConversion] != 0 {
+			t.Fatalf("rerun %+v", again.Conversion)
+		}
+	})
+	// A second approved request with the same person, no converted account and the
+	// same decider is not identified; the rows it shares with the identified
+	// request are retained in both details, counted once, and never blanked.
+	t.Run("shared_rows_are_never_cleared", func(t *testing.T) {
+		f := newAuditAdultFixture(t)
+		dup := f.request
+		dup.ID, dup.ApprovedUserID, dup.Email = 0, nil, "audit-contract-dup@example.com"
+		erasureMustCreate(t, f.app.DB, &dup)
+		run := eraseProbe(t, f.app.DB, erasureSubject{ID: f.admin.ID}, true)
+		c := run.out.Conversion
+		if got := changedIDs(run, f.rows); got != nil {
+			t.Fatalf("rows shared with a retained group were blanked: %v", got)
+		}
+		if c.Groups != 2 || c.Discovered != 3 || c.Retained != 3 || c.Blanked != 0 || run.out.BlankedByClass[auditIPConversion] != 0 || c.ByReason["history_unestablished"] != 3 || c.ByReason["malformed_candidate"] != 3 || len(c.Details) != 2 {
+			t.Fatalf("counts %+v", c)
+		}
+		for i, d := range c.Details {
+			if d.ConvertedFound != 1 || d.TransfersFound != 2 || d.ConvertedRetained != 1 || d.TransfersRetained != 2 || d.Blanked != 0 || d.Identified != (i == 0) {
+				t.Fatalf("detail %d: %+v", i, d)
+			}
+		}
+		if report := newErasureReport(householdErasureCounts{}, run.out); report.ActivityEntriesKept != 3+retainSum(run.out) {
+			t.Fatalf("the shared rows are counted once: %+v", report)
+		}
+	})
+}
+
+// I-3: a failure at the conversion step rolls back everything before it in the
+// attempt, including the class blanks and S5, and returns no counts.
+func TestAuditErasureConversionStepFailureRollsBack(t *testing.T) {
+	f := newAuditAdultFixture(t)
+	db := f.app.DB
+	// An ordinary row of the admin's own is blanked by the class loop, before step 5.
+	own := auditErasureLog(t, db, audit.UserCreated, "user", f.user.ID, &f.admin.ID, nil)
+	historical := auditErasureLog(t, db, "legacy.fault_probe", "user", f.user.ID, &f.admin.ID, nil)
+	snapshot := dumpRows(t, db, "audit_logs", "id", "true")
+	for _, sql := range []string{
+		`CREATE FUNCTION zzz_conversion_step_fault() RETURNS trigger LANGUAGE plpgsql AS $f$
+			BEGIN IF OLD.action IN ('household.person_converted', 'registration.changed') AND OLD.ip <> '' AND NEW.ip = '' THEN
+				RAISE EXCEPTION 'fault at the conversion step';
+			END IF; RETURN NEW; END $f$`,
+		"CREATE TRIGGER zzz_conversion_step_fault BEFORE UPDATE ON audit_logs FOR EACH ROW EXECUTE FUNCTION zzz_conversion_step_fault()",
+	} {
+		if err := db.Exec(sql).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		db.Exec("DROP TRIGGER IF EXISTS zzz_conversion_step_fault ON audit_logs")
+		db.Exec("DROP FUNCTION IF EXISTS zzz_conversion_step_fault()")
+	})
+	var counts auditErasureCounts
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var err error
+		counts, err = eraseAuditDetailsIn(tx, erasureSubject{ID: f.admin.ID})
+		return err
+	})
+	if err == nil || !strings.Contains(err.Error(), "fault at the conversion step") {
+		t.Fatalf("want the failure of the conversion step, got %v", err)
+	}
+	if !reflect.DeepEqual(counts, auditErasureCounts{}) || snapshot != dumpRows(t, db, "audit_logs", "id", "true") {
+		t.Fatalf("a failed step left changes or counts: %+v", counts)
+	}
+	// Without the fault the same erasure blanks the earlier rows too, so they were
+	// part of the transaction that failed.
+	db.Exec("DROP TRIGGER zzz_conversion_step_fault ON audit_logs")
+	run := eraseProbe(t, db, erasureSubject{ID: f.admin.ID}, true)
+	if !run.changed[own.ID] || !run.changed[historical.ID] || run.out.Conversion.Blanked != 3 {
+		t.Fatalf("the earlier blanks were not part of the failed attempt: %v %+v", run.changed, run.out.Conversion)
+	}
+}
+
+// The statements the application sends, with their binds, as the QC-1 harness
+// will see them. Discovery's first statement is the one the harness knows by its
+// text: byte for byte what it was, with the deleted account its only parameter,
+// directly after the retention report and the only block that begins as it does.
+// The other callers' arms are a later statement of their own.
+func TestAuditDiscoveryStatementsAndBinds(t *testing.T) {
+	s := newCoreErasureScene(t)
+	db, u, living := s.app.DB, s.second, s.admin
+	type sentStatement struct {
+		sql  string
+		vars []any
+	}
+	var mu sync.Mutex
+	var sent []sentStatement
+	capture := func(tx *gorm.DB) {
+		mu.Lock()
+		sent = append(sent, sentStatement{tx.Statement.SQL.String(), append([]any(nil), tx.Statement.Vars...)})
+		mu.Unlock()
+	}
+	name := fmt.Sprintf("test:audit_discovery:%d", queryCounterSeq.Add(1))
+	if err := db.Callback().Raw().After("gorm:raw").Register(name, capture); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Callback().Raw().Remove(name) })
+	if err := db.Callback().Row().After("gorm:row").Register(name, capture); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Callback().Row().Remove(name) })
+
+	// Two conversions the erased admin is a candidate of by different keys: R1 he
+	// decided (K1), R2 he invited (K2). Labelled seeds, as the other deletion tests.
+	conversion := func(tag string, decidedBy, invitedBy uint, transfers int) {
+		t.Helper()
+		teen := newTestUser(t, s.app, tag+"-teen", erasurePW, models.RoleMember)
+		h := models.Household{Name: tag + " household", CreatedBy: living.ID}
+		erasureMustCreate(t, db, &h)
+		p := models.HouseholdPerson{HouseholdID: h.ID, FirstName: tag + " person", Kind: models.HouseholdAdult, ConvertedUserID: &teen.ID, CreatedBy: living.ID}
+		erasureMustCreate(t, db, &p)
+		inv := erasureInvitation(t, db, invitedBy, teen.Email, true, &p.ID)
+		erasureMustCreate(t, db, &models.AccountRequest{Name: tag, Email: tag + "@example.com", Source: "household_conversion", Status: "approved",
+			ApprovedUserID: &teen.ID, DecidedBy: &decidedBy, HouseholdPersonID: &p.ID, InvitationID: &inv, ExpiresAt: time.Now().Add(time.Hour)})
+		auditErasureLog(t, db, audit.HouseholdPersonConverted, "household", h.ID, &invitedBy, map[string]any{"personId": p.ID, "householdId": h.ID, "invitationId": inv, "userId": teen.ID,
+			"accountType": "adult", "transferCount": transfers})
+		for i := 0; i < transfers; i++ {
+			auditErasureLog(t, db, audit.RegistrationChanged, "registration", uint(9000+i), &invitedBy, map[string]any{"personId": p.ID, "invitationId": inv, "userId": teen.ID,
+				"formerRegisteredBy": living.ID, "clearedChildcareRequested": false})
+		}
+	}
+	conversion("k1", u.ID, living.ID, 1)
+	conversion("k2", living.ID, u.ID, 0)
+	rows := conversionRowsOf(t, db)
+	if len(rows) != 3 || len(nonEmptyIDs(rows)) != 3 {
+		t.Fatalf("seeded rows %+v", rows)
+	}
+	mu.Lock()
+	sent = nil
+	mu.Unlock()
+	s.erase(t, u.ID)
+	// Stop capturing before anything else reads the database.
+	mu.Lock()
+	sent = append([]sentStatement(nil), sent...)
+	mu.Unlock()
+	_ = db.Callback().Raw().Remove(name)
+	_ = db.Callback().Row().Remove(name)
+	for _, r := range conversionRowsOf(t, db) {
+		if r.IP != "" {
+			t.Fatalf("a candidate's conversion row kept %q after the deletion: %+v", r.IP, r)
+		}
+	}
+	for i, st := range sent {
+		if strings.Contains(st.sql, "audit_logs") {
+			t.Logf("[%d] %s\n     vars %v", i, strings.Join(strings.Fields(st.sql), " "), st.vars)
+		}
+	}
+	uidVars := func(st sentStatement) bool {
+		return len(st.vars) == 1 && fmt.Sprint(st.vars[0]) == itoa(u.ID)
+	}
+	report, s5 := -1, -1
+	for i, st := range sent {
+		switch {
+		case report < 0 && strings.HasPrefix(st.sql, "SELECT class, action, count(*) FROM (SELECT action, "):
+			report = i
+		case s5 < 0 && strings.HasPrefix(st.sql, "UPDATE audit_logs SET ip = '' WHERE ip <> '' AND actor_id = $1 AND action <> ALL("):
+			s5 = i
+		}
+	}
+	if report < 0 || s5 < 0 || s5 > report {
+		t.Fatalf("S5 must be sent before the retention report (S5 at %d, report at %d)", s5, report)
+	}
+	if len(sent) < report+5 {
+		t.Fatalf("only %d statements, the report is at %d", len(sent), report)
+	}
+	k1 := strings.ReplaceAll(auditK1Text, "?", "$1")
+	if sent[report+1].sql != k1 || !uidVars(sent[report+1]) {
+		t.Fatalf("directly after the report the application must send discovery's first statement byte for byte, with the account as its only bind:\n%s\nvars %v", sent[report+1].sql, sent[report+1].vars)
+	}
+	later := sent[report+2]
+	if !strings.HasPrefix(later.sql, "WITH subject AS (SELECT CAST($1 AS bigint) AS id)") || !uidVars(later) || strings.Contains(later.sql, "$2") {
+		t.Fatalf("the other callers' arms are a statement of their own with the account as its only bind:\n%s\nvars %v", later.sql, later.vars)
+	}
+	var requests []uint
+	if err := db.Raw("SELECT id FROM account_requests WHERE source = 'household_conversion' ORDER BY id").Scan(&requests).Error; err != nil {
+		t.Fatal(err)
+	}
+	candidates := sent[report+3]
+	if !strings.HasPrefix(candidates.sql, "WITH r AS (") || len(candidates.vars) != 1 || candidates.vars[0] != pgBigintArray(requests) {
+		t.Fatalf("the candidate rows are read once for the union of both statements' requests %v:\n%s\nvars %v", requests, candidates.sql, candidates.vars)
+	}
+	clear := sent[report+4]
+	var ids []uint
+	for _, r := range rows {
+		ids = append(ids, r.ID)
+	}
+	if !strings.HasPrefix(strings.Join(strings.Fields(clear.sql), " "), "UPDATE audit_logs SET ip = '' WHERE id = ANY(CAST($1 AS bigint[]))") || len(clear.vars) != 1 || clear.vars[0] != pgBigintArray(ids) {
+		t.Fatalf("step 5 clears exactly the identified groups' ids %v:\n%s\nvars %v", ids, clear.sql, clear.vars)
+	}
+	// The harness counts every block that begins as discovery's first statement:
+	// it must find exactly one in the whole deletion.
+	prefix := k1[:90]
+	n := 0
+	for _, st := range sent {
+		if strings.HasPrefix(st.sql, prefix) {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%d statements begin as discovery's first statement, want exactly 1", n)
+	}
+}
+
+// auditK1Text is the first statement of discovery, byte for byte as the QC-1
+// harness holds it (deploy/digitalocean/qc1/app-facts.json at the PR that made
+// it a successor), with its bind written ?.
+const auditK1Text = "SELECT r.id, r.household_person_id AS person_id, r.invitation_id, r.approved_user_id AS user_id, h.household_id,\n" +
+	" EXISTS (SELECT 1 FROM audit_logs m WHERE m.action = 'household.person_updated' AND m.target_type = 'household_person' AND m.target_id = r.household_person_id) AS marker\n" +
+	" FROM account_requests r LEFT JOIN household_people h ON h.id = r.household_person_id\n" +
+	" WHERE r.source = 'household_conversion' AND r.status = 'approved' AND r.decided_by = ?"
+
+func localConst(t *testing.T, src, name string) string {
+	t.Helper()
+	m := regexp.MustCompile("(?s)const " + name + " = `([^`]*)`").FindStringSubmatch(src)
+	if m == nil {
+		t.Fatalf("account_erasure_audit.go declares no const %s", name)
+	}
+	return m[1]
+}
+
+// S-5: the request statements are exactly K1, then K2 to K5 as four EXISTS arms
+// over the retained keys, with one bind each and no time, address, name, kind or
+// sixth arm. A change here is a change of who may have caused a conversion:
+// revisit docs/plan/design/r4-conversion-ip-minimization.md first.
+func TestAuditConversionRequestStatementShape(t *testing.T) {
+	src := guardkit.Production(t)["account_erasure_audit.go"]
+	// K1 is written in discovery, or, once the QC-1 harness names it, as the
+	// package constant discovery takes it from. Either way it is this text.
+	name := "requests"
+	if strings.Contains(src, "const requests = auditConversionRequestsSQL") {
+		name = "auditConversionRequestsSQL"
+	}
+	k1 := localConst(t, src, name)
+	later := localConst(t, src, "laterRequests")
+	if k1 != auditK1Text {
+		t.Fatalf("K1 is the statement the QC-1 harness holds; it changed:\n%s", k1)
+	}
+	if strings.Count(k1, "?") != 1 || strings.Count(later, "?") != 1 || strings.Contains(later, "@") {
+		t.Fatalf("each request statement binds the account once: %q", later)
+	}
+	if !strings.HasPrefix(later, "WITH subject AS (SELECT CAST(? AS bigint) AS id)") || strings.HasPrefix(later, k1[:90]) {
+		t.Fatalf("the later statement must start apart from K1 (QC-1 counts blocks by their first 90 characters): %q", later[:90])
+	}
+	flat := strings.Join(strings.Fields(later), " ")
+	arms := []string{
+		"EXISTS (SELECT 1 FROM invitations i WHERE i.id = r.invitation_id AND i.invited_by = s.id)",
+		"EXISTS (SELECT 1 FROM guardian_links g WHERE g.teen_user_id = r.approved_user_id AND g.confirmed_by = s.id)",
+		"EXISTS (SELECT 1 FROM teen_consents c WHERE c.teen_user_id = r.approved_user_id AND c.granted_by = s.id AND c.scope = 'account' AND c.status = 'granted')",
+		"EXISTS (SELECT 1 FROM audit_logs e WHERE e.action = 'user.enabled' AND e.target_type = 'user' AND e.target_id = r.approved_user_id AND e.actor_id = s.id)",
+	}
+	where := flat[strings.Index(flat, " WHERE r.source"):]
+	want := " WHERE r.source = 'household_conversion' AND r.status = 'approved' AND (" + strings.Join(arms, " OR ") + ")"
+	if where != want {
+		t.Fatalf("K2 to K5 are exactly the four arms of the design:\n got %s\nwant %s", where, want)
+	}
+	if strings.Count(flat, "EXISTS (SELECT 1 FROM") != 5 { // the marker and the four arms
+		t.Fatalf("a sixth arm: %s", flat)
+	}
+	for _, forbidden := range []string{".ip", ".at ", "created_at", "decided_at", "kind", "account_type", "ORDER BY", "LIMIT", "interval", "now()", "decided_by", "NOT EXISTS"} {
+		if strings.Contains(where, forbidden) {
+			t.Fatalf("the callers' arms may read no %q", forbidden)
+		}
+	}
+	// The union runs in Go and the candidate rows are read by the request ids.
+	for _, want := range []string{"WHERE r.id = ANY(CAST(? AS bigint[])))", "pgBigintArray(ids)", "tx.Raw(requests, uid)", "tx.Raw(laterRequests, uid)"} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("discovery lost %q", want)
+		}
+	}
+	if strings.Contains(src, "WITH r AS (`+requests") || strings.Contains(src, "WITH r AS (`+laterRequests") {
+		t.Fatal("the candidate query embeds a request statement again")
+	}
+}
+
+// The one statement that writes ip on a conversion row, apart from none: the
+// class loop cannot (a CONVERSION rule owns nothing), S5 cannot (a registry key),
+// and this one reaches only the ids discovery cleared, by fixed action and
+// target and key, never by an actor, a name, a time or an address.
+func TestAuditConversionClearingStatementShape(t *testing.T) {
+	src := guardkit.Production(t)["account_erasure_audit.go"]
+	got := localConst(t, src, "auditConversionClearSQL")
+	const want = `UPDATE audit_logs SET ip = ''
+ WHERE id = ANY(CAST(? AS bigint[])) AND ip <> ''
+ AND ((action = 'household.person_converted' AND target_type = 'household')
+ OR (action = 'registration.changed' AND target_type = 'registration'
+ AND (jsonb_exists(meta_json, 'invitationId') OR jsonb_exists(meta_json, 'formerRegisteredBy'))))
+ RETURNING id`
+	if got != want {
+		t.Fatalf("the conversion step's statement changed:\n%s", got)
+	}
+	if strings.Count(got, "?") != 1 {
+		t.Fatal("the statement binds the id array once")
+	}
+	for _, forbidden := range []string{"actor_id", "target_id", "ip =", "ip LIKE", " at ", "account_requests", "@"} {
+		if strings.Contains(strings.Replace(got, "SET ip = ''", "", 1), forbidden) {
+			t.Fatalf("the statement selects by %q", forbidden)
+		}
+	}
+	if strings.Count(src, "const auditConversionClearSQL") != 1 || strings.Count(src, "tx.Raw(auditConversionClearSQL, ") != 1 || strings.Count(src, "auditConversionClearSQL,") != 1 {
+		t.Fatal("auditConversionClearSQL must be declared once and sent once")
+	}
+	for action, rules := range auditIPAttribution {
+		for _, rule := range rules {
+			if rule.Class == auditIPConversion && rule.Owner != "FALSE" {
+				t.Fatalf("the class loop would blank %s's conversion rows: %+v", action, rule)
+			}
+		}
 	}
 }
