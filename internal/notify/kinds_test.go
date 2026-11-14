@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"encoding/json"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -171,4 +172,110 @@ func TestYoureGetting(t *testing.T) {
 			t.Errorf("%s: %q, want %q", cat, got, want)
 		}
 	}
+}
+
+// A guardian's copy shows the bell title and body, never the email text, and
+// never a leader's note. This renders every optional email kind the way Send
+// does, with a sentinel in every field a recipient-only capability or note
+// can come from, and holds the copy to what the teen's own bell may say.
+func TestCopyTextCarriesNoRecipientOnlyContent(t *testing.T) {
+	const (
+		note   = "SENTINEL-NOTE"
+		manage = "https://x.example/guest/manage/SENTINEL-MANAGE"
+		video  = "https://x.example/SENTINEL-VIDEO"
+	)
+	v := Vars{Actor: "Pat", Group: "Youth", Event: "Youth night", When: "Fri 7pm", Place: "12 Elm St", Change: "time", Note: note, ManageURL: manage, VideoURL: video}
+	// Control arms: the sentinels do reach the dangerous kinds' other texts,
+	// so the checks below can fail.
+	promoted, _ := Lookup(RegistrationPromoted)
+	if _, email := promoted.RenderForEmail(v); !strings.Contains(email, "SENTINEL-MANAGE") || !strings.Contains(email, "SENTINEL-VIDEO") {
+		t.Fatalf("the promotion email no longer carries its links: %q", email)
+	}
+	removed, _ := Lookup(RegistrationRemoved)
+	if _, bell := removed.Render(v); !strings.Contains(bell, note) {
+		t.Fatalf("the removal bell no longer carries the note, so the title-only flag is untested: %q", bell)
+	}
+	for _, k := range Kinds() {
+		if !k.AllowEmail || k.Required {
+			continue
+		}
+		title, body := k.Render(v)
+		ct, cb := k.CopyText(title, body)
+		if ct != title {
+			t.Errorf("%s: copy title %q, want the bell title %q", k.Key, ct, title)
+		}
+		for _, bad := range []string{"SENTINEL-MANAGE", "SENTINEL-VIDEO", "guest/manage"} {
+			if strings.Contains(ct+cb, bad) {
+				t.Errorf("%s: copy carries %q: %q", k.Key, bad, ct+cb)
+			}
+		}
+		// A body that can carry a note is shown to nobody but the person it is
+		// for: its copy has the title alone.
+		if strings.Contains(body, note) && (!k.CopyTitleOnly || cb != "") {
+			t.Errorf("%s: the body carries a note but the copy shows %q", k.Key, cb)
+		}
+		if strings.Contains(ct+cb, note) {
+			t.Errorf("%s: copy carries the note: %q", k.Key, ct+cb)
+		}
+	}
+	// Positive control: a copy of a plain kind keeps the place the teen sees.
+	cancelled, _ := Lookup(OccurrenceCancelled)
+	title, body := cancelled.Render(v)
+	if _, cb := cancelled.CopyText(title, body); !strings.Contains(cb, "12 Elm St") {
+		t.Errorf("a date's copy lost its place: %q", cb)
+	}
+}
+
+// Only the kind written for someone who has just lost access to its subject
+// is copied without the teen's access to that subject (Grier, 2026-11-13).
+func TestOnlyRegistrationCancelledIsCopiedWithoutSubjectAccess(t *testing.T) {
+	for _, k := range Kinds() {
+		if k.CopyWithoutSubjectAccess != (k.Key == RegistrationCancelled) {
+			t.Errorf("%s: CopyWithoutSubjectAccess = %v", k.Key, k.CopyWithoutSubjectAccess)
+		}
+	}
+	k, _ := Lookup(RegistrationCancelled)
+	if !k.AllowEmail || k.Required {
+		t.Errorf("registration.cancelled must be optional email: %+v", k)
+	}
+	title, body := k.Render(Vars{Event: "Retreat", Group: "Hidden group", Place: "Home", When: "Fri"})
+	for _, bad := range []string{"Hidden group", "Home", "Fri"} {
+		if strings.Contains(title+body, bad) {
+			t.Errorf("registration.cancelled names %q: %q", bad, title+body)
+		}
+	}
+}
+
+// A lost-access copy is the kind's own text for the plain title stored in the
+// notice's data: the title survives any separator it holds, and a row with no
+// usable title, like any other kind, has no copy.
+func TestLostAccessCopyText(t *testing.T) {
+	k, _ := Lookup(RegistrationCancelled)
+	_, wantBody := k.Render(Vars{Event: "x"})
+	for _, title := range []string{"Retreat", "Carols · 2031-12-24 · Part 2", "Games ·", "· 2031-12-24", `Quote "this" & <that>`} {
+		data := `{"eventId":4,"eventTitle":` + jsonString(title) + `}`
+		got, body, ok := k.LostAccessCopyText(data)
+		if !ok || got != "Registration cancelled: "+title || body != wantBody {
+			t.Errorf("%q: got %q %q %v", title, got, body, ok)
+		}
+	}
+	for _, data := range []string{"", "{}", "null", "[]", "not json", `{"eventTitle":""}`, `{"eventTitle":" \t"}`, `{"eventTitle":3}`, `{"eventTitle":null}`, `{"eventtitle":"Retreat"}`} {
+		if title, body, ok := k.LostAccessCopyText(data); ok || title != "" || body != "" {
+			t.Errorf("data %q gave a copy: %q %q", data, title, body)
+		}
+	}
+	// Only the lost-access kind has one: another kind's copy is its stored text.
+	for _, other := range Kinds() {
+		if other.CopyWithoutSubjectAccess {
+			continue
+		}
+		if _, _, ok := other.LostAccessCopyText(`{"eventTitle":"Retreat"}`); ok {
+			t.Errorf("%s has a lost-access copy", other.Key)
+		}
+	}
+}
+
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }

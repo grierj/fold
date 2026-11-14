@@ -65,3 +65,19 @@ func pushRecipientKey(recipientID, deviceID uint) string {
 // avatarCleanupUserField is avatarCleanupJob's JSON key, which the sweep
 // reads in SQL.
 const avatarCleanupUserField = "userId"
+
+// Guardian copies of notices (notify_guardian_copy.go): one job per teen
+// notice per confirmed guardian, carrying ids only. The key makes a repeated
+// enqueue, a retried claim or a requeued notice add nothing.
+const kindNotifyGuardianCopy = "notify.guardian_copy"
+
+var guardianCopyType = jobs.Type{Name: kindNotifyGuardianCopy, MaxAttempts: 8}
+
+type guardianCopyJob struct {
+	NotificationID uint `json:"notificationId"`
+	GuardianID     uint `json:"guardianId"`
+}
+
+func guardianCopyKey(notificationID, guardianID uint) string {
+	return kindNotifyGuardianCopy + ":" + idString(notificationID) + ":" + idString(guardianID)
+}

@@ -24,7 +24,9 @@ Job message.send (at scheduled_at):
       a guest outside a reminder, no address, an open suppression, the person's email choice
       -> rows marked suppressed with a reason (the author sees counts; admins see reasons)
    5. Guardian copies (only if guardian_copies is on, DEC-19, DEC-29): for each teen
-      recipient, an email copy row for each confirmed guardian, filtered the same way
+      recipient, an email copy row for each confirmed guardian, filtered the same way.
+      Reminders are copied here too. An optional notice email is copied by its own
+      job, not by a row (7.4)
    6. Planned (M3.8): the SMS send window (DEC-9, DEC-25) defers each SMS recipient
       to their next allowed time
    7. Queue message.deliver_batch jobs (email in batches of 50) and, when push_alert is on,
@@ -114,6 +116,9 @@ Minors (DEC-8, DEC-19):
   - the teen has opted in to SMS themselves
 - **Planned (M3.7):** revoking either consent stops SMS at once, and an imported phone number for a teen is never treated as opted in.
 - Guardian copies are off unless an admin turns on `guardian_copies` (7.1 step 5, 5.10).
+- **Copies of notices** (DEC-19, DEC-29, #364). An optional notice email to a teen account is copied to each confirmed adult guardian by the `notify.guardian_copy` job, one per guardian, queued in the same transaction as the teen's sent status (a savepoint around the enqueue, rolled back for any outcome but sent). So a teen whose own email was not sent, was suppressed at the provider or has that category off gets no copy for their guardian; an announcement copy row, by contrast, is decided when the audience is snapshotted. The job reads everything again when it runs and finishes quietly when any answer is no: the switch is off, the teen is gone, disabled or no longer a teen, the link is no longer confirmed or the guardian is no longer an active adult with a password (`contactGuardians`), the guardian is already a direct recipient of the same notice (same kind, subject and dedupe key; a notice with no dedupe key is a different notice, so a guardian who is also a registrant gets their own and a marked copy), the guardian's own choice or suppression says no, or the teen can no longer see the date (`reminderReaders`), event or group the notice is about. A notice about anything else is never copied; `membership.departure` already goes straight to the guardians. `registration.cancelled` is the one exception to the access rule, by DEC-149: it is written for someone who has just lost access, and its copy names only the event's title: no date, group, place or link. The single-date path adds the calendar date to the teen's own title, so the copy is not made from the teen's title; it is rendered from the plain title the writer stored in the notice's data (the date's own title when it has one, as of the cancellation), and a notice without one, written before it was stored, gets no copy.
+- The copy shows the bell title and body, never the teen's email text, which can carry the manage link and the video link; a kind whose body can carry a leader's note shows its title alone. It carries no link of the teen's and the guardian's own footer and unsubscribe. No lock is held from the job's reads to the provider, so an erasure, revocation or access change committed in that window may not stop that one copy; one committed before the reads does. Delivery is at least once. A permanent refusal, a suppressed address or no email service ends the job quietly; a transient error retries up to eight times and then raises the dead-job alert, where an admin can retry or set it aside.
+- Known difference (follow-up issue): an announcement or reminder copy row is made from the link as it was at preparation and does not check the guardian's account type, and delivery does not read the link again, while a notice copy rechecks both when it sends.
 
 Push:
 

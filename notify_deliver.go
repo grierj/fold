@@ -28,6 +28,8 @@ const (
 	// doesn't know the notice's kind.
 	emailKindUnknown = "this version of Fold doesn't know this kind of notice"
 	emailDismissed   = "an admin set this notice aside"
+	// guardianCopySavepoint wraps the guardian copy jobs queued in the claim.
+	guardianCopySavepoint = "guardian_copies"
 	// notifyUnknownWait and notifyUnknownGrace mirror jobs.unknownKindWait
 	// and jobs.unknownKindGrace. A notice this build doesn't know waits an
 	// hour without spending an attempt, and is suppressed after a week.
@@ -53,7 +55,7 @@ func (a *App) notifyKinds() []jobs.Kind {
 			}
 			return a.deliverOneNotification(ctx, p.NotificationID)
 		},
-	}}
+	}, a.guardianCopyKind()}
 }
 
 // reconcileNotifications repairs lost delivery jobs and backfills pre-outbox
@@ -335,10 +337,34 @@ func (a *App) sendHeldNotification(tx *gorm.DB, ctx context.Context, id uint) (o
 	if u == nil || (u.Status != models.UserActive && u.Status != models.UserGuest) {
 		return nil, updateEmailDelivery(tx, id, models.DeliverySuppressed, reasonRecipientNotActive, "")
 	}
+	// A teen's guardians are queued before the send, under a savepoint that
+	// the first outcome other than sent rolls back, so the copy jobs commit
+	// with the sent status and only with it. Nothing is written after the
+	// provider accepts the mail except that status: a failed enqueue here
+	// stops the claim before anything is sent, whereas one after the send
+	// would roll the teen's sent status back and mail them again on retry.
+	// The savepoint is never released; COMMIT does that.
+	copies, err := guardianCopyJobs(tx, &n, k, u, a.now())
+	if err != nil {
+		return nil, err
+	}
+	if len(copies) > 0 {
+		if err := tx.SavePoint(guardianCopySavepoint).Error; err != nil {
+			return nil, err
+		}
+		if _, err := jobs.EnqueueMany(tx, copies); err != nil {
+			return nil, err
+		}
+	}
 	msg := a.notificationEmailMessage(&n, u, k, footer)
 	sendCtx, cancel := context.WithTimeout(ctx, deliverSendTimeout)
 	defer cancel()
 	res := sendTracked(sendCtx, mail.Unwrap(a.mailSender()), msg, suppressions)
+	if len(copies) > 0 && res.outcome != sendSent {
+		if err := tx.RollbackTo(guardianCopySavepoint).Error; err != nil {
+			return nil, err
+		}
+	}
 	switch res.outcome {
 	case sendSent:
 		return nil, updateEmailDelivery(tx, id, models.DeliverySent, "", res.providerID)

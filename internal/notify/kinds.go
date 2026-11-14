@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -152,6 +153,60 @@ type Kind struct {
 	// hour, outside the hourly limit (DEC-126); otherwise it is an
 	// ordinary optional push. A row that names no date is never urgent.
 	PushSoon bool
+	// CopyTitleOnly marks a kind whose body can carry a leader's or admin's
+	// note (Vars.Note), which reaches only the person it is for. A guardian's
+	// copy of such a notice shows the title alone.
+	CopyTitleOnly bool
+	// CopyWithoutSubjectAccess marks the one kind written for someone who has
+	// just lost access to its subject (registration.cancelled), so the rule that
+	// a copy follows the teen's live access to the subject cannot apply to it.
+	// Grier decided (2026-11-13) its guardians are copied with the event's title
+	// and nothing else: no date, group, place or link (DEC-149). The teen's own
+	// notice can carry more than that (a date joined to its title), so the copy
+	// is rendered from the plain title the writer stored in Data under
+	// DataEventTitle (LostAccessCopyText), never from the teen's stored text.
+	// Every other copy check still applies.
+	CopyWithoutSubjectAccess bool
+}
+
+// DataEventTitle is the Data key under which a CopyWithoutSubjectAccess
+// notice stores the event's own title, as the writer decided it (a date's
+// title override included), with nothing joined to it. A row written without
+// it has no copy.
+const DataEventTitle = "eventTitle"
+
+// LostAccessCopyText is the guardian's copy of a CopyWithoutSubjectAccess
+// notice: the kind's own text for the plain title in data (the notice's Data
+// column), so the copy names the event and nothing else. ok is false for any
+// other kind and for a row whose data has no usable title (a notice written
+// before the title was stored, or a damaged row), which gets no copy: the
+// teen's stored title cannot be split safely, because a title may itself
+// contain any separator.
+func (k Kind) LostAccessCopyText(data string) (title, body string, ok bool) {
+	if !k.CopyWithoutSubjectAccess {
+		return "", "", false
+	}
+	var d map[string]any
+	if json.Unmarshal([]byte(data), &d) != nil {
+		return "", "", false
+	}
+	plain, _ := d[DataEventTitle].(string)
+	if strings.TrimSpace(plain) == "" {
+		return "", "", false
+	}
+	title, body = k.Render(Vars{Event: plain})
+	return title, body, true
+}
+
+// CopyText is what a guardian's copy of a stored notice shows: the bell
+// title and body, never the email text, which can carry the teen's signed
+// manage link and video link (Vars.ManageURL, Vars.VideoURL). A CopyTitleOnly
+// kind shows no body.
+func (k Kind) CopyText(title, body string) (string, string) {
+	if k.CopyTitleOnly {
+		return title, ""
+	}
+	return title, body
 }
 
 func (k Kind) RenderForPush(v Vars) (title, body string, ok bool) {
@@ -419,7 +474,7 @@ func init() {
 		},
 	})
 	register(Kind{
-		Key: GroupRejected, Category: CatGroups, AllowEmail: true,
+		Key: GroupRejected, Category: CatGroups, AllowEmail: true, CopyTitleOnly: true,
 		Render: func(v Vars) (string, string) {
 			body := "An admin decided not to add it. Ask an admin if you have questions."
 			if v.Note != "" {
@@ -470,7 +525,7 @@ func init() {
 		},
 	})
 	register(Kind{
-		Key: RegistrationCancelled, Category: CatEvents, AllowEmail: true,
+		Key: RegistrationCancelled, Category: CatEvents, AllowEmail: true, CopyWithoutSubjectAccess: true,
 		Render: func(v Vars) (string, string) {
 			return "Registration cancelled: " + or(v.Event, "An event you registered for"),
 				"Who can see this event has changed, so registrations for dates you can no longer access were cancelled."
@@ -482,7 +537,7 @@ func init() {
 		},
 	})
 	register(Kind{
-		Key: VisibilityOverride, Category: CatGroups, AllowEmail: true,
+		Key: VisibilityOverride, Category: CatGroups, AllowEmail: true, CopyTitleOnly: true,
 		Render: func(v Vars) (string, string) {
 			body := fmt.Sprintf("%s opened it up. Now %s. The group is %s.", or(v.Actor, "Someone"), v.Visibility, v.GroupVis)
 			if v.Note != "" {
@@ -572,7 +627,7 @@ func init() {
 	register(Kind{
 		// A leader or host pruned a registration (DEC-20, DEC-30, M1.5).
 		// The note reaches only the removed person.
-		Key: RegistrationRemoved, Category: CatEvents, AllowEmail: true,
+		Key: RegistrationRemoved, Category: CatEvents, AllowEmail: true, CopyTitleOnly: true,
 		Render: func(v Vars) (string, string) {
 			body := "A leader or host removed your registration for " + or(v.Event, "an event") + "."
 			if v.Person != "" {
@@ -645,7 +700,7 @@ func init() {
 	register(Kind{
 		// The people running the event hear an admin's decision. Change is
 		// "approved" or "not approved"; Note is the outcome in words.
-		Key: RoomRequestDecided, Category: CatEvents, AllowEmail: true,
+		Key: RoomRequestDecided, Category: CatEvents, AllowEmail: true, CopyTitleOnly: true,
 		Render: func(v Vars) (string, string) {
 			return "Room " + or(v.Change, "decided") + ": " + or(v.Event, "an event"), or(v.Note, "See the event page.")
 		},
