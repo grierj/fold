@@ -11,6 +11,7 @@ import (
 	"go/format"
 	"go/token"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -173,7 +174,8 @@ func TestAuditErasureAttributionAndSubjectMetadata(t *testing.T) {
 	}
 	add(audit.AccountRequested, "account_request", 301, &u.ID, map[string]any{"source": "unknown"}, false)
 	add(audit.GuardianLinkRequested, "guardian_link", 1, &u.ID, map[string]any{"teenUserId": u.ID, "source": "unknown"}, false)
-	add("legacy.unknown", "user", u.ID, &u.ID, map[string]any{"userId": u.ID}, false)
+	// Unregistered action, erased actor: S5 clears the IP and reports no kept row.
+	add("legacy.unknown", "user", u.ID, &u.ID, map[string]any{"userId": u.ID}, true)
 	out := runAuditErasure(t, app.DB, s)
 	assertAuditErasureRows(t, app.DB, before, blank, removed)
 	var wantIPs int64
@@ -255,6 +257,9 @@ func TestAuditErasureRetentionReportIsSubjectScoped(t *testing.T) {
 	const action = "legacy.audit_retention"
 	var before []models.AuditLog
 	var want int64
+	// An unregistered action whose actor is the erased person is cleared (S5), so
+	// it is neither kept nor reported.
+	blank := map[uint]bool{}
 	for _, tc := range []struct {
 		target string
 		id     uint
@@ -262,7 +267,7 @@ func TestAuditErasureRetentionReportIsSubjectScoped(t *testing.T) {
 		meta   map[string]any
 		kept   bool
 	}{
-		{"group", 1, &u.ID, nil, true},
+		{"group", 1, &u.ID, nil, false},
 		{"user", u.ID, &other.ID, nil, true},
 		{"group", 1, nil, map[string]any{"userId": u.ID}, true},
 		{"group", 1, nil, map[string]any{"userId": itoa(u.ID)}, true},
@@ -278,7 +283,9 @@ func TestAuditErasureRetentionReportIsSubjectScoped(t *testing.T) {
 		{"group", 1, nil, map[string]any{"userId": []any{u.ID}, "teenUserId": nil}, false},
 		{"group", 1, nil, map[string]any{"reason": itoa(u.ID)}, false},
 	} {
-		before = append(before, auditErasureLog(t, app.DB, action, tc.target, tc.id, tc.actor, tc.meta))
+		row := auditErasureLog(t, app.DB, action, tc.target, tc.id, tc.actor, tc.meta)
+		before = append(before, row)
+		blank[row.ID] = tc.actor != nil && *tc.actor == u.ID
 		if tc.kept {
 			want++
 		}
@@ -295,7 +302,288 @@ func TestAuditErasureRetentionReportIsSubjectScoped(t *testing.T) {
 		if got := out.KeptByClassAndAction[auditIPRetainUnattributed][action]; got != want {
 			t.Fatalf("run %d: retained %d, want %d subject-linked rows: %+v", i, got, want, out)
 		}
-		assertAuditErasureRows(t, app.DB, before, nil, nil)
+		assertAuditErasureRows(t, app.DB, before, blank, nil)
+	}
+}
+
+// auditRawLog inserts one audit row with exactly the metadata text given, so a
+// test can seed bytes no current writer produces. A nil ip stores NULL.
+func auditRawLog(t *testing.T, db *gorm.DB, actor *uint, action, target string, id uint, meta string, ip *string) models.AuditLog {
+	t.Helper()
+	var rowID uint
+	if err := db.Raw(`INSERT INTO audit_logs (actor_id, action, target_type, target_id, meta_json, ip)
+ VALUES (?, ?, ?, ?, CAST(? AS jsonb), ?) RETURNING id`, actor, action, target, id, meta, ip).Scan(&rowID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var row models.AuditLog
+	if err := db.First(&row, rowID).Error; err != nil {
+		t.Fatal(err)
+	}
+	return row
+}
+
+// historicalActorFixture seeds S5's reach for erased user u: every row in
+// cleared is an unregistered action with u as actor and a nonempty IP, and every
+// row in kept must come through byte for byte.
+type historicalActorFixture struct {
+	before   []models.AuditLog
+	cleared  map[uint]bool
+	keptMany int64 // rows of keptAction that mention u and so reach the report
+}
+
+const (
+	historicalClearedAction = "legacy.cleared"
+	historicalKeptAction    = "legacy.kept"
+)
+
+func seedHistoricalActorRows(t *testing.T, db *gorm.DB, u, living, other *models.User) *historicalActorFixture {
+	t.Helper()
+	f := &historicalActorFixture{cleared: map[uint]bool{}}
+	ip := "192.0.2.19"
+	empty := ""
+	add := func(action string, actor *uint, target string, id uint, meta string, ip *string, cleared bool) {
+		row := auditRawLog(t, db, actor, action, target, id, meta, ip)
+		f.before = append(f.before, row)
+		f.cleared[row.ID] = cleared
+	}
+	// meta_json and target are never read: garbage of every JSON type, a target
+	// that names nobody, another person, or the subject all clear alike.
+	for _, meta := range []string{`{}`, `[]`, `"text"`, `7`, `null`, `{"userId":"abc"}`, `{"userId":{"a":[1]}}`,
+		`{"teenUserId":99999999999999999999,"personId":false}`, `{"userId":` + itoa(living.ID) + `}`, `{"checkNote":"Keep this note","evidenceText":"Keep"}`} {
+		add(historicalClearedAction, &u.ID, "group", 1, meta, &ip, true)
+	}
+	for _, target := range []struct {
+		kind string
+		id   uint
+	}{{"", 0}, {"user", u.ID}, {"user", other.ID}, {"registration", 9}, {"guardian_link", 71}} {
+		add(historicalClearedAction, &u.ID, target.kind, target.id, `{}`, &ip, true)
+	}
+	// The registry compares whole action strings, so near misses are unregistered.
+	for _, action := range []string{"user.created.v0", "USER.CREATED", " user.created", "invitation.accepted.legacy"} {
+		add(action, &u.ID, "user", u.ID, `{"userId":1}`, &ip, true)
+	}
+	// Not the erased person's rows: a living or other actor, however much the
+	// target or metadata mention u, and a row with no actor (S3).
+	add(historicalKeptAction, &living.ID, "user", u.ID, `{"userId":`+itoa(u.ID)+`}`, &ip, false)
+	add(historicalKeptAction, &other.ID, "user", u.ID, `{"teenUserId":`+itoa(u.ID)+`}`, &ip, false)
+	add(historicalKeptAction, nil, "user", u.ID, `{"userId":`+itoa(u.ID)+`}`, &ip, false)
+	add(historicalKeptAction, nil, "group", 1, `{"userId":`+itoa(u.ID)+`}`, &ip, false)
+	f.keptMany = 4
+	add(historicalKeptAction, &living.ID, "group", 1, `{}`, &ip, false)
+	// Nothing to clear: an empty or NULL address is neither rewritten nor counted.
+	add(historicalClearedAction, &u.ID, "user", u.ID, `{}`, &empty, false)
+	add(historicalClearedAction, &u.ID, "user", u.ID, `{}`, nil, false)
+	// Registered actions with u as actor are S2's rows, however malformed: S5
+	// never reaches them, including a registered system action with an IP.
+	add(audit.InvitationAccepted, &u.ID, "invitation", 401, `{"userId":`+itoa(u.ID)+`,"personId":501}`, &ip, false)
+	add(audit.InvitationAccepted, &u.ID, "invitation", 401, `{}`, &ip, false)
+	add(audit.AccountRequested, &u.ID, "account_request", 301, `{"source":"unknown"}`, &ip, false)
+	add(audit.GuardianLinkRequested, &u.ID, "guardian_link", 1, `{"teenUserId":`+itoa(u.ID)+`,"source":"unknown"}`, &ip, false)
+	add(audit.GuardianLinkRequested, &u.ID, "guardian_link", 2, `[]`, &ip, false)
+	add(audit.UserTurned18, &u.ID, "user", u.ID, `{}`, &ip, false)
+	add(audit.HouseholdPersonConverted, &u.ID, "household", 1, `{"personId":501,"userId":`+itoa(u.ID)+`}`, &ip, false)
+	add(audit.RegistrationChanged, &u.ID, "registration", 1, `{"invitationId":401}`, &ip, false)
+	return f
+}
+
+func TestAuditErasureClearsHistoricalActorRows(t *testing.T) {
+	app := testApp(t)
+	u := newTestUser(t, app, "audit-hist-erased", erasurePW, models.RoleMember)
+	living := newTestUser(t, app, "audit-hist-living", erasurePW, models.RoleAdmin)
+	other := newTestUser(t, app, "audit-hist-other", erasurePW, models.RoleMember)
+	f := seedHistoricalActorRows(t, app.DB, u, living, other)
+	var wantCleared int64
+	for _, yes := range f.cleared {
+		if yes {
+			wantCleared++
+		}
+	}
+	out := runAuditErasure(t, app.DB, erasureSubject{ID: u.ID})
+	// No class rule owns any seeded row, so S5 is the only clearing here and only
+	// ip changes.
+	assertAuditErasureRows(t, app.DB, f.before, f.cleared, nil)
+	if got := out.BlankedByClass[auditIPHistoricalActor]; got != wantCleared {
+		t.Fatalf("HISTORICAL_ACTOR blanked %d, want %d: %+v", got, wantCleared, out)
+	}
+	for class, n := range out.BlankedByClass {
+		if class != auditIPHistoricalActor && n != 0 {
+			t.Fatalf("class %s blanked %d rows; only S5 owns the seeded rows: %+v", class, n, out.BlankedByClass)
+		}
+	}
+	if out.IPsBlanked != wantCleared {
+		t.Fatalf("IPsBlanked %d, want only S5's %d", out.IPsBlanked, wantCleared)
+	}
+	// The retention report runs after S5: cleared rows are not "kept", the rows
+	// S5 does not own still are.
+	if got := out.KeptByClassAndAction[auditIPRetainUnattributed][historicalClearedAction]; got != 0 {
+		t.Fatalf("cleared rows still reported as kept: %d", got)
+	}
+	if got := out.KeptByClassAndAction[auditIPRetainUnattributed][historicalKeptAction]; got != f.keptMany {
+		t.Fatalf("kept %d rows of %s, want %d", got, historicalKeptAction, f.keptMany)
+	}
+	for _, action := range []string{audit.InvitationAccepted, audit.AccountRequested, audit.GuardianLinkRequested, audit.UserTurned18} {
+		if out.KeptByClassAndAction[auditIPRetainUnattributed][action] == 0 {
+			t.Fatalf("registered %s row with actor %d vanished from the report: %+v", action, u.ID, out.KeptByClassAndAction)
+		}
+	}
+	if out.MetadataRowsScrubbed != 0 {
+		t.Fatalf("S5 must not touch metadata: %+v", out)
+	}
+	// The public report counts what remains.
+	var kept int64
+	for _, byAction := range out.KeptByClassAndAction {
+		for _, n := range byAction {
+			kept += n
+		}
+	}
+	if got := newErasureReport(householdErasureCounts{}, out).ActivityEntriesKept; got != kept {
+		t.Fatalf("report counts %d kept rows, want %d", got, kept)
+	}
+	// A second run changes nothing and reports the same rows.
+	snapshot := dumpRows(t, app.DB, "audit_logs", "id", "true")
+	again := runAuditErasure(t, app.DB, erasureSubject{ID: u.ID})
+	if again.IPsBlanked != 0 || again.BlankedByClass[auditIPHistoricalActor] != 0 || snapshot != dumpRows(t, app.DB, "audit_logs", "id", "true") {
+		t.Fatalf("second run mutated audit: %+v", again)
+	}
+	if !reflect.DeepEqual(out.KeptByClassAndAction, again.KeptByClassAndAction) {
+		t.Fatal("rerun lost the retention report")
+	}
+	// HISTORICAL_ACTOR is internal: it is neither a rule class, a report class
+	// nor a key in the public report.
+	for _, rules := range auditIPAttribution {
+		for _, rule := range rules {
+			if rule.Class == auditIPHistoricalActor {
+				t.Fatal("HISTORICAL_ACTOR is not an attribution rule class")
+			}
+		}
+	}
+	if _, ok := out.KeptByClassAndAction[auditIPHistoricalActor]; ok {
+		t.Fatal("HISTORICAL_ACTOR rows are never kept")
+	}
+}
+
+// The registry is read when the erasure runs: an action that gains a rule stops
+// being S5's, and one that is still absent is S5's. Serial: it edits a global.
+func TestAuditErasureHistoricalActorFollowsTheLiveRegistry(t *testing.T) {
+	app := testApp(t)
+	u := newTestUser(t, app, "audit-hist-live", erasurePW, models.RoleMember)
+	const action = "legacy.promoted_to_registry"
+	ip := "192.0.2.19"
+	row := auditRawLog(t, app.DB, &u.ID, action, "group", 1, `{"x":1}`, &ip)
+	out := runAuditErasure(t, app.DB, erasureSubject{ID: u.ID})
+	if out.BlankedByClass[auditIPHistoricalActor] != 1 {
+		t.Fatalf("unregistered action not cleared: %+v", out)
+	}
+	if err := app.DB.Model(&row).Update("ip", ip).Error; err != nil {
+		t.Fatal(err)
+	}
+	// A system rule never owns a row that has an IP, so with the key registered
+	// the row falls to RETAIN_UNATTRIBUTED and stays.
+	auditIPAttribution[action] = auditIPSystem
+	t.Cleanup(func() { delete(auditIPAttribution, action) })
+	out = runAuditErasure(t, app.DB, erasureSubject{ID: u.ID})
+	var after models.AuditLog
+	if err := app.DB.First(&after, row.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if after.IP != ip || out.BlankedByClass[auditIPHistoricalActor] != 0 || out.IPsBlanked != 0 {
+		t.Fatalf("registered action reached by S5: %+v %+v", after, out)
+	}
+	if out.KeptByClassAndAction[auditIPRetainUnattributed][action] != 1 {
+		t.Fatalf("registered row missing from the report: %+v", out.KeptByClassAndAction)
+	}
+}
+
+// S5 sits inside the erasure transaction: a failure after it leaves every S5
+// address as it was and returns no counts. The trigger names which side of S5
+// the failing metadata scrub ran on.
+func TestAuditErasureHistoricalActorRollsBack(t *testing.T) {
+	app := testApp(t)
+	u := newTestUser(t, app, "audit-hist-rollback", erasurePW, models.RoleMember)
+	living := newTestUser(t, app, "audit-hist-rollback-living", erasurePW, models.RoleAdmin)
+	other := newTestUser(t, app, "audit-hist-rollback-other", erasurePW, models.RoleMember)
+	f := seedHistoricalActorRows(t, app.DB, u, living, other)
+	// A subject-keyed metadata scrub is the first statement after S5 that changes a row.
+	auditErasureLog(t, app.DB, audit.UserEmailChanged, "user", u.ID, &living.ID, map[string]any{"oldEmail": "old@example.com", "newEmail": "new@example.com"})
+	snapshot := dumpRows(t, app.DB, "audit_logs", "id", "true")
+	aborted := errors.New("interrupt before commit")
+	var first auditErasureCounts
+	err := app.DB.Transaction(func(tx *gorm.DB) error {
+		var err error
+		first, err = eraseAuditDetailsIn(tx, erasureSubject{ID: u.ID})
+		if err != nil {
+			return err
+		}
+		return aborted
+	})
+	if !errors.Is(err, aborted) || first.BlankedByClass[auditIPHistoricalActor] == 0 || snapshot != dumpRows(t, app.DB, "audit_logs", "id", "true") {
+		t.Fatalf("clean run didn't roll back: %v %+v", err, first)
+	}
+	for _, sql := range []string{
+		fmt.Sprintf(`CREATE FUNCTION aaa_hist_actor_fault() RETURNS trigger LANGUAGE plpgsql AS $f$
+			BEGIN IF NEW.action = 'user.email_changed' THEN
+				IF EXISTS (SELECT 1 FROM audit_logs WHERE action = '%s' AND actor_id = %d AND ip <> '') THEN
+					RAISE EXCEPTION 'fault before historical actor clearing';
+				END IF;
+				RAISE EXCEPTION 'fault after historical actor clearing';
+			END IF; RETURN NEW; END $f$`, historicalClearedAction, u.ID),
+		"CREATE TRIGGER aaa_hist_actor_fault BEFORE UPDATE ON audit_logs FOR EACH ROW EXECUTE FUNCTION aaa_hist_actor_fault()",
+	} {
+		if err := app.DB.Exec(sql).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		app.DB.Exec("DROP TRIGGER IF EXISTS aaa_hist_actor_fault ON audit_logs")
+		app.DB.Exec("DROP FUNCTION IF EXISTS aaa_hist_actor_fault()")
+	})
+	var counts auditErasureCounts
+	err = app.DB.Transaction(func(tx *gorm.DB) error {
+		var err error
+		counts, err = eraseAuditDetailsIn(tx, erasureSubject{ID: u.ID})
+		return err
+	})
+	if err == nil || !strings.Contains(err.Error(), "fault after historical actor clearing") {
+		t.Fatalf("want the failure that follows S5, got %v", err)
+	}
+	if !reflect.DeepEqual(counts, auditErasureCounts{}) || snapshot != dumpRows(t, app.DB, "audit_logs", "id", "true") {
+		t.Fatalf("failed run left changes or counts: %+v", counts)
+	}
+	assertAuditErasureRows(t, app.DB, f.before, nil, nil)
+}
+
+// S5's statement is the one place that reads no metadata and no target, binds
+// only the subject and the live registry, and is the only other writer of
+// audit_logs.ip beside the class updates.
+func TestAuditHistoricalActorStatementShape(t *testing.T) {
+	src := guardkit.Production(t)["account_erasure_audit.go"]
+	m := regexp.MustCompile("const auditHistoricalActorSQL = `([^`]*)`").FindStringSubmatch(src)
+	if m == nil {
+		t.Fatal("auditHistoricalActorSQL is not declared as one constant")
+	}
+	const want = `UPDATE audit_logs SET ip = '' WHERE ip <> '' AND actor_id = @uid AND action <> ALL(CAST(@registered AS text[]))`
+	if m[1] != want {
+		t.Fatalf("S5 statement changed:\n%s", m[1])
+	}
+	for _, forbidden := range []string{"meta_json", "target_type", "target_id", "account_requests", "OR "} {
+		if strings.Contains(m[1], forbidden) {
+			t.Fatalf("S5 reads or widens beyond actor and action: %q", forbidden)
+		}
+	}
+	if !strings.Contains(src, `sql.Named("registered", pgTextArray(actions))`) {
+		t.Fatal("S5 must bind the registry key list built for the classification")
+	}
+	// No other production file writes audit_logs.ip, and this file has only the
+	// class loop and S5.
+	update := regexp.MustCompile(`(?i)UPDATE\s+audit_logs\s+SET\s+ip\b`)
+	for path, text := range guardkit.Production(t) {
+		n := len(update.FindAllString(text, -1))
+		switch {
+		case path == "account_erasure_audit.go" && n != 2:
+			t.Fatalf("%s has %d audit_logs.ip writers, want the class loop and S5", path, n)
+		case path != "account_erasure_audit.go" && n != 0:
+			t.Fatalf("%s writes audit_logs.ip", path)
+		}
 	}
 }
 

@@ -246,9 +246,10 @@ func TestAdminDeleteUserScrubsAuditDetails(t *testing.T) {
 		t.Fatal(err)
 	}
 	before[len(before)-1].IP = ""
-	// Three subject-linked retained IP rows. The malformed nomination also
-	// appears in its diagnostic count; it must contribute only once.
-	add("legacy.unknown", "user", u.ID, &u.ID, nil, false)
+	// An unregistered action with the erased person as actor loses its IP (S5),
+	// so it is not kept. Two subject-linked IP rows remain, and the malformed
+	// nomination also appears in its diagnostic count; it must contribute only once.
+	add("legacy.unknown", "user", u.ID, &u.ID, nil, true)
 	add(audit.InvitationAccepted, "invitation", inv, &living.ID, map[string]any{"userId": u.ID, "personId": p.ID}, false)
 	add(audit.GuardianLinkRequested, "guardian_link", 9004, nil,
 		map[string]any{"source": "household_conversion", "teenUserId": itoa(teen.ID)}, false)
@@ -286,7 +287,7 @@ func TestAdminDeleteUserScrubsAuditDetails(t *testing.T) {
 	if err := dec.Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	want := erasureReportJSON{ActivityEntriesKept: 5}
+	want := erasureReportJSON{ActivityEntriesKept: 4}
 	if body.Erasure != want {
 		t.Fatalf("report %+v, want %+v", body.Erasure, want)
 	}

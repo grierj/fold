@@ -16,7 +16,10 @@ import (
 
 // These rules concern the IP's writer, not the person mentioned in the row.
 // R4-GR-IP found no essential-IP exception. Metadata has separate subject rules.
-// Unknown actions and unmatched historical shapes always retain their IP.
+// An action no writer uses (absent from the registry) loses its IP when its actor
+// is the erased person (S5); the registered actions follow their rules, and an
+// unmatched shape of a registered action or any other unknown row keeps its IP
+// (S2, S3).
 type auditIPClass string
 
 const (
@@ -30,6 +33,9 @@ const (
 	auditIPRetainEssential    auditIPClass = "RETAIN_ESSENTIAL"
 	auditIPRetainUnattributed auditIPClass = "RETAIN_UNATTRIBUTED"
 	auditIPNone               auditIPClass = "NONE"
+	// auditIPHistoricalActor counts S5's rows. It is never an attribution rule
+	// class, so it is not in the CASE, the retention report or the public report.
+	auditIPHistoricalActor auditIPClass = "HISTORICAL_ACTOR"
 )
 
 type auditIPRule struct {
@@ -248,6 +254,13 @@ type auditConversionGroupCounts struct {
 	Reason                   string
 }
 
+// auditHistoricalActorSQL is S5. An action absent from the registry has no
+// current writer, so a row of one whose actor is the erased person comes from an
+// earlier build and has no shape to check: it reads neither meta_json nor the
+// target. A registered action, however malformed, is never reached; the registry
+// is bound when the erasure runs, so an action added later leaves S5.
+const auditHistoricalActorSQL = `UPDATE audit_logs SET ip = '' WHERE ip <> '' AND actor_id = @uid AND action <> ALL(CAST(@registered AS text[]))`
+
 // Mentioning a subject is sufficient for a retention report, never for an
 // IP update. Match malformed string IDs too, without casting untrusted JSON.
 // Bind the uint as bigint before converting it to text; pgx cannot encode a
@@ -302,6 +315,12 @@ func eraseAuditDetailsIn(tx *gorm.DB, s erasureSubject) (auditErasureCounts, err
 		out.BlankedByClass[class] = res.RowsAffected
 		out.IPsBlanked += res.RowsAffected
 	}
+	res := tx.Exec(auditHistoricalActorSQL, sql.Named("uid", s.ID), sql.Named("registered", pgTextArray(actions)))
+	if res.Error != nil {
+		return auditErasureCounts{}, res.Error
+	}
+	out.BlankedByClass[auditIPHistoricalActor] = res.RowsAffected
+	out.IPsBlanked += res.RowsAffected
 	// Subtract only the listed subject-owned keys. jsonb subtraction preserves
 	// every other key; rows without those keys are not rewritten on retries.
 	scrubs := []struct{ where, keys string }{
