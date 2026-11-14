@@ -61,7 +61,7 @@ milestones until a first church is live (DEC-145).
     only when nobody else is left in it. Shared households are kept and counted.
   - Audit rows: attributable IPs and subject metadata are scrubbed, and the delete answers with
     counts of what it kept (`householdsKept`, `activityEntriesKept`).
-  - Network addresses in the activity log (#305, #304; PR-F): deleting also clears the `ip` of the
+  - Network addresses in the activity log (#305, #304; #385): deleting also clears the `ip` of the
     two household-conversion actions in an identified group when the erased person may have caused
     the conversion (owner decision 5), and of rows whose action no current writer uses when the
     erased person is the actor (S5, owner decision 12). The daily tombstone sweep runs this once
@@ -92,9 +92,9 @@ milestones until a first church is live (DEC-145).
     (`scripts/contract-gate.sh`).
 - Done means conditions C1–C5 hold on master ([#311](https://github.com/grierj/fold/issues/311)).
   The personal-IP gate (G-9) and the owner's Nov 3 answer on conversion IPs are recorded in
-  inventory section 6.5.2 and owner decision 5; PR-F adds owner decisions 9 to 12 and DEC-148.
-  G-9 and C3 close only when the checklist at the end of 6.5.2 is ticked by PR-F's final-head
-  review, and #311 audits C3 on master. Nothing here claims either.
+  inventory section 6.5.2 and owner decision 5; #385 added owner decisions 9 to 12 and DEC-148.
+  G-9 is closed: the checklist at the end of 6.5.2 is ticked against #385's merge. C3 is not,
+  because #311 audits it on master, and nothing here claims C3 or M7.4.
 - Open work:
   - [#301](https://github.com/grierj/fold/issues/301) and
     [#302](https://github.com/grierj/fold/issues/302) the one-time review list for reasons of
@@ -103,11 +103,12 @@ milestones until a first church is live (DEC-145).
     and the real-phone and real-restore hand checks in `docs/FIRST-CHURCH-CHECKS.md`.
   - [#303](https://github.com/grierj/fold/issues/303) and
     [#305](https://github.com/grierj/fold/issues/305) design, review and build conversion-IP
-    minimisation (R4-4b): built in PR-F with S5 and sweep version 2. Built is not closed: G-9 stays
-    open until the 6.5.2 checklist is ticked.
+    minimisation (R4-4b): built in #385 with S5 and sweep version 2. Its G-9 checklist is ticked in 6.5.2; C3 is
+    still #311's audit, and the issue stays open until it is closed on GitHub.
   - [#304](https://github.com/grierj/fold/issues/304) the owner's disposition for audit IP
     residue no retained key reaches (G-9, Q3): recorded in owner decisions 9 to 12 and DEC-148,
-    carried by PR-F with the C3 table. It closes with that checklist, not before.
+    carried by #385 with the C3 table, whose G-9 checklist is ticked in 6.5.2. The issue stays open until it
+    is closed on GitHub.
   - [#306](https://github.com/grierj/fold/issues/306) contract suppressions to hash-only, after a
     tagged release that holds `00002` (R4-SC).
   - [#307](https://github.com/grierj/fold/issues/307) and
