@@ -111,6 +111,7 @@ test("name picker keeps safe identities, teen guidance and existing adult add co
   await capture("event-adult-added");
 
   await signInTo(page, "grier", "/admin?tab=groups");
+  await page.getByRole("searchbox", { name: "Search groups" }).fill(destination.name);
   const card = page.getByRole("link", { name: destination.name, exact: true }).locator("../../..");
   await card.getByRole("button", { name: "Manage members" }).click();
   await (await soon(picker)).fill(teenName); await soon(options.first()); await expect(options).toHaveCount(1);
