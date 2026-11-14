@@ -753,6 +753,10 @@ without it; none is written before then.
 - Source guards are the parse-only tests in `guards_<concern>_test.go`, `throttle_keys_test.go`,
   `restore_fence_test.go` and the erasure censuses. Each states its own limits in its doc
   comment; read them before relying on a guard.
+- `TestC3ChecklistCoversTheRegistry` (`account_erasure_audit_test.go`) is a docs guard: it reads the
+  inventory's C3 table (6.5.2) and keeps its codes, rule families, arm names and registry fingerprint
+  equal to `auditIPAttribution`. A new registered action fails it until it has a row. It cannot
+  say an arm is the right one; that is the reviewer's check.
 - They read Go through `internal/guardkit`, a test-only package that `.deadcode-allow` lists like
   `internal/testdb`; `internal/images/imagetest` (shared upload-test pictures) is test-only too.
 - `guardkit.Production(t)` walks the whole tree once with one skip rule set (no tests,

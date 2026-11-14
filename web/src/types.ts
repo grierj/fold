@@ -1441,9 +1441,10 @@ export interface ErasureReport {
   householdsScrubbed: number;
   peopleAnonymized: number;
   guardianLinksRevoked: number;
-  // Subject-linked retained IP rows plus distinct discovered conversion rows,
-  // including conversions whose IP is already empty. Not proof of IP ownership
-  // or a complete count of personal addresses left in the activity log.
+  // Subject-linked retained IP rows plus distinct discovered conversion rows
+  // that were not cleared, including ones whose IP is already empty. Not proof
+  // of IP ownership or a complete count of personal addresses left in the
+  // activity log.
   activityEntriesKept: number;
   // Contact-request reasons the admin decided in this deletion (T07B-2b):
   // counts only, zero when the account had none.

@@ -20,9 +20,10 @@ type erasureReportJSON struct {
 	// GuardianLinksRevoked: pending or confirmed guardian links the erasure ended.
 	GuardianLinksRevoked int `json:"guardianLinksRevoked"`
 	// ActivityEntriesKept: subject-linked RETAIN_* rows with a nonempty IP,
-	// plus distinct conversion rows retained by discovery through this subject's
-	// approved requests (including already-empty IPs). This is a row count,
-	// not proof of IP ownership or a complete census of personal-IP residue.
+	// plus distinct conversion rows that discovery through this subject's
+	// approved requests found and did not clear (including already-empty IPs): a
+	// group that is not identified, and rows it shares with one. This is a row
+	// count, not proof of IP ownership or a complete census of personal-IP residue.
 	ActivityEntriesKept int64 `json:"activityEntriesKept"`
 	// ReasonsKept and ReasonsRemoved: the contact-request reasons the admin
 	// decided in this deletion (T07B-2b). Counts only, zero when the account had
