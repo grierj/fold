@@ -1748,7 +1748,7 @@ Before an announcement's failed rows go back, each is checked against today's au
 
 The message's page shows the counts as a line ("Sent to 132 people · 3 bounced · 9 skipped (6 turned off messages from leaders, 3 have no email address)"), the guardian copies as a count ("1 guardian copy didn't go out"), a failed send's problem under the title as an alert ("This message didn't go out", or for a partly sent one "1 person didn't get this", people and guardian copies counted apart as in the list), Try again outside the alert as the view's one primary action, with a confirm in the same words ("Send again to the 1 person and 1 guardian copy it didn't reach?"), and "See who got it". While a message is sending, or due to send (including a scheduled time that arrives while the page is open), the page reads the message and its counts every 5 seconds ("Sending… 40 of 132 so far", "Sending again…" after Try again). It waits while the tab is hidden, stops when the message settles or the page closes, and after 30 minutes with no change stops and offers "Refresh to check again". A hidden status says once that it settled, not on every check.
 
-`guardian_copies` is `true` or `false` (default off): each confirmed guardian of a teen recipient gets an email copy (DEC-19). `reply_to_address` is where replies to announcements go until the M3.11 relay (DEC-130). Both are on Admin → Settings; each change writes its audit row in the same transaction.
+`guardian_copies` is `true` or `false` (default off): each confirmed guardian of a teen recipient gets an email copy of an announcement, a reminder or an optional notice email (DEC-19; PLAN 7.4). Required notices and account mail are never copied. `reply_to_address` is where replies to announcements go until the M3.11 relay (DEC-130). Both are on Admin → Settings; each change writes its audit row in the same transaction.
 
 #### Push notification too (M3.13d2)
 
@@ -1781,7 +1781,7 @@ A reminder is a message the pipeline sends (`category` `reminder`, no author, `o
   - Recipients are the date's registrants with that status (a household person's reaches the account holder). Guests are included, because reminders for their event are mail they get (PLAN 7.4).
   - Each one is checked again for whether they may still see the date: the date's effective visibility, or a live exact-date invitation. Those who can't are skipped: "can't see this date anymore".
   - Then the usual filters apply, with the **Event updates** switch (`category:events`) instead of Messages from leaders. Someone who turned it off is skipped: "turned off event updates".
-  - Guardian copies follow `guardian_copies` as for any non-transactional email (DEC-19).
+  - Guardian copies follow `guardian_copies` as for any non-transactional email (DEC-19), and follow the teen's own access to the date.
 - **What it looks like.** A reminder is From the church name with no author, and replies go to the office address. The footer says "You're getting event updates from …".
 - **What it says.** The text is the reader's own: first name, the date's title (its own when it has one), time and place, and a button to their date page, where they can change their RSVP.
 

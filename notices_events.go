@@ -112,15 +112,24 @@ func notifyOccurrences(tx *gorm.DB, actor uint, occIDs []uint, kind string) erro
 
 // notifyRegistrationCancelled tells someone who can no longer see an event
 // that their registrations were cancelled. It names neither the group nor
-// the place and links nowhere private (PR #41).
-func notifyRegistrationCancelled(tx *gorm.DB, actor uint, ev *models.Event, userID uint) error {
+// the place and links nowhere private (PR #41). ev.Title is the title the
+// person knew the cancelled dates by, a date's own title included. date is
+// the calendar day of the one date cancelled, or "" for a series change: it is
+// joined to the title the person sees, and kept out of the plain title stored
+// in Data, which is all a guardian's copy shows (DEC-149).
+func notifyRegistrationCancelled(tx *gorm.DB, actor uint, ev *models.Event, userID uint, date string) error {
 	u, err := userIn(tx, userID)
 	if err != nil || u == nil || u.Status == models.UserDisabled {
 		return err
 	}
+	shown := ev.Title
+	if date != "" {
+		shown += " · " + date
+	}
 	_, err = notify.Send(tx, notify.Msg{
 		Kind: notify.RegistrationCancelled, To: []uint{userID}, Actor: &actor,
-		SubjectType: "event", SubjectID: ev.ID, Link: "/", Vars: notify.Vars{Event: ev.Title},
+		SubjectType: "event", SubjectID: ev.ID, Link: "/", Vars: notify.Vars{Event: shown},
+		Data: map[string]any{notify.DataEventTitle: ev.Title},
 	})
 	return err
 }

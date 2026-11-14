@@ -36,7 +36,7 @@ it("turns guardian copies on at once and says Saved", async () => {
   render(<MemoryRouter><GuardianCopiesSetting /></MemoryRouter>);
   const box = await copies();
   expect(box).not.toBeChecked();
-  expect(screen.getByText("When a message goes to a teen, their confirmed parents or guardians also get an email copy, marked as a copy. Takes effect for messages sent from now on. Off by default.")).toBeInTheDocument();
+  expect(screen.getByText("When an announcement, a reminder or an optional notice email goes to a teen, their confirmed parents or guardians also get an email copy, marked as a copy. Account and safety emails aren't copied. Takes effect for emails sent from now on. Off by default.")).toBeInTheDocument();
   await userEvent.click(box);
   expect(setGuardianCopies).toHaveBeenCalledWith(true);
   expect(await screen.findByRole("status")).toHaveTextContent("Saved");

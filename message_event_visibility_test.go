@@ -11,6 +11,7 @@ import (
 
 	"fold/internal/content"
 	"fold/internal/mail"
+	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/internal/providers"
 	"fold/models"
@@ -899,6 +900,82 @@ func TestAnnouncementPushRechecksEventFieldsAfterQuietHours(t *testing.T) {
 					if strings.Contains(note.Title+note.Body, bad) {
 						t.Errorf("%q reached the lock screen: %q / %q", bad, note.Title, note.Body)
 					}
+				}
+			}
+		})
+	}
+}
+
+// A reminder's guardian copy rows already follow the same switch and links as
+// an announcement's: this pins that, since a notice's copy (notify.guardian_copy)
+// follows the same rules and the two should not drift. No behavior is under
+// test here that this change adds.
+func TestReminderGuardianCopyMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		switchOn bool
+		setup    func(t *testing.T, f composeFixture, mom, dad *models.User)
+		wantMom  string // "" means no copy row
+		wantDad  string
+	}{
+		{name: "two confirmed guardians", switchOn: true, wantMom: models.RecipientQueued, wantDad: models.RecipientQueued},
+		{name: "switch off", switchOn: false},
+		{name: "a pending link", switchOn: true, wantDad: models.RecipientQueued, setup: func(t *testing.T, f composeFixture, mom, _ *models.User) {
+			if err := f.app.DB.Model(&models.GuardianLink{}).Where("guardian_user_id = ?", mom.ID).Update("status", models.GuardianPending).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "a revoked link", switchOn: true, wantDad: models.RecipientQueued, setup: func(t *testing.T, f composeFixture, mom, _ *models.User) {
+			if err := f.app.DB.Model(&models.GuardianLink{}).Where("guardian_user_id = ?", mom.ID).Update("status", models.GuardianRevoked).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "a guardian with event updates off", switchOn: true, wantMom: models.RecipientSuppressed, wantDad: models.RecipientQueued, setup: func(t *testing.T, f composeFixture, mom, _ *models.User) {
+			if err := f.app.DB.Create(&models.Consent{UserID: mom.ID, Channel: models.ConsentEmail, Scope: categoryScope(notify.CatEvents), Status: models.ConsentOptedOut, Source: models.ConsentSourceWebForm}).Error; err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "a guardian whose address bounced", switchOn: true, wantMom: models.RecipientSuppressed, wantDad: models.RecipientQueued, setup: func(t *testing.T, f composeFixture, mom, _ *models.User) {
+			suppressDeliverAddress(t, f.app, mom)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newComposeFixture(t)
+			f.admin.holdNotices, f.leader.holdNotices = true, true
+			mom := newTestUser(t, f.app, "matrix-mom", "password1234", models.RoleMember)
+			dad := newTestUser(t, f.app, "matrix-dad", "password1234", models.RoleMember)
+			for _, g := range []*models.User{mom, dad} {
+				if err := f.app.DB.Create(&models.GuardianLink{GuardianUserID: g.ID, TeenUserID: &f.teen.ID, Status: models.GuardianConfirmed}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.switchOn {
+				if err := f.app.DB.Create(&models.Setting{Key: settingGuardianCopies, Value: "true"}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.setup != nil {
+				tc.setup(t, f, mom, dad)
+			}
+			id, _ := prepareReminder(t, f, []*models.User{f.teen}, f.teen)
+			var all []models.MessageRecipient
+			if err := f.app.DB.Where("message_id = ? AND channel = ? AND copy_of_user_id = ?", id, models.DeliveryEmail, f.teen.ID).Find(&all).Error; err != nil {
+				t.Fatal(err)
+			}
+			rows := map[uint]models.MessageRecipient{}
+			for _, r := range all {
+				rows[r.UserID] = r
+			}
+			for g, want := range map[*models.User]string{mom: tc.wantMom, dad: tc.wantDad} {
+				row, has := rows[g.ID]
+				if want == "" {
+					if has {
+						t.Errorf("%s got a copy row: %+v", g.Email, row)
+					}
+					continue
+				}
+				if !has || row.Status != want || row.CopyOfUserID == nil || *row.CopyOfUserID != f.teen.ID {
+					t.Errorf("%s: row %+v, want a %s copy of the teen's", g.Email, row, want)
 				}
 			}
 		})

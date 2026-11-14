@@ -59,17 +59,28 @@ func setSettingIn(tx *gorm.DB, key, value string) error {
 // other value and a failed read all give def, so each switch keeps the default
 // it documents (on for push, off for rooms and guardian copies).
 func boolSettingIn(tx *gorm.DB, key string, def bool) bool {
+	on, _ := boolSettingErrIn(tx, key, def)
+	return on
+}
+
+// boolSettingErrIn is boolSettingIn that also returns a failed read. Inside a
+// transaction a failed statement aborts it, so a caller that is about to send
+// mail must stop on the error rather than carry on with the default.
+func boolSettingErrIn(tx *gorm.DB, key string, def bool) (bool, error) {
 	v, found, err := settingIn(tx, key)
-	if err != nil || !found {
-		return def
+	if err != nil {
+		return def, err
+	}
+	if !found {
+		return def, nil
 	}
 	switch strings.TrimSpace(v) {
 	case "true":
-		return true
+		return true, nil
 	case "false":
-		return false
+		return false, nil
 	}
-	return def
+	return def, nil
 }
 
 // settingOnSQL is boolSettingIn(key, false) as a SQL condition with the key
