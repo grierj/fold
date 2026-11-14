@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -80,8 +81,24 @@ func tombstoneRun(t *testing.T, a *App, id uint, version int) tombstoneReport {
 	return r
 }
 
+// tombstoneMaintenanceDelta is the strict form: a sweep run adds one marker and
+// at most one cleanup job and changes nothing that existed.
 func tombstoneMaintenanceDelta(t *testing.T, db *gorm.DB, before map[string]string, uid uint, version int) {
 	t.Helper()
+	tombstoneMaintenanceDeltaBlanking(t, db, before, uid, version, nil, 0)
+}
+
+// tombstoneMaintenanceDeltaBlanking also allows the one change the version-2
+// sweep may make to an existing row: each audit row in blanked goes from an
+// address to "" and changes in no other column. Every named row must have changed
+// and no other existing row may. The marker it adds reports wantKept entries
+// kept, so a run that blanked too few or too many rows cannot look clean.
+func tombstoneMaintenanceDeltaBlanking(t *testing.T, db *gorm.DB, before map[string]string, uid uint, version int, blanked []uint, wantKept int64) {
+	t.Helper()
+	allowed := map[float64]bool{}
+	for _, id := range blanked {
+		allowed[float64(id)] = true
+	}
 	after := tombstoneDatabase(t, db)
 	for _, table := range []string{"audit_logs", "jobs"} {
 		var old, now []map[string]any
@@ -99,7 +116,11 @@ func tombstoneMaintenanceDelta(t *testing.T, db *gorm.DB, before map[string]stri
 		for _, row := range now {
 			if prev, ok := oldIDs[row["id"]]; ok {
 				if !reflect.DeepEqual(row, prev) {
-					t.Errorf("%s existing row %v changed", table, row["id"])
+					if table == "audit_logs" && allowed[prev["id"].(float64)] && tombstoneOnlyIPBlanked(prev, row) {
+						delete(allowed, prev["id"].(float64))
+					} else {
+						t.Errorf("%s existing row %v changed:\nbefore %v\nafter  %v", table, row["id"], prev, row)
+					}
 				}
 				delete(oldIDs, row["id"])
 				continue
@@ -107,8 +128,8 @@ func tombstoneMaintenanceDelta(t *testing.T, db *gorm.DB, before map[string]stri
 			added++
 			if table == "audit_logs" {
 				meta, ok := row["meta_json"].(map[string]any)
-				if !ok || row["action"] != audit.UserErasureSwept || row["target_type"] != "user" || row["target_id"] != float64(uid) || row["actor_id"] != nil || row["ip"] != "" || len(meta) != 3 || meta["version"] != float64(version) || meta["householdsKept"] != float64(0) || meta["activityEntriesKept"] != float64(0) {
-					t.Errorf("unexpected maintenance marker: %+v", row)
+				if !ok || row["action"] != audit.UserErasureSwept || row["target_type"] != "user" || row["target_id"] != float64(uid) || row["actor_id"] != nil || row["ip"] != "" || len(meta) != 3 || meta["version"] != float64(version) || meta["householdsKept"] != float64(0) || meta["activityEntriesKept"] != float64(wantKept) {
+					t.Errorf("unexpected maintenance marker (want %d entries kept): %+v", wantKept, row)
 				}
 			} else if row["kind"] != kindAvatarCleanup || !reflect.DeepEqual(row["payload"], map[string]any{"userId": float64(uid)}) {
 				t.Errorf("unexpected maintenance job: %+v", row)
@@ -120,7 +141,23 @@ func tombstoneMaintenanceDelta(t *testing.T, db *gorm.DB, before map[string]stri
 		delete(before, table)
 		delete(after, table)
 	}
+	for id := range allowed {
+		t.Errorf("audit row %v was to be blanked and was not", id)
+	}
 	tombstoneSameDatabase(t, before, after)
+}
+
+// tombstoneOnlyIPBlanked: now is prev with a held address replaced by "".
+func tombstoneOnlyIPBlanked(prev, now map[string]any) bool {
+	if ip, _ := prev["ip"].(string); ip == "" {
+		return false
+	}
+	want := map[string]any{}
+	for k, v := range prev {
+		want[k] = v
+	}
+	want["ip"] = ""
+	return reflect.DeepEqual(want, now)
 }
 
 func TestTombstoneFreshErasureChangesOnlyMaintenanceRows(t *testing.T) {
@@ -1253,8 +1290,14 @@ func TestTombstoneFreshErasureThroughRunnerChangesOnlyMaintenance(t *testing.T) 
 	u := newTestUser(t, a, "fresh-runner", erasurePW, models.RoleMember)
 	seedErasureTokens(t, a.DB, u.ID, "fresh-runner", "fresh-runner-new@x.test")
 	erasureSeedConsentEvidence(t, a.DB, u.ID, "fresh-runner-consent")
+	// A fresh deletion already clears a historical row (S5), so the sweep after it
+	// has only the marker to add.
+	historical := auditErasureLog(t, a.DB, "legacy.unknown", "group", 44, &u.ID, map[string]any{"junk": true})
 	s.ac.holdNotices = true
 	s.erase(t, u.ID)
+	if n := countRows(t, a.DB, "audit_logs", "id = ? AND ip <> ''", historical.ID); n != 0 {
+		t.Fatal("the fresh deletion left a historical address")
+	}
 	if err := a.runSweepPage(context.Background(), 0, "2026-11-06"); err != nil {
 		t.Fatal(err)
 	}
@@ -1308,8 +1351,10 @@ func TestTombstoneDiscoveryNumericMarkersAndShape(t *testing.T) {
 	if err := a.DB.Raw(`SELECT (payload->>'userId')::bigint FROM jobs WHERE kind = ? ORDER BY (payload->>'userId')::bigint`, kindTombstone).Scan(&selected).Error; err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(selected, ids[:7]) {
-		t.Fatalf("numeric/structural discovery = %v want %v", selected, ids[:7])
+	// A marker below the current version (0 and 1 here) still needs the work;
+	// only a numeric version at or above it, 2.5 here, covers a tombstone.
+	if !reflect.DeepEqual(selected, ids[:8]) {
+		t.Fatalf("numeric/structural discovery = %v want %v", selected, ids[:8])
 	}
 }
 
@@ -1403,8 +1448,10 @@ func TestTombstoneDiscoveryMeasuredPageBound(t *testing.T) {
  SELECT n, 'deleted-' || n || '@deleted.invalid', '', now(), 'disabled' FROM generate_series(100001, 110000) n`).Error; err != nil {
 		t.Fatal(err)
 	}
+	// The population of the upgrade day: every tombstone an earlier sweep saw has
+	// a version-1 marker, some are already at the current version.
 	if err := db.Exec(`INSERT INTO audit_logs (action, target_type, target_id, meta_json)
- SELECT ?, 'user', n, jsonb_build_object('version', ?::integer) FROM generate_series(100001, 105000) n`, audit.UserErasureSwept, tombstoneSweepVersion).Error; err != nil {
+ SELECT ?, 'user', n, jsonb_build_object('version', CASE WHEN n <= 103000 THEN ?::integer ELSE 1 END) FROM generate_series(100001, 107000) n`, audit.UserErasureSwept, tombstoneSweepVersion).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Exec(`INSERT INTO audit_logs (action, target_type, target_id, meta_json)
@@ -1418,7 +1465,7 @@ func TestTombstoneDiscoveryMeasuredPageBound(t *testing.T) {
 	if err := db.Raw("EXPLAIN (ANALYZE, BUFFERS) "+tombstoneCandidatesSQL, uint(0), audit.UserErasureSwept, tombstoneSweepVersion, tombstoneSweepPage).Scan(&plan).Error; err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("10,000 tombstones, 5,000 marked, 200,000 audit rows:\n%s", strings.Join(plan, "\n"))
+	t.Logf("10,000 tombstones, 3,000 at the current version, 4,000 at version 1, 3,000 unmarked, 202,000 audit rows:\n%s", strings.Join(plan, "\n"))
 	var daily jobs.Kind
 	for _, k := range a.dailyKinds() {
 		if k.Name == kindTombstoneSweep {
@@ -1443,6 +1490,495 @@ func TestTombstoneDiscoveryMeasuredPageBound(t *testing.T) {
 	}
 	if n := countRows(t, db, "jobs", "kind = ?", kindTombstonePage); n != 1 {
 		t.Fatalf("measured continuation count %d", n)
+	}
+}
+
+// The version-2 sweep. A tombstone an earlier sweep marked at version 1 may
+// still hold addresses the conversion step (R4-4b) and S5 now clear. These tests
+// build that residue, then show the version-2 sweep clears exactly it.
+
+// tombstoneResidue is a real teen conversion (the L2 lifecycle) in which one
+// person has been deleted by an old handler and swept at version 1. The person
+// is the link confirmer's neighbour in the group: "consenter" is a caller of the
+// conversion group (K4), "enabler" is not.
+type tombstoneResidue struct {
+	l       auditLifecycle
+	person  *models.User
+	held    []uint // the group's rows that hold an address
+	s5      []uint // unregistered rows whose actor is the person
+	blanked []uint // what a version-2 run must blank, ascending
+	kept    int64  // what its marker must report as kept
+}
+
+// newTombstoneResidue builds the residue. The version-1 sweep is the real
+// pipeline, so its marker is real; each address the pipeline then blanked and an
+// earlier build would not have is written back. That write-back is a labelled
+// fallback fixture: no handler gives a tombstone an address after its erasure.
+// Four neighbour rows mention the person and must keep their address: a living
+// actor's unregistered row targeting them, a NULL-actor row whose metadata names
+// them, and two rows of registered actions whose actor is the person (one
+// malformed, one a system action), which S5 never reaches (S2).
+func newTombstoneResidue(t *testing.T, person string, withS5 bool) tombstoneResidue {
+	t.Helper()
+	l := newAuditLifecycle(t, "L2")
+	db := l.app.DB
+	r := tombstoneResidue{l: l, held: nonEmptyIDs(l.rows), kept: 4}
+	switch person {
+	case "consenter":
+		r.person = l.consenter
+	case "enabler":
+		r.person = l.enabler
+	default:
+		t.Fatalf("unknown person %q", person)
+	}
+	if len(r.held) != 3 {
+		t.Fatalf("the lifecycle's group holds %d addresses, want 3", len(r.held))
+	}
+	id := r.person.ID
+	if withS5 {
+		r.s5 = []uint{
+			auditErasureLog(t, db, "legacy.unknown", "group", 41, &id, map[string]any{"junk": []any{1, "two", nil}}).ID,
+			auditErasureLog(t, db, "legacy.moved", "user", l.f.user.ID, &id, nil).ID,
+		}
+	}
+	auditErasureLog(t, db, "legacy.unknown", "user", id, &l.d.ID, nil)
+	auditErasureLog(t, db, "legacy.unknown", "group", 42, nil, map[string]any{"userId": id})
+	auditErasureLog(t, db, audit.InvitationAccepted, "invitation", 401, &id, map[string]any{})
+	auditErasureLog(t, db, audit.UserTurned18, "user", id, &id, map[string]any{})
+	if person == "consenter" {
+		r.blanked = append(r.blanked, r.held...)
+	}
+	r.blanked = append(r.blanked, r.s5...)
+	sort.Slice(r.blanked, func(i, j int) bool { return r.blanked[i] < r.blanked[j] })
+	tombstoneLegacy(t, db, id)
+	ipsBefore := tombstoneIPs(t, db)
+	tombstoneRun(t, l.app, id, 1)
+	ipsAfter := tombstoneIPs(t, db)
+	for _, rowID := range r.blanked {
+		if ipsBefore[rowID] == "" || ipsAfter[rowID] != "" {
+			t.Fatalf("audit row %d: the version-1 run took %q to %q, so it is not residue", rowID, ipsBefore[rowID], ipsAfter[rowID])
+		}
+		if err := db.Exec(`UPDATE audit_logs SET ip = ? WHERE id = ?`, ipsBefore[rowID], rowID).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	return r
+}
+
+func tombstoneIPs(t *testing.T, db *gorm.DB) map[uint]string {
+	t.Helper()
+	var rows []struct {
+		ID uint
+		IP string
+	}
+	if err := db.Raw(`SELECT id, ip FROM audit_logs`).Scan(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	out := map[uint]string{}
+	for _, r := range rows {
+		out[r.ID] = r.IP
+	}
+	return out
+}
+
+// tombstoneThroughSweep is one daily sweep day for exactly one subject: the
+// page discovers it, and the runner runs its job once. It returns the snapshot
+// taken after discovery and before the job, with the runner's own job-row
+// transition already accepted, ready for tombstoneMaintenanceDeltaBlanking.
+func tombstoneThroughSweep(t *testing.T, a *App, day string, id uint) map[string]string {
+	t.Helper()
+	if err := a.runSweepPage(context.Background(), 0, day); err != nil {
+		t.Fatal(err)
+	}
+	var queued []models.Job
+	if err := a.DB.Where("kind = ? AND status = ? AND payload->>'userId' = ?", kindTombstone, models.JobQueued, fmt.Sprint(id)).Find(&queued).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 1 || queued[0].UniqueKey == nil || *queued[0].UniqueKey != fmt.Sprintf("%s:%d:v%d:%s", kindTombstone, id, tombstoneSweepVersion, day) {
+		t.Fatalf("sweep day %s queued %+v for tombstone %d, want its one job at version %d", day, queued, id, tombstoneSweepVersion)
+	}
+	if err := a.DB.Exec(`UPDATE jobs SET run_at = now() + interval '1 day' WHERE kind <> ?`, kindTombstone).Error; err != nil {
+		t.Fatal(err)
+	}
+	before := tombstoneDatabase(t, a.DB)
+	if ran, err := tombstoneRunner(t, a, tombstoneSweepPage).RunOnce(context.Background(), "sweep"); err != nil || !ran {
+		t.Fatalf("sweep job %v %v", ran, err)
+	}
+	if got := reloadJob(t, a, queued[0].ID); got.Status != models.JobDone || got.Attempts != 1 {
+		t.Fatalf("sweep job %+v", got)
+	}
+	tombstoneAcceptRunnerTransition(t, a.DB, before, queued[0].ID)
+	return before
+}
+
+// S-1, S-3 and the S5 and combined cases: the version-2 sweep of a tombstone a
+// version-1 sweep marked changes exactly the rows P2 and S5 own (their ip), adds
+// one version-2 marker and at most one cleanup, and nothing else in any table.
+// A neighbour row, a living participant's step row and the group of a person who
+// is no caller stay byte-identical. S-2: nothing runs twice.
+func TestTombstoneSweepVersionTwoClearsWhatVersionOneLeft(t *testing.T) {
+	for _, tc := range []struct {
+		name, person string
+		s5           bool
+	}{
+		{"conversion_only", "consenter", false},
+		{"historical_actor_only", "enabler", true},
+		{"conversion_and_historical_actor", "consenter", true},
+		{"neither", "enabler", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newTombstoneResidue(t, tc.person, tc.s5)
+			a, db := r.l.app, r.l.app.DB
+			id := r.person.ID
+			before := tombstoneThroughSweep(t, a, "2026-11-13", id)
+			tombstoneMaintenanceDeltaBlanking(t, db, before, id, tombstoneSweepVersion, r.blanked, r.kept)
+			held := nonEmptyIDs(conversionRowsOf(t, db))
+			if tc.person == "consenter" && len(held) != 0 {
+				t.Errorf("a caller's group still holds %v", held)
+			}
+			if tc.person == "enabler" && !reflect.DeepEqual(held, r.held) {
+				t.Errorf("a person who is no caller changed the group: holds %v, want %v", held, r.held)
+			}
+			// S-2: the same version, the next day's sweep and the previous
+			// binary's version change nothing.
+			settled := tombstoneDatabase(t, db)
+			tombstoneRun(t, a, id, tombstoneSweepVersion)
+			tombstoneRun(t, a, id, 1)
+			if err := a.runSweepPage(context.Background(), 0, "2026-11-13"); err != nil {
+				t.Fatal(err)
+			}
+			if err := a.runSweepPage(context.Background(), 0, "2026-11-14"); err != nil {
+				t.Fatal(err)
+			}
+			tombstoneSameDatabase(t, settled, tombstoneDatabase(t, db))
+		})
+	}
+}
+
+// S-4: a version-1 job key does not hold back the version-2 job, a subject at
+// version 1 is found while one at version 2 is not, and a day's page adds one
+// job per subject however often it runs.
+func TestTombstoneVersionTwoJobKeysDoNotCollideWithVersionOne(t *testing.T) {
+	a := testApp(t)
+	ids := tombstoneSeedUsers(t, a, 3)
+	const day = "2026-11-13"
+	for i, version := range []int{1, tombstoneSweepVersion, 0} {
+		if version > 0 {
+			erasureMustCreate(t, a.DB, &models.AuditLog{Action: audit.UserErasureSwept, TargetType: "user", TargetID: ids[i], MetaJSON: fmt.Sprintf(`{"version":%d}`, version)})
+		}
+	}
+	// A version-1 sweep already ran today for the two it saw.
+	for _, id := range []uint{ids[0], ids[2]} {
+		key := fmt.Sprintf("%s:%d:v1:%s", kindTombstone, id, day)
+		if ok, err := enqueueJob(a.DB, kindTombstone, tombstoneJob{UserID: id}, time.Now(), key, jobs.DefaultMaxAttempts); err != nil || !ok {
+			t.Fatalf("seed %s: %v %v", key, ok, err)
+		}
+	}
+	if err := a.DB.Exec(`UPDATE jobs SET status = 'done' WHERE kind = ?`, kindTombstone).Error; err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := a.runSweepPage(context.Background(), 0, day); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var keys []string
+	if err := a.DB.Raw(`SELECT unique_key FROM jobs WHERE kind = ? ORDER BY unique_key`, kindTombstone).Scan(&keys).Error; err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		fmt.Sprintf("%s:%d:v1:%s", kindTombstone, ids[0], day),
+		fmt.Sprintf("%s:%d:v%d:%s", kindTombstone, ids[0], tombstoneSweepVersion, day),
+		fmt.Sprintf("%s:%d:v1:%s", kindTombstone, ids[2], day),
+		fmt.Sprintf("%s:%d:v%d:%s", kindTombstone, ids[2], tombstoneSweepVersion, day),
+	}
+	sort.Strings(want)
+	if !reflect.DeepEqual(keys, want) {
+		t.Fatalf("subject jobs %v, want %v (the subject at the current version is left alone)", keys, want)
+	}
+	// The continuation key carries the version too.
+	if err := a.runSweepPageSize(context.Background(), 0, "2026-11-14", 2); err != nil {
+		t.Fatal(err)
+	}
+	var page models.Job
+	if err := a.DB.Where("kind = ?", kindTombstonePage).First(&page).Error; err != nil {
+		t.Fatal(err)
+	}
+	if page.UniqueKey == nil || *page.UniqueKey != fmt.Sprintf("%s:v%d:2026-11-14:%d", kindTombstonePage, tombstoneSweepVersion, ids[2]) {
+		t.Fatalf("continuation key %+v", page.UniqueKey)
+	}
+}
+
+// Pagination and restart: an upgrade-day population of version-1, current and
+// unmarked tombstones is discovered in keyset pages of the current version, a
+// restart between jobs loses nothing, and every subject ends with one current
+// marker, never two.
+func TestTombstoneVersionTwoPagesAndRestartsOverVersionOneMarkers(t *testing.T) {
+	a := testApp(t)
+	ids := tombstoneSeedUsers(t, a, 7)
+	// ids[1] and ids[5] are already current; ids[3] never had a marker.
+	for i, version := range []int{1, tombstoneSweepVersion, 1, 0, 1, tombstoneSweepVersion, 1} {
+		if version > 0 {
+			erasureMustCreate(t, a.DB, &models.AuditLog{Action: audit.UserErasureSwept, TargetType: "user", TargetID: ids[i], MetaJSON: fmt.Sprintf(`{"version":%d}`, version)})
+		}
+	}
+	subjects := []uint{ids[0], ids[2], ids[3], ids[4], ids[6]}
+	const day = "2026-11-13"
+	if err := a.runSweepPageSize(context.Background(), 0, day, 3); err != nil {
+		t.Fatal(err)
+	}
+	var queued []uint
+	if err := a.DB.Raw(`SELECT (payload->>'userId')::bigint FROM jobs WHERE kind = ? ORDER BY id`, kindTombstone).Scan(&queued).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(queued, subjects[:3]) {
+		t.Fatalf("first page queued %v, want %v", queued, subjects[:3])
+	}
+	// A restart after two jobs: the runner has no memory, the continuation is a row.
+	if err := a.DB.Exec(`UPDATE jobs SET run_at = now() + interval '1 day' WHERE kind NOT IN (?, ?)`, kindTombstone, kindTombstonePage).Error; err != nil {
+		t.Fatal(err)
+	}
+	first := tombstoneRunner(t, a, 3)
+	for i := 0; i < 2; i++ {
+		if ran, err := first.RunOnce(context.Background(), "before-restart"); err != nil || !ran {
+			t.Fatalf("job %d: %v %v", i, ran, err)
+		}
+	}
+	tombstoneDrain(t, a, tombstoneRunner(t, a, 3))
+	for i, id := range ids {
+		wantMarkers := int64(1)
+		if i == 0 || i == 2 || i == 4 || i == 6 {
+			wantMarkers = 2 // the version-1 marker stays, covered by the newer one
+		}
+		if n := countRows(t, a.DB, "audit_logs", "action = ? AND target_id = ?", audit.UserErasureSwept, id); n != wantMarkers {
+			t.Errorf("tombstone %d has %d markers, want %d", ids[i], n, wantMarkers)
+		}
+		if n := countRows(t, a.DB, "audit_logs", "action = ? AND target_id = ? AND meta_json->'version' = ?::jsonb", audit.UserErasureSwept, id, fmt.Sprint(tombstoneSweepVersion)); n != 1 {
+			t.Errorf("tombstone %d has %d markers at version %d, want 1", ids[i], n, tombstoneSweepVersion)
+		}
+	}
+	if n := countRows(t, a.DB, "jobs", "kind = ?", kindTombstone); n != int64(len(subjects)) {
+		t.Fatalf("%d subject jobs, want %d", n, len(subjects))
+	}
+	if n := countRows(t, a.DB, "jobs", "kind = ? AND status <> 'done'", kindTombstone); n != 0 {
+		t.Fatalf("%d subject jobs did not finish", n)
+	}
+	before := tombstoneDatabase(t, a.DB)
+	if err := a.runSweepPageSize(context.Background(), 0, "2026-11-14", 3); err != nil {
+		t.Fatal(err)
+	}
+	tombstoneSameDatabase(t, before, tombstoneDatabase(t, a.DB))
+}
+
+// A process lost between the domain COMMIT and runner.finish: the job is reclaimed
+// and the marker, not the job row, says the version-2 work is done.
+func TestTombstoneVersionTwoReclaimedJobChangesNothing(t *testing.T) {
+	r := newTombstoneResidue(t, "consenter", true)
+	a, db := r.l.app, r.l.app.DB
+	id := r.person.ID
+	before := tombstoneThroughSweep(t, a, "2026-11-13", id)
+	tombstoneMaintenanceDeltaBlanking(t, db, before, id, tombstoneSweepVersion, r.blanked, r.kept)
+	var j models.Job
+	if err := db.Where("kind = ? AND payload->>'userId' = ?", kindTombstone, fmt.Sprint(id)).First(&j).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&j).Updates(map[string]any{"status": models.JobRunning, "locked_by": "lost", "locked_at": time.Now().Add(-2 * jobs.DefaultLease)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	snap := tombstoneDatabase(t, db)
+	if ran, err := tombstoneRunner(t, a, tombstoneSweepPage).RunOnce(context.Background(), "reclaimed"); err != nil || !ran {
+		t.Fatalf("reclaim %v %v", ran, err)
+	}
+	tombstoneAcceptRunnerTransition(t, db, snap, j.ID)
+	tombstoneSameDatabase(t, snap, tombstoneDatabase(t, db))
+	if got := reloadJob(t, a, j.ID); got.Status != models.JobDone || got.Attempts != 2 {
+		t.Fatalf("reclaimed job %+v", got)
+	}
+}
+
+// Rollback: a fault on the last address the version-2 run clears, after S5 and
+// most of the conversion rows are already updated, rolls back the whole run:
+// every table is byte-identical, there is no marker and no cleanup. The next
+// attempt, with the fault gone, does all of it.
+func TestTombstoneVersionTwoRollsBackWholeOnAFault(t *testing.T) {
+	r := newTombstoneResidue(t, "consenter", true)
+	a, db := r.l.app, r.l.app.DB
+	id := r.person.ID
+	last := r.held[len(r.held)-1]
+	for _, s5 := range r.s5 {
+		if s5 > last {
+			continue
+		}
+		t.Fatalf("S5 row %d is not seeded after the group", s5)
+	}
+	ddl := fmt.Sprintf(`CREATE FUNCTION test_tombstone_v2_fault() RETURNS trigger LANGUAGE plpgsql AS $$
+ BEGIN IF OLD.id = %d AND OLD.ip <> '' AND NEW.ip = '' THEN RAISE EXCEPTION 'test fault after the other addresses'; END IF; RETURN NEW; END $$;
+ CREATE TRIGGER test_tombstone_v2_fault BEFORE UPDATE ON audit_logs FOR EACH ROW EXECUTE FUNCTION test_tombstone_v2_fault()`, last)
+	if err := db.Exec(ddl).Error; err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		db.Exec(`DROP TRIGGER IF EXISTS test_tombstone_v2_fault ON audit_logs; DROP FUNCTION IF EXISTS test_tombstone_v2_fault()`)
+	})
+	before := tombstoneDatabase(t, db)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if _, err := a.eraseTombstoneOnce(ctx, id, tombstoneSweepVersion); err == nil || !strings.Contains(err.Error(), "test fault") {
+		t.Fatalf("fault run returned %v", err)
+	}
+	tombstoneSameDatabase(t, before, tombstoneDatabase(t, db))
+	if err := db.Exec(`DROP TRIGGER test_tombstone_v2_fault ON audit_logs`).Error; err != nil {
+		t.Fatal(err)
+	}
+	after := tombstoneThroughSweep(t, a, "2026-11-13", id)
+	tombstoneMaintenanceDeltaBlanking(t, db, after, id, tombstoneSweepVersion, r.blanked, r.kept)
+}
+
+// Locking: the version-2 clearing runs under the exclusive contact gate and the
+// tombstone's user row lock like every erasure, nothing it does is visible
+// before COMMIT, and a second worker that takes the lease over waits on the gate
+// and then finds the marker.
+func TestTombstoneVersionTwoClearsUnderTheGateAndUserLock(t *testing.T) {
+	r := newTombstoneResidue(t, "consenter", true)
+	a, db := r.l.app, r.l.app.DB
+	id := r.person.ID
+	const pauseKey int64 = 7460202
+	release, blocker := holdAdvisory(t, db, pauseKey)
+	defer release()
+	ddl := fmt.Sprintf(`CREATE FUNCTION test_tombstone_v2_pause() RETURNS trigger LANGUAGE plpgsql AS $$
+ BEGIN IF OLD.ip <> '' AND NEW.ip = '' THEN PERFORM pg_advisory_xact_lock(%d); END IF; RETURN NEW; END $$;
+ CREATE TRIGGER test_tombstone_v2_pause BEFORE UPDATE ON audit_logs FOR EACH ROW EXECUTE FUNCTION test_tombstone_v2_pause()`, pauseKey)
+	if err := db.Exec(ddl).Error; err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		db.Exec(`DROP TRIGGER IF EXISTS test_tombstone_v2_pause ON audit_logs; DROP FUNCTION IF EXISTS test_tombstone_v2_pause()`)
+	})
+	if err := a.runSweepPage(context.Background(), 0, "2026-11-13"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`UPDATE jobs SET run_at = now() + interval '1 day' WHERE kind <> ?`, kindTombstone).Error; err != nil {
+		t.Fatal(err)
+	}
+	before := tombstoneDatabase(t, db)
+	runner := tombstoneRunner(t, a, tombstoneSweepPage)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	run := func(worker string) <-chan error {
+		ch := make(chan error, 1)
+		go func() {
+			ran, err := runner.RunOnce(ctx, worker)
+			if err == nil && !ran {
+				err = errors.New("runner claimed nothing")
+			}
+			ch <- err
+		}()
+		return ch
+	}
+	first := run("first")
+	firstPID := waiterOn(t, db, blocker)
+	requireContactGate(t, db, firstPID, true, "first worker")
+	// The tombstone's user row is locked by the same transaction.
+	err := db.Transaction(func(tx *gorm.DB) error {
+		return tx.Exec(`SELECT id FROM users WHERE id = ? FOR UPDATE NOWAIT`, id).Error
+	})
+	if pgCode(err) != "55P03" {
+		t.Fatalf("the tombstone's user row is not held by the clearing run: %v", err)
+	}
+	// Nothing the run did is visible before its COMMIT.
+	if n := countRows(t, db, "audit_logs", "id IN ? AND ip <> ''", append(append([]uint{}, r.held...), r.s5...)); n != int64(len(r.held)+len(r.s5)) {
+		t.Fatalf("%d of %d addresses are still held before COMMIT", n, len(r.held)+len(r.s5))
+	}
+	if n := countRows(t, db, "audit_logs", "action = ? AND target_id = ? AND meta_json->'version' = ?::jsonb", audit.UserErasureSwept, id, fmt.Sprint(tombstoneSweepVersion)); n != 0 {
+		t.Fatal("the marker is visible before COMMIT")
+	}
+	if err := db.Exec(`UPDATE jobs SET locked_at = now() - interval '1 hour' WHERE kind = ? AND status = ?`, kindTombstone, models.JobRunning).Error; err != nil {
+		t.Fatal(err)
+	}
+	second := run("takeover")
+	agesRaceGateWaiter(t, db, firstPID, "takeover worker")
+	release()
+	if err := awaitDBResult(t, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := awaitDBResult(t, second); err != nil {
+		t.Fatal(err)
+	}
+	var j models.Job
+	if err := db.Where("kind = ?", kindTombstone).First(&j).Error; err != nil {
+		t.Fatal(err)
+	}
+	if j.Status != models.JobDone || j.Attempts != 2 || j.LockedBy != "takeover" {
+		t.Fatalf("takeover result %+v", j)
+	}
+	tombstoneAcceptRunnerTransition(t, db, before, j.ID)
+	tombstoneMaintenanceDeltaBlanking(t, db, before, id, tombstoneSweepVersion, r.blanked, r.kept)
+}
+
+// Restore and binary rollback. A tombstone swept by the previous binary during a
+// rollback window carries a version-1 marker and is found by the next version-2
+// sweep, while the one already at version 2 is left alone. A backup taken before
+// the upgrade brings the addresses and the version-1 marker back; its job rows
+// may still hold today's key, so tomorrow's sweep clears them again. The restore
+// is modelled in SQL, as TestTombstoneRunnerReclaimsCommittedJobAndRecoversRestore
+// does; the pg_restore path is TestRestoreFence*.
+func TestTombstoneVersionTwoSurvivesRollbackWindowAndRestore(t *testing.T) {
+	r := newTombstoneResidue(t, "consenter", true)
+	a, db := r.l.app, r.l.app.DB
+	k := r.person.ID
+	e := r.l.enabler.ID
+	before := tombstoneThroughSweep(t, a, "2026-11-13", k)
+	tombstoneMaintenanceDeltaBlanking(t, db, before, k, tombstoneSweepVersion, r.blanked, r.kept)
+	// The previous binary deletes and sweeps another person during the window;
+	// it knows no S5, so a historical row of theirs keeps its address.
+	tombstoneLegacy(t, db, e)
+	tombstoneRun(t, a, e, 1)
+	left := auditErasureLog(t, db, "legacy.unknown", "group", 43, &e, map[string]any{"era": "old"}).ID
+	// Next day: only the version-1 tombstone is found.
+	snap := tombstoneThroughSweep(t, a, "2026-11-14", e)
+	tombstoneMaintenanceDeltaBlanking(t, db, snap, e, tombstoneSweepVersion, []uint{left}, 0)
+	settled := tombstoneDatabase(t, db)
+	tombstoneRun(t, a, k, 1)
+	tombstoneSameDatabase(t, settled, tombstoneDatabase(t, db))
+	// Restore: the backup's audit rows come back without either version-2 marker
+	// and with every address; its job rows hold the first day's key for k and
+	// the second day's for e.
+	dirty := append(append([]uint{}, r.blanked...), left)
+	for _, rowID := range dirty {
+		if err := db.Exec(`UPDATE audit_logs SET ip = '192.0.2.19' WHERE id = ?`, rowID).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Exec(`DELETE FROM audit_logs WHERE action = ? AND meta_json->'version' = ?::jsonb`, audit.UserErasureSwept, fmt.Sprint(tombstoneSweepVersion)).Error; err != nil {
+		t.Fatal(err)
+	}
+	clean := func(ids []uint) bool {
+		return countRows(t, db, "audit_logs", "id IN ? AND ip <> ''", ids) == 0
+	}
+	// The second day again: e's key for that day is spent, k has none.
+	for i := 0; i < 2; i++ {
+		if err := a.runSweepPage(context.Background(), 0, "2026-11-14"); err != nil {
+			t.Fatal(err)
+		}
+		tombstoneDrain(t, a, tombstoneRunner(t, a, tombstoneSweepPage))
+	}
+	if !clean(r.blanked) {
+		t.Error("the first tombstone kept an address after the restore recovery")
+	}
+	if clean([]uint{left}) {
+		t.Error("a spent same-day key was reused for the second tombstone")
+	}
+	if err := a.runSweepPage(context.Background(), 0, "2026-11-15"); err != nil {
+		t.Fatal(err)
+	}
+	tombstoneDrain(t, a, tombstoneRunner(t, a, tombstoneSweepPage))
+	if !clean(dirty) {
+		t.Error("a tombstone kept an address after the next day's sweep")
+	}
+	for _, id := range []uint{k, e} {
+		if n := countRows(t, db, "audit_logs", "action = ? AND target_id = ? AND meta_json->'version' = ?::jsonb", audit.UserErasureSwept, id, fmt.Sprint(tombstoneSweepVersion)); n != 1 {
+			t.Errorf("tombstone %d has %d current markers after recovery, want 1", id, n)
+		}
 	}
 }
 

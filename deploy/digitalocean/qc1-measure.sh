@@ -210,11 +210,15 @@ write_environment() { # incomplete(true|false) reason
   local -a adl=()
   if declare -p ALL_DELETE_LIST >/dev/null 2>&1; then adl=("${ALL_DELETE_LIST[@]}"); fi
   local -a ALL_DELETE_LIST=("${adl[@]}")
-  pg="$(fin_psql 'SHOW server_version' || true)"
-  dbImage="$(timeout 15 docker inspect --format '{{.Image}}' "${DB_CID:-none}" 2>/dev/null || true)"
-  dbMem="$(jnum "$(timeout 15 docker inspect --format '{{.HostConfig.Memory}}' "${DB_CID:-none}" 2>/dev/null || true)")"; [[ "$dbMem" != null ]] || dbMem=0
+  pg=""; dbImage=""; dbMem=0; database=null
+  # An early abort may happen before a database container exists.
+  if [[ -n "$DB_CID" ]]; then
+    pg="$(fin_psql 'SHOW server_version' || true)"
+    dbImage="$(timeout 15 docker inspect --format '{{.Image}}' "$DB_CID" 2>/dev/null || true)"
+    dbMem="$(jnum "$(timeout 15 docker inspect --format '{{.HostConfig.Memory}}' "$DB_CID" 2>/dev/null || true)")"; [[ "$dbMem" != null ]] || dbMem=0
+    database="$(db_settings_json)"
+  fi
   calib="$(jraw "$(cat "$WORK/calibration.json" 2>/dev/null || true)")"
-  database="$(db_settings_json)"
 jq -n --argjson database "$database" --argjson incomplete "$incomplete" --arg ireason "$ireason" --arg image "$IMAGE" --arg imageId "$IMAGE_ID" --arg revision "$REVISION" --argjson level "$env_LEVEL" --arg droplet "$DROPLET" --arg dbMemory "$DB_MEMORY" --arg appMemory "$APP_MEMORY" \
   --arg cpuset "$CPUSET" --arg layout "$LAYOUT" --argjson reasonLen "$env_REASON_LEN" --argjson maxRequestBytes "$env_MAX_REQUEST_BYTES" \
   --arg pg "$pg" --arg pgImage "$PG_IMAGE" --arg pgImageId "$PG_IMAGE_ID" --argjson pgDigests "$env_PG_REPO_DIGESTS" --argjson appDigests "$env_APP_REPO_DIGESTS" \

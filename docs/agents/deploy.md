@@ -36,6 +36,11 @@ that changes how an operator upgrades, rolls back or restores. The operator-faci
 - QC and deploy scripts never grep application source. What the QC-1 harness takes from the
   application is `deploy/digitalocean/qc1/app-facts.json` (`TestQC1AppFacts` and its siblings;
   `UPDATE_QC1_FACTS=1 go test -run TestQC1AppFacts .` regenerates the `go` section for review).
+  The facts include the text of the erasure's retention report and, once the QC-1 work that records
+  it has merged, of discovery's first audit statement; a saved real-server log under
+  `deploy/digitalocean/testdata/` is checked against that text. Never
+  regenerate a fact with a changed statement to make a check pass: `provision` goes red, and only a new
+  Docker-captured log fixes it (`docs/agents/erasure.md`).
 
 ## Recovery levels (R4-RP)
 
@@ -86,6 +91,19 @@ lock's publication. **Never delete, rename or replace `ops.lock`, `recovery.lock
   decision; no real restore was run to prove this note.
 - A Droplet Backup restore is outside this protection. It does not restore uploads. Docs call the
   procedure "recommended" and make no support promise.
+
+## Tombstone sweep version on upgrade, rollback and restore
+
+`tombstoneSweepVersion` (`account_erasure_tombstones.go`) is 2: the first daily sweep after an upgrade
+from version 1 finds every tombstone with an older or no marker once, and runs the whole erasure
+pipeline for it under the contact gate (200 subjects per page; admin deletes and contact changes
+may wait briefly that day). It clears audit `ip` blanks that the earlier pipeline left, which cannot be
+undone in the live database; backups keep the old values until they expire. There is no migration, the
+recovery level stays 2 and deploy stays one `docker compose up`. A rollback to a release that sweeps at
+version 1 leaves version-2 markers as swept, and a deletion made during that window is found again by
+the version-2 sweep after the next upgrade. A dump taken before the upgrade restores version-1 markers;
+the next sweep clears them again. The tests model the restore in SQL; no real restore was run, and the
+real-restore checks in `docs/FIRST-CHURCH-CHECKS.md` are unchanged.
 
 ## Full restore drill frequency
 

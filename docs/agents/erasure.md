@@ -15,13 +15,32 @@ are in `docs/plan/M7.4-ERASURE-INVENTORY.md` (section numbers below point there)
   `Live` (the admin path's locked row, successors, host picks and reason plan).
 - Deleting an account scrubs the user row to a tombstone and deletes its tokens, calendar link,
   devices and owned throttle keys.
+- `eraseAuditDetailsIn` runs in this order: (1) the six class `UPDATE`s of
+  attributable addresses, (1b) S5 (`auditHistoricalActorSQL`: an action that is not a key of
+  `auditIPAttribution`, `actor_id` the erased person, `ip` not empty; it reads no metadata or
+  target and never reaches a registered action), (2) the metadata scrubs, (3) the retention report,
+  (4) discovery of the conversion groups: statement 1 (K1, `decided_by`; its text is held by the
+  QC-1 harness and has exactly one `?`), statement 2 (K2 to K5, starting `WITH subject AS (`), then
+  the candidate-row query, (5) step 5, which clears only the `ip` of identified conversion groups.
+  Besides the class loop, S5 and step 5 no statement writes `audit_logs.ip`
+  (`TestAuditHistoricalActorStatementShape`). **Send nothing between the report and statement 1,
+  start no other statement with the first 90 characters of statement 1, and never change
+  statement 1's text or regenerate `deploy/digitalocean/qc1/app-facts.json` with a different one**:
+  the saved real-server log pins it, so `provision` goes red and only a new Docker-captured log
+  fixes it (`deploy.md`; `TestAuditDiscoveryStatementsAndBinds`, `TestAuditConversionRequestStatementShape`).
+  Design: `docs/plan/design/r4-conversion-ip-minimization.md` sections 14 and 15.
+- Which rows keep an address, and under which owner statement, is the C3 table in inventory 6.5.2
+  (DEC-148). A new registry action needs a row there, or `TestC3ChecklistCoversTheRegistry` fails; its
+  arm is one an owner statement or R4-4b plainly reaches, never an agent's choice.
 - Legacy tombstones: `erasure.tombstone_sweep` starts a daily keyset page chain;
   `erasure.tombstone_page` continues it, at most 200 subjects plus one continuation per
   transaction; `erasure.tombstone` scrubs one exact soft-deleted `deleted-<id>@deleted.invalid`
   account under the contact gate and user lock. The numeric `user.erasure_swept` version
   committed with the scrub decides whether work remains, never a retained job. Keep the original
   church date in page payloads and daily keys. No tombstone address is reconstructed; address-only
-  residue is unknown per subject (inventory 12.1 to 12.3).
+  residue is unknown per subject (inventory 12.1 to 12.3). Bump `tombstoneSweepVersion` only with
+  reviewed new work: it is 2 now (step 5 and S5), and a bump runs the whole pipeline once, under the
+  exclusive contact gate, for every tombstone with an older or no marker.
 
 ## Contact-request text
 

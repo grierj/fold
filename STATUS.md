@@ -79,7 +79,7 @@ narratives and follow-up lists, is kept in
 | M7.1 Setup takeover: verify and close | Done | #241; issue #240 |
 | M7.2 Privacy and session hardening bundle | Done | #243–#250 |
 | M7.3 Secret rotation and expiring email links | Not started | |
-| M7.4 Account erasure | In progress: most of erasure is built, including the deleted-accounts reason review (T07B 1a to 3b on master); its scale measurements (#292), conversion-IP minimisation, owner dispositions, suppression contraction, the final restore procedure, recovery drills and sign-off remain | #268–#279, #281, #282, #299, #382, #383; open: #301–#313 (#301 and #302 are built in #383) |
+| M7.4 Account erasure | In progress: most of erasure is built, including the deleted-accounts reason review (T07B 1a to 3b on master) and PR-F's conversion-IP minimisation, S5 and the audit-IP owner dispositions (G-9 stays open until its checklist is ticked); its scale measurements (#292), suppression contraction, the final restore procedure, recovery drills and sign-off remain | #268–#279, #281, #282, #299, #382, #383; open: #301–#313 (#301 and #302 are built in #383; #304 and #305 are built in PR-F) |
 | M7.5 Notification delivery outbox | Done | #253–#256 |
 | M7.6 Query ceilings and pool cap | Not started | |
 | M7.7 Baseline squash | Done | #258, #264–#267 |
