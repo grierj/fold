@@ -94,9 +94,10 @@ func tombstoneSweptSQL(target string) string {
 // L11 scrubs only dirty/open INV, cancels only scheduled messages, scrubs only
 // dirty/queued recipient rows and dirty registration fields, and deletes existing
 // id-owned activity rows; guest-signup and outbox address arms are skipped.
-// L12 audits only host rows actually deleted. L13 blanks only attributable,
-// nonempty IPs and subtracts only present metadata keys. L15 adds the marker
-// only for an unmarked version. No step rewrites memberships.
+// L12 audits only host rows actually deleted. L13 blanks only attributable
+// (class, S5 and conversion-group), nonempty IPs and subtracts only present
+// metadata keys. L15 adds the marker only for an unmarked version. No step
+// rewrites memberships.
 func (a *App) eraseTombstoneOnce(ctx context.Context, id uint, version int) (tombstoneReport, error) {
 	var report tombstoneReport
 	err := a.contactMutationCtx(ctx, contactChange{UserID: id}, func(tx *gorm.DB) error {
@@ -165,11 +166,14 @@ func removeTombstoneHostRowsIn(tx *gorm.DB, id uint) error {
 
 // Bump the version only when a reviewed erasure slice adds work. Markers,
 // rather than retained jobs, decide whether a subject needs that work.
+// Version 2 is the conversion-address clearing of R4-4b and S5's clearing of
+// unregistered actions' addresses: a tombstone swept at version 1 may still hold
+// either, so each is found again once. No version-1 marker is removed.
 const (
 	kindTombstoneSweep    = "erasure.tombstone_sweep"
 	kindTombstonePage     = "erasure.tombstone_page"
 	kindTombstone         = "erasure.tombstone"
-	tombstoneSweepVersion = 1
+	tombstoneSweepVersion = 2
 	tombstonePageTimeout  = 30 * time.Second
 	tombstoneJobTimeout   = 2 * time.Minute
 )
