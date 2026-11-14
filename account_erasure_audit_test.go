@@ -10,8 +10,10 @@ import (
 	"go/ast"
 	"go/format"
 	"go/token"
+	"os"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -2788,5 +2790,160 @@ func TestAuditConversionClearingStatementShape(t *testing.T) {
 				t.Fatalf("the class loop would blank %s's conversion rows: %+v", action, rule)
 			}
 		}
+	}
+}
+
+// The C3 checklist (inventory 6.5.2) gives every registered action one row per
+// retained shape and one closing arm. These helpers keep that table equal to
+// auditIPAttribution: a new registered action fails the test until it has a row,
+// and the arm that row names is then the reviewer's to judge. They do not check
+// that an arm is the right one.
+
+// c3Families is each registered action's rule family as the checklist names it.
+// A code is "ordinary" or "system" only when its rule list is exactly the shared
+// one; an action with rules of its own is "shaped", except the conversion action.
+func c3Families() map[string]string {
+	out := map[string]string{}
+	for action, rules := range auditIPAttribution {
+		switch {
+		case action == audit.HouseholdPersonConverted:
+			out[action] = "conversion"
+		case reflect.DeepEqual(rules, auditIPOrdinary):
+			out[action] = "ordinary"
+		case reflect.DeepEqual(rules, auditIPSystem):
+			out[action] = "system"
+		default:
+			out[action] = "shaped"
+		}
+	}
+	return out
+}
+
+// c3Fingerprint is the checklist's registry fingerprint: the codes sorted
+// bytewise and joined by a newline, with a trailing newline.
+func c3Fingerprint(families map[string]string) string {
+	codes := make([]string, 0, len(families))
+	for code := range families {
+		codes = append(codes, code)
+	}
+	sort.Strings(codes)
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(codes, "\n")+"\n")))
+}
+
+var (
+	c3Arms          = map[string]bool{"(b)": true, "S2": true, "S3": true, "S5": true}
+	c3AnyHeading    = regexp.MustCompile(`(?m)^#{1,6} `)
+	c3FingerprintRe = regexp.MustCompile("(?m)^Registry fingerprint: ([0-9]+) codes, sha256 of the codes sorted bytewise and joined by a newline, with a trailing newline, = `([0-9a-f]{64})`\\.$")
+)
+
+const c3Heading = "\n#### C3 checklist (G-9)\n"
+
+// c3ChecklistProblems reads the checklist subsection of the inventory and says
+// how it differs from the registry. Rows are the table lines whose first cell is
+// a backticked action code; a row has four cells (code, family, shape, arm).
+func c3ChecklistProblems(doc string, families map[string]string) []string {
+	start := strings.Index(doc, c3Heading)
+	if start < 0 {
+		return []string{"the inventory has no '#### C3 checklist (G-9)' subsection"}
+	}
+	section := doc[start+len(c3Heading):]
+	if end := c3AnyHeading.FindStringIndex(section); end != nil {
+		section = section[:end[0]]
+	}
+	var problems []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(section, "\n") {
+		if !strings.HasPrefix(line, "| `") {
+			continue
+		}
+		cells := strings.Split(line, "|")
+		if len(cells) != 6 {
+			problems = append(problems, "checklist row does not have four cells: "+line)
+			continue
+		}
+		code, family, arm := strings.Trim(strings.TrimSpace(cells[1]), "`"), strings.TrimSpace(cells[2]), strings.TrimSpace(cells[4])
+		want, ok := families[code]
+		switch {
+		case !ok:
+			problems = append(problems, "checklist code is not in the registry: "+code)
+			continue
+		case family != want:
+			problems = append(problems, fmt.Sprintf("%s: family %q, the registry's rules make it %q", code, family, want))
+		}
+		if !c3Arms[arm] {
+			problems = append(problems, fmt.Sprintf("%s: arm %q is not one of (b), S2, S3, S5", code, arm))
+		}
+		seen[code] = true
+	}
+	var missing []string
+	for code := range families {
+		if !seen[code] {
+			missing = append(missing, code)
+		}
+	}
+	sort.Strings(missing)
+	for _, code := range missing {
+		problems = append(problems, "registered action has no checklist row: "+code)
+	}
+	if m := c3FingerprintRe.FindStringSubmatch(section); m == nil {
+		problems = append(problems, "the checklist has no registry fingerprint line")
+	} else if n, _ := strconv.Atoi(m[1]); n != len(families) || m[2] != c3Fingerprint(families) {
+		problems = append(problems, fmt.Sprintf("registry fingerprint is stale: the registry has %d codes and sha256 %s", len(families), c3Fingerprint(families)))
+	}
+	return problems
+}
+
+func TestC3ChecklistCoversTheRegistry(t *testing.T) {
+	doc, err := os.ReadFile("docs/plan/M7.4-ERASURE-INVENTORY.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	families := c3Families()
+	if bad := c3ChecklistProblems(string(doc), families); len(bad) != 0 {
+		t.Fatalf("C3 checklist and registry differ (regenerate the table and fingerprint from auditIPAttribution, then give each new row an arm):\n%s", strings.Join(bad, "\n"))
+	}
+	t.Logf("C3 checklist covers %d registered codes, fingerprint %s", len(families), c3Fingerprint(families))
+}
+
+func TestC3ChecklistGuardCatchesGaps(t *testing.T) {
+	families := map[string]string{"a.one": "ordinary", "a.two": "system", "a.three": "shaped"}
+	build := func(rows []string, fingerprint string) string {
+		// A row after the next heading belongs to another section and is ignored.
+		return "\n#### C3 checklist (G-9)\n\n| Code | Family | Retained shape | Arm |\n|---|---|---|---|\n" +
+			strings.Join(rows, "\n") + "\n\n" + fingerprint + "\n\n#### Next\n| `a.four` | ordinary | x | S3 |\n"
+	}
+	good := []string{
+		"| `a.one` | ordinary | actor_id NULL | S3 |",
+		"| `a.two` | system | any | S2 |",
+		"| `a.three` | shaped | one shape | (b) |",
+		"| `a.three` | shaped | another shape | S5 |",
+	}
+	fp := fmt.Sprintf("Registry fingerprint: 3 codes, sha256 of the codes sorted bytewise and joined by a newline, with a trailing newline, = `%s`.", c3Fingerprint(families))
+	if bad := c3ChecklistProblems(build(good, fp), families); len(bad) != 0 {
+		t.Fatalf("a matching checklist was rejected: %v", bad)
+	}
+	for _, tc := range []struct {
+		name string
+		doc  string
+		want string
+	}{
+		{"no subsection", "# Inventory\n", "no '#### C3 checklist (G-9)' subsection"},
+		{"new registry action", build(good[:2], fp), "registered action has no checklist row: a.three"},
+		{"code not in the registry", build(append(slices.Clone(good), "| `a.gone` | ordinary | x | S3 |"), fp), "checklist code is not in the registry: a.gone"},
+		{"wrong family", build([]string{good[0], "| `a.two` | ordinary | any | S2 |", good[2]}, fp), `a.two: family "ordinary"`},
+		{"unknown arm", build([]string{good[0], good[1], "| `a.three` | shaped | one shape | OPEN |"}, fp), `a.three: arm "OPEN"`},
+		{"stale fingerprint", build(good, strings.Replace(fp, c3Fingerprint(families), strings.Repeat("0", 64), 1)), "registry fingerprint is stale"},
+		{"missing fingerprint", build(good, ""), "no registry fingerprint line"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bad := c3ChecklistProblems(tc.doc, families)
+			for _, b := range bad {
+				if strings.Contains(b, tc.want) {
+					t.Logf("rejected: %s", b)
+					return
+				}
+			}
+			t.Fatalf("want a problem containing %q, got %v", tc.want, bad)
+		})
 	}
 }
