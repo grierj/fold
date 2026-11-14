@@ -15,7 +15,7 @@ are in `docs/plan/M7.4-ERASURE-INVENTORY.md` (section numbers below point there)
   `Live` (the admin path's locked row, successors, host picks and reason plan).
 - Deleting an account scrubs the user row to a tombstone and deletes its tokens, calendar link,
   devices and owned throttle keys.
-- `eraseAuditDetailsIn` (audit `ip` only) runs in this order: (1) the six class `UPDATE`s of
+- `eraseAuditDetailsIn` runs in this order: (1) the six class `UPDATE`s of
   attributable addresses, (1b) S5 (`auditHistoricalActorSQL`: an action that is not a key of
   `auditIPAttribution`, `actor_id` the erased person, `ip` not empty; it reads no metadata or
   target and never reaches a registered action), (2) the metadata scrubs, (3) the retention report,

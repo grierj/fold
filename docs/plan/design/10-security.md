@@ -99,9 +99,9 @@ promises.
 - Deletion (DEC-36, DEC-144): deleting an account erases the person through one pipeline
   (`eraseAccountIn`; details in [`docs/agents/erasure.md`](../../agents/erasure.md)). Only an
   anonymous tombstone stays, so past head-counts and audit history hold together. The activity log
-  keeps its rows, and deleting clears only their `ip` column, on the rows the inventory's C3 table
+  keeps its rows. The IP-clearing statements change only their `ip` column, on the rows the inventory's C3 table
   (6.5.2) assigns to it. Some network addresses can remain, including ones Fold cannot trace to the
-  person, and the delete dialog says so (DEC-148, an exception to DEC-144's wording).
+  person, and the delete dialog says so (DEC-148, an exception to DEC-144's wording). Separate erasure steps also scrub subject-owned audit metadata.
   - If the account is the only leader of a group, the admin first picks a successor for each (a
     member of that group or any admin, the deleting admin by default). The handoff is audited.
   - If it is the only remaining host of a church-wide event, the admin first picks a replacement
