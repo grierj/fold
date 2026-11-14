@@ -23,7 +23,7 @@ export function GuardianCopiesSetting() {
   return (
     <SettingSwitch
       label="Send guardians a copy of messages to their teens"
-      description="When a message goes to a teen, their confirmed parents or guardians also get an email copy, marked as a copy. Takes effect for messages sent from now on. Off by default."
+      description="When an announcement, a reminder or an optional notice email goes to a teen, their confirmed parents or guardians also get an email copy, marked as a copy. Account and safety emails aren't copied. Takes effect for emails sent from now on. Off by default."
       value={setting.data ? setting.data.on : null}
       save={async (next) => {
         const r = await Admin.setGuardianCopies(next);

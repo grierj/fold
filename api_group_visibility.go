@@ -376,11 +376,11 @@ func (a *App) cancelDateLosers(tx *gorm.DB, actor *models.User, ip string, ev *m
 		holders[key] = true
 		noticeEvent := *ev
 		noticeEvent.Title = title
+		day := ""
 		if occurrenceID != seriesDates {
-			date := dates[occurrenceID]
-			noticeEvent.Title = effectiveOccurrenceTitle(ev, date) + " · " + models.FormatCalendarDate(date.OriginalDate)
+			day = models.FormatCalendarDate(dates[occurrenceID].OriginalDate)
 		}
-		if err := notifyRegistrationCancelled(tx, actor.ID, &noticeEvent, holder); err != nil {
+		if err := notifyRegistrationCancelled(tx, actor.ID, &noticeEvent, holder, day); err != nil {
 			return err
 		}
 	}

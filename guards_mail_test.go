@@ -26,11 +26,12 @@ var legacyNoticeDeliveryNames = map[string]bool{
 // mailerSendFiles may deliver application mail, each with its reason. The
 // synchronous account exceptions below are methods, never whole-file grants.
 var mailerSendFiles = map[string]string{
-	"mail_send.go":           "sendTracked, the one place a sender is called; its callers are the files below",
-	"notify_deliver.go":      "the notify.deliver job sends notice mail",
-	"mail_jobs.go":           "direct account mail is sent by durable jobs after preparation commits",
-	"messages_send.go":       "announcement mail goes through its own send path",
-	"api_message_preview.go": "the composer's test send is synchronous by design (brief section 4)",
+	"mail_send.go":            "sendTracked, the one place a sender is called; its callers are the files below",
+	"notify_deliver.go":       "the notify.deliver job sends notice mail",
+	"notify_guardian_copy.go": "the notify.guardian_copy job sends a guardian the copy of a teen's notice",
+	"mail_jobs.go":            "direct account mail is sent by durable jobs after preparation commits",
+	"messages_send.go":        "announcement mail goes through its own send path",
+	"api_message_preview.go":  "the composer's test send is synchronous by design (brief section 4)",
 }
 
 var synchronousMailMethods = map[string]struct{ method, reason string }{
