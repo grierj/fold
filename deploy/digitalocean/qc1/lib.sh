@@ -1681,12 +1681,13 @@ qc1_calibration_app_record() { # rss hwm0 write_rc hwm1
 # passes. The wording repeats the judge's (qc1_environment_problems) so an
 # early stop names what the judge would name. An unreadable record fails closed.
 qc1_calibration_problems() { # calibration.json
-  jq -r '
+  jq -rs '
+    if length != 1 or (.[0] | type) != "object" then error("invalid calibration record") else .[0] |
     ( if .gate.ok != true then "the gate sampler did not see a known hold" else empty end ),
     ( if .dbMemory.ok != true then "the database memory source is unreadable" else empty end ),
     ( if (.dbMemory.samples // 0) < 3 then "database memory sampling is too sparse to trust (fewer than 3 samples in the calibration half second)" else empty end ),
     ( if .appMemory.ok != true then "the app process memory source is unreadable" else empty end ),
     ( if .appMemory.hwmReset != true then "the app peak-memory reset failed" else empty end ),
     ( if .wal.ok != true then "the WAL position is unreadable" else empty end ),
-    ( if .commit.ok != true then "commit statistics are unreadable" else empty end )' "$1" 2>/dev/null
+    ( if .commit.ok != true then "commit statistics are unreadable" else empty end ) end' "$1" 2>/dev/null
 }

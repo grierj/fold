@@ -2309,6 +2309,10 @@ jq -c '.appMemory.hwmReset = false | .dbMemory.samples = 2' "$WORK/cal.ok.json" 
 jq -c '.gate.ok = false' "$WORK/cal.ok.json" >"$WORK/cal.gate.json"
 [[ "$(qc1_calibration_problems "$WORK/cal.gate.json")" == 'the gate sampler did not see a known hold' ]]
 refused '' qc1_calibration_problems "$WORK/no-such-cal.json"
+printf '  \n' >"$WORK/cal.empty.json"
+refused '' qc1_calibration_problems "$WORK/cal.empty.json"
+cat "$WORK/cal.ok.json" "$WORK/cal.ok.json" >"$WORK/cal.multiple.json"
+refused '' qc1_calibration_problems "$WORK/cal.multiple.json"
 # The judge reads the same flags with or without the additive fields: the record stays compatible both ways.
 jq -c '.calibration.appMemory += {rssKb:10000, hwmBeforeKb:12000, resetWriteRc:0, hwmAfterKb:9000}' "$WORK/env.json" >"$WORK/env.plus.json"
 [[ -z "$(qc1_environment_problems "$WORK/env.plus.json" "$HEAD_FAKE")" ]]
