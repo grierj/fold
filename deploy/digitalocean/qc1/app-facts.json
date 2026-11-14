@@ -15,6 +15,8 @@
       "audit-report": "SELECT class, action, count(*) FROM (SELECT action, ",
       "blank-batch": "UPDATE contact_requests SET reason = '' WHERE id = ANY($1::bigint[]) AND reason <> '' AND (requester_id = $2 OR subject_user_id = $3)",
       "delete-set": "reason <> '' AND (requester_id = $1 OR subject_user_id = $2) ORDER BY contact_requests.id FOR UPDATE",
+      "legacy-facts": "LEFT JOIN users sub ON sub.id = cr.subject_user_id",
+      "legacy-markers": "AS c(req, party, target_type, kept, removed)",
       "page-items": "WHERE id = ANY($1::bigint[]) AND reason <> '' AND (requester_id = $2 OR subject_user_id = $3) ORDER BY contact_requests.id",
       "scanner-continuation": "FROM contact_requests WHERE id > $1::bigint ORDER BY id LIMIT $2",
       "scanner-initial": "FROM contact_requests ORDER BY id LIMIT $1"
@@ -27,13 +29,15 @@
         "))) classified WHERE class IN ('RETAIN_ESSENTIAL', 'RETAIN_UNATTRIBUTED') GROUP BY class, action"
       ],
       "subjectMention": "actor_id = @uid OR (target_type = 'user' AND target_id = @uid)\n OR meta_json->'userId' = to_jsonb(CAST(@uid AS bigint)) OR meta_json->>'userId' = CAST(CAST(@uid AS bigint) AS text)\n OR meta_json->'teenUserId' = to_jsonb(CAST(@uid AS bigint)) OR meta_json->>'teenUserId' = CAST(CAST(@uid AS bigint) AS text)\n OR EXISTS (SELECT 1 FROM unnest(CAST(@people AS bigint[])) p(id)\n WHERE meta_json->'personId' = to_jsonb(p.id) OR meta_json->>'personId' = p.id::text)",
-      "malformedConversionLink": "action = 'guardian_link.requested'\n AND meta_json->'source' = '\"household_conversion\"'::jsonb\n AND EXISTS (SELECT 1 FROM account_requests r WHERE r.source = 'household_conversion' AND r.status = 'approved'\n AND r.decided_by = @uid AND meta_json->>'teenUserId' = r.approved_user_id::text)\n AND (target_type <> 'guardian_link' OR jsonb_typeof(meta_json->'teenUserId') IS DISTINCT FROM 'number')"
+      "malformedConversionLink": "action = 'guardian_link.requested'\n AND meta_json->'source' = '\"household_conversion\"'::jsonb\n AND EXISTS (SELECT 1 FROM account_requests r WHERE r.source = 'household_conversion' AND r.status = 'approved'\n AND r.decided_by = @uid AND meta_json->>'teenUserId' = r.approved_user_id::text)\n AND (target_type <> 'guardian_link' OR jsonb_typeof(meta_json->'teenUserId') IS DISTINCT FROM 'number')",
+      "successor": "SELECT r.id, r.household_person_id AS person_id, r.invitation_id, r.approved_user_id AS user_id, h.household_id,\n EXISTS (SELECT 1 FROM audit_logs m WHERE m.action = 'household.person_updated' AND m.target_type = 'household_person' AND m.target_id = r.household_person_id) AS marker\n FROM account_requests r LEFT JOIN household_people h ON h.id = r.household_person_id\n WHERE r.source = 'household_conversion' AND r.status = 'approved' AND r.decided_by = $1"
     }
   },
   "web": {
     "displayPage": 50,
     "reasonRows": "ul[aria-label=\"Contact-request reasons\"] > li[data-reason-id]",
     "reasonsNav": "nav[aria-label=\"Reasons pages\"] p",
+    "reasonText": "p.whitespace-pre-wrap",
     "reasonIdAttr": "data-reason-id",
     "reasonHeadingAttr": "data-reason-heading",
     "progressSelector": "p.text-text-muted",

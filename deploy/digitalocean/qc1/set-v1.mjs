@@ -26,10 +26,18 @@
 //   legacy-length --entries N [--digits D] ...                 its exact byte length
 //   legacy-capacity --cap BYTES [--digits D] ...               "n bytes_at_n bytes_at_n_plus_1" for the old form (the pilots' 52,760 / 52,761 at their id width)
 //   digest --items FILE --n N                     the set digest of the first N items
+//   agree --items FILE --review FILE              a browser's reasonReview ({format,count,digest,choices} as JSON) against this builder over the items:
+//                                                 {checked, equal, ...}; equal only when count, digest and choice vector all match byte for byte
+//   dom-ids --panel FILE --ids FILE --page N      the ids the panel's final screen should hold, from the pager line it shows (comma list; nothing when the line does not
+//                                                 name a whole page of the reasons the server issued, which dom-text then reports as a disagreement)
+//   dom-text --panel FILE --ids FILE --texts FILE --skip FILE --page N
+//                                                 the final screen against the database: domTextAgreement (response-accounting.mjs). --ids is the JSON array of every request id
+//                                                 in the order the server issued them; --texts is {id: text} from the database; --skip is {id, oldText} or null
 //   selftest --vectors FILE                       the shared vectors
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { domTextAgreement, expectedShownIds } from "./response-accounting.mjs";
 
 export const FORMAT = "set-v1";
 const PREFIX = "fold:erasure-reason-set:v1";
@@ -116,6 +124,51 @@ export function bodyFrom({ successors = {}, hostSuccessors = {}, attemptId = "",
 export function reviewFor(items, n, codes) {
   if (n === 0) return null;
   return { format: FORMAT, count: String(n), digest: digestHex(items, n), choices: encodeChoices(codes, n) };
+}
+
+/**
+ * A reasonReview the BROWSER sent, against this independent builder over the items the server issued: the builder is given the browser's own choices and the
+ * same items, and the count, the digest and the choice vector must come out byte for byte as the browser sent them. checked is false (and equal null, never
+ * true) when there is nothing comparable: no set-v1 review, a count that is not a whole number, more reasons than the server issued, or a vector that does not
+ * decode. A count short of the items issued is checked and not equal: the browser's set was not the server's. The choices are the browser's own, so the builder reproduces them whatever
+ * they are; what it adds is that the vector is canonical, has the right length and holds only 1 (keep) and 2 (remove) for every reason (invalidChoices counts the rest).
+ */
+export function agree(items, review) {
+  const unchecked = (why, extra = {}) => ({ checked: false, equal: null, why, ...extra });
+  if (review === null || typeof review !== "object" || review.format !== FORMAT || typeof review.count !== "string" || typeof review.digest !== "string" || typeof review.choices !== "string") {
+    return unchecked("the browser sent no set-v1 reasonReview to compare");
+  }
+  if (!/^(0|[1-9][0-9]*)$/.test(review.count)) return unchecked(`the browser claimed a count that is not a whole number: ${review.count}`);
+  const n = Number(review.count);
+  if (n === 0) return unchecked("there are no reasons in the review to compare");
+  if (n > items.length) return unchecked("the browser claimed more reasons than the server issued", { browserCount: n, issued: items.length });
+  checkItems(items, items.length);
+  if (n !== items.length) return { checked: true, equal: false, countEqual: false, digestEqual: null, choicesEqual: null, browserCount: n, issued: items.length, why: "the browser's set is not the whole set the server issued" };
+  let codes;
+  try {
+    codes = decodeChoices(review.choices, n);
+  } catch (e) {
+    return unchecked(`the browser's choice vector did not decode: ${e.message}`);
+  }
+  const built = reviewFor(items, n, codes);
+  const digestEqual = built.digest === review.digest;
+  const choicesEqual = built.choices === review.choices;
+  // The server accepts only 1 (keep) and 2 (remove) for a reason; a vector that decodes to anything else was not a complete answer.
+  let invalidChoices = 0;
+  for (let i = 0; i < n; i++) if (codes[i] !== 1 && codes[i] !== 2) invalidChoices++;
+  return {
+    checked: true,
+    equal: digestEqual && choicesEqual && invalidChoices === 0,
+    countEqual: true,
+    digestEqual,
+    choicesEqual,
+    invalidChoices,
+    count: n,
+    issued: items.length,
+    browserDigest: review.digest,
+    expectedDigest: built.digest,
+    source: "the digest and choice vector the browser sent, against this builder over the items the server issued to the same administrator before the browser opened the panel",
+  };
 }
 
 /** The exact byte length of a body for n reasons: only lengths matter, so the content is placeholder. */
@@ -290,6 +343,17 @@ export function run(cmd, o) {
     case "digest": {
       const items = readJson(o.items);
       return digestHex(items, wholeNumber(o.n ?? items.length, "n"));
+    }
+    case "agree":
+      return JSON.stringify(agree(readJson(o.items), readJson(o.review)));
+    case "dom-ids": {
+      const shown = expectedShownIds(readJson(o.panel).screen, readJson(o.ids), wholeNumber(o.page, "page"));
+      return shown.ok ? shown.ids.join(",") : "";
+    }
+    case "dom-text": {
+      const screen = readJson(o.panel).screen;
+      if (screen === null || typeof screen !== "object" || screen.captured !== true) return JSON.stringify({ checked: false, why: screen?.why ?? "the panel result holds no screen" });
+      return JSON.stringify(domTextAgreement(screen, { orderedIds: readJson(o.ids), displayPage: wholeNumber(o.page, "page"), texts: readJson(o.texts), skip: readJson(o.skip) }));
     }
     case "selftest":
       return selftest(readJson(o.vectors));

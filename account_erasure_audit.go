@@ -396,6 +396,17 @@ type auditConversionCandidate struct {
 	models.AuditLog
 }
 
+// auditConversionRequestsSQL is the first statement discoverAuditConversionsIn
+// sends, and the erasure sends it directly after the retention report on the
+// same connection. The QC-1 harness uses it to tie a logged report to the
+// deletion it measured (deploy/digitalocean/qc1/app-facts.json, held equal to
+// this text by TestQC1AppFacts). Changing it, or what runs between the two,
+// changes that proof.
+const auditConversionRequestsSQL = `SELECT r.id, r.household_person_id AS person_id, r.invitation_id, r.approved_user_id AS user_id, h.household_id,
+ EXISTS (SELECT 1 FROM audit_logs m WHERE m.action = 'household.person_updated' AND m.target_type = 'household_person' AND m.target_id = r.household_person_id) AS marker
+ FROM account_requests r LEFT JOIN household_people h ON h.id = r.household_person_id
+ WHERE r.source = 'household_conversion' AND r.status = 'approved' AND r.decided_by = ?`
+
 // Discovery uses retained keys before checking any shape. A wrong household,
 // string identity or missing writer key remains in its whole candidate group.
 // The candidate callers of a request are the five keys of design
@@ -414,10 +425,7 @@ func discoverAuditConversionsIn(tx *gorm.DB, uid uint) (auditConversionCounts, e
 	out := auditConversionCounts{ByReason: map[string]int64{}}
 	// K1. Its text is what the QC-1 harness checks the log against, byte for byte,
 	// and nothing may be sent between the retention report and this statement.
-	const requests = `SELECT r.id, r.household_person_id AS person_id, r.invitation_id, r.approved_user_id AS user_id, h.household_id,
- EXISTS (SELECT 1 FROM audit_logs m WHERE m.action = 'household.person_updated' AND m.target_type = 'household_person' AND m.target_id = r.household_person_id) AS marker
- FROM account_requests r LEFT JOIN household_people h ON h.id = r.household_person_id
- WHERE r.source = 'household_conversion' AND r.status = 'approved' AND r.decided_by = ?`
+	const requests = auditConversionRequestsSQL
 	// K2 to K5: the inviter, a confirmer of a link for the converted account, the
 	// recorder of its account consent, and an admin who enabled it. No arm reads a
 	// time, an address, a name or a kind, so a late confirmer or enabler is a

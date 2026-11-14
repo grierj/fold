@@ -233,6 +233,12 @@ describe("what the QC-1 harness drives in the reason review", () => {
     expect(rows[0].querySelector(`[${F.reasonHeadingAttr}="0"]`)).not.toBeNull();
     // Nothing is preselected, and every row says so in the words the harness waits to disappear.
     for (const row of rows) expect(row.textContent).toContain(F.copy.notChosen);
+    // The harness holds the reason's text to the database's: each row has exactly one element for it, and its text is the reason and nothing else.
+    rows.forEach((row, i) => {
+      const els = row.querySelectorAll(F.reasonText);
+      expect(els).toHaveLength(1);
+      expect(els[0].textContent).toBe(`Reason text ${i + 1}`);
+    });
   });
 
   it("renders the changed notice the harness waits on", () => {

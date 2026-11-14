@@ -208,6 +208,111 @@ refused '64 lowercase hex' body keep "$WORK/bad-items.json" 3 "$ID80"
 # The shape is the product's: the envelope and the 80-hex id are held by web/src/api/adminUsers.test.ts, and the panel's call by DeleteUserPanel.test.tsx.
 # The helper agrees with the product's shared vectors, which are also run by the web and Go tests.
 [[ "$(qc1_setv1 selftest --vectors "$ROOT/web/src/lib/reasonSetVectors.json")" == 'ok 4' ]]
+# The browser's review against the independent builder (set-v1.mjs agree): the digest, count and choice vector the builder makes from the items and the browser's OWN
+# choices must be the ones the browser sent. A body the builder made is, trivially, in agreement; a changed digest, a changed vector, a short count, no review and a count
+# above the items issued are each told apart, and none of them is reported as agreeing.
+body mixed "$WORK/real-items.json" 40 "$ID80" | jq -c '.reasonReview' >"$WORK/rv40.json"
+[[ "$(qc1_digest_agreement "$WORK/real-items.json" "$WORK/rv40.json" | jq -c '[.checked, .equal, .digestEqual, .choicesEqual, .count, .issued]')" == '[true,true,true,true,40,40]' ]]
+jq -c '.digest = ((.digest[0:1] | if . == "0" then "1" else "0" end) + .digest[1:])' "$WORK/rv40.json" >"$WORK/rv40d.json"
+[[ "$(qc1_digest_agreement "$WORK/real-items.json" "$WORK/rv40d.json" | jq -c '[.checked, .equal, .digestEqual, .choicesEqual]')" == '[true,false,false,true]' ]]
+body keep "$WORK/real-items.json" 40 "$ID80" | jq -c '.reasonReview' >"$WORK/rv40k.json"
+[[ "$(qc1_digest_agreement "$WORK/real-items.json" "$WORK/rv40k.json" | jq -c '[.checked, .equal, .invalidChoices]')" == '[true,true,0]' ]]   # any valid vector is the browser's own answer, and is reproduced
+jq -c '.choices = "AAAAAAAAAAAAAA=="' "$WORK/rv40.json" >"$WORK/rv40z.json"
+[[ "$(qc1_digest_agreement "$WORK/real-items.json" "$WORK/rv40z.json" | jq -c '[.checked, .equal, .choicesEqual, .invalidChoices]')" == '[true,false,true,40]' ]]   # 40 reasons with no choice (code 0) are not an answer
+body mixed "$WORK/real-items.json" 30 "$ID80" | jq -c '.reasonReview' >"$WORK/rv30.json"
+[[ "$(qc1_digest_agreement "$WORK/real-items.json" "$WORK/rv30.json" | jq -c '[.checked, .equal, .countEqual, .browserCount, .issued]')" == '[true,false,false,30,40]' ]]   # a short set is not the server's
+jq -c '.count = "41"' "$WORK/rv40.json" >"$WORK/rv41.json"
+[[ "$(qc1_digest_agreement "$WORK/real-items.json" "$WORK/rv41.json" | jq -c '[.checked, .equal]')" == '[false,null]' ]]
+echo null >"$WORK/rvnull.json"
+[[ "$(qc1_digest_agreement "$WORK/real-items.json" "$WORK/rvnull.json" | jq -c '[.checked, .equal]')" == '[false,null]' ]]
+jq -c '.format = "items-v0"' "$WORK/rv40.json" >"$WORK/rvfmt.json"
+[[ "$(qc1_digest_agreement "$WORK/real-items.json" "$WORK/rvfmt.json" | jq -c '[.checked, .equal]')" == '[false,null]' ]]
+jq -c '.count = "forty"' "$WORK/rv40.json" >"$WORK/rvtxt.json"
+[[ "$(qc1_digest_agreement "$WORK/real-items.json" "$WORK/rvtxt.json" | jq -c '[.checked, .equal]')" == '[false,null]' ]]
+jq -c '.choices = "AAAA"' "$WORK/rv40.json" >"$WORK/rvshort.json"
+[[ "$(qc1_digest_agreement "$WORK/real-items.json" "$WORK/rvshort.json" | jq -c '[.checked, .equal]')" == '[false,null]' ]]   # a vector that does not decode is unchecked, never equal
+
+# --- the final screen against the database (set-v1.mjs dom-ids and dom-text; the rule-by-rule cases are in qc1-panel-fixtures.mjs) -----------------------------------------------
+# Here only what the runner adds: files in, one JSON object out, a screen that is wrong reported as wrong (never as unchecked), and one that was never captured as unchecked (never as agreeing).
+DW="$WORK/domscreen"; mkdir -p "$DW"
+jq -nc '[range(101; 221) | tostring]' >"$DW/ids.json"                                   # 120 issued ids, listed in this order
+jq -nc '[range(101; 151) | {key: tostring, value: ("R\u00e9sum\u00e9 e\u0301 \ud83d\ude00 " + tostring)}] | from_entries' >"$DW/texts.json"
+jq -nc '{captured: true, nav: "Reasons 1 to 50 of 120", navCount: 1, rows: [range(101; 151) | {id: tostring, reasonElements: 1, text: ("R\u00e9sum\u00e9 e\u0301 \ud83d\ude00 " + tostring)}]}' | jq -c '{screen: .}' >"$DW/good.json"
+echo null >"$DW/skip.json"
+[[ "$(qc1_dom_ids "$DW/good.json" "$DW/ids.json")" == "$(jq -r '[range(101; 151) | tostring] | join(",")' <<<null)" ]]
+[[ "$(qc1_dom_text "$DW/good.json" "$DW/ids.json" "$DW/texts.json" "$DW/skip.json" | jq -c '[.checked, .membershipOk, .exact, .expectedRows, .rowsOnScreen, .rowsChecked, .mismatched]')" == '[true,true,true,50,50,50,0]' ]]
+# the review's case: one correct reason and 49 ids nobody issued
+jq -c '.screen.rows |= ([.[0]] + [range(900; 949) | {id: tostring, reasonElements: 1, text: "anything"}])' "$DW/good.json" >"$DW/foreign.json"
+[[ "$(qc1_dom_text "$DW/foreign.json" "$DW/ids.json" "$DW/texts.json" "$DW/skip.json" | jq -c '[.checked, .membershipOk, .exact, (.unexpectedIds | length)]')" == '[true,false,false,5]' ]]
+# appended text, one row out of fifty
+jq -c '.screen.rows[7].text += " x"' "$DW/good.json" >"$DW/appended.json"
+[[ "$(qc1_dom_text "$DW/appended.json" "$DW/ids.json" "$DW/texts.json" "$DW/skip.json" | jq -c '[.checked, .membershipOk, .exact, .mismatched, .firstMismatchId]')" == '[true,true,false,1,"108"]' ]]
+# the reason changed behind the page: its old text or the database's new one is the page, a third text is not
+jq -c '.["108"] = "changed"' "$DW/texts.json" >"$DW/texts-changed.json"
+jq -nc --arg old "$(jq -r '.["108"]' "$DW/texts.json")" '{id: "108", oldText: $old}' >"$DW/skip-108.json"
+[[ "$(qc1_dom_text "$DW/good.json" "$DW/ids.json" "$DW/texts-changed.json" "$DW/skip-108.json" | jq -c '[.exact, .rowsChecked, .skipped, .mismatched]')" == '[true,49,1,0]' ]]
+[[ "$(qc1_dom_text "$DW/good.json" "$DW/ids.json" "$DW/texts-changed.json" "$DW/skip.json" | jq -c '[.exact, .mismatched]')" == '[false,1]' ]]   # without the skip the old text is wrong
+jq -c '.screen.rows[7].text = "a third text"' "$DW/good.json" >"$DW/third.json"
+[[ "$(qc1_dom_text "$DW/third.json" "$DW/ids.json" "$DW/texts-changed.json" "$DW/skip-108.json" | jq -c '[.exact, .mismatched]')" == '[false,1]' ]]
+# a pager line that is not a whole page of the issued reasons: no ids to read, and the comparison says the screen is wrong
+for nav in 'Reasons 1 to 50 of at least 120' 'Reasons 2 to 51 of 120' 'Reasons 1 to 49 of 120' 'Reasons 1 to 50 of 121'; do
+  jq -c --arg n "$nav" '.screen.nav = $n' "$DW/good.json" >"$DW/nav.json"
+  [[ -z "$(qc1_dom_ids "$DW/nav.json" "$DW/ids.json")" ]] || { echo "dom-ids named ids for the pager line '$nav'" >&2; exit 1; }
+  echo '{}' >"$DW/none.json"
+  [[ "$(qc1_dom_text "$DW/nav.json" "$DW/ids.json" "$DW/none.json" "$DW/skip.json" | jq -c '[.checked, .membershipOk, .exact]')" == '[true,false,false]' ]] || { echo "the pager line '$nav' was not reported as wrong" >&2; exit 1; }
+done
+# a second page, and the short last page
+jq -c '.screen.nav = "Reasons 101 to 120 of 120" | .screen.rows = [range(201; 221) | {id: tostring, reasonElements: 1, text: "t"}]' "$DW/good.json" >"$DW/last.json"
+[[ "$(qc1_dom_ids "$DW/last.json" "$DW/ids.json")" == "$(jq -r '[range(201; 221) | tostring] | join(",")' <<<null)" ]]
+# a screen that was never captured, a result with no screen and a result that is not JSON are unchecked, and never agree
+jq -nc '{screen: {captured: false, why: "the final screen could not be read: gone"}}' >"$DW/gone.json"
+[[ "$(qc1_dom_text "$DW/gone.json" "$DW/ids.json" "$DW/texts.json" "$DW/skip.json" | jq -c '[.checked, .why]')" == '[false,"the final screen could not be read: gone"]' ]]
+echo '{}' >"$DW/noscreen.json"
+[[ "$(qc1_dom_text "$DW/noscreen.json" "$DW/ids.json" "$DW/texts.json" "$DW/skip.json" | jq -c '.checked')" == false ]]
+echo 'not json' >"$DW/garbage.json"
+[[ "$(qc1_dom_text "$DW/garbage.json" "$DW/ids.json" "$DW/texts.json" "$DW/skip.json" | jq -c '.checked')" == false ]]
+
+# --- the text of the reasons, byte for byte (#293) -----------------------------------------------------------------------------------------------------
+# A before snapshot is one line per reason, "id|sha256|runes|bytes", in ascending id order; the first `removed` lines must be blank afterwards and every other line unchanged.
+HB=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+printf '1|aa|1000|2900\n3|bb|1000|2900\n5|cc|1000|2900\n7|dd|1000|2900\n' >"$WORK/tx.pre"
+printf '1|%s|0|0\n3|%s|0|0\n5|cc|1000|2900\n7|dd|1000|2900\n' "$HB" "$HB" >"$WORK/tx.ok"
+[[ "$(qc1_text_exact "$WORK/tx.pre" "$WORK/tx.ok" 2)" == 'true|2|2|0|0' ]]
+[[ "$(qc1_text_exact "$WORK/tx.pre" "$WORK/tx.pre" 0)" == 'true|4|0|0|0' ]]   # keep: nothing may change
+printf '1|%s|0|0\n3|%s|0|0\n5|%s|0|0\n7|%s|0|0\n' "$HB" "$HB" "$HB" "$HB" >"$WORK/tx.all"
+[[ "$(qc1_text_exact "$WORK/tx.pre" "$WORK/tx.all" 4)" == 'true|0|4|0|0' ]]   # remove: every one blank
+printf '1|%s|0|0\n3|%s|0|0\n5|cX|1000|2900\n7|dd|1000|2900\n' "$HB" "$HB" >"$WORK/tx.mangled"
+[[ "$(qc1_text_exact "$WORK/tx.pre" "$WORK/tx.mangled" 2)" == 'false|1|2|1|0' ]]   # a kept reason whose bytes changed
+printf '1|%s|0|0\n3|bb|1000|2900\n5|cc|1000|2900\n7|dd|1000|2900\n' "$HB" >"$WORK/tx.notblank"
+[[ "$(qc1_text_exact "$WORK/tx.pre" "$WORK/tx.notblank" 2)" == 'false|2|1|1|0' ]]   # a reason that should have been removed still has its text
+printf '1|%s|0|0\n3|%s|3|9\n5|cc|1000|2900\n7|dd|1000|2900\n' "$HB" "$HB" >"$WORK/tx.partial"
+[[ "$(qc1_text_exact "$WORK/tx.pre" "$WORK/tx.partial" 2 | cut -d'|' -f1)" == false ]]   # blanked to something that is not blank
+head -n 3 "$WORK/tx.ok" >"$WORK/tx.short"
+[[ "$(qc1_text_exact "$WORK/tx.pre" "$WORK/tx.short" 2 | cut -d'|' -f1,5)" == 'false|1' ]]   # a reason that vanished
+{ cat "$WORK/tx.ok"; printf '9|ee|1|1\n'; } >"$WORK/tx.extra"
+[[ "$(qc1_text_exact "$WORK/tx.pre" "$WORK/tx.extra" 2 | cut -d'|' -f1,5)" == 'false|1' ]]   # a reason that was not there before
+printf '1|%s|0|0\n4|%s|0|0\n5|cc|1000|2900\n7|dd|1000|2900\n' "$HB" "$HB" >"$WORK/tx.otherid"
+[[ "$(qc1_text_exact "$WORK/tx.pre" "$WORK/tx.otherid" 2 | cut -d'|' -f1)" == false ]]   # not the same ids
+: >"$WORK/tx.none"
+[[ "$(qc1_text_exact "$WORK/tx.none" "$WORK/tx.none" 0)" == 'true|0|0|0|0' ]]
+[[ "$(qc1_text_exact "$WORK/tx.pre" "$WORK/tx.ok" 5 | cut -d'|' -f1)" == false ]]   # more removed than there were
+refused '' qc1_text_exact "$WORK/tx.pre" "$WORK/tx.ok" two
+# The shape of the text as loaded.
+[[ "$(qc1_text_shape "$WORK/tx.pre")" == '{"rows":4,"runesMin":1000,"runesMax":1000,"bytesMin":2900,"bytesMax":2900,"bytesPerRune":2.900}' ]]
+printf '1|aa|999|999\n3|bb|1000|1000\n' >"$WORK/tx.ascii"
+[[ "$(qc1_text_shape "$WORK/tx.ascii")" == '{"rows":2,"runesMin":999,"runesMax":1000,"bytesMin":999,"bytesMax":1000,"bytesPerRune":1.000}' ]]
+[[ "$(qc1_text_shape "$WORK/tx.none")" == null ]]
+# The SQL these send: the account's non-blank reasons by id, and the same ids afterwards; numbers only, nothing interpolated that is not a number.
+qc1_text_snapshot_sql 42 | grep -qF "WHERE reason <> '' AND (requester_id = 42 OR subject_user_id = 42) ORDER BY id"
+qc1_text_snapshot_sql 42 | grep -qF "encode(sha256(convert_to(reason, 'UTF8')), 'hex')"
+qc1_text_snapshot_ids_sql 1,3,5 | grep -qF 'WHERE id IN (1,3,5) ORDER BY id'
+qc1_text_snapshot_ids_sql -1 | grep -qF 'WHERE id IN (-1)'
+refused '' qc1_text_snapshot_sql '1; DROP TABLE users'
+refused '' qc1_text_snapshot_ids_sql '1,2; DROP TABLE users'
+refused '' qc1_text_snapshot_ids_sql ''
+[[ "$(qc1_text_classes_sql 42 | grep -c 'regexp_replace')" == 4 ]] || [[ "$(qc1_text_classes_sql 42 | grep -o 'regexp_replace' | wc -l)" == 4 ]]
+qc1_text_classes_sql 42 | grep -qF 'ORDER BY id LIMIT 20'
+refused '' qc1_text_classes_sql 'x'
 # Mutations: the last choice code replaced (same length), one digest digit changed, the count one higher; nothing else moves.
 body mixed "$WORK/real-items.json" 6 "$ID80" >"$WORK/b6.json"
 qc1_final_choice_body "$WORK/b6.json" maybe >"$WORK/b6m.json"
@@ -345,6 +450,7 @@ refused '' qc1_environment_problems "$WORK/no-such-env.json" "$HEAD_FAKE"
 env_bad memsparse '.calibration.dbMemory.samples = 2' 'too sparse'
 
 [[ "$QC1_BROWSER_COUNTS" == 1000,10000 ]]
+REAL_BROWSER_COUNTS="$QC1_BROWSER_COUNTS"   # the counts a real run (and the matrix script, which sources lib.sh itself) is held to
 QC1_BROWSER_COUNTS=10,100   # the fixture sizes are 10 and 100: its browser rows are at counts the table holds
 # A complete set of rows for sizes S, counts C and dense counts D: every kind holds its instruments, its expectation and its outcome. Dense counts are
 # additive: the same discovery, browser and deletion rows for each dense count the table holds. The set-v1 request-size row is the largest deletion count
@@ -374,13 +480,20 @@ outc() { printf '{"dbOk":true,"accountDeleted":"true","reasonsBlank":%s,"reasons
 rolesof() { if [[ "$1" == requester ]]; then printf '{"requester":%s,"subject":0}' "$2"; else printf '{"requester":0,"subject":%s}' "$2"; fi; }          # direction k
 # The audit-retention report statement as the REAL pilot3 server log has it (testdata/qc1-pilot3-audit-retention.log: one deletion of account 46, its plan with a JIT section), turned into
 # the evidence the runner records by the same function. The explained rows below carry it, so the healthy fixtures are of the real statement and not of a typed one.
-PILOT3_AUDIT_LOG="$HERE/testdata/qc1-pilot3-audit-retention.log"
+# That log was written by a build that still ran a diagnostic count after the report; the application no longer does, and what follows the report today is conversion discovery's first query
+# (testdata/qc1-current-audit-retention.log is a real log of the current build). PILOT3_RAW stays as it was captured. PILOT3_AUDIT_LOG is its first 105 lines (the application's audit UPDATE and the
+# report with its plan) followed by the real current successor block with only its backend and account changed to pilot3's (12393, 46): the plan and JIT cases below keep their real plan, and the
+# identity they carry is the current shape.
+PILOT3_RAW="$HERE/testdata/qc1-pilot3-audit-retention.log"
+CURRENT_AUDIT_LOG="$HERE/testdata/qc1-current-audit-retention.log"
+PILOT3_AUDIT_LOG="$WORK/pilot3-current-shape.log"
+{ head -n 105 "$PILOT3_RAW"; sed -n '299,316p' "$CURRENT_AUDIT_LOG" | sed "1s/\[661\]/[12393]/; s/\\\$1 = '13'/\$1 = '46'/"; } >"$PILOT3_AUDIT_LOG"
 AUD_EV="$(qc1_audit_report_evidence "$PILOT3_AUDIT_LOG" 46 true)"
 AUTOEX='{"scope":"on for this one deletion only, off and waited for before the log was read; the matrix itself runs with auto_explain off","settings":{"log_lock_waits":"on"},"caveats":["one execution","log_lock_waits reports only waits longer than deadlock_timeout","no row locks","other sessions in the same log","docker logs --since"]}'
 explained_row() { # which size
   printf '{"status":"measured","item":6,"case":"order-control-delete-%s-explained","size":%s,"workers":0,"targetReasonLen":1000,"reasons":0,"expect":{"items":0,"kept":0,"removed":0},"outcome":%s,"explained":{"status":"200","ms":2900,"requestMs":2850,"reasonsKept":0,"reasonsRemoved":0,"auditRowsBefore":10,"auditBytesBefore":1000,"tableRowsBefore":%s,"targetUserId":46},"auditRetention":%s,"autoExplain":%s,"plannerSettings":{"jit":"on"}}\n' "$1" "$2" "$(outc 0 0)" "$2" "$AUD_EV" "$AUTOEX"
 }
-gen() { # sizes counts [dense]
+gen_rows() { # sizes counts [dense]
   local s k d m c kept removed bc K dlist ci np pre pages digest ph probe probec act k9 name item
   probe="$(probe_json public)"; probec="$(probe_json qc1_clean)"
   for s in $(qc1_list "$1"); do
@@ -427,6 +540,8 @@ gen() { # sizes counts [dense]
   s="$(qc1_list "$1" | sort -n | tail -n 1)"; k9=$(( s < 1000 ? s : 1000 ))
   printf '{"status":"observation","item":9,"case":"workers-on-delete","size":%s,"workers":2,"reasons":%s,"expect":{"items":%s,"kept":%s,"removed":%s},"outcome":%s,"delete":%s}\n' "$s" "$k9" "$k9" "$(( k9 / 2 ))" "$(( k9 - k9 / 2 ))" "$(outc "$(( k9 / 2 ))" "$(( k9 - k9 / 2 ))")" "$(dele "$(( s + k9 ))" "$(( k9 / 2 ))" "$(( k9 - k9 / 2 ))")"
 }
+# Every row of a case that loads the cell's scenario (discovery, deletion, workers, browser) carries the layout the runner's record() writes: spread, the baseline cell.
+gen() { gen_rows "$@" | sed -E 's/^(\{"status":"(measured|observation)","item":(3|6|9|10),.*)\}$/\1,"layout":"spread"}/'; }
 PEND='{"status":"pending","item":4,"case":"legacy-discovery","size":null,"reason":"T07B-3a"}
 {"status":"pending","item":5,"case":"legacy-put","size":null,"reason":"T07B-3a"}'
 status_of() { qc1_evidence_status "$1" "${2:-10,100}" "${3:-0,10,100,1000,10000}" "$WORK/env.json" "$HEAD_FAKE" 6291456 "${4:-}"; }
@@ -467,10 +582,10 @@ legacy_rows() { # sizes
   for s in $(qc1_list "$1"); do
     for k in $(qc1_list "$QC1_LEGACY_COUNTS"); do
       (( k <= s )) || continue
-      printf '{"status":"measured","item":4,"case":"legacy-discovery-%s","size":%s,"workers":0,"reasons":%s,"expect":{"items":%s},"legacy":{"route":"/api/v1/admin/users/ID/legacy-reasons","loadedPairs":%s,"source":"T07B-3a"},"traversal":%s}\n' "$k" "$s" "$k" "$k" "$k" "$(trav "$(( s + k ))" "$k")"
+      printf '{"status":"measured","item":4,"case":"legacy-discovery-%s","size":%s,"workers":0,"reasons":%s,"expect":{"items":%s},"legacy":{"route":"/api/v1/admin/users/ID/legacy-reasons","loadedPairs":%s,"source":"T07B-3a","pairSetExact":true,"duplicates":0,"privacy":{"noReasonKey":true,"noScenarioText":true}},"traversal":%s}\n' "$k" "$s" "$k" "$k" "$k" "$(trav "$(( s + k ))" "$k")"
     done
     # the marker lookup: a workload of 20 pairs with 5 party-qualified markers seeded for tombstone 7, one found
-    printf '{"status":"measured","item":4,"case":"legacy-discovery-probe","size":%s,"workers":0,"probe":{"ms":3,"status":"200","found":true,"route":"/api/v1/admin/users/ID/legacy-reasons/marker","workload":{"backgroundRows":%s,"loadedPairs":20,"markersSeeded":5,"tombstoneId":7},"marker":{"requestId":"42","party":7,"action":"add.reason_kept","source":"legacy_review"},%s}}\n' "$s" "$s" "$(ins "$(( s + 20 ))")"
+    printf '{"status":"measured","item":4,"case":"legacy-discovery-probe","size":%s,"workers":0,"probe":{"ms":3,"status":"200","found":true,"privacy":{"noReasonKey":true,"noScenarioText":true},"route":"/api/v1/admin/users/ID/legacy-reasons/marker","workload":{"backgroundRows":%s,"loadedPairs":20,"markersSeeded":5,"tombstoneId":7},"marker":{"requestId":"42","party":7,"action":"add.reason_kept","source":"legacy_review"},%s}}\n' "$s" "$s" "$(ins "$(( s + 20 ))")"
     # the legacy PUT: the accepted 100-decision subset of 120 seeded pairs (50 Keep, 50 Blank), its measured body, the verified effects, and the 101st decision refused by count validation
     (( s >= 100 )) || continue
     printf '{"status":"measured","item":5,"case":"legacy-put","size":%s,"workers":0,"put":{"status":"200","ms":50,"appPeakKb":2048,"route":"/api/v1/admin/users/ID/legacy-reasons","decisions":100,"accepted":100,"bodyBytes":17500,"workload":{"backgroundRows":%s,"loadedPairs":120,"tombstoneId":7},"effects":{"dbOk":true,"kept":50,"blanked":50,"rowsBlank":50,"rowsWithText":50,"markers":{"count":100,"party":7,"partyQualified":true,"source":"legacy_review","byAction":{"add.reason_kept":50,"add.reason_removed":50}},"audits":{"count":100,"source":"legacy_review"}},"countRefusal":{"decisions":101,"status":"400","authenticated":true,"reason":"decision_count","bodyBytes":17600,"unchanged":true},%s}}\n' "$s" "$s" "$(ins "$(( s + 120 ))")"
@@ -784,7 +899,7 @@ for lim in 'gate hold time' 'digest-only time' 'isolated server-side parse' 'mul
   [[ "$(jq -r --arg l "$lim" '[.notMeasured[] | select(contains($l))] | length' <<<"$st")" == 1 ]] || { echo "notMeasured lacks: $lim" >&2; exit 1; }
 done
 # THE REVIEW'S CASE: an environment record whose settings claim the whole matrix, with the 10 and 100 row sizes and arguments. The settings alone never make a run full.
-jq -c '.settings += {sizes:"10000,100000,1000000", counts:"0,10,100,1000,10000", deleteCounts:"0,10,100,1000,10000,100000", denseCounts:"100000", targetReasonLen:1000, wire:"set-v1", browser:true}' "$WORK/env.json" >"$WORK/env.full"
+jq -c '.settings += {sizes:"10000,100000,1000000", counts:"0,10,100,1000,10000", deleteCounts:"0,10,100,1000,10000,100000", denseCounts:"100000", layout:"spread", targetReasonLen:1000, wire:"set-v1", browser:true}' "$WORK/env.json" >"$WORK/env.full"
 fake="$(qc1_evidence_status "$WORK/e2.jsonl" 10,100 0,10,100,1000,10000 "$WORK/env.full" "$HEAD_FAKE" 6291456)"
 [[ "$(jq -r .coverage.kind <<<"$fake")" == pilot && "$(jq -r .releaseEvidence <<<"$fake")" == false && "$(jq -r .complete <<<"$fake")" == false ]] || { echo "a fake-full environment passed: $(jq -c '[.coverage, .complete, .releaseEvidence]' <<<"$fake")" >&2; exit 1; }
 [[ "$(jq -r '[.coverage.reasons[] | select(contains("rows of the full matrix are not measured and clean"))] | length' <<<"$fake")" == 1 ]]
@@ -804,11 +919,34 @@ fs="$(qc1_evidence_status "$WORK/full.jsonl" 10000,100000 0,10,100,1000,10000 "$
 [[ "$(jq -r .coverage.kind <<<"$fs")" == pilot && "$(jq -r '[.invalid[] | select(.failure == "settings-disagreement" and .what == "sizes")] | length' <<<"$fs")" == 1 ]]
 jq -c '.settings.denseCounts = "none"' "$WORK/env.full" >"$WORK/env.nodense"
 fs="$(full_status "$WORK/full.jsonl" "$WORK/env.nodense")"; [[ "$(jq -r .coverage.kind <<<"$fs")" == pilot && "$(jq -r '[.invalid[] | select(.what == "dense counts")] | length' <<<"$fs")" == 1 ]]
-for spec in '.settings.browser = false|no browser' '.settings.targetReasonLen = 200|1,000-rune' 'del(.settings.targetReasonLen)|1,000-rune' '.settings.wire = "items"|not the set-v1 wire' 'del(.settings.sizes)|do not name the sizes'; do
+for spec in '.settings.browser = false|no browser' '.settings.targetReasonLen = 200|1,000-rune' 'del(.settings.targetReasonLen)|1,000-rune' '.settings.wire = "items"|not the set-v1 wire' 'del(.settings.sizes)|do not name the sizes' 'del(.settings.layout)|do not name the layout' '.settings.layout = "diagonal"|do not name the layout'; do
   jq -c "${spec%%|*}" "$WORK/env.full" >"$WORK/env.cov"
   fs="$(full_status "$WORK/full.jsonl" "$WORK/env.cov")"
   [[ "$(jq -r .coverage.kind <<<"$fs")" == pilot && "$(jq -r .releaseEvidence <<<"$fs")" == false && "$(jq -r --arg w "${spec##*|}" '[.coverage.reasons[] | select(contains($w))] | length > 0' <<<"$fs")" == true ]] || { echo "coverage not pilot for ${spec%%|*}: $(jq -c .coverage <<<"$fs")" >&2; exit 1; }
 done
+# The layout the settings name must be the layout of the rows that load the scenario (discovery, deletion, workers, browser): a row of another layout, or of none, is a disagreement, so a cell cannot
+# be certified full by its labels while its measurements were taken in another layout. The request-size and plan rows load their own layouts and are not held to it.
+layout_case() { # name jq-filter-on-rows [env-file]: the rows with the filter applied, judged in the full environment (spread)
+  jq -c "$2" "$WORK/full.jsonl" >"$WORK/full.$1"
+  fs="$(full_status "$WORK/full.$1" "${3:-$WORK/env.full}")"
+}
+layout_refused() { # name jq-filter-on-rows [env-file]: what the layout rows say is refused, and the run is a pilot
+  layout_case "$@"
+  [[ "$(jq -r .coverage.kind <<<"$fs")" == pilot && "$(jq -r .releaseEvidence <<<"$fs")" == false && "$(jq -r .complete <<<"$fs")" == false \
+    && "$(jq -r '[.invalid[] | select(.failure == "settings-disagreement" and .what == "layout")] | length > 0' <<<"$fs")" == true ]] || { echo "layout case $1 was not refused: $(jq -c '[.coverage.kind, .invalid[:3]]' <<<"$fs")" >&2; exit 1; }
+}
+jq -c '.settings.layout = "tail"' "$WORK/env.full" >"$WORK/env.layout-tail"
+layout_refused lay-none 'if .item == 10 and .case == "browser-panel-100" and .size == 10000 then del(.layout) else . end'
+layout_refused lay-null 'if .item == 3 and .case == "discovery-requester-100" and .size == 100000 then .layout = null else . end'
+layout_refused lay-one-tail 'if .item == 6 and .case == "delete-subject-100-mixed" and .size == 100000 then .layout = "tail" else . end'
+layout_refused lay-workers 'if .item == 9 then .layout = "head" else . end'
+layout_refused lay-all-head 'if .item == 3 or .item == 6 or .item == 9 or .item == 10 then .layout = "head" else . end'
+layout_refused lay-env-tail 'if .item == 3 or .item == 6 or .item == 9 or .item == 10 then .layout = "spread" else . end' "$WORK/env.layout-tail"
+layout_case lay-request-size 'if .item == 5 then .layout = "tail" else . end'
+[[ "$(jq -c '[.coverage.kind, .complete, .releaseEvidence, (.invalid | length)]' <<<"$fs")" == '["full",true,true,0]' ]] || { echo "a request-size row of another layout broke a full run: $(jq -c '.invalid[:3]' <<<"$fs")" >&2; exit 1; }
+# A run of the tail layout is full when its rows are the tail's, and only then.
+layout_case lay-tail 'if .item == 3 or .item == 6 or .item == 9 or .item == 10 then .layout = "tail" else . end' "$WORK/env.layout-tail"
+[[ "$(jq -c '[.coverage.kind, .complete, .releaseEvidence, (.invalid | length)]' <<<"$fs")" == '["full",true,true,0]' ]] || { echo "a tail run with tail rows is not full: $(jq -c '[.coverage.reasons, .invalid[:3]]' <<<"$fs")" >&2; exit 1; }
 # A full run that is not clean is not release evidence.
 jq -c 'if .item == 10 and .case == "browser-panel-100" then . else . end | if .item == 8 then .generic.source = "harness" else . end' "$WORK/full.jsonl" >"$WORK/full.dirty"
 fs="$(full_status "$WORK/full.dirty")"; [[ "$(jq -r .releaseEvidence <<<"$fs")" == false && "$(jq -r .complete <<<"$fs")" == false ]]
@@ -1522,9 +1660,18 @@ grep -q 'RECORD_STATUS=failed' "$HERE/qc1-measure.sh"
 # --- the runner ---------------------------------------------------------------------------------
 RUNNER="$HERE/qc1-measure.sh"
 help="$(bash "$RUNNER" --help)"
-for flag in --dir --image --sizes --counts --layout --reason-len --droplet --seconds-per-reason --sitting-minutes --shared-daemon --no-browser --keep; do grep -q -- "$flag" <<<"$help"; done
+for flag in --dir --image --sizes --counts --layout --charset --reason-len --droplet --seconds-per-reason --sitting-minutes --shared-daemon --no-browser --keep; do grep -q -- "$flag" <<<"$help"; done
 refused 'unknown option' bash "$RUNNER" --nope
 refused 'whole numbers above 0' bash "$RUNNER" --dir "$WORK/never" --sitting-minutes 0
+# #298: the sampling flags are in the help, and are refused before anything is created when they could not work.
+for flag in --next-changed-only --next-changed-presses --next-changed-runs --profile-next-changed; do grep -q -- "$flag" <<<"$help"; done
+refused 'whole numbers above 0' bash "$RUNNER" --dir "$WORK/never" --next-changed-presses 0
+refused 'whole numbers above 0' bash "$RUNNER" --dir "$WORK/never" --next-changed-runs x
+refused 'needs --next-changed-only' bash "$RUNNER" --dir "$WORK/never" --next-changed-runs 3
+refused 'above 1' bash "$RUNNER" --dir "$WORK/never" --profile-next-changed
+refused 'needs the browser' bash "$RUNNER" --dir "$WORK/never" --next-changed-only --no-browser
+refused 'needs the browser' bash "$RUNNER" --dir "$WORK/never" --next-changed-only --dense-counts none
+[[ ! -e "$WORK/never" ]]
 # It needs no root (a rootless or nested daemon is the place to run it) and reads no host paths.
 if grep -nE 'id -u|EUID' "$RUNNER"; then echo 'qc1: the runner must not require root' >&2; exit 1; fi
 if grep -nE 'APP_PID|/proc/\$|"/sys/fs/cgroup/system.slice|cgroup_file\(\)' "$RUNNER"; then echo 'qc1: the runner reads host process or cgroup paths' >&2; exit 1; fi
@@ -1560,7 +1707,7 @@ if grep -qE '^(run|rm|network|volume|pull|system|container|kill|stop|exec|prune)
 # another revision is refused. The runner runs from a clean copy of its own files
 # in a throwaway repository, so this holds whatever state the real tree is in.
 CLONE="$WORK/clone"; mkdir -p "$CLONE/deploy/digitalocean/qc1"
-cp "$HERE/qc1-measure.sh" "$CLONE/deploy/digitalocean/"; cp "$HERE"/qc1/app-facts.json "$HERE"/qc1/lib.sh "$HERE"/qc1/filler.sql "$HERE"/qc1/scenario.sql "$HERE"/qc1/panel-measure.mjs "$HERE"/qc1/browser.mjs "$HERE"/qc1/browser-launch.cjs "$HERE"/qc1/browser-preflight.mjs "$HERE"/qc1/response-accounting.mjs "$HERE"/qc1/set-v1.mjs "$HERE"/qc1/panel-core.mjs "$HERE"/qc1/panel-driver.mjs "$HERE"/qc1/page-observer.mjs "$HERE"/qc1/top-statements.sql "$CLONE/deploy/digitalocean/qc1/"; mkdir -p "$CLONE/web/src/lib"; cp "$ROOT/web/src/lib/reasonSetVectors.json" "$CLONE/web/src/lib/"; cp "$HERE/isolation.sh" "$CLONE/deploy/digitalocean/"
+cp "$HERE/qc1-measure.sh" "$CLONE/deploy/digitalocean/"; cp "$HERE"/qc1/app-facts.json "$HERE"/qc1/lib.sh "$HERE"/qc1/filler.sql "$HERE"/qc1/legacy.sh "$HERE"/qc1/legacy-markers.sql "$HERE"/qc1/scenario.sql "$HERE"/qc1/panel-measure.mjs "$HERE"/qc1/browser.mjs "$HERE"/qc1/browser-launch.cjs "$HERE"/qc1/browser-preflight.mjs "$HERE"/qc1/response-accounting.mjs "$HERE"/qc1/set-v1.mjs "$HERE"/qc1/panel-core.mjs "$HERE"/qc1/panel-driver.mjs "$HERE"/qc1/page-observer.mjs "$HERE"/qc1/top-statements.sql "$CLONE/deploy/digitalocean/qc1/"; mkdir -p "$CLONE/web/src/lib"; cp "$ROOT/web/src/lib/reasonSetVectors.json" "$CLONE/web/src/lib/"; cp "$HERE/isolation.sh" "$CLONE/deploy/digitalocean/"
 git init -q "$CLONE"; git -C "$CLONE" config user.name fixture; git -C "$CLONE" config user.email fixture@example.invalid
 git -C "$CLONE" config commit.gpgsign false; git -C "$CLONE" config core.hooksPath /dev/null
 git -C "$CLONE" add -A; git -C "$CLONE" commit -qm clone
@@ -1615,7 +1762,7 @@ grep -q 'for id in "\${CONTAINERS\[@\]}"; do docker rm -fv "\$id"' "$RUNNER"
 grep -q '^start_app 0$' "$RUNNER"; grep -q 'ALTER SYSTEM SET autovacuum = off' "$RUNNER"; grep -q "checkpoint_timeout = '1d'" "$RUNNER"
 grep -q '^instrumented() {' "$RUNNER"; instr_line="$(grep -n '^instrumented() {' "$RUNNER" | cut -d: -f1)"
 [[ "$(sed -n "$((instr_line + 1)),$((instr_line + 20))p" "$RUNNER" | grep -c "^  quiesce$")" == 1 ]]
-cal_line="$(grep -n '^calibrate$' "$RUNNER" | cut -d: -f1)"; first_measure="$(grep -n '^for n in "\${SIZE_LIST\[@\]}"; do measure_size' "$RUNNER" | cut -d: -f1)"
+cal_line="$(grep -n '^calibrate$' "$RUNNER" | cut -d: -f1)"; first_measure="$(grep -n '^ *for n in "\${SIZE_LIST\[@\]}"; do measure_size' "$RUNNER" | cut -d: -f1)"
 [[ -n "$cal_line" && "$cal_line" -lt "$first_measure" ]]
 grep -q 'start_app 2' "$RUNNER"; grep -q 'RECORD_STATUS=observation record 9 workers-on-delete' "$RUNNER"
 grep -q 'if \[\[ "\$n" == "\$MAX_SIZE" \]\]; then observe_workers_on' "$RUNNER"
@@ -1663,6 +1810,15 @@ sed -n '/^measure_browser_panel() {/,/^}/p' "$RUNNER" | grep 'the row is missing
 sed -n '/^measure_browser_panel() {/,/^}/p' "$RUNNER" | grep '(( BROWSER )) || return 0' >/dev/null
 mbp="$(sed -n '/^measure_browser_panel() {/,/^}/p' "$RUNNER")"; rpm="$(sed -n '/^run_panel_measure() {/,/^}/p' "$RUNNER")"
 grep -qF 'QC1_CHANGE_CMD="$PANEL_HOOK" QC1_PHASE_CMD="$PANEL_PHASE"' <<<"$rpm"
+# #298: the sampling settings reach the browser process, the row says which kind of run it is, and --next-changed-only runs the rendered panel at the dense counts R times
+# right after the background rows are loaded, before anything else of the size.
+grep -qF 'QC1_NEXT_CHANGED_PRESSES="$NEXT_CHANGED_PRESSES" QC1_PROFILE_NEXT_CHANGED="$PROFILE_NEXT_CHANGED"' <<<"$rpm"
+grep -qF 'else "next-changed-run"' <<<"$mbp"
+nc_body="$(sed -n '/^measure_size() {/,/^}/p' "$RUNNER")"
+nc_f="$(grep -n 'load_filler "\$n" all' <<<"$nc_body" | head -n 1 | cut -d: -f1)"; nc_o="$(grep -n 'if (( NEXT_CHANGED_ONLY )); then' <<<"$nc_body" | head -n 1 | cut -d: -f1)"; nc_c="$(grep -n 'instrumented ctl_request' <<<"$nc_body" | head -n 1 | cut -d: -f1)"
+[[ -n "$nc_f$nc_o$nc_c" && "$nc_f" -lt "$nc_o" && "$nc_o" -lt "$nc_c" ]]
+grep -qF 'measure_browser_panel "$n" "$bk" "-nc$run"' <<<"$nc_body"
+grep -qF 'for bk in "${DENSE_LIST[@]}"; do' <<<"$nc_body"
 # The changed-reason hook must alter even a maximum-length reason without
 # exceeding the database's 1,000-character constraint.
 grep -qF 'left(reason, 999) || CASE WHEN right(reason, 1) = chr(33) THEN chr(63) ELSE chr(33) END' "$RUNNER"
@@ -1704,60 +1860,115 @@ fk_closure() { # root -> the root and every table that references it, transitive
 if grep -lE 'REFERENCES +(public\.)?(contact_requests|contact_grants|registrations)\b' "$ROOT"/migrations/*.sql | grep -v '00001_baseline.sql'; then echo 'a migration after the baseline references the contact-request tables: re-check the QC-1 loader' >&2; exit 1; fi
 
 # The loader against a model of the database: a catalog that lists the closure, row counts, and every statement recorded.
-export QC1_MODEL_REFERRERS="" QC1_MODEL_LOG="$WORK/sql.log"
+# The model drains its stdin exactly like docker exec -i does: with the real
+# transport a psql_db call inherits the caller's stdin, so a call inside the
+# closure loop eats the remaining table names. A reset that shares fd 0 with
+# its SQL calls truncates an incomplete list here, as the 1M size did. Every
+# invocation below runs with stdin closed, which the reset must never need.
+# contact_requests rows live in a file (command substitutions cannot keep
+# variables), so TRUNCATE really empties the table across resets.
+export QC1_MODEL_REFERRERS="" QC1_MODEL_LOG="$WORK/sql.log" QC1_MODEL_STATE="$WORK/model-contact-requests"
 psql_db() { # -c SQL
   local sql="$2"
+  cat >/dev/null
   printf '%s\n' "$sql" >>"$QC1_MODEL_LOG"
   case "$sql" in
     "WITH RECURSIVE r(oid) AS"*) [[ -z "${QC1_MODEL_FAIL_CATALOG:-}" ]] || return 1; printf '%s\n' "$QC1_MODEL_REFERRERS" ;;
+    "SELECT count(*) FROM contact_requests") cat "$QC1_MODEL_STATE" ;;
+    *"FROM pg_stat_activity"*) [[ -z "${QC1_MODEL_FAIL_BACKENDS:-}" ]] || return 1; printf '%s\n' "${QC1_MODEL_BACKENDS:-'(none)'}" ;;
     "SELECT count(*) FROM "*) local t="${sql#SELECT count(*) FROM }"; local v="QC1_MODEL_ROWS_${t//[^a-z_0-9]/_}"; printf '%s\n' "${!v:-0}" ;;
-    "TRUNCATE "*) [[ -z "${QC1_MODEL_FAIL_TRUNCATE:-}" ]] || return 1 ;;
+    "TRUNCATE "*) [[ -z "${QC1_MODEL_FAIL_TRUNCATE:-}" ]] || return 1
+      printf '%s\n' "${QC1_MODEL_LEFT:-0}" >"$QC1_MODEL_STATE"
+      printf 'TRUNCATE TABLE\n%s\n' "$(cat "$QC1_MODEL_STATE")" ;;
     *) echo "unexpected sql: $sql" >&2; return 1 ;;
   esac
 }
-model() { : >"$QC1_MODEL_LOG"; unset QC1_MODEL_FAIL_CATALOG QC1_MODEL_FAIL_TRUNCATE QC1_MODEL_ROWS_contact_grants QC1_MODEL_ROWS_registrations QC1_MODEL_ROWS_grant_notes; }
+model() { : >"$QC1_MODEL_LOG"; printf '0\n' >"$QC1_MODEL_STATE"; unset QC1_MODEL_FAIL_CATALOG QC1_MODEL_FAIL_TRUNCATE QC1_MODEL_LEFT QC1_MODEL_FAIL_BACKENDS QC1_MODEL_BACKENDS QC1_MODEL_ROWS_contact_grants QC1_MODEL_ROWS_registrations QC1_MODEL_ROWS_grant_notes; }
+reset_closed() { qc1_reset_contact_requests </dev/null; }
 truncates() { grep -c '^TRUNCATE ' "$QC1_MODEL_LOG" || true; }
 closure_text="$(fk_closure contact_requests)"
 # the SQL asks the catalog for the transitive foreign-key set of the real table
 grep -qF "WITH RECURSIVE r(oid) AS (SELECT 'public.contact_requests'::regclass::oid UNION SELECT c.conrelid FROM pg_constraint c JOIN r ON c.confrelid = r.oid WHERE c.contype = 'f')" "$HERE/qc1/lib.sh"
-# (1) empty referrers: one TRUNCATE naming the whole set, no CASCADE, no DELETE, nothing before the checks
+# the repopulation diagnosis reads real backends: it selects from pg_stat_activity and excludes its own backend
+grep -qF 'FROM pg_stat_activity WHERE pid <> pg_backend_pid()' "$HERE/qc1/lib.sh"
+# the closure loop never shares fd 0 with its SQL calls (docker exec -i would drain the remaining names)
+if grep -qF 'done <<<"$names"' "$HERE/qc1/lib.sh"; then echo 'the reset loop reads table names from the same stdin its SQL calls inherit' >&2; exit 1; fi
+# (1) empty referrers: one TRUNCATE naming the whole set (proving the table empty in the same session), no CASCADE, no DELETE, nothing before the checks
 model; QC1_MODEL_REFERRERS="$closure_text"
-qc1_reset_contact_requests
-[[ "$(truncates)" == 1 ]]; [[ "$(grep '^TRUNCATE ' "$QC1_MODEL_LOG")" == 'TRUNCATE contact_grants, contact_requests, registrations' ]]
+reset_closed
+[[ "$(truncates)" == 1 ]]; [[ "$(grep '^TRUNCATE ' "$QC1_MODEL_LOG")" == 'TRUNCATE contact_grants, contact_requests, registrations; SELECT count(*) FROM contact_requests' ]]
 if grep -qiE 'CASCADE|DELETE|RESTART IDENTITY' "$QC1_MODEL_LOG"; then echo 'the reset deletes, cascades or restarts identities' >&2; exit 1; fi
 [[ "$(grep -n '^SELECT count' "$QC1_MODEL_LOG" | tail -n 1 | cut -d: -f1)" -lt "$(grep -n '^TRUNCATE ' "$QC1_MODEL_LOG" | cut -d: -f1)" ]]    # every count before the statement
 [[ "$(grep -c '^SELECT count(\*) FROM ' "$QC1_MODEL_LOG")" == 2 ]]                                                                              # both referrers, not contact_requests itself
 # (2) a referrer that holds rows: refused, named, nothing truncated
 for t in contact_grants registrations; do
   model; QC1_MODEL_REFERRERS="$closure_text"; export "QC1_MODEL_ROWS_$t=3"
-  refused "$t holds 3 rows that depend on contact_requests" qc1_reset_contact_requests
+  refused "$t holds 3 rows that depend on contact_requests" reset_closed
   [[ "$(truncates)" == 0 ]]
 done
 # (3) a table reached only through another referrer is found and checked too
 model; QC1_MODEL_REFERRERS="$(printf '%s\n' "$closure_text" grant_notes | LC_ALL=C sort)"
-qc1_reset_contact_requests
-[[ "$(grep '^TRUNCATE ' "$QC1_MODEL_LOG")" == 'TRUNCATE contact_grants, contact_requests, grant_notes, registrations' ]]
+reset_closed
+[[ "$(grep '^TRUNCATE ' "$QC1_MODEL_LOG")" == 'TRUNCATE contact_grants, contact_requests, grant_notes, registrations; SELECT count(*) FROM contact_requests' ]]
 model; QC1_MODEL_REFERRERS="$(printf '%s\n' "$closure_text" grant_notes | LC_ALL=C sort)"; export QC1_MODEL_ROWS_grant_notes=1
-refused 'grant_notes holds 1 rows' qc1_reset_contact_requests; [[ "$(truncates)" == 0 ]]
+refused 'grant_notes holds 1 rows' reset_closed; [[ "$(truncates)" == 0 ]]
 # (4) the catalog cannot be read, lists a table in another schema or a quoted name, omits the table itself, or a count is unreadable: refused, nothing truncated
 model; QC1_MODEL_REFERRERS="$closure_text"; export QC1_MODEL_FAIL_CATALOG=1
-refused 'cannot list the tables' qc1_reset_contact_requests; [[ "$(truncates)" == 0 ]]
-model; QC1_MODEL_REFERRERS="$(printf '%s\n' "$closure_text" other.t)"; refused "unexpected table name 'other.t'" qc1_reset_contact_requests; [[ "$(truncates)" == 0 ]]
-model; QC1_MODEL_REFERRERS="$(printf '%s\n' "$closure_text" '"Odd Name"')"; refused 'unexpected table name' qc1_reset_contact_requests; [[ "$(truncates)" == 0 ]]
-model; QC1_MODEL_REFERRERS="$(printf '%s\n' contact_grants registrations)"; refused 'not in the foreign-key closure' qc1_reset_contact_requests; [[ "$(truncates)" == 0 ]]
-model; QC1_MODEL_REFERRERS=""; refused 'not in the foreign-key closure' qc1_reset_contact_requests
-model; QC1_MODEL_REFERRERS="$closure_text"; export QC1_MODEL_ROWS_contact_grants=many; refused 'unreadable row count for contact_grants' qc1_reset_contact_requests; [[ "$(truncates)" == 0 ]]
+refused 'cannot list the tables' reset_closed; [[ "$(truncates)" == 0 ]]
+model; QC1_MODEL_REFERRERS="$(printf '%s\n' "$closure_text" other.t)"; refused "unexpected table name 'other.t'" reset_closed; [[ "$(truncates)" == 0 ]]
+model; QC1_MODEL_REFERRERS="$(printf '%s\n' "$closure_text" '"Odd Name"')"; refused 'unexpected table name' reset_closed; [[ "$(truncates)" == 0 ]]
+model; QC1_MODEL_REFERRERS="$(printf '%s\n' contact_grants registrations)"; refused 'not in the foreign-key closure' reset_closed; [[ "$(truncates)" == 0 ]]
+model; QC1_MODEL_REFERRERS=""; refused 'not in the foreign-key closure' reset_closed
+model; QC1_MODEL_REFERRERS="$closure_text"; export QC1_MODEL_ROWS_contact_grants=many; refused 'unreadable row count for contact_grants' reset_closed; [[ "$(truncates)" == 0 ]]
 # (5) TRUNCATE itself failing is reported
 model; QC1_MODEL_REFERRERS="$closure_text"; export QC1_MODEL_FAIL_TRUNCATE=1
-refused 'TRUNCATE contact_grants, contact_requests, registrations failed' qc1_reset_contact_requests
-unset -f psql_db model truncates
+refused 'TRUNCATE contact_grants, contact_requests, registrations' reset_closed
+# (6) rows left after TRUNCATE (the 1M-size failure: retained rows from an
+# earlier size, e.g. through an incomplete TRUNCATE list) are refused with the
+# count, not measured over: one TRUNCATE, then the read-only diagnosis naming
+# referrer counts, one representative open backend and recent jobs
+model; QC1_MODEL_REFERRERS="$closure_text"; export QC1_MODEL_LEFT=5 QC1_MODEL_BACKENDS='4242 qc1-app | active | TRUNCATE contact_requests'
+refused 'contact_requests holds 5 rows after TRUNCATE' reset_closed
+[[ "$(truncates)" == 1 ]]
+grep -qF 'after TRUNCATE (contact_grants, contact_requests, registrations): contact_grants holds' "$WORK/out"
+grep -qF 'open backends: 4242 qc1-app | active | TRUNCATE contact_requests' "$WORK/out"
+grep -qF 'jobs enqueued in the last 10 minutes:' "$WORK/out"
+# a diagnostic read that fails stays best-effort: the reset still refuses with the count, naming the failure as unknown
+model; QC1_MODEL_REFERRERS="$closure_text"; export QC1_MODEL_LEFT=5 QC1_MODEL_FAIL_BACKENDS=1
+refused 'contact_requests holds 5 rows after TRUNCATE' reset_closed
+grep -qF 'open backends: ?' "$WORK/out"
+# (7) the sampling-only size transition with retained even filler rows: the
+# first size leaves 100000 even rows behind, the reset clears them, and the
+# second reset starts empty and keeps it empty. Both resets check every closure
+# name and truncate the whole set, through the draining transport on a closed
+# stdin the reset never reads.
+model; QC1_MODEL_REFERRERS="$closure_text"; printf '100000\n' >"$QC1_MODEL_STATE"
+reset_closed
+[[ "$(truncates)" == 1 ]]
+[[ "$(grep '^TRUNCATE ' "$QC1_MODEL_LOG")" == 'TRUNCATE contact_grants, contact_requests, registrations; SELECT count(*) FROM contact_requests' ]]
+[[ "$(grep -c '^SELECT count(\*) FROM ' "$QC1_MODEL_LOG")" == 2 ]]
+[[ "$(cat "$QC1_MODEL_STATE")" == 0 ]]
+while IFS= read -r t; do grep -qF "$t" "$QC1_MODEL_LOG" || { echo "the reset never saw $t" >&2; exit 1; }; done <<<"$closure_text"
+# the next size starts empty and the reset keeps it empty, through the same draining transport
+reset_closed
+[[ "$(truncates)" == 2 ]]
+[[ "$(grep -c '^SELECT count(\*) FROM ' "$QC1_MODEL_LOG")" == 4 ]]
+[[ "$(cat "$QC1_MODEL_STATE")" == 0 ]]
+[[ "$(psql_db -c 'SELECT count(*) FROM contact_requests' </dev/null)" == 0 ]]
+while IFS= read -r t; do grep -qF "$t" "$QC1_MODEL_LOG" || { echo "the reset never saw $t" >&2; exit 1; }; done <<<"$closure_text"
+unset -f psql_db model truncates reset_closed
 # The runner uses it, once per size, before the filler loads, and checks what the clear must not touch; the bare table-only TRUNCATE is gone.
 RUNNER_BODY="$(sed -n '/^measure_size() {/,/^}$/p' "$HERE/qc1-measure.sh")"
 if grep -n "TRUNCATE contact_requests" "$HERE/qc1-measure.sh"; then echo 'the runner still truncates contact_requests alone' >&2; exit 1; fi
 r_l="$(grep -n 'qc1_reset_contact_requests || exit 1' <<<"$RUNNER_BODY" | head -n 1 | cut -d: -f1)"; f_l="$(grep -n 'load_filler "\$n" all' <<<"$RUNNER_BODY" | head -n 1 | cut -d: -f1)"
-s_l="$(grep -n "admin@example.invalid'\")\" == 1" <<<"$RUNNER_BODY" | head -n 1 | cut -d: -f1)"
+# the survivors check is one function (reset_background_checks) that the matrix and the legacy-only run both call right after the reset
+s_l="$(grep -n '^  reset_background_checks$' <<<"$RUNNER_BODY" | head -n 1 | cut -d: -f1)"
+CHECKS_BODY="$(sed -n '/^reset_background_checks() {/,/^}$/p' "$HERE/qc1-measure.sh")"
 [[ -n "$r_l$f_l$s_l" && "$r_l" -lt "$s_l" && "$s_l" -lt "$f_l" ]]
-for pat in "FROM groups WHERE id = \$GROUP" "qc1-counterpart-%@example.invalid'\")\" == 10" "SELECT count(*) FROM contact_requests')\" == 0"; do grep -qF -- "$pat" <<<"$RUNNER_BODY" || { echo "the runner no longer checks $pat" >&2; exit 1; }; done
+q_l="$(grep -n '^  quiesce$' <<<"$RUNNER_BODY" | head -n 1 | cut -d: -f1)"
+[[ -n "$q_l" && "$q_l" -lt "$r_l" ]] || { echo 'the runner no longer quiesces before clearing the background rows' >&2; exit 1; }
+for pat in "FROM groups WHERE id = \$GROUP" "qc1-counterpart-%@example.invalid'\")\" == 10" "SELECT count(*) FROM contact_requests')\" == 0"; do grep -qF -- "$pat" <<<"$CHECKS_BODY" || { echo "the runner no longer checks $pat" >&2; exit 1; }; done
+grep -qF -- "admin@example.invalid'\")\" == 1" <<<"$CHECKS_BODY" || { echo 'the runner no longer checks that the seeded admin survives the reset' >&2; exit 1; }
 
 # --- pilot2: the outcome of ONE deletion, the app's peak, and the plan capture -------------------------------------------------------------------------------------------------------
 RUNNER_SRC="$HERE/qc1-measure.sh"
@@ -1824,6 +2035,225 @@ grep -qF 'AUDIT_ROWS0 AUDIT_BYTES0' "$RUNNER_SRC"; grep -qF 'AUDIT_ROWS1 AUDIT_B
 # the judge still requires the database outcome: the pilot2 rows (accumulated audits) are invalid, bound rows are not
 mut dbbad "$DEL then .outcome = {dbOk:false, accountDeleted:\"true\", reasonsBlank:50, reasonsWithText:50, decisionAudits:1260} else . end"; expect_invalid dbbad outcome-db
 
+# --- the charset of the reasons (#293): what the judge asks of a multibyte row, and what it still asks of an ASCII one --------------------------------------------------------------
+# A multibyte run carries, on every row with reasons, the shape of the text as loaded (every target reason exactly targetReasonLen runes, more bytes than runes and at most four a
+# rune, and in a sample 2-, 3- and 4-byte runes and combining marks), a deletion that left every kept reason byte for byte as it was, page responses as heavy as multibyte text
+# makes them, and a browser whose digest equals the independent builder's and whose screen shows the database's text.
+MB='(.charset = "multibyte")
+ | (if (.item == 3 or .item == 6 or .item == 10) and ((.reasons // 0) > 0) and (.targetReasonLen != null) then .textShape = {rows: .reasons, runesMin: .targetReasonLen, runesMax: .targetReasonLen, bytesMin: (.targetReasonLen * 2), bytesMax: (.targetReasonLen * 3), bytesPerRune: 2.9, sample: {rows: 20, width2: 4, width3: 4, width4: 4, combining: 2}} else . end)
+ | (if .item == 6 and ((.reasons // 0) > 0) and ((.outcome | type) == "object") then .outcome.textExact = true else . end)
+ | (if .item == 5 and .case == "request-size" and ((.request.fitOutcome | type) == "object") then .request.fitOutcome.textExact = true else . end)
+ | (if .item == 3 and ((.reasons // 0) > 0) then .traversal.responseBytes = (.reasons * 3000) else . end)
+ | (if .item == 10 then .agreement = {digest: {checked: true, equal: true}, domText: {checked: true, membershipOk: true, exact: true, nav: {from: 1, to: 50, total: 1000}, expectedRows: 50, rowsOnScreen: 50, rowsChecked: 49, skipped: 1, mismatched: 0}} else . end)'
+jq -c "$MB" "$WORK/e2.jsonl" >"$WORK/e2.mb"
+jq -c '.settings.charset = "multibyte"' "$WORK/env.json" >"$WORK/env.mb"
+mb_status() { qc1_evidence_status "$1" 10,100 0,10,100,1000,10000 "$WORK/env.mb" "$HEAD_FAKE" 6291456 ""; }
+mbmut() { jq -c "$MB | $2" "$WORK/e2.jsonl" >"$WORK/e2.$1"; }   # name jq-filter (the good multibyte rows, then the filter on every row)
+mb_invalid() { # name failure
+  local st; st="$(mb_status "$WORK/e2.$1")"
+  [[ "$(jq -r .complete <<<"$st")" == false && "$(jq -r --arg f "$2" '[.invalid[] | select(.failure == $f)] | length > 0' <<<"$st")" == true ]] || { echo "multibyte mutation $1 not invalid ($2): $(jq -c '[.invalid[] | .failure]' <<<"$st")" >&2; exit 1; }
+}
+st="$(mb_status "$WORK/e2.mb")"
+[[ "$(jq -c '[.invalid[] | .failure]' <<<"$st")" == '[]' && "$(jq -r .complete <<<"$st")" == true ]] || { echo "the good multibyte rows are not clean: $(jq -c '.invalid' <<<"$st")" >&2; exit 1; }
+[[ "$(jq -c '.coverage.cell' <<<"$st")" == '{"layout":"spread","charset":"multibyte"}' || "$(jq -c '.coverage.cell.charset' <<<"$st")" == '"multibyte"' ]]
+jq -e '.notMeasured | map(select(startswith("multi-byte reasons"))) | length == 1 and (.[0] | contains("fixed 21-rune pattern"))' <<<"$st" >/dev/null   # a multibyte run says what a multibyte run still does not measure
+jq -e '.notMeasured | map(select(startswith("multi-byte reasons"))) | length == 1 and (.[0] | contains("ASCII"))' <<<"$(status_of "$WORK/e2.jsonl")" >/dev/null   # an ASCII run says it is ASCII
+[[ "$(jq -c '.coverage.cell.charset' <<<"$(status_of "$WORK/e2.jsonl")")" == '"ascii"' ]]   # no charset in the settings means ascii
+SH1='if .item == 3 and .case == "discovery-requester-10"'
+mbmut mb-noshape "$SH1 then del(.textShape) else . end"; mb_invalid mb-noshape text-shape-missing
+mbmut mb-short "$SH1 then .textShape.runesMin = 999 else . end"; mb_invalid mb-short text-shape
+mbmut mb-rows "$SH1 then .textShape.rows = 9 else . end"; mb_invalid mb-rows text-shape
+mbmut mb-asciibytes "$SH1 then .textShape.bytesMax = .textShape.runesMax else . end"; mb_invalid mb-asciibytes text-shape
+mbmut mb-over4 "$SH1 then .textShape.bytesMax = 4001 else . end"; mb_invalid mb-over4 text-shape
+mbmut mb-nowide "$SH1 then .textShape.sample.width4 = 0 else . end"; mb_invalid mb-nowide text-shape
+mbmut mb-nocombining "$SH1 then .textShape.sample.combining = 0 else . end"; mb_invalid mb-nocombining text-shape
+mbmut mb-nosample "$SH1 then del(.textShape.sample) else . end"; mb_invalid mb-nosample text-shape
+mbmut mb-notexact "$DEL then .outcome.textExact = false else . end"; mb_invalid mb-notexact text-not-exact
+mbmut mb-exactgone "$DEL then del(.outcome.textExact) else . end"; mb_invalid mb-exactgone text-not-exact
+mbmut mb-exactnull "$DEL then .outcome.textExact = null else . end"; mb_invalid mb-exactnull text-not-exact
+mbmut mb-fit-notexact 'if .item == 5 and .case == "request-size" then .request.fitOutcome.textExact = false else . end'; mb_invalid mb-fit-notexact text-not-exact
+mbmut mb-fit-exactgone 'if .item == 5 and .case == "request-size" then del(.request.fitOutcome.textExact) else . end'; mb_invalid mb-fit-exactgone text-not-exact
+mbmut mb-resp-small "$SH1 then .traversal.responseBytes = 10 else . end"; mb_invalid mb-resp-small response-not-multibyte
+mbmut mb-resp-gone "$SH1 then del(.traversal.responseBytes) else . end"; mb_invalid mb-resp-gone response-not-multibyte
+mbmut mb-noagree "$BP then del(.agreement) else . end"; mb_invalid mb-noagree browser-agreement-missing
+mbmut mb-dig-differs "$BP then .agreement.digest.equal = false else . end"; mb_invalid mb-dig-differs browser-digest-disagrees
+mbmut mb-dig-unchecked "$BP then .agreement.digest = {checked: false, equal: null} else . end"; mb_invalid mb-dig-unchecked browser-agreement-missing
+mbmut mb-dom-none "$BP then .agreement.domText.rowsChecked = 0 else . end"; mb_invalid mb-dom-none browser-agreement-missing
+mbmut mb-dom-unchecked "$BP then .agreement.domText = {checked: false} else . end"; mb_invalid mb-dom-unchecked browser-agreement-missing
+mbmut mb-dom-bad "$BP then .agreement.domText.mismatched = 1 else . end"; mb_invalid mb-dom-bad browser-text-disagrees
+# The screen is the page the pager line names, every row of it expected, once, and every one compared: anything short of that is a disagreement, however many rows matched.
+mbmut mb-dom-member "$BP then .agreement.domText.membershipOk = false else . end"; mb_invalid mb-dom-member browser-text-disagrees
+mbmut mb-dom-notexact "$BP then .agreement.domText.exact = false else . end"; mb_invalid mb-dom-notexact browser-text-disagrees
+mbmut mb-dom-fewer "$BP then .agreement.domText.rowsOnScreen = 49 else . end"; mb_invalid mb-dom-fewer browser-text-disagrees
+mbmut mb-dom-uncompared "$BP then .agreement.domText.rowsChecked = 30 else . end"; mb_invalid mb-dom-uncompared browser-text-disagrees
+mbmut mb-dom-noexpected "$BP then del(.agreement.domText.expectedRows) else . end"; mb_invalid mb-dom-noexpected browser-text-disagrees
+mbmut mb-dom-zeroexpected "$BP then .agreement.domText.expectedRows = 0 | .agreement.domText.rowsOnScreen = 0 else . end"; mb_invalid mb-dom-zeroexpected browser-text-disagrees
+mbmut mb-dom-oldshape "$BP then .agreement.domText = {checked: true, rowsChecked: 50, mismatched: 0} else . end"; mb_invalid mb-dom-oldshape browser-text-disagrees
+# A row of one charset in a run of another is a disagreement between the rows and the settings.
+mut cs-disagree 'if .item == 3 and .case == "discovery-requester-10" then .charset = "multibyte" else . end'; expect_invalid cs-disagree settings-disagreement
+# ASCII rows keep the checks that do not depend on the charset: a deletion that was not exact, a browser digest that differs, a shape that is not one byte a rune.
+mut asc-notexact "$DEL then .outcome.textExact = false else . end"; expect_invalid asc-notexact text-not-exact
+mut asc-dig "$BP then .agreement = {digest: {checked: true, equal: false}} else . end"; expect_invalid asc-dig browser-digest-disagrees
+mut asc-dom-member "$BP then .agreement = {digest: {checked: true, equal: true}, domText: {checked: true, membershipOk: false, exact: false, expectedRows: 50, rowsOnScreen: 50, rowsChecked: 1, skipped: 0, mismatched: 0}} else . end"; expect_invalid asc-dom-member browser-text-disagrees
+mut asc-dom-bad "$BP then .agreement = {digest: {checked: true, equal: true}, domText: {checked: true, membershipOk: true, exact: false, expectedRows: 50, rowsOnScreen: 50, rowsChecked: 49, skipped: 1, mismatched: 1}} else . end"; expect_invalid asc-dom-bad browser-text-disagrees
+mut asc-dom-good "$BP then .agreement = {digest: {checked: true, equal: true}, domText: {checked: true, membershipOk: true, exact: true, expectedRows: 50, rowsOnScreen: 50, rowsChecked: 49, skipped: 1, mismatched: 0}} else . end"
+st="$(status_of "$WORK/e2.asc-dom-good")"; [[ "$(jq -r '.invalid | length' <<<"$st")" == 0 ]]
+mut asc-shape "$SH1 then .textShape = {rows: 10, runesMin: 1000, runesMax: 1000, bytesMin: 2000, bytesMax: 2000} else . end"; expect_invalid asc-shape text-shape
+mut asc-shape-ok "$SH1 then .textShape = {rows: 10, runesMin: 1000, runesMax: 1000, bytesMin: 1000, bytesMax: 1000} else . end"
+st="$(status_of "$WORK/e2.asc-shape-ok")"; [[ "$(jq -r .complete <<<"$st")" == true && "$(jq -r '.invalid | length' <<<"$st")" == 0 ]]
+
+# --- the matrix report over cells that are really full (scripts/reason-review-matrix.sh) -----------------------------------------------------------------------------------------------
+# The matrix's own self-test (make reason-review-scale-test) has stub cells that cannot be full. The positive control, and every way a FULL matrix is spoiled AFTER its rows are complete, is here, where the
+# generators of the full rows are: four cells (three ASCII layouts and the multibyte one) of consistent rows, environment, status and runner record, joined once as they are and then with one thing wrong each.
+MX="$WORK/matrix"; mkdir -p "$MX/base"
+MX_LIB="$(sha256sum "$HERE/qc1/lib.sh" | cut -d' ' -f1)"; MX_FACTS="$(sha256sum "$HERE/qc1/app-facts.json" | cut -d' ' -f1)"
+MX_CELLS=(ascii-spread ascii-tail ascii-head multibyte-spread)
+mx_base_cell() { # name rows-file: a complete cell with a status that is true of its rows (the runner record is made per case)
+  local name="$1" d="$MX/base/$1/qc1"
+  mkdir -p "$d"
+  jq -c --arg ly "${name#*-}" 'if (.status == "measured" or .status == "observation") and (.item == 3 or .item == 6 or .item == 9 or .item == 10) then .layout = $ly else . end' "$2" >"$d/measurements.jsonl"   # the rows of the cell are of its layout
+  jq -c --arg ly "${name#*-}" --arg cs "${name%%-*}" --arg lib "$MX_LIB" --arg facts "$MX_FACTS" '.settings += {layout:$ly, charset:$cs} | .maxRequestBytes = 6291456 | .incomplete = false
+    | (.sources[] | select(.path == "deploy/digitalocean/qc1/lib.sh") | .sha256) = $lib | (.sources[] | select(.path == "deploy/digitalocean/qc1/app-facts.json") | .sha256) = $facts' "$WORK/env.full" >"$d/environment.json"
+  qc1_evidence_status "$d/measurements.jsonl" 10000,100000,1000000 0,10,100,1000,10000 "$d/environment.json" "$HEAD_FAKE" 6291456 100000 >"$d/evidence-status.json"
+  [[ "$(jq -c '[.coverage.kind, .complete, .releaseEvidence]' "$d/evidence-status.json")" == '["full",true,true]' ]] || { echo "the matrix fixture cell $name is not full: $(jq -c '[.coverage, .missing[:2], .pending[:2], .invalid[:2]]' "$d/evidence-status.json")" >&2; exit 1; }
+}
+# The matrix script sources lib.sh itself and holds a cell to the real browser counts (1,000 and 10,000, and the dense 100,000), so the control's rows are of those counts and are judged with them here.
+QC1_BROWSER_COUNTS="$REAL_BROWSER_COUNTS"
+{ gen 10000,100000,1000000 0,10,100,1000,10000 100000; legacy_rows 10000,100000,1000000; } >"$WORK/full.real"
+jq -c "$MB" "$WORK/full.real" >"$WORK/full.real.mb"
+for c in ascii-spread ascii-tail ascii-head; do mx_base_cell "$c" "$WORK/full.real"; done
+mx_base_cell multibyte-spread "$WORK/full.real.mb"
+mx_runner() { # case-dir cell: the runner's record of a clean run of the cell, with the summary of the status the cell holds
+  local d="$1/$2/qc1"
+  jq -nc --arg dir "$d" --arg rev "$HEAD_FAKE" --slurpfile st "$d/evidence-status.json" '{schema:"fold/reason-review-scale/v1", revision:$rev, workingTreeClean:true, result:"partial",
+    steps:[{name:"qc1", exit:0, verdict:"pass", artifacts:$dir, summary:($st[0] | {complete, coverage:.coverage.kind, releaseEvidence, missing:(.missing | length), invalid:(.invalid | length), pending:(.pending | length), aborted:((.aborted // null) != null)})}]}' >"$1/$2/evidence.json"
+}
+MX_DIR=
+mx_case() { # name: a copy of the base cells with their runner records; MX_DIR is where it is
+  MX_DIR="$MX/case-$1"; rm -rf "$MX_DIR"; cp -a "$MX/base" "$MX_DIR"
+  local c; for c in "${MX_CELLS[@]}"; do mx_runner "$MX_DIR" "$c"; done
+}
+MX_RC=0
+mx_run() { # label: joins the cells of MX_DIR; MX_RC is the exit status, $MX/out-label.json the record
+  local a=() c; for c in "${MX_CELLS[@]}"; do a+=(--cell "$c=$MX_DIR/$c/qc1"); done
+  MX_RC=0; bash "$ROOT/scripts/reason-review-matrix.sh" --out "$MX/out-$1.json" --revision "$HEAD_FAKE" "${a[@]}" >"$MX/out-$1.txt" 2>&1 || MX_RC=$?
+}
+mx_pilot() { # label gap-pattern: PILOT (exit 10), and a gap matches the pattern
+  [[ "$MX_RC" == 10 && "$(jq -r .status "$MX/out-$1.json")" == PILOT ]] || { echo "matrix case $1: exit $MX_RC, status $(jq -r .status "$MX/out-$1.json" 2>/dev/null): $(cat "$MX/out-$1.txt")" >&2; exit 1; }
+  jq -e --arg p "$2" '.gaps | any(test($p))' "$MX/out-$1.json" >/dev/null || { echo "matrix case $1: no gap matches '$2': $(jq -c .gaps "$MX/out-$1.json")" >&2; exit 1; }
+}
+mx_edit() { # cell file jq-filter: rewrites a file of a cell of MX_DIR
+  local p="$MX_DIR/$1/qc1/$2"; jq -c "$3" "$p" >"$p.tmp" && mv "$p.tmp" "$p"
+}
+# The control: four consistent cells, a clean runner record each. This is the only way to FULL.
+mx_case control; mx_run control
+[[ "$MX_RC" == 0 && "$(jq -r .status "$MX/out-control.json")" == FULL && "$(jq -c .gaps "$MX/out-control.json")" == '[]' ]] || { echo "the control matrix is not FULL: exit $MX_RC: $(cat "$MX/out-control.json" | jq -c '.gaps' 2>/dev/null) $(cat "$MX/out-control.txt")" >&2; exit 1; }
+jq -e '.cells | length == 4 and all(.recompute.savedEqualsRecomputed == true and .evidence.releaseEvidence == true and .evidence.coverage == "full" and .judge.libMatchesRun and .judge.factsMatchRun and .settingsFull and .runner.step.summaryAgrees and .collectionFailed == null)' "$MX/out-control.json" >/dev/null
+jq -e '[.cells[] | select(.name == "multibyte-spread")] | .[0].exactness | (.deletionsChecked > 0 and .textExact == .deletionsChecked and .textNotExact == 0)' "$MX/out-control.json" >/dev/null
+# One case spoils each cell in a different way, so a joined record shows every way at once (each gap names its own cell and cause, and none can come from another cell's spoiling).
+# R1: complete inner records, and the nested run could not bring something out of the container (the wrapper rejects exactly this); a run the runner did not record, did not finish, or recorded as failed.
+mx_case outer
+printf '%s\n' '/work/prep (the browser runtime preparation) could not be copied out' 'the run inside could not be confirmed stopped before the copy' >"$MX_DIR/ascii-tail/qc1/COLLECTION-FAILED.txt"
+rm -f "$MX_DIR/ascii-head/evidence.json"
+jq -c '.steps[0].verdict = "fail" | .result = "fail"' "$MX_DIR/multibyte-spread/evidence.json" >"$MX_DIR/x.tmp" && mv "$MX_DIR/x.tmp" "$MX_DIR/multibyte-spread/evidence.json"
+jq -c '.steps[0].exit = 143 | .steps[0].verdict = "interrupted" | .result = "incomplete"' "$MX_DIR/ascii-spread/evidence.json" >"$MX_DIR/x.tmp" && mv "$MX_DIR/x.tmp" "$MX_DIR/ascii-spread/evidence.json"
+mx_run outer
+mx_pilot outer 'cell ascii-tail: the nested run left COLLECTION-FAILED.txt.*could not be copied out'
+mx_pilot outer 'cell ascii-head: no runner record'
+mx_pilot outer 'cell multibyte-spread: the runner recorded its QC-1 step as fail'
+mx_pilot outer 'cell ascii-spread: the runner recorded its QC-1 step as interrupted, exit 143'
+jq -e '[.gaps[] | select(test("ascii-tail"))] | length == 1' "$MX/out-outer.json" >/dev/null   # the rows of ascii-tail are complete, and the collection failure is the only thing named for it
+mx_case outer2
+jq -c '.workingTreeClean = false' "$MX_DIR/ascii-spread/evidence.json" >"$MX_DIR/x.tmp" && mv "$MX_DIR/x.tmp" "$MX_DIR/ascii-spread/evidence.json"
+jq -c '.steps[0].summary.collectionFailed = true' "$MX_DIR/ascii-head/evidence.json" >"$MX_DIR/x.tmp" && mv "$MX_DIR/x.tmp" "$MX_DIR/ascii-head/evidence.json"
+jq -c '.steps[0].summary.releaseEvidence = false' "$MX_DIR/ascii-tail/evidence.json" >"$MX_DIR/x.tmp" && mv "$MX_DIR/x.tmp" "$MX_DIR/ascii-tail/evidence.json"
+jq -c '.steps[0].artifacts = "/elsewhere/qc1"' "$MX_DIR/multibyte-spread/evidence.json" >"$MX_DIR/x.tmp" && mv "$MX_DIR/x.tmp" "$MX_DIR/multibyte-spread/evidence.json"
+mx_run outer2
+mx_pilot outer2 'cell ascii-spread: the runner record does not say the working tree was clean'
+mx_pilot outer2 'cell ascii-head: the runner recorded a collection failure'
+mx_pilot outer2 'cell ascii-tail: the runner.s summary of its QC-1 step differs'
+mx_pilot outer2 'cell multibyte-spread: the runner record.s qc1 step is for another directory'
+# R2: a status that was true of its rows, and the rows or the environment were changed or cut afterwards; a status of another run; an edited flag.
+mx_case status
+grep -v '"item":10,"case":"browser-panel-100000","size":1000000,' "$MX_DIR/ascii-head/qc1/measurements.jsonl" >"$MX_DIR/x.tmp" && mv "$MX_DIR/x.tmp" "$MX_DIR/ascii-head/qc1/measurements.jsonl"
+head -n "$(( $(wc -l <"$MX_DIR/ascii-tail/qc1/measurements.jsonl") / 2 ))" "$MX_DIR/ascii-tail/qc1/measurements.jsonl" >"$MX_DIR/x.tmp" && mv "$MX_DIR/x.tmp" "$MX_DIR/ascii-tail/qc1/measurements.jsonl"
+cp "$MX_DIR/multibyte-spread/qc1/evidence-status.json" "$MX_DIR/ascii-spread/qc1/evidence-status.json"
+mx_edit multibyte-spread evidence-status.json '.releaseEvidence = false'
+mx_run status
+mx_pilot status 'cell ascii-head: the saved evidence-status.json differs from the status recomputed'
+mx_pilot status 'cell ascii-head: 1 expected measurement.s. missing, first: item 10 size 1000000 browser-panel-100000'
+mx_pilot status 'cell ascii-head: coverage is pilot, not full'
+mx_pilot status 'cell ascii-tail: the saved evidence-status.json differs'
+mx_pilot status 'cell ascii-spread: the saved evidence-status.json differs'
+mx_pilot status 'cell multibyte-spread: the saved evidence-status.json differs.*releaseEvidence'
+mx_case environment
+mx_edit ascii-head environment.json '.settings.targetReasonLen = 200'
+mx_edit ascii-spread environment.json '.limitsApplied = false'
+mx_edit ascii-tail environment.json '.incomplete = true'
+mx_edit multibyte-spread environment.json '(.sources[] | select(.path | endswith("qc1/lib.sh")) | .sha256) = "'"$(printf '0%.0s' {1..64})"'"'
+mx_run environment
+mx_pilot environment 'cell ascii-head: the saved evidence-status.json differs'
+mx_pilot environment 'cell ascii-spread: the saved evidence-status.json differs'
+mx_pilot environment 'cell ascii-tail: its environment record is marked incomplete'
+mx_pilot environment 'cell multibyte-spread: qc1/lib.sh here is not the file the run recorded'
+# ... a status that is honest about rows that are not clean (the matrix names the finding, not only a disagreement), and settings that are not the full matrix's or are another cell's.
+mx_case rows
+mx_edit ascii-head measurements.jsonl 'if .item == 8 then .generic.source = "harness" else . end'
+qc1_evidence_status "$MX_DIR/ascii-head/qc1/measurements.jsonl" 10000,100000,1000000 0,10,100,1000,10000 "$MX_DIR/ascii-head/qc1/environment.json" "$HEAD_FAKE" 6291456 100000 >"$MX_DIR/ascii-head/qc1/evidence-status.json"; mx_runner "$MX_DIR" ascii-head
+mx_edit ascii-tail environment.json '.settings.sizes = "10000,100000"'
+mx_edit multibyte-spread environment.json '.settings.charset = "ascii"'
+mx_run rows
+mx_pilot rows 'cell ascii-head: [0-9]+ invalid finding.s., first:'
+jq -e '[.gaps[] | select(test("cell ascii-head: the saved evidence-status.json differs"))] | length == 0' "$MX/out-rows.json" >/dev/null   # an honest status is not called a mismatch
+mx_pilot rows 'cell ascii-tail: its settings do not name the full matrix'
+mx_pilot rows 'cell multibyte-spread: its settings name another layout or charset'
+mx_case revision; mx_edit ascii-tail environment.json '.revision = "2222222222222222222222222222222222222222"'; mx_run revision; mx_pilot revision 'more than one revision'
+# R2 (layout): the rows that load the scenario are of the layout the cell names. A head label over rows measured in the spread layout, a browser row that names no layout, and a deletion row of another
+# layout each make the recomputed status carry an invalid finding for that cell (the saved status is made honest first, so the layout is the only thing wrong), and nothing is named for the untouched cell.
+mx_case layout
+mx_edit ascii-head measurements.jsonl 'if .layout != null then .layout = "spread" else . end'
+mx_edit ascii-tail measurements.jsonl 'if .item == 10 and .case == "browser-panel-1000" and .size == 10000 then del(.layout) else . end'
+mx_edit multibyte-spread measurements.jsonl 'if .item == 6 and .case == "delete-subject-100-mixed" and .size == 100000 then .layout = "tail" else . end'
+for c in ascii-head ascii-tail multibyte-spread; do
+  qc1_evidence_status "$MX_DIR/$c/qc1/measurements.jsonl" 10000,100000,1000000 0,10,100,1000,10000 "$MX_DIR/$c/qc1/environment.json" "$HEAD_FAKE" 6291456 100000 >"$MX_DIR/$c/qc1/evidence-status.json"
+  [[ "$(jq -r '[.invalid[] | select(.failure == "settings-disagreement" and .what == "layout")] | length > 0' "$MX_DIR/$c/qc1/evidence-status.json")" == true ]] || { echo "matrix layout case: $c has no layout finding" >&2; exit 1; }
+  mx_runner "$MX_DIR" "$c"
+done
+mx_run layout
+for c in ascii-head ascii-tail multibyte-spread; do mx_pilot layout "cell $c: [0-9]+ invalid finding.s., first: settings-disagreement"; done
+jq -e '[.gaps[] | select(test("cell ascii-spread"))] | length == 0' "$MX/out-layout.json" >/dev/null || { echo "the untouched cell is named: $(jq -c .gaps "$MX/out-layout.json")" >&2; exit 1; }
+jq -e '([.cells[] | select(.name == "ascii-spread") | .rowLayouts | map(.layout)] == [["spread"]]) and ([.cells[] | select(.name == "ascii-head") | .rowLayouts | map(.layout)] == [["spread"]]) and ([.cells[] | select(.name == "ascii-tail") | .rowLayouts | map(.layout) | sort] == [["none", "tail"]])' "$MX/out-layout.json" >/dev/null || { echo "the cells do not carry the layouts of their rows: $(jq -c '[.cells[] | {name, rowLayouts}]' "$MX/out-layout.json")" >&2; exit 1; }
+# the control's cells each carry only their own layout
+jq -e '.cells | all(. as $c | ($c.rowLayouts | map(.layout)) == [($c.name | sub("^[a-z]+-"; ""))])' "$MX/out-control.json" >/dev/null || { echo "the control cells carry another layout than their name: $(jq -c '[.cells[] | {name, rowLayouts}]' "$MX/out-control.json")" >&2; exit 1; }
+QC1_BROWSER_COUNTS=10,100   # back to the fixture's own counts for what follows
+
+# --- recording a browser case (R4): the figures reach jq through a file -------------------------------------------------------------------------------------------------------------
+# The real record() of the runner, taken from its source, appends a browser row whose panel result holds the final screen's reason texts: 50 rows of 1,000 mixed 1- to 4-byte runes (61 bytes per 21 runes, about
+# 2.9 bytes a rune), over 140 KB, which is more than the 128 KiB Linux allows as one process argument. The row must be appended whole, byte for byte. (A subshell: its variables are the runner's, not this script's.)
+(
+  eval "$(sed -n '/^record() {/,/^}/p' "$RUNNER_SRC")"
+  MB_TEXT="$(jq -nr '[97,98,99, 233,246,252,769, 8364,8482,8226,8230,8212,8211, 128512,128513,128514,128515,128516,128517,128518,128519] as $p | [range(0; 1000) | $p[. % ($p | length)]] | implode')"
+  [[ "$(jq -nr --arg t "$MB_TEXT" '$t | length')" == 1000 && "$(jq -nr --arg t "$MB_TEXT" '$t | utf8bytelength')" -gt 2800 ]]
+  jq -nc --arg t "$MB_TEXT" '{captured: true, nav: "Reasons 1 to 50 of 1000", navCount: 1, rows: [range(0; 50) | {id: ((1000 + .) | tostring), reasonElements: 1, text: $t}]}' >"$WORK/rec-screen.json"
+  jq -c '{reasons: 1000, variant: "standard", browser: {walkTotal: 1000, screen: .}, agreement: {digest: {checked: true, equal: true}}}' "$WORK/rec-screen.json" >"$WORK/rec-extra.json"
+  REC_EXTRA="$(cat "$WORK/rec-extra.json")"
+  (( $(printf '%s' "$REC_EXTRA" | wc -c) > 131072 )) || { echo "the recording fixture is not larger than one process argument (128 KiB): $(printf '%s' "$REC_EXTRA" | wc -c) bytes" >&2; exit 1; }
+  MEASUREMENTS="$WORK/rec-measurements.jsonl"; : >"$MEASUREMENTS"
+  # shellcheck disable=SC2034  # read by the runner's record(), which was eval'd from its source
+  LAYOUT=spread CHARSET=multibyte REASON_LEN=200 TARGET_REASON_LEN=1000 CURRENT_WORKERS=0 CASE_SEQ=0
+  record 10 browser-panel-1000 10000 "$REC_EXTRA"
+  record 10 browser-panel-10000 10000 "$REC_EXTRA"
+  [[ "$(wc -l <"$MEASUREMENTS")" == 2 && "$(jq -sc '[.[] | [.seq, .item, .case, .layout, .charset, .size]]' "$MEASUREMENTS")" == '[[1,10,"browser-panel-1000","spread","multibyte",10000],[2,10,"browser-panel-10000","spread","multibyte",10000]]' ]] || { echo "record() did not append two rows: $(head -c 300 "$MEASUREMENTS")" >&2; exit 1; }
+  jq -es --arg t "$MB_TEXT" --slurpfile s "$WORK/rec-screen.json" 'all(.[]; (.browser.screen == $s[0]) and (.browser.screen.rows | (length == 50) and all(.[]; .text == $t)) and .agreement.digest.equal == true and .table.backgroundRows == 10000)' "$MEASUREMENTS" >/dev/null || { echo "record() altered the screen text" >&2; exit 1; }
+  record 2 unrelated 100 '{"expect":{"items":0}}'
+  [[ "$(tail -n 1 "$MEASUREMENTS" | jq -c '[.item, .case, .expect.items]')" == '[2,"unrelated",0]' ]]
+)
+# the runner's own source: a figure never goes through a process argument again
+if sed -n '/^record() {/,/^}/p' "$RUNNER_SRC" | grep -q -- '--argjson extra'; then echo 'qc1: record() passes the figures as a process argument' >&2; exit 1; fi
+sed -n '/^record() {/,/^}/p' "$RUNNER_SRC" | grep -qF -- '--slurpfile extra "$extra_file"'
+mut asc-noagree-ok "$BP then .agreement = {digest: {checked: false, equal: null}} else . end"   # an ASCII run need not have compared; it must not have found a difference
+st="$(status_of "$WORK/e2.asc-noagree-ok")"; [[ "$(jq -r .complete <<<"$st")" == true ]]
+
 # (2) The app's peak over an operation.
 printf '100 5000\n120 5000\n' >"$WORK/app.a"
 [[ "$(qc1_app_peak 5000 5000 "$WORK/app.a")" == '0 2 false' ]]
@@ -1853,6 +2283,58 @@ r_l="$(grep -n 'hwm_reset="\$(app_status_kb VmHWM' <<<"$i_body" | cut -d: -f1)";
 grep -qF "APP_HWM_RESET\" == true ]] || APP_PEAK_KB=null" <<<"$i_body"        # an unverified reset still yields no figure
 sed -n '/^app_status_kb() {/,/^}/p' "$RUNNER_SRC" | grep 'for i in 1 2 3' >/dev/null
 grep -qF 'appMemSamples:$appSamples, appHwmBelowBaseline:$appBelow' "$RUNNER_SRC"
+
+# (2b) The startup app-memory calibration: the raw readings ride along, the verdict rule is unchanged.
+# A genuine lowering passes with its numbers; growth, a failed write and an unreadable re-read each
+# fail with the numbers that tell them apart. A failed write never verifies, even when the later mark
+# is below the earlier one; malformed reads are not "ok". An unchanged mark still passes the old rule,
+# so the record carries the numbers without calling equality a demonstrated reset.
+[[ "$(qc1_calibration_app_record 10000 10000 0 10000)" == '{"ok":true,"hwmReset":true,"rssKb":10000,"hwmBeforeKb":10000,"resetWriteRc":0,"hwmAfterKb":10000}' ]]
+[[ "$(qc1_calibration_app_record 12000 15000 0 9000)" == '{"ok":true,"hwmReset":true,"rssKb":12000,"hwmBeforeKb":15000,"resetWriteRc":0,"hwmAfterKb":9000}' ]]
+[[ "$(qc1_calibration_app_record 10000 10000 0 11000)" == '{"ok":true,"hwmReset":false,"rssKb":10000,"hwmBeforeKb":10000,"resetWriteRc":0,"hwmAfterKb":11000}' ]]
+[[ "$(qc1_calibration_app_record 40000 50000 0 50000)" == '{"ok":true,"hwmReset":true,"rssKb":40000,"hwmBeforeKb":50000,"resetWriteRc":0,"hwmAfterKb":50000}' ]]
+[[ "$(qc1_calibration_app_record 10000 12000 1 9000)" == '{"ok":true,"hwmReset":false,"rssKb":10000,"hwmBeforeKb":12000,"resetWriteRc":1,"hwmAfterKb":9000}' ]]
+[[ "$(qc1_calibration_app_record 10000 12000 0 "")" == '{"ok":true,"hwmReset":false,"rssKb":10000,"hwmBeforeKb":12000,"resetWriteRc":0,"hwmAfterKb":null}' ]]
+[[ "$(qc1_calibration_app_record 10000 12000 2 abc)" == '{"ok":true,"hwmReset":false,"rssKb":10000,"hwmBeforeKb":12000,"resetWriteRc":2,"hwmAfterKb":null}' ]]
+[[ "$(qc1_calibration_app_record "" 12000 "" "")" == '{"ok":false,"hwmReset":false,"rssKb":null,"hwmBeforeKb":12000,"resetWriteRc":null,"hwmAfterKb":null}' ]]
+[[ "$(qc1_calibration_app_record 10000 x 0 9000)" == '{"ok":false,"hwmReset":false,"rssKb":10000,"hwmBeforeKb":null,"resetWriteRc":0,"hwmAfterKb":9000}' ]]
+# The verdict the judge will reach on the calibration block alone: empty when it passes, naming each
+# block in the judge's own words when it fails, and failing closed on an unreadable record.
+jq -nc '{gate:{ok:true},dbMemory:{ok:true,samples:10},appMemory:{ok:true,hwmReset:true},wal:{ok:true},commit:{ok:true}}' >"$WORK/cal.ok.json"
+[[ -z "$(qc1_calibration_problems "$WORK/cal.ok.json")" ]]
+jq -c '.appMemory.hwmReset = false' "$WORK/cal.ok.json" >"$WORK/cal.reset.json"
+[[ "$(qc1_calibration_problems "$WORK/cal.reset.json")" == 'the app peak-memory reset failed' ]]
+jq -c '.appMemory.hwmReset = false | .dbMemory.samples = 2' "$WORK/cal.ok.json" >"$WORK/cal.two.json"
+[[ "$(qc1_calibration_problems "$WORK/cal.two.json")" == $'database memory sampling is too sparse to trust (fewer than 3 samples in the calibration half second)\nthe app peak-memory reset failed' ]]
+jq -c '.gate.ok = false' "$WORK/cal.ok.json" >"$WORK/cal.gate.json"
+[[ "$(qc1_calibration_problems "$WORK/cal.gate.json")" == 'the gate sampler did not see a known hold' ]]
+refused '' qc1_calibration_problems "$WORK/no-such-cal.json"
+printf '  \n' >"$WORK/cal.empty.json"
+refused '' qc1_calibration_problems "$WORK/cal.empty.json"
+cat "$WORK/cal.ok.json" "$WORK/cal.ok.json" >"$WORK/cal.multiple.json"
+refused '' qc1_calibration_problems "$WORK/cal.multiple.json"
+# The judge reads the same flags with or without the additive fields: the record stays compatible both ways.
+jq -c '.calibration.appMemory += {rssKb:10000, hwmBeforeKb:12000, resetWriteRc:0, hwmAfterKb:9000}' "$WORK/env.json" >"$WORK/env.plus.json"
+[[ -z "$(qc1_environment_problems "$WORK/env.plus.json" "$HEAD_FAKE")" ]]
+jq -c '.calibration.appMemory.hwmReset = false' "$WORK/env.json" >"$WORK/env.bad.json"
+jq -c '.calibration.appMemory += {rssKb:10000, hwmBeforeKb:12000, resetWriteRc:0, hwmAfterKb:13000}' "$WORK/env.bad.json" >"$WORK/env.badplus.json"
+[[ "$(qc1_environment_problems "$WORK/env.bad.json" "$HEAD_FAKE")" == "$(qc1_environment_problems "$WORK/env.badplus.json" "$HEAD_FAKE")" ]]
+[[ "$(qc1_environment_problems "$WORK/env.badplus.json" "$HEAD_FAKE")" == *'peak-memory reset'* ]]
+# The runner records through the helper and gates before measuring: the helper decides the verdict,
+# the gate stops on the judge's own verdict through the aborted-evidence finalizer, before the smoke
+# and before any size is measured. No new process, PID file, tolerance or judge change rides along.
+grep -qF 'app_mem_json="$(qc1_calibration_app_record "$rss" "$hwm0" "$reset_rc" "$hwm1")"' "$RUNNER_SRC"
+grep -qF '(( hwm1 <= hwm0 ))' "$HERE/qc1/lib.sh"
+g_def="$(grep -n '^calibration_gate() {' "$RUNNER_SRC" | cut -d: -f1)"
+g_call="$(grep -n '^calibration_gate$' "$RUNNER_SRC" | cut -d: -f1)"
+smoke_l="$(grep -n '^  legacy_smoke$' "$RUNNER_SRC" | cut -d: -f1)"
+sizes_l="$(grep -n 'for n in "${SIZE_LIST\[@\]}"' "$RUNNER_SRC" | head -n 1 | cut -d: -f1)"
+[[ -n "$g_def$g_call$smoke_l$sizes_l" && "$g_def" -lt "$g_call" && "$g_call" -lt "$smoke_l" && "$g_call" -lt "$sizes_l" ]]
+g_body="$(sed -n '/^calibration_gate() {/,/^}/p' "$RUNNER_SRC")"
+grep -qF 'qc1_calibration_problems "$WORK/calibration.json"' <<<"$g_body"
+grep -qF 'finalize_evidence aborted 1' <<<"$g_body"
+grep -qF 'exit 1' <<<"$g_body"
+if grep -qF 'appMemory:{ok:$hwm, hwmReset:$reset' "$RUNNER_SRC"; then echo 'qc1: calibrate still writes the bare flag record' >&2; exit 1; fi
 
 # (3) auto_explain: the capture's ALTER SYSTEM must not be outranked by the command line (pilot2 logged no plan at all).
 db_run="$(sed -n '/^DB_CID="\$(docker run -d/,/CONTAINERS+=("\$DB_CID")/p' "$RUNNER_SRC")"
@@ -1896,11 +2378,11 @@ LOG
 printf '%s\n' '2026-11-07 14:30:50.046 UTC [1] LOG:  received SIGHUP, reloading configuration files' >"$WORK/pg.pilot2"
 [[ "$(qc1_plan_counts "$WORK/pg.pilot2")" == '{"scanner-initial":0,"scanner-continuation":0,"page-items":0,"delete-set":0,"blank-batch":0}' ]]       # what the pilot saw: nothing
 # === the audit-retention report statement: the explained order controls, and the planner estimates of both scanner probes ===============================================
-# (1) THE REAL STATEMENT. testdata/qc1-pilot3-audit-retention.log is the pilot3 server log of ONE deletion (account 46): the application's own audit UPDATE, the report statement with its
-# auto_explain plan (a JIT section in it) and the diagnostic count that follows, all in backend 12393. The evidence function is run on it as the runner runs it.
+# (1) THE REAL STATEMENT. testdata/qc1-pilot3-audit-retention.log is the pilot3 server log of ONE deletion (account 46): the application's own audit UPDATE and the report statement with its
+# auto_explain plan (a JIT section in it), in backend 12393. PILOT3_AUDIT_LOG (above) is that log with the current build's successor block after it. The evidence function is run on it as the runner runs it.
 [[ "$(qc1_audit_pieces | wc -l)" == 4 ]]   # the facts hold the four fixed pieces around the classification, the subject mention and the malformed-link term
 [[ "$(jq -c '.identity.fixedPieceLengths' <<<"$AUD_EV")" == '[52,47,6,96]' ]] || { echo "the audit report statement changed (qc1/app-facts.json): review the explained-delete evidence and the fixture log: $(jq -c .identity.fixedPieceLengths <<<"$AUD_EV")" >&2; exit 1; }
-[[ "$(jq -c '[.statementBlocks, .identity.prefixOk, .identity.suffixOk, .identity.piecesInOrder, .identity.variablePartsNonEmpty, .identity.parametersAreTarget, .identity.backendPid, .identity.auditUpdatesBefore, .identity.malformedCountAfter, .identity.queryTextBytes, .rowLocks, .lockWaits.logged, .lockWaits.count, .durationMs]' <<<"$AUD_EV")" == '[1,true,true,true,true,true,"12393",1,1,14255,false,true,0,2153.339]' ]]
+[[ "$(jq -c '[.statementBlocks, .identity.prefixOk, .identity.suffixOk, .identity.piecesInOrder, .identity.variablePartsNonEmpty, .identity.parametersAreTarget, .identity.backendPid, .identity.auditUpdatesBefore, .identity.successor.blocksInLog, .identity.queryTextBytes, .rowLocks, .lockWaits.logged, .lockWaits.count, .durationMs, .identity.successor.found, .identity.proven]' <<<"$AUD_EV")" == '[1,true,true,true,true,true,"12393",1,1,14255,false,true,0,2153.339,true,true]' ]]
 [[ "$(jq -r '.identity.queryTextSha256' <<<"$AUD_EV")" == 8e6e08f3bf5708ec8eb6e2c8d9aa1b343c8569dc2e32dd6131ca5d3930483869 ]]
 # the plan, parsed: the planner ESTIMATES beside what happened, the Seq Scan that removed 78,521 rows, and the JIT section that is 97% of the statement
 [[ "$(jq -c '.plan.nodes[0] | [.nodeType, .startupCost, .totalCost, .planRows, .width, .actualTotalMs, .actualRows, .sharedHit, .sharedRead]' <<<"$AUD_EV")" == '["GroupAggregate",9615677.90,9658395.74,606,72,2153.337,0,2827,0]' ]]
@@ -1916,9 +2398,11 @@ sed '13,105d' "$PILOT3_AUDIT_LOG" >"$WORK/aud.none"; [[ "$(aud "$WORK/aud.none" 
 : >"$WORK/aud.empty"; [[ "$(aud "$WORK/aud.empty" | jq -c .)" == '{"statementBlocks":0}' ]]
 { cat "$PILOT3_AUDIT_LOG"; sed -n '13,105p' "$PILOT3_AUDIT_LOG"; } >"$WORK/aud.two"; [[ "$(aud "$WORK/aud.two" | jq '.statementBlocks')" == 2 ]]   # two candidate statements
 [[ "$(aud "$PILOT3_AUDIT_LOG" 47 | jq -c '[.identity.parametersAreTarget, .identity.targetUserId]')" == '[false,47]' ]]               # another account's deletion
-sed '13s/\[12393\]/[777]/' "$PILOT3_AUDIT_LOG" >"$WORK/aud.pid"; [[ "$(aud "$WORK/aud.pid" | jq -c '[.identity.backendPid, .identity.auditUpdatesBefore, .identity.malformedCountAfter]')" == '["777",0,0]' ]]
-sed '1,12d' "$PILOT3_AUDIT_LOG" >"$WORK/aud.noupd"; [[ "$(aud "$WORK/aud.noupd" | jq -c '[.identity.auditUpdatesBefore, .identity.malformedCountAfter]')" == '[0,1]' ]]
-sed '106,$d' "$PILOT3_AUDIT_LOG" >"$WORK/aud.nocount"; [[ "$(aud "$WORK/aud.nocount" | jq -c '[.identity.auditUpdatesBefore, .identity.malformedCountAfter]')" == '[1,0]' ]]
+sed '13s/\[12393\]/[777]/' "$PILOT3_AUDIT_LOG" >"$WORK/aud.pid"; [[ "$(aud "$WORK/aud.pid" | jq -c '[.identity.backendPid, .identity.auditUpdatesBefore, .identity.successor.found, .identity.proven]')" == '["777",0,false,false]' ]]
+sed '1,12d' "$PILOT3_AUDIT_LOG" >"$WORK/aud.noupd"; [[ "$(aud "$WORK/aud.noupd" | jq -c '[.identity.auditUpdatesBefore, .identity.successor.found, .identity.proven]')" == '[0,true,false]' ]]
+sed '106,$d' "$PILOT3_AUDIT_LOG" >"$WORK/aud.nosucc"; [[ "$(aud "$WORK/aud.nosucc" | jq -c '[.identity.auditUpdatesBefore, .identity.successor.found, .identity.proven]')" == '[1,false,false]' ]]
+# the pilot3 log AS CAPTURED ends in the removed diagnostic count: a count of an obsolete statement is no successor, so its report is not proven for the current build
+[[ "$(aud "$PILOT3_RAW" | jq -c '[.identity.auditUpdatesBefore, .identity.successor.found, .identity.successor.blocksInLog, .identity.proven]')" == '[1,false,0,false]' ]]
 sed "s/GROUP BY class, action/GROUP BY class/" "$PILOT3_AUDIT_LOG" >"$WORK/aud.suffix"; [[ "$(aud "$WORK/aud.suffix" | jq -c '[.identity.prefixOk, .identity.suffixOk]')" == '[true,false]' ]]   # same start, a different end
 sed "s/ AS class FROM audit_logs WHERE ip <> '' AND ((/ AS class FROM audit_logs WHERE ((/" "$PILOT3_AUDIT_LOG" >"$WORK/aud.middle"; [[ "$(aud "$WORK/aud.middle" | jq -c '.identity.piecesInOrder')" == false ]]   # a fixed middle piece gone
 sed '/^\t\(JIT:\|  Functions:\|  Options:\|  Timing:\)/d' "$PILOT3_AUDIT_LOG" >"$WORK/aud.nojit"; [[ "$(aud "$WORK/aud.nojit" | jq -c '[.statementBlocks, .plan.jit]')" == '[1,null]' ]]   # a plan without a JIT section is still a plan
@@ -1937,7 +2421,20 @@ exinv ex-two '.auditRetention.statementBlocks = 2' audit-statement-ambiguous
 for k in prefixOk suffixOk piecesInOrder variablePartsNonEmpty parametersAreTarget; do exinv "ex-id-$k" ".auditRetention.identity.$k = false" audit-statement-unproven; done
 exinv ex-id-pid '.auditRetention.identity.backendPid = ""' audit-statement-unproven
 exinv ex-id-before '.auditRetention.identity.auditUpdatesBefore = 0' audit-statement-unproven
-exinv ex-id-after '.auditRetention.identity.malformedCountAfter = 0' audit-statement-unproven
+exinv ex-id-proven '.auditRetention.identity.proven = false' audit-statement-unproven
+exinv ex-id-proven-gone 'del(.auditRetention.identity.proven)' audit-statement-unproven
+exinv ex-id-reportblocks '.auditRetention.identity.reportBlocks = 2' audit-statement-unproven
+exinv ex-id-reportline-gone 'del(.auditRetention.identity.reportLine)' audit-statement-unproven
+exinv ex-id-succ-gone 'del(.auditRetention.identity.successor)' audit-statement-unproven
+exinv ex-id-succ-null '.auditRetention.identity.successor = null' audit-statement-unproven
+exinv ex-id-succ-found '.auditRetention.identity.successor.found = false' audit-statement-unproven
+exinv ex-id-succ-text '.auditRetention.identity.successor.textMatchesSource = false' audit-statement-unproven
+exinv ex-id-succ-pid '.auditRetention.identity.successor.backendPid = "999"' audit-statement-unproven
+exinv ex-id-succ-params '.auditRetention.identity.successor.parameters = "$1 = '"'"'47'"'"'"' audit-statement-unproven
+exinv ex-id-succ-params-extra '.auditRetention.identity.successor.parameters = "$1 = '"'"'46'"'"', $2 = '"'"'46'"'"'"' audit-statement-unproven
+exinv ex-id-succ-count '.auditRetention.identity.successor.blocksInLog = 2' audit-statement-unproven
+exinv ex-id-succ-count-zero '.auditRetention.identity.successor.blocksInLog = 0' audit-statement-unproven
+exinv ex-id-succ-before '.auditRetention.identity.successor.line = 1' audit-statement-unproven       # logged before the report
 exinv ex-id-sha '.auditRetention.identity.queryTextSha256 = "xyz"' audit-statement-unproven
 exinv ex-id-gone 'del(.auditRetention.identity)' audit-statement-unproven
 exinv ex-nodes-gone '.auditRetention.plan.nodes = []' audit-plan-incomplete
@@ -2084,6 +2581,57 @@ for nm in cut3 cut7 other5 other8 arr-scalar extra gap swapped noparams t-op t-n
   mut "ev-$nm" "$EX then .auditRetention = $(pev "$nm" | jq -c .) else . end"; expect_invalid "ev-$nm" audit-statement-unproven
 done
 mut ev-ok "$EX then .auditRetention = $(pev arr-ids | jq -c .) else . end"; [[ "$(jq -r .complete <<<"$(status_of "$WORK/e2.ev-ok")")" == true ]]
+# (a2) THE REAL CURRENT LOG AND ITS SUCCESSOR. testdata/qc1-current-audit-retention.log is lines 620 to 935, unmodified, of the server log of one real explained deletion of account 13 by the current build
+# (the T294 matrix cell ascii-spread, size 10000, order-control-delete-start-explained): the erasure's six IP UPDATEs and five metadata UPDATEs, the report statement with its plan, and the first query of
+# conversion discovery, all in backend 661. The earlier judge required a later "SELECT count(*) FROM audit_logs WHERE ip <> ''" that the application no longer sends, so it marked this row, and 23 like it,
+# audit-statement-unproven. The report is now tied to its deletion by what the application sends after it: the facts file's successor statement, the first one its backend logs, with the deleted account as
+# its only argument, the only such block in the log. The source log (162,294 bytes, sha256 2d212d3237b3cd2b33d08aaf736506926d1d17a0644fbbd9bc5e79737ce7a989) stays outside the checkout with its matrix.
+[[ "$(sha256sum "$CURRENT_AUDIT_LOG" | cut -d' ' -f1)" == 04a3b9b82937cbcfaa30f99d29fda137a6aa3790c002ce75f2a525e9084ad6f8 ]]
+[[ "$(qc1_log_blocks "$CURRENT_AUDIT_LOG" | awk -F'\t' 'index($4, "SELECT count(*) FROM audit_logs WHERE ip <> ") == 1 { c++ } END { print c + 0 }')" == 0 ]]   # the removed diagnostic is not in the real log
+grep -qF 'SELECT count(*) FROM audit_logs WHERE ip <> ' "$HERE/qc1/lib.sh" && exit 1                                                                                     # and the harness does not look for it
+CUR_EV="$(aud "$CURRENT_AUDIT_LOG" 13)"
+[[ "$(jq -c '[.statementBlocks, .identity.proven, .identity.backendPid, .identity.reportBlocks, .identity.auditUpdatesBefore, .identity.queryTextBytes, .identity.queryTextSha256, .durationMs, (.plan.nodes | length)]' <<<"$CUR_EV")" == '[1,true,"661",1,6,14255,"8e6e08f3bf5708ec8eb6e2c8d9aa1b343c8569dc2e32dd6131ca5d3930483869",0.082,23]' ]]
+[[ "$(jq -c '[.identity.reportLine, (.identity.successor | [.found, .line, .backendPid, .textMatchesSource, .parameters, .blocksInLog, .textBytes])]' <<<"$CUR_EV")" == '[210,[true,299,"661",true,"$1 = '"'"'13'"'"'",1,457]]' ]]
+jq -e '.identity.proof | test("conversion discovery") and (test("NOT PROVEN") | not)' <<<"$CUR_EV" >/dev/null
+# the judge accepts the real current row, and its summary says the identity is proven
+mut cur-ok "$EX then .auditRetention = $(jq -c . <<<"$CUR_EV") | .explained.targetUserId = 13 else . end"; [[ "$(jq -r .complete <<<"$(status_of "$WORK/e2.cur-ok")")" == true ]]
+[[ "$(jq -c '.confounding.explainedOrderControls | map(select(.size == 100 and .case == "order-control-delete-end-explained") | .identityProven)' <<<"$(status_of "$WORK/e2.cur-ok")")" == '[true]' ]]
+# Each change to the real log, or to who it is judged for, leaves the report NOT proven; the evidence says so (identity.proven false and a proof text that says NOT PROVEN) and the judge agrees, and the
+# summary's identityProven follows the judge. A duplicated report block is the one ambiguity, answered as such.
+curc() { # name failure [target]: the evidence of $WORK/cur.<name> is not proven; the judge answers failure; the summary's identityProven is false
+  local ev t="${3:-13}" st
+  ev="$(aud "$WORK/cur.$1" "$t")"
+  if [[ "$(jq -r '.identity.proven' <<<"$ev")" != false ]] || ! jq -e '.identity.proof | startswith("NOT PROVEN")' <<<"$ev" >/dev/null; then echo "cur.$1: the evidence says proven: $(jq -c .identity <<<"$ev")" >&2; exit 1; fi
+  mut "cur-$1" "$EX then .auditRetention = $(jq -c . <<<"$ev") | .explained.targetUserId = $t else . end"; expect_invalid "cur-$1" "$2"
+  st="$(status_of "$WORK/e2.cur-$1")"
+  [[ "$(jq -c '.confounding.explainedOrderControls | map(select(.size == 100 and .case == "order-control-delete-end-explained") | .identityProven)' <<<"$st")" == '[false]' ]] || { echo "cur.$1: the summary says the identity is proven" >&2; exit 1; }
+}
+CUR="$CURRENT_AUDIT_LOG"
+# the successor: altered text (a changed predicate; the same start with a different end; one with a different projection), another backend, another account, parameters missing, truncated or extended
+sed "303s/r.status = 'approved'/r.status = 'pending'/" "$CUR" >"$WORK/cur.s-text";                       curc s-text audit-statement-unproven
+sed '303s/r.decided_by = \$1$/r.decided_by = $1 OR true/' "$CUR" >"$WORK/cur.s-end";                   curc s-end audit-statement-unproven
+sed '300s/SELECT r.id,/SELECT r.id, r.status,/' "$CUR" >"$WORK/cur.s-proj";                            curc s-proj audit-statement-unproven
+sed '299s/\[661\]/[777]/' "$CUR" >"$WORK/cur.s-pid";                                                    curc s-pid audit-statement-unproven
+sed "304s/\\\$1 = '13'/\$1 = '14'/" "$CUR" >"$WORK/cur.s-uid";                                          curc s-uid audit-statement-unproven
+sed '304d' "$CUR" >"$WORK/cur.s-noparams";                                                              curc s-noparams audit-statement-unproven
+sed "304s/\$/, \\\$2 = '13'/" "$CUR" >"$WORK/cur.s-extra";                                              curc s-extra audit-statement-unproven
+sed '299,$d' "$CUR" >"$WORK/cur.s-gone";                                                                curc s-gone audit-statement-unproven
+{ sed -n '1,298p' "$CUR"; sed -n '1,11p' "$CUR"; sed -n '299,316p' "$CUR"; } >"$WORK/cur.s-notfirst";   curc s-notfirst audit-statement-unproven   # another statement of the backend between the two
+{ sed -n '1,209p' "$CUR"; sed -n '299,316p' "$CUR"; sed -n '210,298p' "$CUR"; } >"$WORK/cur.s-before";  curc s-before audit-statement-unproven     # the successor logged before the report
+{ cat "$CUR"; sed -n '299,316p' "$CUR" | sed '1s/\[661\]/[777]/'; } >"$WORK/cur.s-dup-other";            curc s-dup-other audit-statement-unproven   # a second successor block, another backend
+{ cat "$CUR"; sed -n '299,316p' "$CUR"; } >"$WORK/cur.s-dup-same";                                      curc s-dup-same audit-statement-unproven    # a second successor block, the same backend
+[[ "$(jq -c '.identity.successor | [.found, .blocksInLog]' <<<"$(aud "$WORK/cur.s-dup-same" 13)")" == '[true,2]' ]]
+# the report: a duplicate block, an altered tail, parameters truncated or naming another account, another account judged, no preceding audit UPDATE
+{ cat "$CUR"; sed -n '210,298p' "$CUR"; } >"$WORK/cur.r-dup";                                           curc r-dup audit-statement-ambiguous
+[[ "$(aud "$WORK/cur.r-dup" 13 | jq -c '[.statementBlocks, .identity.reportBlocks]')" == '[2,2]' ]]
+sed 's/GROUP BY class, action/GROUP BY class/' "$CUR" >"$WORK/cur.r-tail";                              curc r-tail audit-statement-unproven
+sed "s/OR meta_json->>'teenUserId' = CAST(CAST(\\\$6/AND meta_json->>'teenUserId' = CAST(CAST(\$6/" "$CUR" >"$WORK/cur.r-mid"; curc r-mid audit-statement-unproven
+sed '234s/, \$3 = .*$//' "$CUR" >"$WORK/cur.r-params-cut";                                              curc r-params-cut audit-statement-unproven
+sed "234s/\\\$8 = '13'/\$8 = '14'/" "$CUR" >"$WORK/cur.r-params-uid";                                   curc r-params-uid audit-statement-unproven
+sed '1,209d' "$CUR" >"$WORK/cur.r-noupd";                                                               curc r-noupd audit-statement-unproven
+cp "$CUR" "$WORK/cur.r-target";                                                                         curc r-target audit-statement-unproven 14   # evidence of account 13's deletion offered for account 14
+# the stale marker alone no longer proves anything: a log that holds the OLD report and diagnostic shape (pilot3, as captured) is not proven either
+[[ "$(aud "$PILOT3_RAW" | jq -r '.identity.proven')" == false ]]
 # (b) A COMPLETE PLAN. The audit_logs scan needs its estimates (startup and total cost, rows) and, once it ran, its actual rows, loops, time and shared buffers; the top node too.
 SCANL=45; BUFL=48
 pmut "${SCANL}s/  (cost=0.00..9615649.14 rows=620 width=64)//" p-nocost;                       [[ "$(pf p-nocost '[.plan.nodes | map(select(.relation == "audit_logs")) | length]')" == '[0]' ]]    # no estimates: not even a node
@@ -2188,4 +2736,308 @@ mut sch-lim-other 'if .item == 8 then .executions.scannerInitial.limits = [50000
 mut sch-lim-rows 'if .item == 8 then .executions.scannerInitial.rows = [300] else . end'; expect_invalid sch-lim-rows scanner-limit-overrun
 mut sch-lim-last 'if .item == 8 and .size == 100 then .executions.scannerContinuation = {count:2, rows:[17488, 256], sharedBlocks:[900, 40], limits:[17488, 256]} else . end'
 [[ "$(jq -r '.complete' <<<"$(status_of "$WORK/e2.sch-lim-last")")" == true ]]                                                        # the largest batch is a legitimate production statement
+# --- a measured DELETE leaves a safe record, at once, whatever happens next -----------------------------------------
+AD="$WORK/attempts"; AR="$WORK/answer"; printf '{}' >"$WORK/dbody"
+req() { printf '%s' "$REQ_BODY" >"$AR"; echo "503 1234"; }
+req_down() { echo "000 0"; return 7; }
+attempt() { local n="$1"; shift; qc1_delete_attempt "$AD" "$n" "$AR" "$WORK/dbody" '{"seq":4,"case":"delete-keep-10","size":10000,"charset":"multibyte","revision":"abc"}' -- "$@"; }
+REQ_BODY='{"error":"deleting took too long, so nothing was deleted","code":"delete_timed_out"}'; attempt 1 req
+jq -e '.code == "delete_timed_out" and .status == "503" and .transport == "ok" and .ms == 1234 and .bodyBytes == 2 and .seq == 4 and .case == "delete-keep-10" and .size == 10000 and .charset == "multibyte" and .revision == "abc"' "$AD/0001.json" >/dev/null
+[[ "$DEL_STATUS $DEL_MS" == '503 1234' ]]
+# an answer whose code is not a known one, or whose message could hold a person's words, is withheld, not kept
+REQ_BODY='{"error":"reason: Alice needs help","code":"alice_private"}'; attempt 2 req
+jq -e '.code == "withheld" and .responseBytes > 0' "$AD/0002.json" >/dev/null; if grep -rqi 'alice' "$AD"; then echo 'qc1: a response message was kept' >&2; exit 1; fi
+# a request that fails cannot be given the answer before it; two attempts never share a file; a taken number is refused, not overwritten
+attempt 3 req_down; jq -e '.code == "none" and .responseBytes == 0 and .status == "000" and .transport == "failed" and .requestExit == 7' "$AD/0003.json" >/dev/null
+[[ "$(find "$AD" -name '*.json' | wc -l)" == 3 ]]; jq -e '.code == "withheld"' "$AD/0002.json" >/dev/null
+attempt 1 req_down 2>"$WORK/dup.err"; grep -q 'delete attempt 1 was not written' "$WORK/dup.err"; jq -e '.code == "delete_timed_out"' "$AD/0001.json" >/dev/null
+# the record is there when what runs after the request fails
+REQ_BODY='{"code":"reason_review_busy"}'; if ( attempt 4 req; false ); then exit 1; fi; jq -e '.code == "reason_review_busy"' "$AD/0004.json" >/dev/null
+# A valid prefix is not a complete response, and partial transfers never establish a code.
+REQ_BODY='{"code":"delete_timed_out"} {'; attempt 5 req
+jq -e '.code == "withheld" and .transport == "ok"' "$AD/0005.json" >/dev/null
+REQ_BODY='{"code":"delete_timed_out"} {"code":"reason_review_busy"}'; attempt 6 req
+jq -e '.code == "withheld"' "$AD/0006.json" >/dev/null
+req_partial() { printf '%s' '{"code":"delete_timed_out"}' >"$AR"; echo '503 1'; return 7; }
+attempt 7 req_partial; jq -e '.code == "withheld" and .transport == "failed" and .responseBytes > 0' "$AD/0007.json" >/dev/null
+grep -q 'qc1_delete_attempt "\$WORK/delete-attempts"' "$HERE/qc1-measure.sh"
+
+# --- T-292: the legacy-only run (qc1/legacy.sh): its nine rows per size, the judge's added rules, the status mode, the helpers and the refusals ---------------------------------------
+# One size's nine rows, as the code in qc1/legacy.sh writes them. Every figure follows from the size and the seed (10,000 pairs: 9,900 spread over the table for the dense account, 100 after
+# every background row for the sparse one), the way a real run's would.
+LO_SEED=10000
+LO_SHA="$(printf 'f%.0s' {1..64})"   # the fake sources hash gen_env records for every measurement file, the marker file included
+# The validator holds the smoke to the check set legacy.sh writes, and the
+# producer writes the pair count the validator holds: one list, one number.
+[[ "$(printf '%s\n' "${QC1_LEGACY_SMOKE_CHECKS[@]}" | sort | paste -sd,)" == "$(grep -o 'smoke_ok [^ ]*' "$HERE/qc1/legacy.sh" | awk '{print $2}' | sort | paste -sd,)" ]]
+[[ "$QC1_LEGACY_SMOKE_PAIRS" == 101 && "$QC1_LEGACY_SIZES_FLOOR" == 10000 && "$QC1_LEGACY_SEED_LAYOUT" == spread ]]
+insv() { # rows views: the instrument fragment for a table of `rows`, with `views` account-page view audits in its audit delta
+  local f from to; f="$(ins "$1")"
+  from='"auditActionsDelta":{"x.view":10,"add.reason_kept":5}'; to="\"auditActionsDelta\":{\"user.erasure_reasons_viewed\":$2}"
+  [[ "$f" == *"$from"* ]] || { echo 'qc1: the instrument fixture no longer has the audit delta insv replaces' >&2; return 1; }
+  printf '%s' "${f/"$from"/"$to"}"
+}
+lo_trav() { # rows items views pages [lastStatus]
+  printf '{"units":2,"slowestUnitMs":5,"totalMs":10,"requestMs":8,"clientMs":2,"items":%s,"lastStatus":"%s","unitMs":[5,3],"lastCode":null,"nonEmptyPages":%s,"timeToFirstItemsMs":4,%s}' "$2" "${5:-200}" "$4" "$(insv "$1" "$3")"
+}
+LO_PRIV='{"noReasonKey":true,"noScenarioText":true}'
+lo_rows() { # size
+  local s="$1" k
+  for k in 0 100 "$LO_SEED"; do
+    printf '{"status":"measured","item":4,"case":"legacy-discovery-%s","size":%s,"workers":0,"reasons":%s,"expect":{"items":%s},"legacy":{"route":"GET /api/v1/admin/erasure-reasons/legacy","source":"T07B-3a","loadedPairs":%s,"tombstones":{"A":7,"B":8},"pairSetExact":true,"duplicates":0,"privacy":%s},"traversal":%s}\n' \
+      "$k" "$s" "$k" "$k" "$k" "$LO_PRIV" "$(lo_trav "$((s + k))" "$k" 0 0)"
+  done
+  for c in "dense 9900 99" "sparse-tail 100 1"; do
+    read -r name items pages <<<"$c"
+    printf '{"status":"measured","item":4,"case":"legacy-account-%s","size":%s,"workers":0,"reasons":%s,"expect":{"items":%s},"legacy":{"route":"POST /api/v1/admin/erasure-reasons/legacy/:userId/page","source":"T07B-3a","tombstoneId":7,"loadedPairs":%s,"accountPairs":%s,"partyRefOk":true,"uniqueRequests":%s},"traversal":%s}\n' \
+      "$name" "$s" "$items" "$items" "$LO_SEED" "$items" "$items" "$(lo_trav "$((s + LO_SEED))" "$items" "$pages" "$pages")"
+  done
+  printf '{"status":"measured","item":4,"case":"legacy-discovery-probe","size":%s,"workers":0,"probe":{"ms":3,"status":"200","found":true,"route":"GET /api/v1/admin/erasure-reasons/legacy/probe","privacy":%s,"workload":{"backgroundRows":%s,"loadedPairs":%s,"markersSeeded":100,"tombstoneId":7},"marker":{"requestId":"42","party":7,"action":"add.reason_kept","source":"legacy_review"},%s}}\n' \
+    "$s" "$LO_PRIV" "$s" "$LO_SEED" "$(ins "$((s + LO_SEED))")"
+  printf '{"status":"measured","item":5,"case":"legacy-put","size":%s,"workers":0,"put":{"status":"200","ms":50,"route":"PUT /api/v1/admin/erasure-reasons/legacy/:userId","decisions":100,"accepted":100,"bodyBytes":17500,"mints":2,"workload":{"backgroundRows":%s,"loadedPairs":%s,"tombstoneId":7},"effects":{"dbOk":true,"kept":50,"blanked":50,"rowsBlank":50,"rowsWithText":50,"textExact":true,"othersUntouched":true,"markers":{"count":100,"party":7,"partyQualified":true,"source":"legacy_review","byAction":{"add.reason_kept":50,"add.reason_removed":50}},"audits":{"count":100,"source":"legacy_review"},"receipts":{"before":3,"after":4,"delta":1}},"countRefusal":{"decisions":101,"status":"400","error":"invalid decisions","authenticated":true,"reason":"decision_count","bodyBytes":17600,"unchanged":true,"receiptsDelta":0},%s},"legacy":{"source":"T07B-3a"}}\n' \
+    "$s" "$s" "$LO_SEED" "$(ins "$((s + LO_SEED))")"
+  printf '{"status":"measured","item":4,"case":"legacy-decided-discovery","size":%s,"workers":0,"reasons":0,"expect":{"items":0},"traversal":%s,"probe":{"ms":3,"status":"200","found":false,"route":"GET /api/v1/admin/erasure-reasons/legacy/probe","privacy":%s,%s},"legacy":{"route":"GET /api/v1/admin/erasure-reasons/legacy","source":"T07B-3a","tombstoneId":9,"backgroundRequester":9,"candidatePairs":%s,"markersSeeded":%s,"privacy":%s,"forgedMarkers":{"file":"deploy/digitalocean/qc1/legacy-markers.sql","sha256":"%s","keysMatch":true}}}\n' \
+    "$s" "$(lo_trav "$s" 0 0 0)" "$LO_PRIV" "$(ins "$s")" "$s" "$s" "$LO_PRIV" "$LO_SHA"
+  printf '{"status":"measured","item":11,"case":"legacy-plans","size":%s,"workers":0,"plans":{"scanner-initial":2,"scanner-continuation":5,"legacy-facts":4,"legacy-markers":4},"markerPlans":{"executions":4,"auditLogsAccess":{"targetIndex":4,"seqScan":0,"other":0}},"request":{"status":"200","ms":900},"state":{"tombstoneId":9,"contactRequests":%s,"markers":%s,"auditRows":%s},"legacy":{"source":"T07B-3a"},"autoExplain":{"scope":"on for one discovery page","caveats":["a","b","c","d"]}}\n' \
+    "$s" "$s" "$s" "$((s + 200))"
+}
+lo_env() { jq -c --arg sizes "${1:-10000}" '.settings += {mode:"legacy-only", browser:false, sizes:$sizes, counts:"0,10,100,1000,10000", denseCounts:"100000", deleteCounts:"0,10,100,1000,10000,100000", layout:"spread", targetReasonLen:1000, wire:"set-v1"} | del(.browserRuntime)' "$WORK/env.json" >"$WORK/env.lo$([[ -n "${1:-}" ]] && echo ."$1")"; }
+# The happy environment: the same record with the passing smoke and the marker
+# file hash, the way write_environment writes them on a real run.
+lo_env_ok() { jq -c --arg sizes "${1:-10000}" --arg sha "$LO_SHA" --argjson checks "$(printf '%s\n' "${QC1_LEGACY_SMOKE_CHECKS[@]}" | jq -R . | jq -sc .)" \
+  --argjson pairs "$QC1_LEGACY_SMOKE_PAIRS" --argjson floor "$QC1_LEGACY_SIZES_FLOOR" --arg layout "$QC1_LEGACY_SEED_LAYOUT" \
+  '.settings += {mode:"legacy-only", browser:false, charset:"ascii", sizes:$sizes, counts:"0,10,100,1000,10000", denseCounts:"100000", deleteCounts:"0,10,100,1000,10000,100000", layout:"spread", targetReasonLen:1000, wire:"set-v1"} | .settings.legacy = {sizesFloor:$floor, seedLayout:$layout, markersSha256:$sha, smoke:{ok:true, checks:$checks, pairs:$pairs}} | del(.browserRuntime)' \
+  "$WORK/env.json" >"$WORK/env.lo.ok$([[ -n "${1:-}" ]] && echo ."$1")"; }
+lo_env
+lo_env 10000,100000,1000000
+lo_env_ok
+lo_env_ok 10000,100000,1000000
+lo_status() { qc1_evidence_status "$1" "${2:-10000}" 0,10,100,1000,10000 "${3:-$WORK/env.lo.ok}" "$HEAD_FAKE" 6291456 100000; }
+lo_rows 10000 >"$WORK/lo.jsonl"
+[[ "$(wc -l <"$WORK/lo.jsonl")" == 9 ]]
+# A clean set is judged clean and complete, in legacy-only mode: nothing missing, nothing pending, no invalid finding, a pilot that says why, never release evidence.
+[[ -z "$(qc1_judge "$WORK/lo.jsonl" 6291456 | jq -c 'select(.class == "invalid")')" ]] || { qc1_judge "$WORK/lo.jsonl" 6291456 >&2; echo 'qc1: the clean legacy-only rows are not clean' >&2; exit 1; }
+# The happy environment carries the provenance and passes the validator clean.
+[[ -z "$(qc1_environment_problems "$WORK/env.lo.ok" "$HEAD_FAKE")" ]] || { qc1_environment_problems "$WORK/env.lo.ok" "$HEAD_FAKE" >&2; echo 'qc1: the happy legacy-only environment is not clean' >&2; exit 1; }
+[[ -z "$(qc1_environment_problems "$WORK/env.lo.ok.10000,100000,1000000" "$HEAD_FAKE")" ]]
+st="$(lo_status "$WORK/lo.jsonl")"
+[[ "$(jq -r .complete <<<"$st")" == true && "$(jq -c '[.missing, .pending, .invalid] | map(length)' <<<"$st")" == '[0,0,0]' && "$(jq -r '.coverage.kind' <<<"$st")" == pilot && "$(jq -r .releaseEvidence <<<"$st")" == false ]] || { echo "legacy-only status: $st" >&2; exit 1; }
+jq -e '[.coverage.reasons[] | test("legacy-only run: the live matrix rows were not run")] | any' <<<"$st" >/dev/null
+# The legacy plan row (item 11) has none of the item-8 fields and is not an item-8 row, so the generic plan rules do not apply to it (the item-8 judge needs plans[delete-set], executions, ...).
+[[ "$(jq -c 'select(.item == 11) | has("executions") or has("generic") or has("batchSchedule") or has("tables")' "$WORK/lo.jsonl")" == false ]]
+# Three sizes owe 27 rows, 9 each; without the mode the same rows leave the live matrix missing and the run incomplete (the stricter reading).
+{ lo_rows 10000; lo_rows 100000; lo_rows 1000000; } >"$WORK/lo3.jsonl"
+[[ "$(qc1_legacy_only_want_json 10000,100000,1000000 | jq 'length')" == 27 && "$(qc1_legacy_only_want_json 10000 | jq 'length')" == 9 ]]
+[[ "$(qc1_legacy_only_want_json 10000,100000,1000000 | jq -c 'group_by(.size) | map(length)')" == '[9,9,9]' ]]
+st3="$(lo_status "$WORK/lo3.jsonl" 10000,100000,1000000 "$WORK/env.lo.ok.10000,100000,1000000")"
+[[ "$(jq -r .complete <<<"$st3")" == true && "$(jq '.missing | length' <<<"$st3")" == 0 ]]
+# Legacy-only provenance is fail-closed: the bare legacy-only record with no
+# smoke and no marker hash, the case the review found complete, is now an
+# invalid environment and an incomplete run.
+qc1_environment_problems "$WORK/env.lo" "$HEAD_FAKE" | grep -F -- 'no legacy provenance' >/dev/null
+[[ "$(jq -r .complete <<<"$(lo_status "$WORK/lo.jsonl" 10000 "$WORK/env.lo")")" == false ]]
+nomode="$(lo_status "$WORK/lo.jsonl" 10000 "$WORK/env.json")"
+[[ "$(jq -r .complete <<<"$nomode")" == false && "$(jq '[.missing[] | select(.item == 4 or .item == 5 or .item == 11) | select(.case | startswith("legacy-"))] | length' <<<"$nomode")" == 0 && "$(jq '.missing | length' <<<"$nomode")" -gt 40 ]]
+jq -c '.settings.mode = "something-else"' "$WORK/env.lo" >"$WORK/env.lo.bad"
+[[ "$(jq -r .complete <<<"$(lo_status "$WORK/lo.jsonl" 10000 "$WORK/env.lo.bad")")" == false ]]
+# A missing row is MISSING (the run asked for it), not pending: every one of the nine, dropped alone, makes the run incomplete and is named.
+for drop in '"case":"legacy-discovery-0"' '"case":"legacy-discovery-100"' '"case":"legacy-discovery-10000"' '"case":"legacy-account-dense"' '"case":"legacy-account-sparse-tail"' '"case":"legacy-discovery-probe"' '"case":"legacy-put"' '"case":"legacy-decided-discovery"' '"case":"legacy-plans"'; do
+  grep -vF -- "$drop" "$WORK/lo.jsonl" >"$WORK/lo.drop"
+  d="$(lo_status "$WORK/lo.drop")"
+  [[ "$(jq -r .complete <<<"$d")" == false && "$(jq '.missing | length' <<<"$d")" == 1 && "$(jq '.pending | length' <<<"$d")" == 0 ]] || { echo "dropping $drop: $d" >&2; exit 1; }
+done
+# A missing, null, failed or mismatched smoke or marker hash is an invalid
+# environment and an incomplete run: every way the provenance can be absent,
+# forged or inconsistent fails closed, never as a clean pilot.
+lo_prov() { # name jq-filter needle: the mutated provenance is refused and the problem named
+  jq -c "$2" "$WORK/env.lo.ok" >"$WORK/env.lo.$1"
+  qc1_environment_problems "$WORK/env.lo.$1" "$HEAD_FAKE" | grep -F -- "$3" >/dev/null || { echo "legacy provenance mutation $1 not named ($3): $(qc1_environment_problems "$WORK/env.lo.$1" "$HEAD_FAKE")" >&2; exit 1; }
+  [[ "$(jq -r .complete <<<"$(lo_status "$WORK/lo.jsonl" 10000 "$WORK/env.lo.$1")")" == false ]]
+}
+lo_prov legacynull '.settings.legacy = null' 'no legacy provenance'
+lo_prov smoke-missing 'del(.settings.legacy.smoke)' 'did not pass'
+lo_prov smoke-fail '.settings.legacy.smoke.ok = false' 'did not pass'
+lo_prov smoke-checks '.settings.legacy.smoke.checks |= .[1:]' 'defined check set'
+lo_prov smoke-bogus '.settings.legacy.smoke.checks += ["not-a-check"]' 'defined check set'
+lo_prov smoke-null-entry '.settings.legacy.smoke.checks += [null]' 'defined check set'
+lo_prov smoke-number-entry '.settings.legacy.smoke.checks += [42]' 'defined check set'
+lo_prov smoke-object-entry '.settings.legacy.smoke.checks += [{}]' 'defined check set'
+lo_prov smoke-pairs '.settings.legacy.smoke.pairs = 100' 'pairs, not'
+lo_prov sha-wrong '.settings.legacy.markersSha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"' 'does not match'
+lo_prov sha-bad '.settings.legacy.markersSha256 = "x"' 'no markersSha256'
+lo_prov floor '.settings.legacy.sizesFloor = 9999' 'sizesFloor'
+lo_prov layout '.settings.legacy.seedLayout = "tail"' 'seedLayout'
+lo_prov browser '.settings.browser = true' 'must not measure the browser'
+lo_prov charset '.settings.charset = "multibyte"' 'ASCII reasons only'
+lo_prov sizes '.settings.sizes = "5000,10000"' 'seed floor'
+# The matrix placeholders say what a matrix run does not do.
+grep -q 'qc1-measure.sh --legacy-only measures it' <<<"$QC1_PENDING_4 $QC1_PENDING_5"
+# Each mutation of the clean set fails the named rule, and the rule is not the one that fails on the clean set.
+lo_mut() { jq -c "$2" "$WORK/lo.jsonl" >"$WORK/lo.$1"; }
+lo_bad() { # name failure: the mutation makes exactly this failure appear (and the run incomplete)
+  local d; d="$(lo_status "$WORK/lo.$1")"
+  jq -e --arg f "$2" '[.invalid[] | select(.failure == $f)] | length >= 1' <<<"$d" >/dev/null || { echo "mutation $1 did not raise $2: $(jq -c '[.invalid[] | .failure]' <<<"$d")" >&2; exit 1; }
+  [[ "$(jq -r .complete <<<"$d")" == false ]]
+}
+D0='.item == 4 and .case == "legacy-discovery-0"'; D100='.item == 4 and .case == "legacy-discovery-100"'; D10K='.item == 4 and .case == "legacy-discovery-10000"'
+ACC='.item == 4 and .case == "legacy-account-dense"'; SPA='.item == 4 and .case == "legacy-account-sparse-tail"'; PRB='.item == 4 and .case == "legacy-discovery-probe"'
+PUT='.item == 5 and .case == "legacy-put"'; DEC='.item == 4 and .case == "legacy-decided-discovery"'; PLN='.item == 11'
+# The decided row names the marker file it ran with: another hash, or none,
+# is not the decided history of this run (a forged or inconsistent marker source).
+lo_mut dec-sha "if $DEC then .legacy.forgedMarkers.sha256 = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" else . end"
+dsha="$(lo_status "$WORK/lo.dec-sha")"
+jq -e '[.invalid[] | select(.failure == "settings-disagreement" and .what == "marker source")] | length >= 1' <<<"$dsha" >/dev/null || { echo "dec-sha not named: $(jq -c '[.invalid[] | {failure, what}]' <<<"$dsha")" >&2; exit 1; }
+[[ "$(jq -r .complete <<<"$dsha")" == false ]]
+lo_mut dec-nosha "if $DEC then del(.legacy.forgedMarkers.sha256) else . end"
+dnosha="$(lo_status "$WORK/lo.dec-nosha")"
+jq -e '[.invalid[] | select(.failure == "settings-disagreement" and .what == "marker source")] | length >= 1' <<<"$dnosha" >/dev/null || { echo "dec-nosha not named: $(jq -c '[.invalid[] | {failure, what}]' <<<"$dnosha")" >&2; exit 1; }
+[[ "$(jq -r .complete <<<"$dnosha")" == false ]]
+# The marker lookup is one unit of review work: a measured 200 probe over the
+# existing 10 s line is a budget finding and the run stays complete, while a
+# 503 at the deadline stays the existing invalid, never a budget.
+lo_mut probeslow "if $PRB then .probe.ms = 10001 | .probe.gateTicks = 120 | .probe.dbMemSamples = 120 else . end"
+[[ "$(qc1_judge "$WORK/lo.probeslow" 6291456 | jq -c 'select(.failure == "probe") | .class')" == '"budget"' ]]
+pslow="$(lo_status "$WORK/lo.probeslow")"
+[[ "$(jq -r .complete <<<"$pslow")" == true && "$(jq -c '[.budgetFailures[] | .failure]' <<<"$pslow")" == '["probe"]' && "$(jq '.invalid | length' <<<"$pslow")" == 0 ]]
+lo_mut dprobeslow "if $DEC then .probe.ms = 10001 | .probe.gateTicks = 120 | .probe.dbMemSamples = 120 else . end"
+[[ "$(qc1_judge "$WORK/lo.dprobeslow" 6291456 | jq -c 'select(.failure == "probe") | .class')" == '"budget"' ]]
+dpslow="$(lo_status "$WORK/lo.dprobeslow")"
+[[ "$(jq -r .complete <<<"$dpslow")" == true && "$(jq -c '[.budgetFailures[] | .failure]' <<<"$dpslow")" == '["probe"]' ]]
+lo_mut p503 "if $PRB then .probe.status = \"503\" else . end"; lo_bad p503 legacy-no-metrics
+lo_mut dec-ms-missing "if $DEC then del(.probe.ms) else . end"; lo_bad dec-ms-missing legacy-decided
+lo_mut dec-ms-null "if $DEC then .probe.ms = null else . end"; lo_bad dec-ms-null legacy-decided
+lo_mut dec-ms-string "if $DEC then .probe.ms = \"bad\" else . end"; lo_bad dec-ms-string legacy-decided
+lo_mut dec-ms-negative "if $DEC then .probe.ms = -1 else . end"; lo_bad dec-ms-negative legacy-decided
+lo_mut pairs "if $D10K then .legacy.pairSetExact = false else . end"; lo_bad pairs legacy-pairs-inexact
+lo_mut pairs-missing "if $D100 then del(.legacy.pairSetExact) else . end"; lo_bad pairs-missing legacy-pairs-inexact
+lo_mut dup "if $D100 then .legacy.duplicates = 1 else . end"; lo_bad dup legacy-pairs-inexact
+lo_mut nodup "if $D100 then del(.legacy.duplicates) else . end"; lo_bad nodup legacy-pairs-inexact
+lo_mut key "if $D0 then .legacy.privacy.noReasonKey = false else . end"; lo_bad key legacy-privacy
+lo_mut text "if $D10K then .legacy.privacy.noScenarioText = false else . end"; lo_bad text legacy-privacy
+lo_mut nopriv "if $D100 then del(.legacy.privacy) else . end"; lo_bad nopriv legacy-privacy
+lo_mut view "if $D0 then .traversal.auditActionsDelta[\"user.erasure_reasons_viewed\"] = 1 else . end"; lo_bad view legacy-privacy
+lo_mut pkey "if $PRB then .probe.privacy.noReasonKey = false else . end"; lo_bad pkey legacy-privacy
+lo_mut ptext "if $PRB then .probe.privacy.noScenarioText = false else . end"; lo_bad ptext legacy-privacy
+lo_mut pview "if $PRB then .probe.auditActionsDelta[\"user.erasure_reasons_viewed\"] = 2 else . end"; lo_bad pview legacy-privacy
+lo_mut dpkey "if $DEC then .probe.privacy.noReasonKey = false else . end"; lo_bad dpkey legacy-privacy
+lo_mut dkey "if $DEC then .legacy.privacy.noScenarioText = false else . end"; lo_bad dkey legacy-privacy
+lo_mut views "if $ACC then .traversal.auditActionsDelta[\"user.erasure_reasons_viewed\"] = 98 else . end"; lo_bad views legacy-account
+lo_mut noviews "if $ACC then del(.traversal.auditActionsDelta[\"user.erasure_reasons_viewed\"]) else . end"; lo_bad noviews legacy-account
+lo_mut partyref "if $ACC then .legacy.partyRefOk = false else . end"; lo_bad partyref legacy-account
+lo_mut uniq "if $SPA then .legacy.uniqueRequests = 99 else . end"; lo_bad uniq legacy-account
+lo_mut acctpairs "if $ACC then .legacy.accountPairs = 9899 else . end"; lo_bad acctpairs legacy-account
+lo_mut acctrows "if $SPA then .traversal.tableRowsBefore = 10100 else . end"; lo_bad acctrows legacy-account
+lo_mut sparse2 "if $SPA then .traversal.nonEmptyPages = 2 | .traversal.auditActionsDelta[\"user.erasure_reasons_viewed\"] = 2 else . end"; lo_bad sparse2 legacy-account
+lo_mut sparsefirst "if $SPA then del(.traversal.timeToFirstItemsMs) else . end"; lo_bad sparsefirst legacy-account
+lo_mut acctsrc "if $ACC then .legacy.source = \"harness\" else . end"; lo_bad acctsrc legacy-account
+lo_mut accnoinstr "if $ACC then del(.traversal.walBytes) else . end"; lo_bad accnoinstr metric-missing
+lo_mut prbnoinstr "if $PRB then del(.probe.walBytes) else . end"; lo_bad prbnoinstr metric-missing
+lo_mut decnoinstr "if $DEC then del(.probe.commitCalls) else . end"; lo_bad decnoinstr metric-missing
+lo_mut putnoinstr "if $PUT then del(.put.dbPeakKb) else . end"; lo_bad putnoinstr metric-missing
+lo_mut prbfound "if $PRB then .probe.found = false else . end"; lo_bad prbfound legacy-no-metrics
+lo_mut putnoreason "if $PUT then del(.put.countRefusal.reason) else . end"; lo_bad putnoreason legacy-no-metrics
+lo_mut putrefusal200 "if $PUT then .put.countRefusal.status = \"200\" else . end"; lo_bad putrefusal200 legacy-no-metrics
+lo_mut putunchanged "if $PUT then .put.countRefusal.unchanged = false else . end"; lo_bad putunchanged legacy-no-metrics
+lo_mut putrows "if $PUT then .put.effects.rowsBlank = 49 else . end"; lo_bad putrows legacy-no-metrics
+lo_mut putmarkers "if $PUT then .put.effects.markers.party = 8 else . end"; lo_bad putmarkers legacy-no-metrics
+lo_mut dec-items "if $DEC then .traversal.items = 1 else . end"; lo_bad dec-items discovery-count
+lo_mut dec-expect "if $DEC then .expect.items = 1 | .traversal.items = 1 else . end"; lo_bad dec-expect legacy-decided
+lo_mut dec-found "if $DEC then .probe.found = true else . end"; lo_bad dec-found legacy-decided
+lo_mut dec-keys "if $DEC then .legacy.forgedMarkers.keysMatch = false else . end"; lo_bad dec-keys legacy-decided
+lo_mut dec-cand "if $DEC then .legacy.candidatePairs = 9999 else . end"; lo_bad dec-cand legacy-decided
+lo_mut dec-seeded "if $DEC then .legacy.markersSeeded = 9999 else . end"; lo_bad dec-seeded legacy-decided
+lo_mut dec-rows "if $DEC then .traversal.tableRowsBefore = 10001 else . end"; lo_bad dec-rows legacy-decided
+lo_mut dec-prows "if $DEC then .probe.tableRowsBefore = 10001 else . end"; lo_bad dec-prows legacy-decided
+lo_mut dec-noprobe "if $DEC then del(.probe) else . end"; lo_bad dec-noprobe legacy-decided
+lo_mut dec-status "if $DEC then .probe.status = \"503\" else . end"; lo_bad dec-status legacy-decided
+lo_mut plan-nomarkers "if $PLN then .plans[\"legacy-markers\"] = 0 | .markerPlans.executions = 0 | .markerPlans.auditLogsAccess = {targetIndex:0, seqScan:0, other:0} else . end"; lo_bad plan-nomarkers legacy-plans-missing
+lo_mut plan-nofacts "if $PLN then del(.plans[\"legacy-facts\"]) else . end"; lo_bad plan-nofacts legacy-plans-missing
+lo_mut plan-exec "if $PLN then .markerPlans.executions = 3 else . end"; lo_bad plan-exec legacy-plans-missing
+lo_mut plan-access "if $PLN then .markerPlans.auditLogsAccess.other = 1 else . end"; lo_bad plan-access legacy-plans-missing
+lo_mut plan-nomarkerplans "if $PLN then del(.markerPlans) else . end"; lo_bad plan-nomarkerplans legacy-plans-missing
+lo_mut plan-caveats "if $PLN then .autoExplain.caveats = [\"a\"] else . end"; lo_bad plan-caveats legacy-plans-missing
+lo_mut plan-status "if $PLN then .request.status = \"503\" else . end"; lo_bad plan-status legacy-plans-missing
+lo_mut plan-state "if $PLN then .state.contactRequests = 1 else . end"; lo_bad plan-state legacy-plans-missing
+# A 503 at a route's deadline is the existing "status" INVALID, never a budget finding: the run is incomplete, and nothing here reclassifies it. A slow unit over 10 s is the existing budget.
+lo_mut s503 "if $D10K then .traversal.lastStatus = \"503\" else . end"; lo_bad s503 status
+[[ "$(qc1_judge "$WORK/lo.s503" 6291456 | jq -c 'select(.item == 4 and .case == "legacy-discovery-10000") | .class' | sort -u | paste -sd,)" == '"invalid"' ]]
+lo_mut slow "if $D10K then .traversal.slowestUnitMs = 10001 else . end"
+[[ "$(qc1_judge "$WORK/lo.slow" 6291456 | jq -c 'select(.failure == "unit") | .class')" == '"budget"' && "$(jq -r .complete <<<"$(lo_status "$WORK/lo.slow")")" == true ]]
+# A marker plan with a Seq Scan on audit_logs is RECORDED and judged against nothing: no new budget class (R4-C01 names the index in prose, the subsection reports it).
+lo_mut plan-seq "if $PLN then .markerPlans.auditLogsAccess = {targetIndex:0, seqScan:4, other:0} else . end"
+[[ "$(qc1_judge "$WORK/lo.plan-seq" 6291456 | jq -c 'select(.item == 11)' | wc -l)" == 0 && "$(jq -r .complete <<<"$(lo_status "$WORK/lo.plan-seq")")" == true && "$(jq '.budgetFailures | length' <<<"$(lo_status "$WORK/lo.plan-seq")")" == 0 ]]
+# The contracted rows keep the budgets they had: a body over the cap or a unit over 10 s in a legacy row is the same budget finding as before; none was added or removed for legacy rows.
+[[ "$(jq -r '.budgetFailures | length' <<<"$st")" == 0 ]]
+# Per-size gate: the invalid findings of one size, and none of another.
+[[ -z "$(qc1_size_invalid "$WORK/lo.jsonl" 10000 6291456)" ]]
+[[ "$(qc1_size_invalid "$WORK/lo.pairs" 10000 6291456 | jq -r .failure | paste -sd,)" == legacy-pairs-inexact && -z "$(qc1_size_invalid "$WORK/lo.pairs" 100000 6291456)" ]]
+# --- helpers: the pairs a discovery page lists, the plan counts of the legacy statements and how the marker lookup reached audit_logs ------------------------------------------------------
+cat >"$WORK/lo.page" <<'JSON'
+{"accounts":[{"userId":"7","name":"Deleted account","items":[{"requestId":"1"},{"requestId":"3"}]},{"userId":"8","name":"Deleted account","items":[{"requestId":"3"},{"requestId":"-5"}]}],"next":"3"}
+JSON
+[[ "$(qc1_legacy_discovery_pairs "$WORK/lo.page" | jq -sc 'map("\(.requestId),\(.userId)")')" == '["1,7","3,7","3,8","-5,8"]' ]]
+[[ "$(qc1_legacy_discovery_pairs <(echo '{"accounts":[],"next":null}') | wc -l)" == 0 ]]
+ts() { printf '2026-11-13 10:00:00.000 UTC [%s] LOG:  duration: 1.0 ms  plan:\n\tQuery Text: %s\n%s\n' "$1" "$2" "$3"; }
+{ ts 11 'SELECT id, requester_id FROM contact_requests ORDER BY id LIMIT $1' '	Limit  (cost=0.29..1.0 rows=256 width=25)'
+  ts 12 'SELECT cr.id, cr.purpose FROM contact_requests cr
+	LEFT JOIN users req ON req.id = cr.requester_id
+	LEFT JOIN users sub ON sub.id = cr.subject_user_id
+	WHERE cr.id = ANY($1::bigint[])' '	Nested Loop Left Join  (cost=0.57..1.0 rows=1 width=1)'
+  ts 13 'SELECT c.req, c.party
+	FROM unnest($1::bigint[], $2::bigint[], $3::text[], $4::text[], $5::text[]) AS c(req, party, target_type, kept, removed)
+	WHERE EXISTS (SELECT 1 FROM audit_logs a WHERE a.target_type = c.target_type)' '	Nested Loop Semi Join  (cost=0.43..1.0 rows=1 width=1)
+	  ->  Index Scan using idx_audit_logs_target on audit_logs a  (cost=0.43..8.0 rows=1 width=1)'
+  ts 14 'SELECT c.req, c.party
+	FROM unnest($1::bigint[], $2::bigint[], $3::text[], $4::text[], $5::text[]) AS c(req, party, target_type, kept, removed)
+	WHERE EXISTS (SELECT 1 FROM audit_logs a WHERE a.target_type = c.target_type)' '	Nested Loop Semi Join  (cost=0.43..1.0 rows=1 width=1)
+	  ->  Bitmap Heap Scan on audit_logs a  (cost=4.0..8.0 rows=1 width=1)
+	        ->  Bitmap Index Scan on idx_audit_logs_target  (cost=0.0..4.0 rows=1 width=0)'
+  ts 15 'SELECT c.req, c.party
+	FROM unnest($1::bigint[], $2::bigint[], $3::text[], $4::text[], $5::text[]) AS c(req, party, target_type, kept, removed)
+	WHERE EXISTS (SELECT 1 FROM audit_logs a WHERE a.target_type = c.target_type)' '	Nested Loop Semi Join  (cost=0.43..1.0 rows=1 width=1)
+	  ->  Seq Scan on audit_logs a  (cost=0.0..9000.0 rows=1 width=1)'
+  ts 16 'SELECT c.req, c.party
+	FROM unnest($1::bigint[], $2::bigint[], $3::text[], $4::text[], $5::text[]) AS c(req, party, target_type, kept, removed)' '	Function Scan on unnest c  (cost=0.0..1.0 rows=1 width=1)'
+} >"$WORK/lo.pglog"
+[[ "$(qc1_plan_counts "$WORK/lo.pglog" "${QC1_LEGACY_PLAN_KINDS[@]}")" == '{"scanner-initial":1,"scanner-continuation":0,"legacy-facts":1,"legacy-markers":4}' ]]
+[[ "$(qc1_plan_counts "$WORK/lo.pglog")" == '{"scanner-initial":1,"scanner-continuation":0,"page-items":0,"delete-set":0,"blank-batch":0}' ]]   # the live kinds are what they were
+[[ "$(qc1_marker_plan_access "$WORK/lo.pglog")" == '{"executions":4,"auditLogsAccess":{"targetIndex":2,"seqScan":1,"other":1}}' ]]
+[[ "${#QC1_PLAN_KINDS[@]}" == 5 && "${QC1_LEGACY_PLAN_KINDS[*]}" == 'scanner-initial scanner-continuation legacy-facts legacy-markers' ]]
+# --- the arguments: a legacy-only run refuses anything that would make it another measurement, before any daemon is touched, and a valid run reaches the daemon check ------------------------------
+mkdir -p "$WORK/lostub"; printf '#!/usr/bin/env bash\necho "stub docker: $*" >&2\nexit 1\n' >"$WORK/lostub/docker"; chmod +x "$WORK/lostub/docker"
+lo_run() { PATH="$WORK/lostub:$PATH" bash "$HERE/qc1-measure.sh" --dir "$WORK/lo-never" "$@"; }
+lo_refused() { local needle="$1"; shift; local rc=0; lo_run "$@" >"$WORK/lo.out" 2>&1 || rc=$?; [[ "$rc" == 1 ]] && grep -qF -- "$needle" "$WORK/lo.out" && [[ ! -e "$WORK/lo-never" ]] || { echo "legacy-only $*: rc $rc: $(cat "$WORK/lo.out")" >&2; exit 1; }; }
+lo_refused 'needs --no-browser' --legacy-only
+lo_refused 'needs --no-browser' --legacy-only --sizes 10000
+lo_refused 'refuses --layout' --legacy-only --no-browser --layout tail
+lo_refused 'refuses --layout' --legacy-only --no-browser --counts 0,10
+lo_refused 'refuses --layout' --legacy-only --no-browser --dense-counts none
+lo_refused 'refuses --charset multibyte' --legacy-only --no-browser --charset multibyte
+lo_refused 'cannot be combined' --legacy-only --no-browser --next-changed-presses 3
+lo_refused 'cannot be combined' --legacy-only --no-browser --browser-fallback-digest
+lo_refused 'cannot be combined' --legacy-only --no-browser --next-changed-runs 2 --next-changed-only
+lo_refused 'at least 10000' --legacy-only --no-browser --sizes 9999
+lo_refused 'at least 10000' --legacy-only --no-browser --sizes 10000,500
+lo_refused 'at least 10000' --legacy-only --no-browser --sizes 10000,x
+lo_refused 'cannot reach a Docker daemon' --legacy-only --no-browser --sizes 10000,100000
+lo_refused 'cannot reach a Docker daemon' --legacy-only --no-browser --sizes 1000000 --droplet 2gb
+# the matrix is untouched: without the flag an ordinary argument list reaches the same daemon check
+lo_refused 'cannot reach a Docker daemon' --no-browser --sizes 10000
+# --- the forged markers run in one place only: psql into the harness's own database container, by id, from legacy.sh -------------------------------------------------------------------------
+[[ "$(grep -rn --include='*.sh' -- '-f - <"$HERE/qc1/legacy-markers.sql"' "$HERE" "$ROOT/scripts" | grep -vc '/qc1-fixtures.sh:')" == 1 ]]
+grep -q 'docker exec -i "\$DB_CID" psql -X -U church -d fold .* -f - <"\$HERE/qc1/legacy-markers.sql"' "$HERE/qc1/legacy.sh"
+grep -q 'forge_markers' "$HERE/qc1/legacy.sh"
+if grep -n 'forge_markers\|legacy_forge_with' "$HERE/qc1-measure.sh"; then echo 'qc1: the runner calls the forged-marker file itself' >&2; exit 1; fi
+# the file refuses unless the run's own sentinel matches, and says so in its header
+grep -q "qc1_disposable" "$HERE/qc1/legacy-markers.sql"; grep -q 'READ THIS BEFORE YOU RUN IT' "$HERE/qc1/legacy-markers.sql"
+grep -q "d.token = current_setting('qc1.token')" "$HERE/qc1/legacy-markers.sql"
+# the legacy run is wired: the sentinel and the smoke before any size, in a legacy-only run only, and the matrix keeps its placeholders
+grep -q '^  legacy_guard_create$' "$HERE/qc1-measure.sh"; grep -q '^  legacy_smoke$' "$HERE/qc1-measure.sh"
+[[ "$(grep -n '^  legacy_smoke$' "$HERE/qc1-measure.sh" | cut -d: -f1)" -lt "$(grep -n 'legacy_size "\$n"' "$HERE/qc1-measure.sh" | head -n 1 | cut -d: -f1)" ]]
+grep -q 'status:"pending", item:4' "$HERE/qc1-measure.sh"
+# the legacy source files are in the hashed set, so a changed copy cannot be measured as HEAD
+printf '%s\n' "${QC1_SOURCE_FILES[@]}" | grep -qx 'deploy/digitalocean/qc1/legacy.sh'; printf '%s\n' "${QC1_SOURCE_FILES[@]}" | grep -qx 'deploy/digitalocean/qc1/legacy-markers.sql'
+# the filler change is opt-in: with no requester the rows are what they were
+grep -q '\\if :{?requester} \\else \\set requester 0 \\endif' "$HERE/qc1/filler.sql"; grep -q 'CASE WHEN :requester = 0 THEN 1000000 + (g.i % 5000) ELSE :requester END' "$HERE/qc1/filler.sql"
+
 echo 'qc1 fixtures: ok'

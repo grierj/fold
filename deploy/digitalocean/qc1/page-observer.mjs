@@ -10,7 +10,7 @@
 //   - reconcile() counts started, completed and pending per walk, so the final collection can prove every response of the first read and of the reload is accounted for.
 //
 // `r` is a Playwright Response (url(), status(), body(), request().timing()); the fixtures give it a fake. `append(line)` persists a line; `sleep(ms)` waits.
-import { totalBodyBytes, walkOrigin } from "./response-accounting.mjs";
+import { countRunes, totalBodyBytes, walkOrigin } from "./response-accounting.mjs";
 
 const PAGE_PATH = "/erasure-reasons/page";
 
@@ -25,7 +25,7 @@ export function pageObserver({ origin, append = () => {}, sleep = (ms) => new Pr
   async function onResponse(r) {
     const u = new URL(r.url());
     if (!u.pathname.endsWith(PAGE_PATH)) return;
-    const rec = { seq: seq++, walk, status: r.status(), foreignOrigin: u.origin !== origin, bytes: null, requestMs: null, nodeParseMs: null };
+    const rec = { seq: seq++, walk, status: r.status(), foreignOrigin: u.origin !== origin, bytes: null, runes: null, requestMs: null, nodeParseMs: null };
     started[rec.walk] = (started[rec.walk] ?? 0) + 1;
     inflight.set(rec.seq, { rec, startedAt: clock(), timedOut: false });
     append(JSON.stringify({ seq: rec.seq, walk: rec.walk, event: "start", status: rec.status, foreignOrigin: rec.foreignOrigin }) + "\n");
@@ -42,6 +42,7 @@ export function pageObserver({ origin, append = () => {}, sleep = (ms) => new Pr
       rec.nodeParseMs = parsed ? Math.round((clock() - p0) * 100) / 100 : null;
       rec.requestMs = t && t.responseEnd >= 0 && t.startTime >= 0 ? Math.round(t.responseEnd * 100) / 100 : null;
       rec.bytes = body.length;
+      rec.runes = countRunes(body);
     } catch {
       // Keep the elapsed lower bound even if the body fails after a timeout.
       rec.completed = false;
@@ -54,7 +55,7 @@ export function pageObserver({ origin, append = () => {}, sleep = (ms) => new Pr
   }
 
   const missingEntry = ({ rec, startedAt }) => ({
-    seq: rec.seq, walk: rec.walk, status: rec.status, foreignOrigin: rec.foreignOrigin, bytes: null, requestMs: null, nodeParseMs: null, completed: false, ageMs: Math.round(clock() - startedAt),
+    seq: rec.seq, walk: rec.walk, status: rec.status, foreignOrigin: rec.foreignOrigin, bytes: null, runes: null, requestMs: null, nodeParseMs: null, completed: false, ageMs: Math.round(clock() - startedAt),
   });
 
   return {

@@ -11,11 +11,68 @@ HERE="$ROOT/deploy/digitalocean"
 # shellcheck source=deploy/digitalocean/isolation.sh
 source "$HERE/isolation.sh"
 WORK="$(mktemp -d /tmp/fold-isolation-fixture.XXXXXX)"
+active_runner=""
+fixture_launching=0 fixture_pending=0
+fixture_signal() {
+  if (( fixture_launching )); then
+    (( fixture_pending != 0 )) || fixture_pending=$1
+    return
+  fi
+  exit "$1"
+}
+start_owned_runner() {
+  fixture_launching=1
+  "$@" &
+  active_runner=$!
+  fixture_launching=0
+  if (( fixture_pending )); then exit "$fixture_pending"; fi
+}
 # shellcheck disable=SC2329 # EXIT trap.
-finish() { local rc=$?; rm -rf -- "$WORK"; exit "$rc"; }
+finish() { local rc=$?; trap '' INT TERM HUP; if [[ -n "$active_runner" ]]; then wait "$active_runner" 2>/dev/null || true; fi; rm -rf -- "$WORK"; exit "$rc"; }
 trap finish EXIT
+trap 'fixture_signal 130' INT
+trap 'fixture_signal 143' TERM
+trap 'fixture_signal 129' HUP
 trap 'printf "isolation fixture failed at line %s: %s\n" "$LINENO" "$BASH_COMMAND" >&2' ERR
 refused() { local needle="$1" rc=0; shift; "$@" >"$WORK/out" 2>&1 || rc=$?; [[ "$rc" != 0 ]]; [[ -z "$needle" ]] || grep -qF -- "$needle" "$WORK/out"; }
+
+# Interrupt the actual ownership helpers at registration and immediately before wait. The child
+# can only write its completion marker while the fixture's tools still exist.
+declare -f fixture_signal start_owned_runner finish >"$WORK/owner-functions"
+cat >"$WORK/owner-hook" <<'HOOK'
+[[ ${0##*/} == fixture-owner.sh ]] || return 0
+set -T
+owner_interrupt() {
+  [[ $BASHPID == "$$" && ! -e $OWNER_SIGNAL ]] || return 0
+  if [[ $OWNER_MODE == launch && $BASH_COMMAND == 'active_runner=$!' ]] ||
+     [[ $OWNER_MODE == registered && $BASH_COMMAND == 'wait "$active_runner"' ]]; then
+    : >"$OWNER_SIGNAL"
+    builtin kill -TERM "$$"
+  fi
+}
+trap owner_interrupt DEBUG
+HOOK
+cat >"$WORK/fixture-owner.sh" <<'OWNER'
+set -Eeuo pipefail
+source "$OWNER_FUNCTIONS"
+WORK=$OWNER_DIR; active_runner=""; fixture_launching=0; fixture_pending=0
+wait() { : >"$OWNER_FINISH"; builtin wait "$@"; }
+trap finish EXIT
+trap 'fixture_signal 143' TERM
+start_owned_runner bash -c 'for ((i=0; i<500; i++)); do [[ ! -e $3 ]] || break; sleep 0.02; done; [[ -e $3 && -f $1/tool ]] && : >"$2"' _ "$WORK" "$OWNER_SETTLED" "$OWNER_RELEASE"
+wait "$active_runner"
+active_runner=""
+OWNER
+for owner_mode in launch registered; do
+  owner_dir="$WORK/owner-$owner_mode"; mkdir "$owner_dir"; : >"$owner_dir/tool"
+  start_owned_runner timeout --foreground -s KILL 15 env BASH_ENV="$WORK/owner-hook" OWNER_MODE="$owner_mode" OWNER_FUNCTIONS="$WORK/owner-functions" OWNER_DIR="$owner_dir" OWNER_SIGNAL="$WORK/owner-$owner_mode.signal" OWNER_SETTLED="$WORK/owner-$owner_mode.settled" OWNER_FINISH="$WORK/owner-$owner_mode.finish" OWNER_RELEASE="$WORK/owner-$owner_mode.release" \
+    bash "$WORK/fixture-owner.sh"
+  for ((i=0; i<500; i++)); do [[ ! -e "$WORK/owner-$owner_mode.finish" ]] || break; sleep 0.02; done
+  [[ -e "$WORK/owner-$owner_mode.finish" && ! -e "$WORK/owner-$owner_mode.settled" && -e "$owner_dir/tool" ]] || { echo "isolation: owner did not hold its child at $owner_mode" >&2; exit 1; }
+  : >"$WORK/owner-$owner_mode.release"
+  owner_rc=0; wait "$active_runner" || owner_rc=$?; active_runner=""
+  [[ "$owner_rc" == 143 && -e "$WORK/owner-$owner_mode.signal" && -e "$WORK/owner-$owner_mode.settled" && ! -e "$owner_dir" ]] || { echo "isolation: owner interruption failed at $owner_mode" >&2; exit 1; }
+done
 
 rc=0; bash "$HERE/isolation.sh" >"$WORK/direct.log" 2>&1 || rc=$?
 [[ "$rc" == 1 ]]; grep -q 'source from a drill only' "$WORK/direct.log"
@@ -104,7 +161,8 @@ grep -q '^source "\$ROOT/deploy/digitalocean/isolation.sh"' "$RD"
 mkdir "$WORK/stubbin"
 cat >"$WORK/stubbin/docker" <<'STUB'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >>"$STUB_LOG"
+line=; sep=; for a in "$@"; do line+="$sep${a//$'\n'/\\n}"; sep=" "; done; printf '%s\n' "$line" >>"$STUB_LOG"   # one line per call; a newline inside an argument is written as \n
+[[ $1 != run ]] || : >"$STUB_LOG.argv"; { sep=; for a in "$@"; do printf '%s%q' "$sep" "$a"; sep=" "; done; printf '\n'; } >>"$STUB_LOG.argv"   # the same call with every argument %q-quoted, so that where one ends and the next begins survives (a launch starts with `run`, which starts the file anew)
 case "$1" in
   info) printf '{"Name":"%s","ContainersRunning":0}\n' "${STUB_NAME:-the-host}" ;;
   run) printf 'c%.0s' {1..64}; echo ;;
@@ -113,6 +171,17 @@ case "$1" in
       *NetworkMode*) echo "${STUB_NET:-bridge}" ;;
       *Mounts*) printf '%b' "${STUB_MOUNTS:-/var/lib/docker /var/lib/docker/volumes/x/_data\n}" ;;
     esac ;;
+  exec) case "$*" in
+    *fold-owned-scan*) echo 0 ;;
+    *fold-listener-scan*)
+      if [[ "${STUB_LISTEN_HANG:-0}" == 1 ]]; then
+        trap '' TERM
+        sleep 60 & child=$!
+        printf '%s\n%s\n' "$$" "$child" >"$STUB_PIDS"
+        wait "$child"
+      fi
+      printf "%s\n" "${STUB_LISTEN-checked ipv4 ipv6}"; exit "${STUB_LISTEN_RC:-0}" ;;
+  esac ;;
 esac
 exit 0
 STUB
@@ -147,24 +216,135 @@ git init -q "$CLONE"; git -C "$CLONE" config user.name fixture; git -C "$CLONE" 
 git -C "$CLONE" config commit.gpgsign false; git -C "$CLONE" config core.hooksPath /dev/null
 git -C "$CLONE" add -A; git -C "$CLONE" commit -qm clone
 launch() { STUB_LOG="$WORK/stub.log" PATH="$WORK/stubbin:$PATH" bash "$CLONE/deploy/digitalocean/restore-drill-nested.sh" "$@"; }
+# WRAP, the supervisor every docker exec runs the workload under, as the runner defines it (WRAP_ARG). The stub's argv file (stub.log.argv) keeps every argument apart, so the check is
+# that WRAP is exactly one argument after bash -c and the workload's words follow it one by one. The supervisor's contract, read from the script itself: it loads the
+# Chromium the preparation found, polls for the stop request and TERMs the workload's group; it does not exec the command in its place.
+WRAP_ARG="$(sed -n "/^WRAP=\$(cat <<'WRAP'\$/,/^WRAP\$/p" "$LA" | sed '1d;$d')"
+[[ -n "$WRAP_ARG" ]]
+grep -qF 'prep/browser.env' <<<"$WRAP_ARG"; grep -qF 'stop-request' <<<"$WRAP_ARG"; grep -qF 'kill -TERM -- "-$g"' <<<"$WRAP_ARG"
+if grep -qF 'exec "$@"' <<<"$WRAP_ARG"; then echo 'the supervisor execs the command in its place again' >&2; exit 1; fi
+# wrapped_call LOG WORDS...: LOG (the stub's argv file: one call per line, each argument %q-quoted, so no two arguments can read as one) holds a docker exec whose arguments END with
+# bash, -c, the WRAP text as exactly ONE argument, _, bash and then each of WORDS as an argument of its own. The negative case below shows that WRAP and the workload's words
+# joined into one argument are refused.
+WRAP_Q="$(printf '%q' "$WRAP_ARG")"
+wrapped_call() { local log=$1 want="bash -c $WRAP_Q _ bash" a l; shift; for a in "$@"; do want+=" $(printf '%q' "$a")"; done; while IFS= read -r l; do [[ "$l" == "exec "*" $want" ]] && return 0; done <"$log"; return 1; }
+printf 'exec -w /work/fold c bash -c %q\n' "$WRAP_ARG _ bash x y" >"$WORK/joined.argv"
+if wrapped_call "$WORK/joined.argv" x y; then echo 'wrapped_call accepts WRAP and the workload joined into one argument' >&2; exit 1; fi
+printf 'exec -w /work/fold c bash -c %q _ bash x y\n' "$WRAP_ARG" >"$WORK/exact.argv"
+wrapped_call "$WORK/exact.argv" x y
 : >"$WORK/stub.log"
 launch --out "$WORK/ev1" -- --keep >"$WORK/l1.out" 2>&1
 [[ -d "$WORK/ev1" ]] && grep -q 'drill exit=0' "$WORK/l1.out"
 run_line="$(grep '^run ' "$WORK/stub.log")"
 [[ "$(grep -c '^run ' "$WORK/stub.log")" == 1 ]]
 # One container, privileged, named and hostnamed for this run, with no mounts, host network or socket.
-grep -qE -- '--name fold-drill-[0-9a-f]{12} --hostname fold-drill-[0-9a-f]{12} --privileged -e DOCKER_TLS_CERTDIR= docker:29-dind$' <<<"$run_line"
-if grep -qE -- ' -v |--volume|--mount|--network|--net |docker\.sock|--pid|--ipc|--userns|--cap-add' <<<"$run_line"; then echo "isolation: the nested container is given more than it needs: $run_line" >&2; exit 1; fi
+grep -qE -- '--name fold-drill-[0-9a-f]{12} --hostname fold-drill-[0-9a-f]{12} --privileged -e DOCKER_TLS_CERTDIR= docker:29-dind@sha256:[0-9a-f]{64} dockerd --host=unix:///var/run/docker.sock$' <<<"$run_line"
+if grep -qE -- ' -v |--volume|--mount|--network|--net |docker\.sock|--pid|--ipc|--userns|--cap-add|--publish| -p | -P |--expose' <<<"${run_line% dockerd --host=unix:///var/run/docker.sock}"; then echo "isolation: the nested container is given more than it needs: $run_line" >&2; exit 1; fi
+# The daemon's own command line. The image's ENTRYPOINT (dockerd-entrypoint.sh) puts tcp://0.0.0.0:2375 in front of any arguments that are empty or start with `-`, so the first word
+# after the image has to be `dockerd` itself, with exactly one --host, the unix socket. check_dind_argv reads the argv file (its first line is this launch's `run`, every argument
+# quoted) and takes the image as the one argument before `dockerd`: the default is a digest-pinned reference, and --dind-image is passed as given.
+check_dind_argv() { # IMAGE_PATTERN
+  local -a v
+  eval "v=($(head -n 1 "$WORK/stub.log.argv"))"
+  [[ "${#v[@]}" == 12 && "${v[0]}" == run && "${v[1]}" == -d && "${v[2]}" == --name && "${v[4]}" == --hostname && "${v[6]}" == --privileged && "${v[7]}" == -e && "${v[8]}" == DOCKER_TLS_CERTDIR= ]] \
+    || { echo "isolation: the nested launch is not the expected twelve arguments: ${v[*]}" >&2; exit 1; }
+  [[ "${v[9]}" =~ $1 && "${v[10]}" == dockerd && "${v[11]}" == --host=unix:///var/run/docker.sock ]] || { echo "isolation: the daemon is not started as 'dockerd --host=unix:///var/run/docker.sock' after the image: ${v[*]:9}" >&2; exit 1; }
+}
+check_dind_argv '^docker:29-dind@sha256:[0-9a-f]{64}$'
+# The digest is the multi-arch index of docker:29-dind, as the launcher says; the fixture only requires that it is a full sha256 and that the tag it came from is still named.
+grep -qE '^DIND_DEFAULT=docker:29-dind@sha256:[0-9a-f]{64}$' "$LA"; grep -q '^OUT="" DIND=\$DIND_DEFAULT ' "$LA"
+# The listening-socket lookup is the launcher's own LISTEN_SCAN, passed as ONE argument of `sh -c`, followed by its name and exactly the two files it reads, after the daemon answers
+# (`docker info`) and before anything is installed or run.
+LISTEN_TXT="$(sed -n "/^LISTEN_SCAN=\$(cat <<'LISTEN'\$/,/^LISTEN\$/p" "$LA" | sed '1d;$d')"
+[[ -n "$LISTEN_TXT" ]]
+scan_n=0; scan_argv=
+while IFS= read -r l; do if [[ "$l" == *" fold-listener-scan "* ]]; then scan_n=$((scan_n + 1)); scan_argv=$l; fi; done <"$WORK/stub.log.argv"
+[[ "$scan_n" == 1 ]]
+declare -a scan_v; eval "scan_v=($scan_argv)"
+[[ "${#scan_v[@]}" == 8 && "${scan_v[0]}" == exec && "${scan_v[1]}" =~ ^c{64}$ && "${scan_v[2]}" == sh && "${scan_v[3]}" == -c && "${scan_v[4]}" == "$LISTEN_TXT" && "${scan_v[5]}" == fold-listener-scan && "${scan_v[6]}" == /proc/net/tcp && "${scan_v[7]}" == /proc/net/tcp6 ]]
+info_l="$(grep -n '^exec c\{64\} docker info$' "$WORK/stub.log" | head -n 1 | cut -d: -f1)"; scan_l="$(grep -n ' fold-listener-scan /proc/net/tcp /proc/net/tcp6$' "$WORK/stub.log" | head -n 1 | cut -d: -f1)"
+apk_l="$(grep -n '^exec c\{64\} apk add' "$WORK/stub.log" | head -n 1 | cut -d: -f1)"
+[[ -n "$info_l" && -n "$scan_l" && -n "$apk_l" && "$info_l" -lt "$scan_l" && "$scan_l" -lt "$apk_l" ]]
+# The lookup itself, run for real on made-up /proc/net/tcp files (a LISTEN row is state 0A; 2375 is 0x0947, 2376 is 0x0948): a listener on either port at any address, in either file, is
+# printed; an established connection on 2375, listeners elsewhere and a file that cannot be read are not; and the count says how many files it could read.
+mkdir "$WORK/proc"
+tcp_hdr='  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode'
+row() { printf '   0: %s 00000000:0000 %s 00000000:00000000 00:00000000 00000000     0        0 1 1 x\n' "$1" "$2"; }
+{ echo "$tcp_hdr"; row 00000000:0050 0A; row 0100007F:0BB8 0A; row 0100007F:0947 01; row 0100007F:0948 06; } >"$WORK/proc/clean4"
+{ echo "$tcp_hdr"; row 00000000000000000000000000000000:01BB 0A; } >"$WORK/proc/clean6"
+{ echo "$tcp_hdr"; row 00000000:0947 0A; } >"$WORK/proc/bad4"
+{ echo "$tcp_hdr"; row 0100007F:0948 0A; } >"$WORK/proc/loop4"
+{ echo "$tcp_hdr"; row 00000000000000000000000000000000:0947 0A; } >"$WORK/proc/bad6"
+echo "$tcp_hdr" >"$WORK/proc/empty"
+scan() { sh -c "$LISTEN_TXT" fold-listener-scan "$@"; }
+[[ "$(scan "$WORK/proc/clean4" "$WORK/proc/clean6")" == 'checked ipv4 ipv6' ]]
+[[ "$(scan "$WORK/proc/empty" "$WORK/proc/absent")" == 'checked ipv4' ]]
+if scan "$WORK/proc/absent" "$WORK/proc/clean6" >"$WORK/scan.out" 2>&1; then echo 'isolation: missing IPv4 table was accepted' >&2; exit 1; fi
+if scan "$WORK/proc/clean4" "$WORK/proc" >"$WORK/scan.out" 2>&1; then echo 'isolation: unreadable IPv6 table was accepted' >&2; exit 1; fi
+[[ "$(scan "$WORK/proc/bad4" "$WORK/proc/clean6")" == "$WORK/proc/bad4 listens on tcp 00000000:0947"$'\n''checked ipv4 ipv6' ]]
+[[ "$(scan "$WORK/proc/clean4" "$WORK/proc/bad6")" == "$WORK/proc/bad6 listens on tcp 00000000000000000000000000000000:0947"$'\n''checked ipv4 ipv6' ]]
+[[ "$(scan "$WORK/proc/loop4" "$WORK/proc/clean6")" == "$WORK/proc/loop4 listens on tcp 0100007F:0948"$'\n''checked ipv4 ipv6' ]]
 # The repository goes in as a bundle by cp, the drill runs inside with the flag, the evidence comes out by cp, and the container is removed by id.
 grep -q '^cp .*fold.bundle ccc' "$WORK/stub.log"; grep -q "^cp ccc[c]*:/work/out/. $WORK/ev1/" "$WORK/stub.log"
-grep -q '^exec -e FOLD_DRILL_ISOLATED_DAEMON=1 -e QC1_NO_SANDBOX=1 -e QC1_WEB_DIR=/work/fold/web -w /work/fold c\{64\} bash -c .* _ bash deploy/digitalocean/restore-drill.sh --dir /work/out --keep$' "$WORK/stub.log"
+grep -q '^exec -e FOLD_NESTED_RUN=[0-9a-f]\{12\} -e FOLD_DRILL_ISOLATED_DAEMON=1 -e QC1_NO_SANDBOX=1 -e QC1_WEB_DIR=/work/fold/web -w /work/fold c\{64\} bash -c .* _ bash deploy/digitalocean/restore-drill.sh --dir /work/out --keep$' "$WORK/stub.log"
 # The drill's browser is prepared first, in the same container, and the Chromium it found is the one the run is given.
 prep_l="$(grep -n 'browser-prepare.sh /work/prep$' "$WORK/stub.log" | head -n 1 | cut -d: -f1)"; run_l="$(grep -n 'restore-drill.sh --dir /work/out' "$WORK/stub.log" | head -n 1 | cut -d: -f1)"
 [[ -n "$prep_l" && -n "$run_l" && "$prep_l" -lt "$run_l" ]]
-grep -q '/work/prep/browser.env' "$WORK/stub.log"
+wrapped_call "$WORK/stub.log.argv" deploy/digitalocean/qc1/browser-prepare.sh /work/prep; wrapped_call "$WORK/stub.log.argv" deploy/digitalocean/restore-drill.sh --dir /work/out --keep   # the preparation and the drill, each under the exact supervisor (one argument), which loads the prepared Chromium, then its own words as separate arguments
 grep -qE '^rm -fv c{64}$' "$WORK/stub.log"
+# The override: any reference goes in exactly as given, with the same daemon command line.
+: >"$WORK/stub.log"
+launch --out "$WORK/ev1o" --dind-image example.invalid/dind:override -- --keep >"$WORK/l1o.out" 2>&1
+grep -q 'drill exit=0' "$WORK/l1o.out"
+check_dind_argv '^example\.invalid/dind:override$'
 # Refusals leave the container removed and the drill unrun.
 refuse_launch() { : >"$WORK/stub.log"; local rc=0; "$@" >"$WORK/lr.out" 2>&1 || rc=$?; [[ "$rc" == 1 ]]; }
+# A daemon that is not shown to be unix-only is refused as soon as it answers, before anything is installed or run in it: a TCP 2375 or 2376 listener, a lookup that fails (even if its
+# text would pass), prints nothing, finds no readable file or prints anything else is no proof, and the container is removed by id.
+refuse_tcp() { # NAME OUTPUT [RC]
+  STUB_LISTEN="$2" STUB_LISTEN_RC="${3:-0}" refuse_launch launch --out "$WORK/ev-$1"
+  grep -q 'not shown to listen on its unix socket only' "$WORK/lr.out"; grep -qE '^rm -fv c{64}$' "$WORK/stub.log"
+  grep -q ' fold-listener-scan /proc/net/tcp /proc/net/tcp6$' "$WORK/stub.log"
+  if grep -qE 'apk add|restore-drill.sh|qc1-measure.sh|browser-prepare.sh|^cp .*fold.bundle' "$WORK/stub.log"; then echo "isolation: $1: the run went on after the TCP check refused it" >&2; exit 1; fi
+}
+refuse_tcp tcp2375 $'/proc/net/tcp listens on tcp 00000000:0947\nchecked ipv4 ipv6'
+grep -q 'listens on tcp 00000000:0947' "$WORK/lr.out"
+refuse_tcp tcp2376 $'/proc/net/tcp6 listens on tcp 00000000000000000000000000000000:0948\nchecked ipv4 ipv6'
+refuse_tcp silent ''
+refuse_tcp none 'checked 0'
+refuse_tcp odd 'checked 3'
+refuse_tcp noise $'warning\nchecked ipv4 ipv6'
+refuse_tcp failed 'checked ipv4 ipv6' 1
+# A stalled client and its child must not outlive the call or cancellation of the runner alone.
+cat >"$WORK/signal-probe.sh" <<'HOOK'
+[[ ${0##*/} == restore-drill-nested.sh ]] || return 0
+set -T
+signal_probe() {
+  [[ $BASHPID == "$$" && -s $STUB_PIDS && ! -e $SIGNAL_MARK ]] || return 0
+  : >"$SIGNAL_MARK"
+  sleep 0.3
+  builtin kill -TERM "$$"
+}
+trap signal_probe DEBUG
+HOOK
+for mode in timeout term; do
+  : >"$WORK/stub.log"; rm -f "$WORK/probe-pids" "$WORK/probe-signalled"
+  start=$SECONDS
+  hook=""; call_timeout=2
+  if [[ "$mode" == term ]]; then hook="$WORK/signal-probe.sh"; call_timeout=15; fi
+  start_owned_runner timeout --foreground -s KILL 30 env STUB_LOG="$WORK/stub.log" STUB_PIDS="$WORK/probe-pids" SIGNAL_MARK="$WORK/probe-signalled" BASH_ENV="$hook" STUB_LISTEN_HANG=1 FOLD_NESTED_CALL_TIMEOUT="$call_timeout" FOLD_NESTED_CLEANUP_BUDGET=12 PATH="$WORK/stubbin:$PATH" \
+    bash "$CLONE/deploy/digitalocean/restore-drill-nested.sh" --out "$WORK/ev-hang-$mode" >"$WORK/hang-$mode.out" 2>&1
+  rc=0; wait "$active_runner" || rc=$?; active_runner=""
+  [[ -s "$WORK/probe-pids" ]] || { echo 'isolation: listener probe did not start' >&2; exit 1; }
+  if [[ "$mode" == term ]]; then [[ "$rc" == 143 && -e "$WORK/probe-signalled" ]]; else [[ "$rc" == 1 && ! -e "$WORK/probe-signalled" ]]; fi
+  (( SECONDS - start < 20 ))
+  grep -qE '^rm -fv c{64}$' "$WORK/stub.log"
+  if grep -qE 'apk add|restore-drill.sh|qc1-measure.sh|browser-prepare.sh|^cp .*fold.bundle' "$WORK/stub.log"; then echo "isolation: $mode continued after a stalled probe" >&2; exit 1; fi
+  while IFS= read -r p; do
+    state="$(ps -o stat= -p "$p" 2>/dev/null || true)"
+    [[ -z "$state" || "$state" == Z* ]] || { echo "isolation: $mode left a probe process alive" >&2; exit 1; }
+  done <"$WORK/probe-pids"
+done
 STUB_MOUNTS='/var/run/docker.sock /var/run/docker.sock\n' refuse_launch launch --out "$WORK/ev2"
 grep -q 'mounts beyond its own /var/lib/docker' "$WORK/lr.out"; grep -qE '^rm -fv c{64}$' "$WORK/stub.log"; if grep -q 'restore-drill.sh' "$WORK/stub.log"; then exit 1; fi
 STUB_MOUNTS='/var/lib/docker /v\n/work /home/me/work\n' refuse_launch launch --out "$WORK/ev3"
@@ -180,12 +360,13 @@ git -C "$CLONE" checkout -q -- deploy/digitalocean/restore-drill-nested.sh
 # A drill that fails is reported with its exit code and its evidence still comes out.
 cat >"$WORK/stubbin/docker" <<'STUB'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >>"$STUB_LOG"
+line=; sep=; for a in "$@"; do line+="$sep${a//$'\n'/\\n}"; sep=" "; done; printf '%s\n' "$line" >>"$STUB_LOG"   # one line per call; a newline inside an argument is written as \n
+[[ $1 != run ]] || : >"$STUB_LOG.argv"; { sep=; for a in "$@"; do printf '%s%q' "$sep" "$a"; sep=" "; done; printf '\n'; } >>"$STUB_LOG.argv"   # the same call with every argument %q-quoted, so that where one ends and the next begins survives (a launch starts with `run`, which starts the file anew)
 case "$1" in
   info) echo '{"Name":"x","ContainersRunning":0}' ;;
   run) printf 'c%.0s' {1..64}; echo ;;
   inspect) case "$*" in *NetworkMode*) echo bridge ;; *Mounts*) echo '/var/lib/docker /v' ;; esac ;;
-  exec) case "$*" in *restore-drill.sh*) exit 7 ;; esac ;;
+  exec) case "$*" in *fold-owned-scan*) echo 0 ;; *fold-listener-scan*) echo "checked ipv4 ipv6" ;; *restore-drill.sh*) exit 7 ;; esac ;;
 esac
 exit 0
 STUB

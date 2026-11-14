@@ -119,7 +119,7 @@ if command -v node >/dev/null; then
 
   if grep -n -i 'content-length' "$HERE/qc1/panel-measure.mjs" "$HERE/qc1/panel-driver.mjs" "$HERE/qc1/panel-core.mjs" "$HERE/qc1/page-observer.mjs"; then echo 'the panel measurement reads Content-Length' >&2; exit 1; fi
   # The decoded body size is the observer's: read from the body, null (absent) when the body cannot be read, never zero.
-  grep -qF 'const body = await r.body();' "$HERE/qc1/page-observer.mjs"; grep -qF 'rec.bytes = body.length;' "$HERE/qc1/page-observer.mjs"; grep -qF 'bytes: null, requestMs: null, nodeParseMs: null' "$HERE/qc1/page-observer.mjs"
+  grep -qF 'const body = await r.body();' "$HERE/qc1/page-observer.mjs"; grep -qF 'rec.bytes = body.length;' "$HERE/qc1/page-observer.mjs"; grep -qF 'bytes: null, runes: null, requestMs: null, nodeParseMs: null' "$HERE/qc1/page-observer.mjs"
   # --- the preflight against a fake Playwright: module resolution is real, the browser is not ------------------------------
   # Two fake packages, as the repository has them: @playwright/test (the measurement) and playwright (the restore proof), over one playwright-core.
   fakepkg() { # dir name version
@@ -286,12 +286,13 @@ if sed -n '/^while (( \$# )); do/,/^done/p' "$RDS" | grep -- '--no-browser' >/de
 mkdir "$WORK/stubbin"
 cat >"$WORK/stubbin/docker" <<'STUB'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >>"$STUB_LOG"
+line=; sep=; for a in "$@"; do line+="$sep${a//$'\n'/\\n}"; sep=" "; done; printf '%s\n' "$line" >>"$STUB_LOG"   # one line per call; a newline inside an argument is written as \n
+[[ $1 != run ]] || : >"$STUB_LOG.argv"; { sep=; for a in "$@"; do printf '%s%q' "$sep" "$a"; sep=" "; done; printf '\n'; } >>"$STUB_LOG.argv"   # the same call with every argument %q-quoted, so that where one ends and the next begins survives (a launch starts with `run`, which starts the file anew)
 case "$1" in
   info) printf '{"Name":"x","ContainersRunning":0}\n' ;;
   run) printf 'c%.0s' {1..64}; echo ;;
   inspect) case "$*" in *NetworkMode*) echo bridge ;; *Mounts*) echo '/var/lib/docker /v' ;; esac ;;
-  exec) case "$*" in *browser-prepare.sh*) exit "${STUB_PREP_RC:-0}" ;; *qc1-measure.sh*) exit "${STUB_QC1_RC:-0}" ;; *restore-drill.sh*) exit "${STUB_DRILL_RC:-0}" ;; esac ;;
+  exec) case "$*" in *fold-owned-scan*) echo 0 ;; *fold-listener-scan*) echo "checked ipv4 ipv6" ;; *browser-prepare.sh*) exit "${STUB_PREP_RC:-0}" ;; *qc1-measure.sh*) exit "${STUB_QC1_RC:-0}" ;; *restore-drill.sh*) exit "${STUB_DRILL_RC:-0}" ;; esac ;;
 esac
 exit 0
 STUB
@@ -301,31 +302,50 @@ git init -q "$LAUNCH"; git -C "$LAUNCH" config user.name fixture; git -C "$LAUNC
 git -C "$LAUNCH" config commit.gpgsign false; git -C "$LAUNCH" config core.hooksPath /dev/null
 git -C "$LAUNCH" add -A; git -C "$LAUNCH" commit -qm launcher
 launch() { STUB_LOG="$WORK/stub.log" PATH="$WORK/stubbin:$PATH" bash "$LAUNCH/deploy/digitalocean/restore-drill-nested.sh" "$@"; }
+# WRAP, the supervisor every docker exec runs the workload under, as the runner defines it (WRAP_ARG). The stub's argv file (stub.log.argv) keeps every argument apart, so the check is
+# that WRAP is exactly one argument after bash -c and the workload's words follow it one by one. The supervisor's contract, read from the script itself: it loads the
+# Chromium the preparation found, polls for the stop request and TERMs the workload's group; it does not exec the command in its place.
+WRAP_ARG="$(sed -n "/^WRAP=\$(cat <<'WRAP'\$/,/^WRAP\$/p" "$HERE/restore-drill-nested.sh" | sed '1d;$d')"
+[[ -n "$WRAP_ARG" ]]
+grep -qF 'prep/browser.env' <<<"$WRAP_ARG"; grep -qF 'stop-request' <<<"$WRAP_ARG"; grep -qF 'kill -TERM -- "-$g"' <<<"$WRAP_ARG"
+if grep -qF 'exec "$@"' <<<"$WRAP_ARG"; then echo 'the supervisor execs the command in its place again' >&2; exit 1; fi
+# wrapped_call LOG WORDS...: LOG (the stub's argv file: one call per line, each argument %q-quoted, so no two arguments can read as one) holds a docker exec whose arguments END with
+# bash, -c, the WRAP text as exactly ONE argument, _, bash and then each of WORDS as an argument of its own. The negative case below shows that WRAP and the workload's words
+# joined into one argument are refused.
+WRAP_Q="$(printf '%q' "$WRAP_ARG")"
+wrapped_call() { local log=$1 want="bash -c $WRAP_Q _ bash" a l; shift; for a in "$@"; do want+=" $(printf '%q' "$a")"; done; while IFS= read -r l; do [[ "$l" == "exec "*" $want" ]] && return 0; done <"$log"; return 1; }
+printf 'exec -w /work/fold c bash -c %q\n' "$WRAP_ARG _ bash x y" >"$WORK/joined.argv"
+if wrapped_call "$WORK/joined.argv" x y; then echo 'wrapped_call accepts WRAP and the workload joined into one argument' >&2; exit 1; fi
+printf 'exec -w /work/fold c bash -c %q _ bash x y\n' "$WRAP_ARG" >"$WORK/exact.argv"
+wrapped_call "$WORK/exact.argv" x y
 # In EACH mode the browser is prepared once, after the clone and before the run, in the same container, and the run receives the Chromium the preparation found.
-check_mode() { # mode-name run-script label prepare-env-words
+check_mode() { # mode-name run-script label prepare-env-words run-words
   local clone_l prep_l run_l run_line
   clone_l="$(grep -n 'git clone' "$WORK/stub.log" | head -n 1 | cut -d: -f1)"
   prep_l="$(grep -n 'browser-prepare.sh /work/prep$' "$WORK/stub.log" | head -n 1 | cut -d: -f1)"
   run_l="$(grep -n -- "$2" "$WORK/stub.log" | head -n 1 | cut -d: -f1)"
   [[ -n "$clone_l" && -n "$prep_l" && -n "$run_l" && "$clone_l" -lt "$prep_l" && "$prep_l" -lt "$run_l" ]] || { echo "$1: the browser is not prepared between the clone and the run" >&2; cat "$WORK/stub.log" >&2; exit 1; }
   [[ "$(grep -c 'browser-prepare.sh' "$WORK/stub.log")" == 1 ]] || { echo "$1: the browser is prepared more or less than once" >&2; exit 1; }
-  grep -q "^exec $4-w /work/fold c\{64\} bash deploy/digitalocean/qc1/browser-prepare.sh /work/prep\$" "$WORK/stub.log" || { echo "$1: the preparation does not run with the environment $4" >&2; cat "$WORK/stub.log" >&2; exit 1; }
+  grep -q "^exec -e FOLD_NESTED_RUN=[0-9a-f]\{12\} $4-w /work/fold c\{64\} bash -c .* _ bash deploy/digitalocean/qc1/browser-prepare.sh /work/prep\$" "$WORK/stub.log" || { echo "$1: the preparation does not run with the environment $4" >&2; cat "$WORK/stub.log" >&2; exit 1; }
   run_line="$(sed -n "${run_l}p" "$WORK/stub.log")"
   grep -q -- '-e FOLD_DRILL_ISOLATED_DAEMON=1 -e QC1_NO_SANDBOX=1 -e QC1_WEB_DIR=/work/fold/web -w /work/fold' <<<"$run_line" || { echo "$1: the run does not get the runner switches" >&2; exit 1; }
-  grep -q 'set -a; . /work/prep/browser.env; set +a; fi; exec "$@"' <<<"$run_line" || { echo "$1: the run does not load the prepared Chromium" >&2; exit 1; }
+  read -ra run_w <<<"$5"   # the run's words, each its own argument after the supervisor's exact one
+  wrapped_call "$WORK/stub.log.argv" deploy/digitalocean/qc1/browser-prepare.sh /work/prep || { echo "$1: the preparation is not under the exact supervisor with its own arguments" >&2; exit 1; }
+  wrapped_call "$WORK/stub.log.argv" "${run_w[@]}" || { echo "$1: the run is not under the exact supervisor with its own arguments" >&2; exit 1; }
   grep -q "^cp c\{64\}:/work/prep/. $WORK/$3/prep/" "$WORK/stub.log"; grep -q "^cp c\{64\}:/work/out/. $WORK/$3/" "$WORK/stub.log"; grep -qE '^rm -fv c{64}$' "$WORK/stub.log"
 }
 : >"$WORK/stub.log"; launch --out "$WORK/m-drill" -- --keep >"$WORK/l.out" 2>&1; grep -q 'drill exit=0' "$WORK/l.out"
-check_mode drill 'restore-drill.sh --dir /work/out' m-drill '-e QC1_WEB_DIR=/work/fold/web -e QC1_PREPARE_FIREFOX=1 '
+check_mode drill 'restore-drill.sh --dir /work/out' m-drill '-e QC1_WEB_DIR=/work/fold/web -e QC1_PREPARE_FIREFOX=1 ' 'deploy/digitalocean/restore-drill.sh --dir /work/out --keep'
 if grep -q 'qc1-measure.sh' "$WORK/stub.log"; then echo 'the drill mode measured' >&2; exit 1; fi
 : >"$WORK/stub.log"; launch --out "$WORK/m-qc1" --qc1 -- --sizes 10000 >"$WORK/l.out" 2>&1; grep -q 'qc1 exit=0' "$WORK/l.out"
-check_mode qc1 'qc1-measure.sh --dir /work/out' m-qc1 '-e QC1_WEB_DIR=/work/fold/web '
+check_mode qc1 'qc1-measure.sh --dir /work/out' m-qc1 '-e QC1_WEB_DIR=/work/fold/web ' 'deploy/digitalocean/qc1-measure.sh --dir /work/out --sizes 10000'
 if grep -q 'QC1_PREPARE_FIREFOX' "$WORK/stub.log"; then echo 'the qc1 mode builds the Firefox runtime' >&2; exit 1; fi
 grep -q -- '_ bash deploy/digitalocean/qc1-measure.sh --dir /work/out --sizes 10000$' "$WORK/stub.log"
 if grep -q 'restore-drill.sh' "$WORK/stub.log"; then echo 'the qc1 mode ran the restore drill' >&2; exit 1; fi
 # No mount, host network or socket on the run line in either mode.
 run_line="$(grep '^run ' "$WORK/stub.log")"; [[ "$(grep -c '^run ' "$WORK/stub.log")" == 1 ]]
-if grep -qE -- ' -v |--volume|--mount|--network|docker\.sock|--cap-add' <<<"$run_line"; then echo "the runner is given more than it needs: $run_line" >&2; exit 1; fi
+if grep -qE -- ' -v |--volume|--mount|--network|--cap-add' <<<"$run_line"; then echo "the runner is given more than it needs: $run_line" >&2; exit 1; fi
+grep -qF -- 'dockerd --host=unix:///var/run/docker.sock' <<<"$run_line"
 # A runtime that cannot be prepared ends EITHER mode before anything runs, with the preparation's exit code and its evidence copied out.
 : >"$WORK/stub.log"; rc=0; STUB_PREP_RC=9 launch --out "$WORK/m-drill-fail" >"$WORK/l2.out" 2>&1 || rc=$?
 [[ "$rc" == 9 ]] && grep -q 'nothing was run (drill)' "$WORK/l2.out"
@@ -350,7 +370,7 @@ LA="$HERE/restore-drill-nested.sh"
 [[ "$(grep -c 'qc1/browser-prepare.sh' <(grep -v '^#' "$LA"))" == 1 ]]
 prep_s="$(grep -n 'bash deploy/digitalocean/qc1/browser-prepare.sh /work/prep' "$LA" | cut -d: -f1)"; branch_s="$(grep -n '^if (( QC1 )); then$' "$LA" | tail -n 1 | cut -d: -f1)"
 [[ -n "$prep_s" && -n "$branch_s" && "$prep_s" -lt "$branch_s" ]]
-grep -q '^wrap=' "$LA"
+grep -q '^WRAP=' "$LA"
 
 # --- Firefox: a glibc binary cannot start on the Alpine runner, so the drill runs it in a Debian container built and launched BEFORE the drill ------------
 # (drill3: `playwright install firefox` downloaded a glibc Firefox into the musl runner; spawn failed with ENOENT, the missing /lib64/ld-linux-x86-64.so.2.)
@@ -503,7 +523,7 @@ fi
 # --- the runner: browser preflight before anything is created -------------------------------------------------------------
 CLONE="$WORK/clone"; mkdir -p "$CLONE/deploy/digitalocean/qc1" "$CLONE/web/src/lib"
 cp "$HERE/qc1-measure.sh" "$HERE/isolation.sh" "$CLONE/deploy/digitalocean/"
-cp "$HERE"/qc1/app-facts.json "$HERE"/qc1/lib.sh "$HERE"/qc1/filler.sql "$HERE"/qc1/scenario.sql "$HERE"/qc1/panel-measure.mjs "$HERE"/qc1/browser.mjs "$HERE"/qc1/browser-launch.cjs "$HERE"/qc1/browser-preflight.mjs "$HERE"/qc1/response-accounting.mjs "$HERE"/qc1/set-v1.mjs "$HERE"/qc1/panel-core.mjs "$HERE"/qc1/panel-driver.mjs "$HERE"/qc1/page-observer.mjs "$HERE"/qc1/top-statements.sql "$CLONE/deploy/digitalocean/qc1/"; mkdir -p "$CLONE/web/src/lib"; cp "$ROOT/web/src/lib/reasonSetVectors.json" "$CLONE/web/src/lib/"
+cp "$HERE"/qc1/app-facts.json "$HERE"/qc1/lib.sh "$HERE"/qc1/filler.sql "$HERE"/qc1/legacy.sh "$HERE"/qc1/legacy-markers.sql "$HERE"/qc1/scenario.sql "$HERE"/qc1/panel-measure.mjs "$HERE"/qc1/browser.mjs "$HERE"/qc1/browser-launch.cjs "$HERE"/qc1/browser-preflight.mjs "$HERE"/qc1/response-accounting.mjs "$HERE"/qc1/set-v1.mjs "$HERE"/qc1/panel-core.mjs "$HERE"/qc1/panel-driver.mjs "$HERE"/qc1/page-observer.mjs "$HERE"/qc1/top-statements.sql "$CLONE/deploy/digitalocean/qc1/"; mkdir -p "$CLONE/web/src/lib"; cp "$ROOT/web/src/lib/reasonSetVectors.json" "$CLONE/web/src/lib/"
 git init -q "$CLONE"; git -C "$CLONE" config user.name fixture; git -C "$CLONE" config user.email fixture@example.invalid
 git -C "$CLONE" config commit.gpgsign false; git -C "$CLONE" config core.hooksPath /dev/null
 git -C "$CLONE" add -A; git -C "$CLONE" commit -qm clone
@@ -741,16 +761,18 @@ OUT="$FIN_DIR"; mkdir -p "$OUT"
 cp "$HERE/testdata/qc1-100k-abort-rows.jsonl" "$OUT/measurements.jsonl"
 cp "$HERE/testdata/qc1-100k-abort-harness.log" "$OUT/harness.log"
 echo '{"gate":{"ok":true}}' >"$OUT/calibration.json"
+echo '{"ok":true,"checks":["smoke"],"pairs":101}' >"$OUT/legacy-smoke.json"
 WORK="$OUT"; MEASUREMENTS="$OUT/measurements.jsonl"
 exec >>"$WORK/harness.log" 2>&1
 KEEP="${KEEP:-0}"; SAMPLERS=(); CONTAINERS=(dbcid appcid); NET_ID=netid; VOL=""; VOL_TOKEN=""; DB_CID=dbcid; AUTOEXPLAIN_DIRTY=0
 SIZES=100000; COUNTS=0,10,100,1000,10000; DENSE=100000; DENSE_LIST=(100000); ALL_DELETE_LIST=(0 10 100 1000 10000 100000); REVISION="$(printf 'a%.0s' {1..40})"; MAX_REQUEST_BYTES=6291456
 IMAGE=qc1-fold:test; IMAGE_ID=sha256:test; LEVEL=2; DROPLET=2gb; DB_MEMORY=2g; APP_MEMORY=1g; CPUSET=0; LAYOUT=spread; REASON_LEN=200; TARGET_REASON_LEN=1000
+NEXT_CHANGED_PRESSES=1; NEXT_CHANGED_RUNS=1; NEXT_CHANGED_ONLY=0; PROFILE_NEXT_CHANGED=0; LEGACY_ONLY="${LEGACY_ONLY:-0}"
 SECONDS_PER_REASON=10; SITTING_MINUTES=15; PG_REPO_DIGESTS='["pg-digest"]'; APP_REPO_DIGESTS='["app-digest"]'
 APP_CONTAINERS='[{"imageId":"sha256:test","memoryLimitBytes":1024}]'; DAEMON_JSON='{"rootless":false}'; SOURCES='["source"]'; BROWSER_RUNTIME='{"ok":true}'
 sleep() { :; }
 src() { awk -v f="$1" '$0 ~ "^" f "\\(\\) \\{" { on = 1 } on { print } on && (/^}$/ || /^[a-z_]+\(\) \{.*\}$/) { exit }' "$RUNNER"; }
-for fn in jnum jraw fin_psql db_settings_json write_environment write_abort_record finalize_evidence autoexplain_reset cleanup note psql_db; do eval "$(src "$fn")"; done
+for fn in jnum jraw fin_psql db_settings_json write_environment write_abort_record finalize_evidence autoexplain_reset cleanup note psql_db calibration_gate; do eval "$(src "$fn")"; done
 eval "$(grep -E '^FINALIZED=0 CURRENT_STEP=' "$RUNNER")"
 eval "$(grep -E "^trap 'ERR_CMD=" "$RUNNER")"
 eval "$(grep -E "^trap (cleanup EXIT|'exit (130|143|129)' (INT|TERM|HUP))\$" "$RUNNER")"
@@ -765,6 +787,13 @@ case "$MODE" in
   finfail)      note "size 100000: a step"; mkdir "$WORK/evidence-status.json"; exit 7 ;;
   idem)         note "size 100000: a step"; finalize_evidence aborted 5 ""; sha256sum "$WORK"/*.json >"$WORK/first.sha"; wc -l <"$STUB_LOG" >"$WORK/first.calls"; finalize_evidence aborted 5 ""; sha256sum "$WORK"/*.json >"$WORK/second.sha"; wc -l <"$STUB_LOG" >"$WORK/second.calls"; exit 5 ;;
   complete)     finalize_evidence complete 0; exit 0 ;;
+  legacy)       LEGACY_ONLY=1; finalize_evidence complete 0; exit 0 ;;
+  calibfail)  note "calibrating the instruments"; : >"$OUT/measurements.jsonl"
+    jq -nc '{gate:{ok:true,spanMs:380,holders:1,grants:20,ticks:22,maxGapMs:21,meanGapMs:20,holes:0},dbMemory:{ok:true,samples:10},appMemory:{ok:true,hwmReset:false,rssKb:10000,hwmBeforeKb:12000,resetWriteRc:0,hwmAfterKb:13000},wal:{ok:true},commit:{ok:true}}' >"$OUT/calibration.json"
+    calibration_gate; echo "qc1: calibration_gate returned on a failing record" >"$OUT/gate-returned"; exit 0 ;;
+  calibok)    note "calibrating the instruments"; : >"$OUT/measurements.jsonl"
+    jq -nc '{gate:{ok:true,spanMs:380,holders:1,grants:20,ticks:22,maxGapMs:21,meanGapMs:20,holes:0},dbMemory:{ok:true,samples:10},appMemory:{ok:true,hwmReset:true,rssKb:10000,hwmBeforeKb:12000,resetWriteRc:0,hwmAfterKb:9000},wal:{ok:true},commit:{ok:true}}' >"$OUT/calibration.json"
+    calibration_gate; echo "gate-pass" >"$OUT/gate-returned"; exit 0 ;;
   early)        exit 0 ;;
 esac
 DRV
@@ -813,6 +842,26 @@ fin_run complete; [[ "$rc" == 0 ]]; jq -e 'has("aborted") | not' "$FD/evidence-s
 jq -e '.incomplete == false and .recoveryPolicy == 2 and .maxRequestBytes == 6291456 and .settings.reasonLen == 200 and .settings.targetReasonLen == 1000 and .settings.secondsPerReason == 10 and .settings.sittingMinutes == 15 and .appImageId == "sha256:test" and .limits.appMemoryLimitBytes == 1024 and .daemon.rootless == false and .sources == ["source"] and .browserRuntime.ok == true and .postgresRepoDigests == ["pg-digest"] and .appRepoDigests == ["app-digest"]' "$FD/environment.json" >/dev/null
 [[ ! -e "$FD/abort.json" ]]
 fin_run early; [[ "$rc" == 0 && ! -e "$FD/abort.json" ]]
+# (5c) A failing calibration stops before any measurement: nothing measured, the aborted evidence names the
+# judge's problem in the abort step and the log and carries the raw record, through the same finalizer.
+# A passing one lets the run go on. An empty measurements file is unjudgeable rows, the pre-existing
+# status for any abort before the first row (a smoke failure aborts the same way); the judge is unchanged.
+fin_run calibfail; [[ "$rc" == 1 ]]
+[[ ! -e "$FD/gate-returned" && "$(wc -l <"$FD/measurements.jsonl")" == 0 ]]
+jq -e '.outcome == "aborted" and .exitCode == 1 and .step == "calibration failed; stopping before any measurement" and .rowsMeasured == 0' "$FD/abort.json" >/dev/null
+jq -e '.complete == false and ([.invalid[] | select(.failure == "unparsable-measurements")] | length) == 1' "$FD/evidence-status.json" >/dev/null
+jq -e '.calibration.appMemory == {ok:true, hwmReset:false, rssKb:10000, hwmBeforeKb:12000, resetWriteRc:0, hwmAfterKb:13000}' "$FD/environment.json" >/dev/null
+jq -e '.evidence.complete == false and .judgeRan == true' "$FD/summary.json" >/dev/null
+grep -qF 'the app peak-memory reset failed' "$FD/harness.log"
+grep -qx 'qc1 evidence=finalized' "$FD/harness.log"; grep -qx 'qc1 result=1 artifacts=.* retained_stack=0' "$FD/harness.log"
+fin_run calibok; [[ "$rc" == 0 ]]; [[ -f "$FD/gate-returned" ]]; [[ ! -e "$FD/abort.json" && ! -e "$FD/evidence-status.json" ]]
+# (5b) A matrix run's environment record has no mode and no legacy block; a legacy-only run records both, and its evidence status is read in that mode (the run asked for nine rows a
+# size, so they are MISSING when absent, nothing is pending, and the coverage says why it is a pilot).
+fin_run complete; [[ "$rc" == 0 ]]; jq -e '(.settings | has("mode") or has("legacy")) | not' "$FD/environment.json" >/dev/null
+fin_run legacy; [[ "$rc" == 0 ]]
+jq -e '.settings.mode == "legacy-only" and .settings.legacy.sizesFloor == 10000 and .settings.legacy.seedLayout == "spread" and .settings.legacy.smoke.ok == true and .settings.legacy.smoke.pairs == 101 and (.settings.legacy.markersSha256 | test("^[0-9a-f]{64}$"))' "$FD/environment.json" >/dev/null
+[[ "$(jq -r .settings.legacy.markersSha256 "$FD/environment.json")" == "$(sha256sum <"$HERE/qc1/legacy-markers.sql" | cut -d' ' -f1)" ]]
+jq -e '([.missing[] | .item] | unique) == [4,5,11] and (.missing | length) == 9 and (.pending | length) == 0 and ([.coverage.reasons[] | test("legacy-only run: the live matrix rows were not run")] | any) and .coverage.kind == "pilot" and .releaseEvidence == false and .complete == false' "$FD/evidence-status.json" >/dev/null
 # (6) Static: cleanup finalizes after the auto_explain reset and before any removal, from the original status, and the normal end calls the same function.
 cl_body="$(sed -n '/^cleanup() {/,/^}/p' "$RUNNER")"
 l_r="$(grep -n 'autoexplain_reset;' <<<"$cl_body" | head -n 1 | cut -d: -f1)"; l_f="$(grep -n 'finalize_evidence aborted' <<<"$cl_body" | cut -d: -f1)"; l_d="$(grep -n 'docker rm -fv' <<<"$cl_body" | cut -d: -f1)"

@@ -16,20 +16,28 @@
 // installed Chromium, see browser.mjs), QC1_ADMIN_EMAIL, QC1_ADMIN_PASSWORD, QC1_TARGET_EMAIL, QC1_EXPECT (reasons the account holds), QC1_OUT
 // (file for the JSON result). Optional: QC1_CHANGE_CMD (an executable called with one request id: it changes that reason behind the page),
 // QC1_NO_SUBTLE=1 (remove crypto.subtle before the page loads, as a plain-http LAN address lacks it, so the bundled SHA-256 runs), QC1_CLICKS
-// (default 30), QC1_PHASE_CMD (an executable called with a phase name that prints the WAL position and audit_logs figures as JSON: open, walk-end,
+// (default 30), QC1_NEXT_CHANGED_PRESSES (default 1: how many times "Next changed reason" is pressed; above 1 the repeated presses of #298 are sampled, see panel-core.mjs),
+// QC1_PROFILE_NEXT_CHANGED=1 (a V8 CPU profile across the repeated presses, written to QC1_OUT.nextchanged.cpuprofile; a diagnostic whose overhead makes its figures unfit to judge), QC1_PHASE_CMD (an executable called with a phase name that prints the WAL position and audit_logs figures as JSON: open, walk-end,
 // interactions-end, press-start, press-end). Exit 3 when the browser tooling is not usable, 4 when sign-in fails, 5 when the run breaks before any
 // result is written; the pages seen so far are still in QC1_OUT.pages.jsonl, and the runner records them as a partial row. Exit 6 when a PHASE failed after the run
 // started: the file is written with `failed` naming the phase and every figure measured before it (including any budget already crossed); the runner
 // records it as a PARTIAL row, which the judge keeps for its budget findings and calls invalid as incomplete. browser-preflight.mjs proves the tooling with the same launch.
 //
+// Three things are recorded for the multibyte matrix (#293), without touching the panel: `deleteReview` is the reasonReview of the first DELETE the browser sent (the harness compares
+// its count, digest and choices with an independent builder over the items the server issued, qc1/set-v1.mjs agree); `screen` is the final screen as the page shows it (the pager
+// line, and for each reason row its id, how many reason-text elements it holds and their exact text), which the harness holds to the database after the run (set-v1.mjs dom-ids and
+// dom-text, domTextAgreement in response-accounting.mjs); and `pagesText` is the bytes and runes of the review page responses, so a multibyte run is seen to carry multibyte text.
+//
 // Timing is the PAGE's own clock throughout (panel-driver.mjs): the first page, the end of the walk, the first interactive click and the end of the second walk are
 // stamped in the page, from the pointerdown on the Delete menu item, where each happens; clicks and navigation are timed from their pointerdown to the frame after
 // the commit; only a page request's time is Playwright's (its request timing). The phase hook's and the Node loop's clocks measure nothing. Every review page
 // response is persisted as it completes to QC1_OUT.pages.jsonl (page-observer.mjs), so a run that stops part-way keeps every page it saw, slow ones included.
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { cpus } from "node:os";
 import { launchOptions, resolvePlaywright } from "./browser.mjs";
 import { pageObserver } from "./page-observer.mjs";
-import { measurePanel, CLICKS_DEFAULT } from "./panel-core.mjs";
+import { measurePanel, CLICKS_DEFAULT, WEB, parseLoadavg, parseProcStatCpu, parsePressureCpu } from "./panel-core.mjs";
+import { bodyRuneSummary } from "./response-accounting.mjs";
 import { playwrightDriver, INIT_SCRIPT, NO_SUBTLE_SCRIPT } from "./panel-driver.mjs";
 
 const env = process.env;
@@ -37,7 +45,21 @@ for (const k of ["QC1_URL", "QC1_WEB_DIR", "QC1_ADMIN_EMAIL", "QC1_ADMIN_PASSWOR
   if (!env[k]) { process.stderr.write(`panel-measure: ${k} is required\n`); process.exit(2); }
 }
 const expected = Number(env.QC1_EXPECT);
+const nextChangedPresses = Number(env.QC1_NEXT_CHANGED_PRESSES ?? 1);
+if (!Number.isInteger(nextChangedPresses) || nextChangedPresses < 1) { process.stderr.write("panel-measure: QC1_NEXT_CHANGED_PRESSES must be a whole number of at least 1\n"); process.exit(2); }
+const profileNextChanged = env.QC1_PROFILE_NEXT_CHANGED === "1";
 const url = env.QC1_URL.replace(/\/$/, "");
+
+// The host's own counters, read from /proc by this process (the one that drives the browser, on the machine the stack shares with it). In a container these are
+// the counters of the kernel the container runs on, which is the contention the page felt; a counter that cannot be read is null, never a guess (panel-core.mjs parses).
+const procText = (p) => { try { return readFileSync(p, "utf8"); } catch { return null; } };
+const loadSnapshot = async () => ({
+  at: Date.now(),
+  loadavg: parseLoadavg(procText("/proc/loadavg")),
+  cpu: parseProcStatCpu(procText("/proc/stat")),
+  cpuPressureSomeAvg10: parsePressureCpu(procText("/proc/pressure/cpu")),
+  cpus: cpus().length,
+});
 const origin = new URL(url).origin;
 
 let pw;
@@ -74,19 +96,55 @@ try {
   writeFileSync(pagesFile, "");
   const observer = pageObserver({ origin, append: (line) => appendFileSync(pagesFile, line) });
   page.on("response", (r) => { observer.onResponse(r); });
+  // The reasonReview of each DELETE the browser sends, as it left the page: the harness holds it against an independent builder (the browser's digest agreement).
+  const sentReviews = [];
+  page.on("request", (r) => {
+    if (r.method() !== "DELETE" || !/\/api\/v1\/admin\/users\/\d+$/.test(new URL(r.url()).pathname)) return;
+    try {
+      const b = JSON.parse(r.postData() ?? "null");
+      sentReviews.push(b && typeof b === "object" && b.reasonReview ? b.reasonReview : null);
+    } catch {
+      sentReviews.push(null);
+    }
+  });
 
-  const driver = playwrightDriver({ page, context, url, targetEmail: env.QC1_TARGET_EMAIL, expected, changeCmd: env.QC1_CHANGE_CMD ?? "", phaseCmd: env.QC1_PHASE_CMD ?? "", observer });
+  const driver = playwrightDriver({ page, context, url, targetEmail: env.QC1_TARGET_EMAIL, expected, changeCmd: env.QC1_CHANGE_CMD ?? "", phaseCmd: env.QC1_PHASE_CMD ?? "", profileFile: profileNextChanged ? `${env.QC1_OUT}.nextchanged.cpuprofile` : "", observer });
   const result = await measurePanel(driver, {
     expected,
     now: () => performance.now(),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     clicksTotal: Number(env.QC1_CLICKS ?? CLICKS_DEFAULT),
+    nextChangedPresses,
+    profileNextChanged,
+    loadSnapshot,
   });
   // A run that failed part-way is WRITTEN anyway, with `failed` naming the phase: the phases that finished keep their figures (and any budget already
   // crossed). The runner records such a file as a partial row and the judge keeps its budget findings; the exit status is 6 so it is never mistaken for a
   // clean run.
+  // The final screen, taken as it is (the harness judges it after the run, against the database): the pager line and, for every reason row, its id, the number of
+  // reason-text elements inside it and the exact textContent of that element. The page may be gone after a failure: then nothing is captured, and says so.
+  let screen = { captured: false, why: "the page was not read" };
+  try {
+    screen = await page.evaluate(
+      ([rowSel, navSel, textSel, idAttr]) => ({
+        captured: true,
+        nav: document.querySelector(navSel)?.textContent ?? null,
+        navCount: document.querySelectorAll(navSel).length,
+        rows: [...document.querySelectorAll(rowSel)].map((li) => {
+          const els = li.querySelectorAll(textSel);
+          return { id: li.getAttribute(idAttr), reasonElements: els.length, text: els.length === 1 ? els[0].textContent : null };
+        }),
+      }),
+      [WEB.reasonRows, WEB.reasonsNav, WEB.reasonText, WEB.reasonIdAttr],
+    );
+  } catch (e) {
+    screen = { captured: false, why: `the final screen could not be read: ${String(e && e.message ? e.message : e).slice(0, 200)}` };
+  }
   writeFileSync(env.QC1_OUT, JSON.stringify({
     ...result,
+    deleteReview: sentReviews.length > 0 ? sentReviews[0] : null,
+    screen,
+    pagesText: bodyRuneSummary(observer.observations()),
     browser: `chromium ${browser.version()}`,
     noSubtle: env.QC1_NO_SUBTLE === "1",
     note: "every interval of the first load and of the second walk is the PAGE's own clock, from the pointerdown on the Delete menu item to the moment the page saw the thing happen (timeline); click and navigation latencies are the page's own clock from the pointerdown to the frame after the commit; page request times are Playwright's request timing; headless Chromium, 1280x900, the app's own embedded bundle, a runner where the browser shares the machine with the stack",

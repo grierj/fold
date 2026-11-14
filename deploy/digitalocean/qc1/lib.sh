@@ -43,15 +43,26 @@ QC1_DENSE_COUNTS_DEFAULT=100000
 # contactLockID: the gate pg_advisory_xact_lock takes.
 QC1_GATE_LOCK_ID="$(qc1_fact .go.contactLockID)"
 # Items the harness cannot measure at this tree, with the reason it records.
-QC1_PENDING_4='legacy discovery is T07B-3a; the route and the marker lookup are not in this tree'
-QC1_PENDING_5='the legacy PUT body is T07B-3a; its route is not in this tree'
+# A matrix run does not measure the legacy cases (T-292 owns them, in the focused --legacy-only run); the placeholders say so.
+QC1_PENDING_4='legacy discovery is not measured in a matrix run; qc1-measure.sh --legacy-only measures it (docs/agents/testing.md)'
+QC1_PENDING_5='the legacy save is not measured in a matrix run; qc1-measure.sh --legacy-only measures it (docs/agents/testing.md)'
 # Files whose bytes decide what is measured; each must equal HEAD's blob.
-QC1_SOURCE_FILES=(deploy/digitalocean/qc1-measure.sh deploy/digitalocean/qc1/lib.sh deploy/digitalocean/qc1/filler.sql deploy/digitalocean/qc1/scenario.sql
+QC1_SOURCE_FILES=(deploy/digitalocean/qc1-measure.sh deploy/digitalocean/qc1/lib.sh deploy/digitalocean/qc1/filler.sql deploy/digitalocean/qc1/legacy.sh deploy/digitalocean/qc1/legacy-markers.sql deploy/digitalocean/qc1/scenario.sql
   deploy/digitalocean/qc1/top-statements.sql deploy/digitalocean/qc1/panel-measure.mjs deploy/digitalocean/qc1/browser.mjs deploy/digitalocean/qc1/browser-launch.cjs deploy/digitalocean/qc1/browser-preflight.mjs deploy/digitalocean/qc1/response-accounting.mjs
   deploy/digitalocean/qc1/set-v1.mjs deploy/digitalocean/qc1/panel-core.mjs deploy/digitalocean/qc1/panel-driver.mjs deploy/digitalocean/qc1/page-observer.mjs web/src/lib/reasonSetVectors.json
   deploy/digitalocean/qc1/app-facts.json)
 # The statements whose plans must be present for every size.
 QC1_PLAN_KINDS=(scanner-initial scanner-continuation page-items delete-set blank-batch)
+# The legacy-only plan row (item 11) records these instead; QC1_PLAN_KINDS stays what every live item-8 row carries.
+QC1_LEGACY_PLAN_KINDS=(scanner-initial scanner-continuation legacy-facts legacy-markers)
+# The legacy-only provenance a run records in settings.legacy (qc1-measure.sh
+# write_environment) and what the validator below holds it to: the seed floor
+# and layout the run refused to vary, the smoke's pair count, and the smoke's
+# defined check set in run order (legacy.sh writes SMOKE_CHECKS in this order).
+QC1_LEGACY_SIZES_FLOOR=10000
+QC1_LEGACY_SEED_LAYOUT=spread
+QC1_LEGACY_SMOKE_PAIRS=101
+QC1_LEGACY_SMOKE_CHECKS=(discovery-lists-the-seeded-pairs account-pages-are-audited-once-each attempt-id-mint count-refusal-bound-and-nothing-changed save-effects-exact save-decides-pairs-and-probe-finds-the-rest forged-marker-is-recognized-and-shaped-like-the-applications guard-refuses-a-live-account-and-a-wrong-token)
 
 # comma list -> one positive integer per line; fails on anything else.
 qc1_list() {
@@ -166,6 +177,34 @@ qc1_lsn_bytes() { # from to
     BEGIN { x = lsn(a); y = lsn(b); if (x < 0 || y < 0 || y < x) { print "invalid"; exit 1 } printf "%.0f\n", y - x }'
 }
 
+# Run one measured DELETE and keep a small record of how it ended, before the caller's post-request instrumentation can fail:
+#   qc1_delete_attempt dir n response-file body-file meta-json -- command...   (the command prints "status ms", as `timed` does)
+# Sets DEL_STATUS and DEL_MS. The response file is emptied first, so a request that fails cannot be read as the one before it. The record
+# (dir/NNNN.json, written whole, never over another) holds only the caller's controlled fields (meta), the status, the command's exit, the
+# duration, byte counts and the response's "code" when it is one of the known ones below. A response with any other code, or none, is
+# "withheld": its message is never read or kept. No cause is inferred. A record that cannot be written is said on stderr and changes nothing else.
+qc1_delete_attempt() {
+  local dir="$1" n="$2" resp="$3" body="$4" meta="$5" out rc=0 code=none rbytes=0 transport=ok c dst
+  shift 6
+  : >"$resp"
+  out="$("$@")" || rc=$?
+  read -r DEL_STATUS DEL_MS <<<"$out"
+  if [[ -s "$resp" ]]; then
+    rbytes="$(wc -c <"$resp")" code=withheld
+    if (( rc == 0 )) && c="$(jq -ers 'select(length == 1 and (.[0] | type) == "object" and (.[0].code | type) == "string") | .[0].code' "$resp" 2>/dev/null)"; then
+      case "$c" in delete_timed_out | reason_review_busy | reason_review_changed | restore_detected | server_error) code="$c" ;; esac
+    fi
+  fi
+  (( rc == 0 )) || transport=failed
+  dst="$(printf '%s/%04d.json' "$dir" "$n")"
+  { mkdir -p "$dir" && [[ ! -e "$dst" ]] && jq -nc --argjson m "${meta:-null}" --argjson n "$n" --arg st "${DEL_STATUS:-}" --arg ms "${DEL_MS:-}" --arg t "$transport" \
+    --argjson rc "$rc" --argjson rb "$rbytes" --arg bb "$(wc -c <"$body" 2>/dev/null)" --arg code "$code" \
+    '($m // {}) + {schema:"fold/qc1-delete-attempt/v1", attempt:$n, status:(if $st | test("^[0-9]{3}$") then $st else "unknown" end), ms:($ms | tonumber? // null),
+      transport:$t, requestExit:$rc, responseBytes:$rb, bodyBytes:($bb | tonumber? // null), code:$code}' >"$dst.tmp" && mv -n "$dst.tmp" "$dst"; } \
+    || echo "qc1: the record for delete attempt $n was not written" >&2
+  return 0
+}
+
 # What a deletion of k reasons does under a choice mode, as "kept removed":
 # keep keeps all, remove removes all, mixed removes the first half (the first
 # ceil(k/2) entries) and keeps the rest.
@@ -278,7 +317,9 @@ qc1_source_hashes() { # repo-root
 # measurement to HEAD and to immutable image ids and its instruments were
 # proved before use. head is HEAD's full SHA.
 qc1_environment_problems() { # environment.json head
-  jq -r --arg head "$2" --argjson sources "$(printf '%s\n' "${QC1_SOURCE_FILES[@]}" | jq -R . | jq -sc .)" '
+  jq -r --arg head "$2" --argjson sources "$(printf '%s\n' "${QC1_SOURCE_FILES[@]}" | jq -R . | jq -sc .)" \
+    --argjson smokeChecks "$(printf '%s\n' "${QC1_LEGACY_SMOKE_CHECKS[@]}" | jq -R . | jq -sc .)" \
+    --argjson legacyFloor "$QC1_LEGACY_SIZES_FLOOR" --arg legacyLayout "$QC1_LEGACY_SEED_LAYOUT" --argjson smokePairs "$QC1_LEGACY_SMOKE_PAIRS" '
     def hex64: test("^[0-9a-f]{64}$");
     def sha256id: test("^sha256:[0-9a-f]{64}$");
     ( if .revision != $head then "revision \(.revision) is not HEAD \($head)" else empty end ),
@@ -306,14 +347,40 @@ qc1_environment_problems() { # environment.json head
     ( if .calibration.wal.ok != true then "the WAL position is unreadable" else empty end ),
     ( if .calibration.commit.ok != true then "commit statistics are unreadable" else empty end ),
     ( if .settings.browser == true and (.browserRuntime.ok != true or ((.browserRuntime.chromium // "") == "") or ((.browserRuntime.playwright // "") == "")) then "the browser preflight is not recorded as passing" else empty end ),
-    ( if (.calibration.dbMemory.samples // 0) < 3 then "database memory sampling is too sparse to trust (fewer than 3 samples in the calibration half second)" else empty end )' "$1"
+    ( if (.calibration.dbMemory.samples // 0) < 3 then "database memory sampling is too sparse to trust (fewer than 3 samples in the calibration half second)" else empty end ),
+    # Legacy-only provenance (R4-C06 items 4 and 5 are measured only in that
+    # mode): the run refused anything but the seed floor, the spread layout,
+    # ASCII reasons and no browser, so the record must say exactly that, with
+    # the passing smoke (its defined check set and pair count) and the marker
+    # file hash bound to the recorded source entry. A missing, null, failed
+    # or mismatched block is not provenance: it is an invalid environment.
+    ( if .settings.mode == "legacy-only" and (.settings.browser // false) != false then "legacy-only run must not measure the browser (it refused everything but --no-browser)" else empty end ),
+    ( if .settings.mode == "legacy-only" and ((.settings.charset // "ascii") != "ascii") then "legacy-only run measures ASCII reasons only (it refused --charset multibyte)" else empty end ),
+    ( if .settings.mode == "legacy-only" and (.settings.sizes | type) == "string" and ([.settings.sizes | split(",")[] | tonumber? // -1] | any(. < $legacyFloor)) then "legacy-only run names a size below its \($legacyFloor)-pair seed floor" else empty end ),
+    ( if .settings.mode == "legacy-only" and (.settings.legacy | type) != "object" then "legacy-only run records no legacy provenance (settings.legacy is missing)" else empty end ),
+    ( if .settings.mode == "legacy-only" and (.settings.legacy | type) == "object" and .settings.legacy.sizesFloor != $legacyFloor then "legacy-only provenance names sizesFloor \(.settings.legacy.sizesFloor), not \($legacyFloor)" else empty end ),
+    ( if .settings.mode == "legacy-only" and (.settings.legacy | type) == "object" and .settings.legacy.seedLayout != $legacyLayout then "legacy-only provenance names seedLayout \(.settings.legacy.seedLayout), not \($legacyLayout)" else empty end ),
+    ( if .settings.mode == "legacy-only" and (.settings.legacy | type) == "object"
+      then (.settings.legacy.markersSha256 // null) as $m
+           | (.sources[] | select(.path == "deploy/digitalocean/qc1/legacy-markers.sql") | .sha256) as $src
+           | if ($m | type) != "string" or ($m | test("^[0-9a-f]{64}$") | not) then "legacy-only provenance records no markersSha256 for qc1/legacy-markers.sql"
+             elif $src == null or ($src | test("^[0-9a-f]{64}$") | not) then "legacy-only provenance cannot be bound: the recorded legacy-markers.sql source hash is not a sha256"
+             elif $m != $src then "legacy-only markersSha256 does not match the recorded legacy-markers.sql source hash" else empty end
+      else empty end ),
+    ( if .settings.mode == "legacy-only" and (.settings.legacy | type) == "object"
+      then (.settings.legacy.smoke // null) as $sm
+           | if ($sm | type) != "object" or $sm.ok != true then "legacy-only smoke did not pass (settings.legacy.smoke.ok is not true)"
+             elif ($sm.pairs // null) != $smokePairs then "legacy-only smoke names \($sm.pairs) pairs, not \($smokePairs)"
+             elif (($sm.checks // null) | type) != "array" or (($sm.checks // []) | sort) != ($smokeChecks | sort) then "legacy-only smoke does not carry the defined check set" else empty end
+      else empty end )' "$1"
 }
 
 # Judge a measurements file (one JSON object per line). Each finding is a JSON
 # object with a class:
 #   budget   a measured failure of R4-C06 for a reviewed engineering
 #            disposition: a unit or page above 10 s, a deletion above 40 s, a
-#            full traversal above 2 minutes, a valid history whose body
+#            full traversal above 2 minutes, the marker lookup (probe) above
+#            10 s of measured HTTP time on a 200, a valid history whose body
 #            exceeds maxRequestBytes;
 #   invalid  the measurement itself cannot be trusted: an unexpected HTTP
 #            status; an instrument that read nothing (WAL, process or database
@@ -329,7 +396,7 @@ qc1_environment_problems() { # environment.json head
 #            assessment; a browser row with a missing figure.
 # Rows with status measured or observation are judged; observations (workers
 # on) are budget-judged but never required to be attributable.
-qc1_judge_defs() { cat <<'JQ'
+qc1_judge_defs() { qc1_audit_identity_defs; cat <<'JQ'
     def inv($why; $x): {class:"invalid", failure:$why} + $x;
     def bud($why; $x): {class:"budget", failure:$why} + $x;
     def numz: if type == "number" then . else null end;
@@ -458,17 +525,7 @@ qc1_judge_defs() { cat <<'JQ'
     def explained_case($m): ($m.case | type) == "string" and ($m.case | endswith("-explained"));
     def audit_retention($m):
       ($m.auditRetention) as $a | ($m.explained) as $x
-      | def isnum: type == "number";
-        def num_all($o; $keys): $o | type == "object" and ($keys | all(. as $k | $o[$k] | isnum));
-        # The parameters the statement was run with, checked again from what the row stored: every position against the kind of argument the Go source puts there. The account is the one
-        # the explained deletion deleted; an array position is an id-array literal; a list shorter or longer than its kinds, or naming another account anywhere, fails.
-        def params_ok($i; $acct):
-          ($i.parameterKinds) as $k | ($i.parameterValues) as $v
-          | ($k | type) == "array" and ($v | type) == "array" and ($k | length) >= 8 and ($k | length) == ($v | length) and ($acct | isnum)
-            and ([ range(0; $k | length) as $j
-                   | if $k[$j] == "uid" then $v[$j] == ("'" + ($acct | tostring) + "'")
-                     elif ($k[$j] == "people" or $k[$j] == "requests" or $k[$j] == "invitations") then (($v[$j] | type) == "string" and ($v[$j] | test("^'\\{([0-9]+(,[0-9]+)*)?\\}'$")))
-                     else false end ] | all);
+      | def num_all($o; $keys): $o | type == "object" and ($keys | all(. as $k | $o[$k] | isnum));
         # A JIT section is either truly absent (null, and no stray JIT lines in the plan text) or complete: every field the collector promises, numeric, and a total that is the sum of its parts.
         def jit_ok($p):
           ($p | has("jit")) and ($p.jitStray == false)
@@ -491,12 +548,8 @@ qc1_judge_defs() { cat <<'JQ'
             ( $a.identity ) as $i | ( $a.plan.nodes ) as $n | ( $a.plan ) as $p
             | ( [ if ($n | type) == "array" then $n[] | select(.relation == "audit_logs") else empty end ] ) as $sc
             | ( [ $sc[] | select(.neverExecuted != true) ] ) as $ran
-            | ( if ($i | type) != "object" or $i.prefixOk != true or $i.suffixOk != true or $i.piecesInOrder != true or $i.variablePartsNonEmpty != true or $i.parametersAreTarget != true
-                   or $i.tailMatchesSource != true or $i.classificationOk != true
-                   or ($i.targetUserId | isnum | not) or $i.targetUserId != $x.targetUserId or (params_ok($i; $i.targetUserId) | not)
-                   or ($i.backendPid | type) != "string" or ($i.backendPid | length) == 0 or ($i.auditUpdatesBefore | type) != "number" or $i.auditUpdatesBefore < 1 or ($i.malformedCountAfter | type) != "number" or $i.malformedCountAfter < 1
-                   or ($i.queryTextSha256 | type) != "string" or ($i.queryTextSha256 | test("^[0-9a-f]{64}$") | not) or ($i.queryTextBytes | type) != "number" or $i.queryTextBytes < 1
-                then inv("audit-statement-unproven"; {why:"the logged statement must be the Go source text (fixed pieces, subject-mention and malformed-link constants byte for byte, a classification of the source shape), take the complete parameter list with the deleted account at every account position and id arrays at the array positions, and sit in the backend of the erasure own audit UPDATEs before it and its diagnostic count after it", identity:$i}) else empty end ),
+            | ( if ($i | type) != "object" or $i.proven != true or (audit_identity_ok($i; $x.targetUserId) | not)
+                then inv("audit-statement-unproven"; {why:"the logged statement must be the Go source text (fixed pieces, subject-mention and malformed-link constants byte for byte, a classification of the source shape), take the complete parameter list with the deleted account at every account position and id arrays at the array positions, sit in the backend of the erasure own audit UPDATEs before it, and be followed on that backend, as its first logged statement, by the application own conversion discovery (the Go source text, the deleted account as its only parameter), the only one in the log", identity:$i}) else empty end ),
               ( if ($n | type) != "array" or ($n | length) == 0 or (num_all($n[0]; ["startupCost", "totalCost", "planRows", "actualRows", "actualTotalMs"]) | not)
                    or ($sc | length) == 0 or ($ran | length) == 0
                    or ([ $sc[] | select(num_all(.; ["startupCost", "totalCost", "planRows"]) | not) ] | length) > 0
@@ -510,7 +563,8 @@ qc1_judge_defs() { cat <<'JQ'
                 then inv("audit-caveats-missing"; {why:"the row must say the statement takes no row locks, that log_lock_waits was on with the count it logged, and carry the scan, lock and cluster caveats"}) else empty end )
           end );
     def norm_row:
-      (reduce ("traversal","delete","request","expect","outcome","assessment","browser","plans","generic","window","put","executions","failed","scannerProbe","scannerProbeClean","tables","loggedShapes","probe","legacy","explained","auditRetention","autoExplain","batchSchedule") as $k (.; if (.[$k] | type) == "object" then . else .[$k] = null end)
+      (reduce ("traversal","delete","request","expect","outcome","assessment","browser","plans","generic","window","put","executions","failed","scannerProbe","scannerProbeClean","tables","loggedShapes","probe","legacy","explained","auditRetention","autoExplain","batchSchedule","textShape","agreement") as $k (.; if (.[$k] | type) == "object" then . else .[$k] = null end)
+       | (.agreement |= (if type == "object" then reduce ("digest","domText") as $b (.; if (.[$b] | type) == "object" then . else .[$b] = null end) else . end))
        | (if .traversal != null then .traversal |= (.totalMs |= numz | .slowestUnitMs |= numz | .requestMs |= numz | .clientMs |= numz | .units |= numz | .items |= numz) else . end)
        | (if .delete != null then .delete |= (.ms |= numz | .reasonsKept |= numz | .reasonsRemoved |= numz) else . end)
        | (.loggedShapes |= (if type == "object" then reduce ("initial","continuation") as $b (.; if (.[$b] | type) == "object" then . else .[$b] = null end) else . end))
@@ -573,6 +627,41 @@ qc1_judge_rules() { cat <<'JQ'
                  # Bind the refusal to the count check, not authentication or the body-size limit.
                  or ($m.put.countRefusal | type) != "object" or $m.put.countRefusal.decisions != 101 or (($m.put.countRefusal.status != "400") and ($m.put.countRefusal.status != "422")) or $m.put.countRefusal.authenticated != true or $m.put.countRefusal.reason != "decision_count" or ($m.put.countRefusal.bodyBytes | type) != "number" or $m.put.countRefusal.bodyBytes > $cap or $m.put.countRefusal.unchanged != true)
         then inv("legacy-no-metrics"; {case:$m.case, cap:$cap, why:"the legacy PUT row is the accepted 100-decision subset: its measured body bytes, the instrument set, a workload bound to the declared size, and the verified database effects (kept and blanked text, party-qualified markers and audits); the 101st decision is refused by count validation"}) else empty end ),
+      # The rest of the legacy-only run (T-292) only TIGHTENS what the rows above ask of a legacy row; no budget, class or want of the live matrix changes. A 503 at a route's deadline is the
+      # existing "status" invalid below, never a budget finding; the marker plan (item 11) is recorded and not judged against a threshold.
+      # Exact pairs: the pairs a discovery walk listed are exactly the pairs seeded, each once. Privacy: discovery and the probe carry no reason key and no scenario text, and write no view audit.
+      ( if $m.item == 4 and ($m.case | type) == "string" and ($m.case | test("^legacy-discovery-[0-9]+$")) and ($m.legacy.pairSetExact != true or ($m.legacy.duplicates // 1) != 0)
+        then inv("legacy-pairs-inexact"; {case:$m.case, why:"the pairs the walk listed must be exactly the pairs seeded (compared with the database), none twice"}) else empty end ),
+      ( if $m.item == 4 and ($m.case | type) == "string" and (($m.case | test("^legacy-discovery-[0-9]+$")) or $m.case == "legacy-decided-discovery")
+            and ($m.legacy.privacy.noReasonKey != true or $m.legacy.privacy.noScenarioText != true or ($m.traversal.auditActionsDelta["user.erasure_reasons_viewed"] // 0) != 0)
+        then inv("legacy-privacy"; {case:$m.case, why:"discovery pages carry no reason key and no reason text and write no view audit"}) else empty end ),
+      ( if $m.item == 4 and ($m.case == "legacy-discovery-probe" or $m.case == "legacy-decided-discovery")
+            and ($m.probe.privacy.noReasonKey != true or $m.probe.privacy.noScenarioText != true or ($m.probe.auditActionsDelta["user.erasure_reasons_viewed"] // 0) != 0)
+        then inv("legacy-privacy"; {case:$m.case, why:"the probe answer carries no reason key and no reason text and writes no view audit"}) else empty end ),
+      # An exact account's pages (the deleted account's own audited pages): one view audit per nonempty page and none else, every item names that account, no request twice, the table is the size plus the pairs seeded.
+      ( if $m.item == 4 and ($m.case | type) == "string" and ($m.case | startswith("legacy-account-"))
+            and (($m.traversal.auditActionsDelta["user.erasure_reasons_viewed"] // 0) != ($m.traversal.nonEmptyPages // -2) or $m.legacy.partyRefOk != true or $m.legacy.uniqueRequests != $m.traversal.items
+                 or $m.legacy.accountPairs != $m.traversal.items or ($m.legacy.loadedPairs | type) != "number" or $m.traversal.tableRowsBefore != ($m.size + $m.legacy.loadedPairs)
+                 or $m.legacy.source != "T07B-3a" or ($m.legacy.route | type) != "string" or ($m.legacy.route | length) == 0 or ($m.legacy.tombstoneId | type) != "number"
+                 or ($m.case == "legacy-account-sparse-tail" and ($m.traversal.nonEmptyPages != 1 or ($m.traversal.timeToFirstItemsMs | numz) == null)))
+        then inv("legacy-account"; {case:$m.case, why:"an account's pages write one view audit per nonempty page, every item names the account once, and the table is the declared size plus the pairs seeded"}) else empty end ),
+      # The decided history: every background request names one deleted account and has a marker, so the walk lists none (expect.items is 0, held against traversal.items by the generic count rule) and the
+      # probe finds none; the oracle counts, the forged key set and the table the walks saw bind it to the declared size.
+      ( if $m.item == 4 and $m.case == "legacy-decided-discovery"
+            and (($m.expect.items // -1) != 0 or ($m.probe | type) != "object" or ($m.probe.ms | type) != "number" or $m.probe.ms < 0 or $m.probe.status != "200" or $m.probe.found != false or ($m.probe.route | type) != "string" or ($m.probe.route | length) == 0
+                 or $m.legacy.candidatePairs != $m.size or $m.legacy.markersSeeded != $m.size or $m.legacy.forgedMarkers.keysMatch != true
+                 or $m.traversal.tableRowsBefore != $m.size or $m.probe.tableRowsBefore != $m.size or ($m.legacy.tombstoneId | type) != "number"
+                 or $m.legacy.source != "T07B-3a" or ($m.legacy.route | type) != "string" or ($m.legacy.route | length) == 0)
+        then inv("legacy-decided"; {case:$m.case, why:"the decided history lists no pair and its probe finds none, over exactly the declared size, with a forged marker shaped like the application's"}) else empty end ),
+      ( if $m.item == 11 and $m.case == "legacy-plans"
+            and (($m.plans | type) != "object" or ([$m.plans["scanner-initial"], $m.plans["scanner-continuation"], $m.plans["legacy-facts"], $m.plans["legacy-markers"]] | any(type != "number"))
+                 or ([$m.plans["scanner-initial"], $m.plans["legacy-facts"], $m.plans["legacy-markers"]] | any(. < 1))
+                 or ($m.markerPlans | type) != "object" or $m.markerPlans.executions != $m.plans["legacy-markers"]
+                 or ([$m.markerPlans.auditLogsAccess.targetIndex, $m.markerPlans.auditLogsAccess.seqScan, $m.markerPlans.auditLogsAccess.other] | any(type != "number"))
+                 or ($m.markerPlans.auditLogsAccess.targetIndex + $m.markerPlans.auditLogsAccess.seqScan + $m.markerPlans.auditLogsAccess.other) != $m.markerPlans.executions
+                 or $m.request.status != "200" or ($m.autoExplain.caveats | type) != "array" or ($m.autoExplain.caveats | length) < 3
+                 or ($m.state | type) != "object" or ($m.state.tombstoneId | type) != "number" or $m.state.contactRequests != $m.size or $m.legacy.source != "T07B-3a")
+        then inv("legacy-plans-missing"; {case:$m.case, why:"the plan row holds the application's own logged scanner, facts and marker statements for one discovery page of the decided history, how the marker lookup reached audit_logs, and the capture caveats"}) else empty end ),
       # The labels are bound to the data: a row proves what its case name, size and mode claim. The reasons it was loaded with, the table it ran against (background size plus
       # those reasons, immediately before each operation), the direction of the reasons it listed, and the outcome the database shows after a deletion must all agree with the label.
       ( lblk($m) as $k
@@ -624,6 +713,13 @@ qc1_judge_rules() { cat <<'JQ'
       ( if ($m.traversal.slowestUnitMs // 0) > $unit then bud("unit"; {ms:$m.traversal.slowestUnitMs, budget:$unit}) else empty end ),
       ( if ($m.traversal.totalMs // 0) > $trav then bud("traversal"; {ms:$m.traversal.totalMs, budget:$trav}) else empty end ),
       ( if ($m.delete.ms // 0) > $del then bud("delete"; {ms:$m.delete.ms, budget:$del}) else empty end ),
+      # The marker lookup is one unit of review work, held to the same 10 s
+      # line. A 200 over it is a budget finding, not a broken measurement: the
+      # route's own 10 s context bounds the database work, while the recorded
+      # HTTP time also covers authentication, the response serialization and
+      # the transport, which can push a finished read past the line. A 503 at
+      # the deadline stays the existing "status" invalid below, never a budget.
+      ( if ($m.probe | type) == "object" and $m.probe.status == "200" and ($m.probe.ms | type) == "number" and $m.probe.ms > $unit then bud("probe"; {ms:$m.probe.ms, budget:$unit}) else empty end ),
       ( if $m.item == 5 and $m.case == "request-size" and $m.request != null and (($m.request.maxRequestBytes | type) != "number" or ($m.request.capacity.reasons | type) != "number" or ($m.request.largest.reasons | type) != "number" or ($m.request.largest.bodyBytes | type) != "number") then inv("request-incomplete"; {}) else empty end ),
       ( if $m.item == 5 and $m.case == "request-size" and ($m.request.largest.bodyBytes | type) == "number" and ($m.request.capacity.reasons | type) == "number" and ((($m.request.largest.bodyBytes) > $m.request.maxRequestBytes) or ($m.request.capacity.reasons < $m.request.largest.reasons)) then bud("body"; {reasons:$m.request.largest.reasons, bytes:$m.request.largest.bodyBytes, capacityReasons:$m.request.capacity.reasons, cap:$m.request.maxRequestBytes}) else empty end ),
       ( if $m.traversal != null and ($m.traversal.lastStatus // "") != "200" then inv("status"; {route:"page", status:$m.traversal.lastStatus}) else empty end ),
@@ -741,6 +837,40 @@ qc1_judge_rules() { cat <<'JQ'
             elif ($m.browser.pages.incomplete // 1) != 0 or ([ $m.browser.pages.walks[] | select((.incomplete // 1) != 0 or (.completed // -1) != (.started // -2)) ] | length) > 0 then inv("browser-pages-incomplete"; {incomplete:$m.browser.pages.incomplete, walks:$m.browser.pages.walks})
             else empty end
         else empty end ),
+      # The text of the reasons (#293). A row says which charset its reasons are in; the shape of the account's reasons as loaded must be what that charset promises (every target
+      # reason exactly targetReasonLen runes; one byte a rune for ASCII; for multibyte more bytes than runes, at most four a rune, and in a sample the 2-, 3- and 4-byte widths
+      # and combining marks all present), the deletion must have left every kept reason byte for byte as it was and every removed one blank, the page responses must be as large
+      # as multibyte text makes them, and the browser must have sent the digest and choices the independent builder makes and shown the text the database holds.
+      ( ($m.charset // "ascii") as $cs
+        | lblk($m) as $k
+        | if ($m.item == 3 or $m.item == 6 or $m.item == 10) and $k != null and $k > 0 and ($m.targetReasonLen | numz) != null then
+            ($m.textShape) as $t
+            | if $t == null then (if $cs == "multibyte" then inv("text-shape-missing"; {charset:$cs, reasons:$k}) else empty end)
+              elif $t.rows != $k or $t.runesMin != $m.targetReasonLen or $t.runesMax != $m.targetReasonLen then inv("text-shape"; {what:"every target reason is exactly targetReasonLen runes", shape:$t, reasons:$k, targetReasonLen:$m.targetReasonLen})
+              elif $cs == "ascii" and $t.bytesMax != $t.runesMax then inv("text-shape"; {what:"ASCII reasons take one byte a rune", shape:$t})
+              elif $cs == "multibyte" and ($t.bytesMax <= $t.runesMax or $t.bytesMax > 4 * $t.runesMax) then inv("text-shape"; {what:"multibyte reasons take more than one and at most four bytes a rune", shape:$t})
+              elif $cs == "multibyte" and $m.targetReasonLen >= 21 and (($t.sample | type) != "object" or ([$t.sample.width2, $t.sample.width3, $t.sample.width4, $t.sample.combining] | any(. == null or . <= 0))) then inv("text-shape"; {what:"a sample of the reasons shows 2-, 3- and 4-byte runes and combining marks", shape:$t})
+              else empty end
+          else empty end ),
+      ( ($m.charset // "ascii") as $cs
+        | if $m.item == 6 and ($m.case | type) == "string" and ($m.case | startswith("delete-")) and ($m.reasons // 0) > 0 and ($m.outcome | type) == "object" and ($m.outcome.textExact == false or ($cs == "multibyte" and $m.outcome.textExact != true)) then inv("text-not-exact"; {charset:$cs, outcome:$m.outcome})
+          elif $m.item == 5 and $m.case == "request-size" and ($m.request.fitOutcome | type) == "object" and ($m.request.fitOutcome.textExact == false or ($cs == "multibyte" and $m.request.fitOutcome.textExact != true)) then inv("text-not-exact"; {charset:$cs, outcome:$m.request.fitOutcome})
+          else empty end ),
+      ( if ($m.charset // "ascii") == "multibyte" and $m.item == 3 and ($m.reasons // 0) > 0 and ($m.targetReasonLen | numz) != null
+             and (($m.traversal.responseBytes | type) != "number" or $m.traversal.responseBytes < $m.reasons * $m.targetReasonLen * 2)
+        then inv("response-not-multibyte"; {responseBytes:$m.traversal.responseBytes, reasons:$m.reasons, targetReasonLen:$m.targetReasonLen, why:"the pages of N multibyte reasons of L runes carry more than 2 * N * L bytes; fewer means the text was not multibyte on the wire"}) else empty end ),
+      ( if $m.item == 10 and ($m.agreement != null or ($m.charset // "ascii") == "multibyte") then
+          ($m.agreement) as $a | (($m.charset // "ascii") == "multibyte") as $mb
+          | if $a == null then inv("browser-agreement-missing"; {why:"a multibyte browser case compares the browser's digest and the DOM text with the server's"})
+            elif $a.digest == null or $a.digest.checked != true then (if $mb then inv("browser-agreement-missing"; {digest:$a.digest}) else empty end)
+            elif $a.digest.equal != true then inv("browser-digest-disagrees"; {digest:$a.digest})
+            elif $mb and ($a.domText == null or $a.domText.checked != true or ($a.domText.rowsChecked // 0) < 1) then inv("browser-agreement-missing"; {domText:$a.domText})
+            elif $a.domText != null and $a.domText.checked == true
+                 and (($a.domText.mismatched // 0) > 0 or $a.domText.membershipOk != true or $a.domText.exact != true
+                      or (($a.domText.expectedRows | numz) == null) or $a.domText.expectedRows < 1 or $a.domText.rowsOnScreen != $a.domText.expectedRows
+                      or (($a.domText.rowsChecked // 0) + ($a.domText.skipped // 0)) != $a.domText.expectedRows) then inv("browser-text-disagrees"; {domText:$a.domText})
+            else empty end
+        else empty end ),
       ( if $m.item == 10 then browser_budgets($m) else empty end )
     | . + {item:$m.item, size:$m.size, case:$m.case}
 JQ
@@ -793,17 +923,49 @@ qc1_legacy_want_json() { # sizes
     [ $sizes[] as $s | ($lc[] as $k | select($k <= $s) | {item:4,size:$s,case:("legacy-discovery-" + ($k|tostring))}), {item:4,size:$s,case:"legacy-discovery-probe"}, (select($s >= 100) | {item:5,size:$s,case:"legacy-put"}) ]'
 }
 
+# What a --legacy-only run owes per size: the five contracted legacy rows above plus the exact-account walks, the decided-history walk and the plan row (9 per size).
+# In that mode the rows are MISSING, not pending: the run asked for them (qc1_evidence_status reads settings.mode).
+qc1_legacy_only_want_json() { # sizes
+  local sizes
+  sizes="$(qc1_list "$1" | paste -sd, -)" || return 1
+  { qc1_legacy_want_json "$1"
+    jq -nc --argjson sizes "[$sizes]" '[ $sizes[] as $s | {item:4,size:$s,case:"legacy-account-dense"}, {item:4,size:$s,case:"legacy-account-sparse-tail"}, {item:4,size:$s,case:"legacy-decided-discovery"}, {item:11,size:$s,case:"legacy-plans"} ]'
+  } | jq -sc 'add'
+}
+# The pairs (requestId, userId) one discovery page lists, one JSON object per line: every account's items flattened, a request listed under both parties twice.
+qc1_legacy_discovery_pairs() { # page-file
+  jq -c '.accounts[]? | .userId as $u | .items[]? | {requestId, userId:$u}' "$1"
+}
+# The judge's invalid findings of ONE size, as JSON lines (the harness gate: a harness-class invalid at a smaller size never pays for a larger one). Budget findings are not here.
+qc1_size_invalid() { # measurements.jsonl size max_request_bytes
+  qc1_judge "$1" "${3:-0}" | jq -c --argjson s "$2" 'select(.class == "invalid" and .size == $s)'
+}
+# How the application's own logged executions of the marker lookup reached audit_logs, as {executions, auditLogsAccess:{targetIndex, seqScan, other}}: an execution that scans audit_logs
+# sequentially is a seqScan, otherwise one that uses idx_audit_logs_target (Index Scan, Index Only Scan or Bitmap Index Scan) is targetIndex, anything else is other. Recorded, never judged.
+qc1_marker_plan_access() { # log
+  local out
+  out="$(qc1_extract_plans "$1" legacy-markers)" || return 2
+  awk '
+    function flush() { if (!inb) return; n++; if (seq) sq++; else if (idx) ix++; else ot++ }
+    /duration: .* plan:/ { flush(); inb = 1; seq = idx = 0; next }
+    inb && /Seq Scan on audit_logs/ { seq = 1 }
+    inb && /(Index Scan|Index Only Scan|Bitmap Index Scan) (using|on) idx_audit_logs_target/ { idx = 1 }
+    END { flush(); printf "{\"executions\":%d,\"auditLogsAccess\":{\"targetIndex\":%d,\"seqScan\":%d,\"other\":%d}}\n", n, ix, sq, ot }' <<<"$out"
+}
+
 # Said out loud in every evidence status: what this harness does NOT measure or only approximates, so a clean run is not read as more than it is.
 QC1_NOT_MEASURED_JSON="$(cat <<'JSON'
 ["gate hold time: the gate figures are SAMPLED (the span from the first to the last sample that saw it, with the sampler cadence), never an exact hold time",
  "digest-only time on the bundled fallback path: only press-to-request (an upper bound that includes minting the attempt id and serialising the body) is available; crypto.subtle time is measured by wrapping the call, on the webcrypto path only",
  "isolated server-side parse and encode time: only whole request times, and the page's own text() read and JSON.parse, are measured; the server's share of a request is not separated",
- "multi-byte reasons: the dense targets are ASCII 1,000-rune reasons, so pages of 1,000 four-byte runes are not measured",
+ "multi-byte reasons: this run's reasons are ASCII; a run with --charset multibyte measures 1,000-rune reasons of mixed 1- to 4-byte runes (and says what it still does not)",
  "cluster attribution: WAL, commit, audit and memory figures are cluster-wide counters read around an operation (and around each browser phase), not attributed to one statement",
  "a real droplet: the figures come from a nested or local Docker approximation unless the environment record says otherwise",
  "an exact table size: each operation records the rows contact_requests held just before and after it (background plus the scenario rows, n + k); the background target is not the total"]
 JSON
 )"
+# What a --charset multibyte run still does not measure, in place of the ASCII run's multi-byte line.
+QC1_NOT_MEASURED_MULTIBYTE="multi-byte reasons: the text is a fixed 21-rune pattern of 1- to 4-byte runes (61 bytes, about 2.9 bytes a rune), never the 4-byte worst case of 4,000 bytes a reason, and it repeats, so compression, TOAST and index behaviour are those of repetitive text, not prose; the pages, the browser and the digest see real multi-byte text"
 
 # Which measurements a complete QC-1 run holds. Prints {complete, missing, pending, invalid, budgetFailures, coverage, releaseEvidence, notMeasured, confounding}.
 # sizes, counts and dense are the comma lists the run was asked for; env is the environment record, head HEAD's SHA, max the maxRequestBytes.
@@ -816,7 +978,7 @@ JSON
 #   releaseEvidence   complete AND full.
 # Budget failures are reported for disposition and do not make a run incomplete.
 qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head max_request_bytes [dense-counts] [abort.json]
-  local sizes counts dense="" want fullwant legacy judged judge_ok=true env_problems envjson abortjson=null
+  local sizes counts dense="" want fullwant legacy judged judge_ok=true env_problems envjson abortjson=null mode
   # Lines that are not JSON cannot be judged or counted: the whole file is invalid evidence.
   if ! jq -e . "$1" >/dev/null 2>&1; then
     printf '%s\n' '{"complete":false,"missing":[],"pending":[],"invalid":[{"class":"invalid","failure":"unparsable-measurements"}],"budgetFailures":[]}'
@@ -828,13 +990,17 @@ qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head 
   want="$(qc1_want_json "$sizes" "$counts" "$dense")" || return 1
   fullwant="$(qc1_want_json 10000,100000,1000000 "$QC1_COUNTS_DEFAULT" 100000)" || return 1
   legacy="$(qc1_legacy_want_json "$sizes")" || return 1
+  # The mode the run recorded in its environment (settings.mode): a legacy-only run owes the legacy rows, as missing (it asked for them), and none of the live matrix. An unreadable record or
+  # no mode is a matrix run, the stricter reading.
+  mode="$(jq -r '.settings.mode // "matrix"' "$4" 2>/dev/null)" || mode=matrix
+  if [[ "$mode" == legacy-only ]]; then want="$(qc1_legacy_only_want_json "$sizes")" || return 1; legacy='[]'; else mode=matrix; fi
   judged="$(qc1_judge "$1" "$6")" || judge_ok=false
   env_problems="$(qc1_environment_problems "$4" "$5" | jq -R . | jq -sc .)" || env_problems='["environment record unreadable"]'
   envjson="$(jq -c . "$4" 2>/dev/null || printf null)"
   if [[ -n "${8:-}" && -s "${8:-}" ]]; then abortjson="$(jq -c . "$8" 2>/dev/null || printf null)"; fi   # an aborted run: how it ended, carried into the status
-  jq -s -c --argjson want "$want" --argjson fullWant "$fullwant" --argjson legacyWant "$legacy" --arg pending4 "$QC1_PENDING_4" --arg pending5 "$QC1_PENDING_5" --argjson judgeOk "$judge_ok" \
+  jq -s -c --argjson want "$want" --argjson fullWant "$fullwant" --argjson legacyWant "$legacy" --arg pending4 "$QC1_PENDING_4" --arg pending5 "$QC1_PENDING_5" --argjson judgeOk "$judge_ok" --arg mode "$mode" \
     --argjson aborted "$abortjson" --argjson argSizes "[$sizes]" --argjson argCounts "[$counts]" --argjson argDense "[${dense}]" --argjson dc "[$QC1_DELETE_COUNTS]" --argjson env "$envjson" \
-    --argjson envProblems "$env_problems" --argjson notMeasured "$QC1_NOT_MEASURED_JSON" --argjson judged "$(jq -sc . <<<"$judged")" '
+    --argjson envProblems "$env_problems" --argjson notMeasured "$QC1_NOT_MEASURED_JSON" --arg notMeasuredMultibyte "$QC1_NOT_MEASURED_MULTIBYTE" --argjson judged "$(jq -sc . <<<"$judged")" '
     def nums($x): if $x == null then null else ($x | tostring | split(",") | map(tonumber? // empty) | unique) end;
     def same($a; $b): ($a | unique) == ($b | unique);
     . as $rows
@@ -851,7 +1017,19 @@ qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head 
          if $s.deleteCounts != null and (same(nums($s.deleteCounts); ($dc + $argDense)) | not) then {what:"deletion counts", settings:$s.deleteCounts, argument:($dc + $argDense)} else empty end,
          # a row that says its target reasons are not what the settings say they are
          ($rows[] | select((type == "object") and (.item == 3 or .item == 6 or .item == 10) and (.status == "measured" or .status == "observation") and $s.targetReasonLen != null and .targetReasonLen != $s.targetReasonLen)
-            | {what:"target reason length", settings:$s.targetReasonLen, row:{item, size, case, targetReasonLen}}) ]) as $disagree
+            | {what:"target reason length", settings:$s.targetReasonLen, row:{item, size, case, targetReasonLen}}),
+         # a row of another charset than the settings name (a pre-charset record means ascii)
+         ($rows[] | select((type == "object") and (.status == "measured" or .status == "observation") and .item != null and ((.charset // "ascii") != ($s.charset // "ascii")))
+            | {what:"charset", settings:($s.charset // "ascii"), row:{item, size, case, charset}}),
+         # a row of a case that loads the scenario of the cell (discovery, deletion, workers, browser) must carry the layout the settings name: a row of another layout, or of none, is not
+         # the measurement of that cell, however the saved coverage reads. (The request-size and plan rows load their own layouts and are not held to this.)
+         ($rows[] | select((type == "object") and (.status == "measured" or .status == "observation") and (.item == 3 or .item == 6 or .item == 9 or .item == 10) and $s.layout != null and (.layout != $s.layout))
+            | {what:"layout", settings:$s.layout, row:{item, size, case, layout}}),
+         # a decided-history row proves which marker file it ran with: its forgedMarkers.sha256 must be the settings.legacy.markersSha256 of this run, itself
+         # bound to the recorded legacy-markers.sql source hash by the environment check. A row that names another file, or none, is not the decided history of this run.
+         ($rows[] | select((type == "object") and (.status == "measured" or .status == "observation") and .item == 4 and .case == "legacy-decided-discovery"
+            and ((.legacy.forgedMarkers.sha256 | type) != "string" or .legacy.forgedMarkers.sha256 != $s.legacy.markersSha256))
+            | {what:"marker source", settings:($s.legacy.markersSha256 // null), row:{item, size, case, sha256:(.legacy.forgedMarkers.sha256 // null)}}) ]) as $disagree
     | ([ $fullWant[] | select(clean(.) | not) ]) as $fullGaps
     | ([ $rows[] | select((type == "object") and (.item == 3 or .item == 6 or .item == 10) and (.status == "measured" or .status == "observation") and .targetReasonLen != 1000) ] | length) as $shortTargets
     | ([ (if ($env == null) then "environment record unreadable" else empty end),
@@ -860,8 +1038,10 @@ qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head 
          (if $s.targetReasonLen != 1000 then "the settings do not name 1,000-rune target reasons (targetReasonLen " + ($s.targetReasonLen | tostring) + ")" else empty end),
          (if $s.browser != true then "no browser panel measurement" else empty end),
          (if $s.wire != "set-v1" then "not the set-v1 wire" else empty end),
+         (if ($s.layout | IN("spread", "tail", "head") | not) then "the settings do not name the layout (spread, tail or head) the rows were measured in" else empty end),
          (if ($disagree | length) > 0 then "the settings disagree with the arguments or the rows: " + ($disagree | map(.what) | join(", ")) else empty end),
-         (if $s.sizes == null or $s.counts == null or $s.denseCounts == null or $s.deleteCounts == null then "the settings do not name the sizes, counts, dense counts and deletion counts" else empty end) ]) as $covReasons
+         (if $s.sizes == null or $s.counts == null or $s.denseCounts == null or $s.deleteCounts == null then "the settings do not name the sizes, counts, dense counts and deletion counts" else empty end),
+         (if $mode == "legacy-only" then "legacy-only run: the live matrix rows were not run (settings.mode legacy-only)" else empty end) ]) as $covReasons
     | { missing: [ $want[] | select(present(.) | not) ],
         pending: [ $legacyWant[] | select(clean(.) | not) | . + {reason: (if .item == 4 then $pending4 else $pending5 end)} ],
         invalid: ( [ $judged[] | select(.class == "invalid") ]
@@ -898,18 +1078,19 @@ qc1_evidence_status() { # measurements.jsonl sizes counts environment.json head 
               # The audit-retention report statement of the EXPLAINED deletions (the extra zero-reason deletions run with auto_explain on for that one operation): the statement time, how much of it was
               # JIT, the planner estimate for the plan root and the audit_logs scan with what it really did. Recorded, never judged; these deletions carry the capture overhead, so their time is
               # not compared with the unexplained controls above.
+              # identityProven is the judge own verdict (no audit-statement-unproven, -ambiguous or audit-plan-missing finding for the row), never a count of flags the row carries.
               explainedOrderControls: ( [ $ms[] | select(.item == 6 and ((.case | type) == "string") and (.case | endswith("-explained")))
                   | (.auditRetention // {}) as $a | ($a.plan.nodes // []) as $n | ($a.plan.jit // null) as $j | ([ $n[] | select(.relation == "audit_logs") ] | .[0]) as $sc
                   | {size: .size, case: .case, seq: .seq, deleteMsWithCapture: .explained.ms, statementMs: $a.durationMs, statementBlocks: $a.statementBlocks,
-                     identityProven: (($a.identity // {}) as $i | ([$i.prefixOk, $i.suffixOk, $i.piecesInOrder, $i.variablePartsNonEmpty, $i.parametersAreTarget] | all)),
+                     identityProven: (. as $r | $judgeOk and $a.statementBlocks == 1 and ([ $judged[] | select(.item == $r.item and .size == $r.size and .case == $r.case and (.failure == "audit-statement-unproven" or .failure == "audit-statement-ambiguous" or .failure == "audit-plan-missing")) ] | length) == 0),
                      planRoot: (if ($n | length) == 0 then null else {node: $n[0].nodeType, estimatedTotalCost: $n[0].totalCost, estimatedRows: $n[0].planRows, actualRows: $n[0].actualRows, actualTotalMs: $n[0].actualTotalMs} end),
                      auditLogsScan: (if $sc == null then null else {node: $sc.nodeType, estimatedTotalCost: $sc.totalCost, estimatedRows: $sc.planRows, actualRows: $sc.actualRows, rowsRemovedByFilter: $sc.rowsRemovedByFilter, sharedHit: $sc.sharedHit, sharedRead: $sc.sharedRead, actualTotalMs: $sc.actualTotalMs} end),
                      jit: (if $j == null then null else {functions: $j.functions, totalMs: $j.totalMs, optimizationMs: $j.optimizationMs, emissionMs: $j.emissionMs,
                                                          shareOfStatement: (if ($a.durationMs | type) == "number" and $a.durationMs > 0 and ($j.totalMs | type) == "number" then ((($j.totalMs / $a.durationMs) * 1000 | round) / 1000) else null end)} end),
                      lockWaitsLogged: $a.lockWaits.count} ]) } ),
-        coverage: {kind: (if ($covReasons | length) == 0 then "full" else "pilot" end), reasons: $covReasons, derivedFrom: "the measurement rows, the arguments and the environment settings, which must agree"} }
+        coverage: {kind: (if ($covReasons | length) == 0 then "full" else "pilot" end), reasons: $covReasons, cell: {layout: ($s.layout // null), charset: ($s.charset // "ascii")}, derivedFrom: "the measurement rows, the arguments and the environment settings, which must agree"} }
     | . + {complete: ((.missing | length) == 0 and (.pending | length) == 0 and (.invalid | length) == 0)}
-    | . + {releaseEvidence: (.complete and .coverage.kind == "full"), notMeasured: $notMeasured}
+    | . + {releaseEvidence: (.complete and .coverage.kind == "full"), notMeasured: ($notMeasured | map(if startswith("multi-byte reasons") and (($env.settings.charset // "ascii") == "multibyte") then $notMeasuredMultibyte else . end))}
     | if $aborted != null then . + {aborted: $aborted, complete: false, releaseEvidence: false} else . end' "$1"
 }
 
@@ -935,11 +1116,14 @@ qc1_extract_plans() { # log which
 
 # How many plans of each kind a log holds, as JSON {"scanner-unit":n,...}. A
 # size's plans are present only when every kind has at least one.
-qc1_plan_counts() { # log
-  local kind first=1 n
+qc1_plan_counts() { # log [kind...]  (default QC1_PLAN_KINDS: what every live item-8 row carries)
+  local log="$1" kind first=1 n
+  shift
+  local -a kinds=("$@")
+  (( ${#kinds[@]} )) || kinds=("${QC1_PLAN_KINDS[@]}")
   printf '{'
-  for kind in "${QC1_PLAN_KINDS[@]}"; do
-    n="$(qc1_extract_plans "$1" "$kind" | grep -c 'duration: .* plan:' || true)"
+  for kind in "${kinds[@]}"; do
+    n="$(qc1_extract_plans "$log" "$kind" | grep -c 'duration: .* plan:' || true)"
     (( first )) || printf ','
     first=0
     printf '"%s":%d' "$kind" "$n"
@@ -1039,7 +1223,7 @@ qc1_plan_shapes() { # log which
 # deletion once the audit table had grown, and pilot3's own plan-stage log held one execution of it (a Seq Scan whose plan cost was 9.6 million and whose 2,153 ms was 2,093 ms of JIT compilation).
 # What follows reads an auto_explain log written while the application ran a deletion and PROVES the statement it reports is the application's own and no other: the fixed pieces of the Go
 # statement, in order, around three non-empty variable parts; its parameters are the deleted account's id; it ran in the backend of the erasure's own audit statements, after the UPDATEs that blank
-# addresses and before the diagnostic count that follows it. Nothing is substituted, re-run or reconstructed by the harness.
+# addresses, and the first statement that backend logs after it is the application's conversion discovery for the same account. Nothing is substituted, re-run or reconstructed by the harness.
 
 # The four fixed pieces of the statement, one per line, from the facts file (TestQC1AppFacts holds them equal to auditRetentionReportSQL).
 qc1_audit_pieces() { qc1_fact '.go.auditReport.pieces[]'; }
@@ -1131,20 +1315,64 @@ qc1_audit_expected() {
     | if ($mention | length) == 0 or ($link | length) == 0 or (.kinds | length) == 0 then . + {kinds: []} else . end'
 }
 
+# The identity proof of an audit-retention report, one predicate for both ends: qc1_audit_report_evidence sets identity.proven and its proof text with it, and the judge rechecks every
+# stored row with it. So the summary's identityProven and the proof text can never say more than the judge accepts. A pure function of the stored evidence: it holds when the report
+# statement is the Go source text with its complete parameters, ran in the erasure's backend after that erasure's own audit UPDATEs, and that backend's first logged statement
+# after it is the application's conversion discovery for the same account, the only one in the log.
+qc1_audit_identity_defs() { cat <<'JQ'
+    def isnum: type == "number";
+    # The parameters the statement was run with, checked again from what the row stored: every position against the kind of argument the Go source puts there. The account is the one
+    # the explained deletion deleted; an array position is an id-array literal; a list shorter or longer than its kinds, or naming another account anywhere, fails.
+    def audit_params_ok($i; $acct):
+      ($i.parameterKinds) as $k | ($i.parameterValues) as $v
+      | ($k | type) == "array" and ($v | type) == "array" and ($k | length) >= 8 and ($k | length) == ($v | length) and ($acct | isnum)
+        and ([ range(0; $k | length) as $j
+               | if $k[$j] == "uid" then $v[$j] == ("'" + ($acct | tostring) + "'")
+                 elif ($k[$j] == "people" or $k[$j] == "requests" or $k[$j] == "invitations") then (($v[$j] | type) == "string" and ($v[$j] | test("^'\\{([0-9]+(,[0-9]+)*)?\\}'$")))
+                 else false end ] | all);
+    # The statement that follows the report: found on the report's own backend, after it, as that backend's first logged statement; the Go source text of conversion discovery's first query
+    # (flag set by the collector against the facts file); the deleted account as its only parameter; and the only block of its kind in the whole log.
+    def audit_successor_ok($i):
+      ($i.successor) as $s
+      | ($s | type) == "object" and $s.found == true and $s.textMatchesSource == true
+        and ($s.backendPid | type) == "string" and ($s.backendPid | length) > 0 and $s.backendPid == $i.backendPid
+        and ($s.line | isnum) and ($i.reportLine | isnum) and $s.line > $i.reportLine
+        and ($s.parameters | type) == "string" and ($i.targetUserId | isnum) and $s.parameters == ("$1 = '" + ($i.targetUserId | tostring) + "'")
+        and ($s.blocksInLog | isnum) and $s.blocksInLog == 1;
+    def audit_identity_ok($i; $acct):
+      ($i | type) == "object"
+      and $i.prefixOk == true and $i.suffixOk == true and $i.piecesInOrder == true and $i.variablePartsNonEmpty == true and $i.parametersAreTarget == true
+      and $i.tailMatchesSource == true and $i.classificationOk == true
+      and ($i.targetUserId | isnum) and ($acct | isnum) and $i.targetUserId == $acct and audit_params_ok($i; $i.targetUserId)
+      and ($i.backendPid | type) == "string" and ($i.backendPid | length) > 0
+      and ($i.reportBlocks | isnum) and $i.reportBlocks == 1
+      and ($i.auditUpdatesBefore | isnum) and $i.auditUpdatesBefore >= 1
+      and ($i.queryTextSha256 | type) == "string" and ($i.queryTextSha256 | test("^[0-9a-f]{64}$")) and ($i.queryTextBytes | isnum) and $i.queryTextBytes >= 1
+      and audit_successor_ok($i);
+JQ
+}
+
+# The query text and the parameters of one auto_explain block (stdin) as the server logged them; a continuation line of the text loses only the log's leading tab.
+qc1_block_query() { awk '/^\tQuery Text: / { inq = 1; sub(/^\tQuery Text: /, ""); print; next } inq && /^\tQuery Parameters: / { exit } inq && /^\t[A-Za-z]/ { exit } inq { sub(/^\t/, ""); print }'; }
+qc1_block_params() { awk '/^\tQuery Parameters: / { sub(/^\tQuery Parameters: /, ""); print; exit }'; }
+
 # The audit-retention report statement in an auto_explain log, proven to be the application own and no other, with its plan. Arguments: the log, the id of the
 # account the deletion deleted, whether log_lock_waits was on while the log was written. Prints one JSON object; statementBlocks is 0 when the log holds none (the caller marks that INVALID).
+# The proof ties the logged report to the deletion by what the application sends around it: its own audit UPDATEs before it, and after it, on the same backend as the first statement that
+# backend logs, the first query of conversion discovery (the facts file's successor, the deleted account its only argument), the only such block in the log.
 qc1_audit_report_evidence() { # log target-user-id lockwaits-logged(true|false)
-  local q log="$1" target="$2" lw="$3" blocks n block1 qtext params rest pid line dur sha i p expected kinds_json values_json mention link var1 tail_txt
+  local q log="$1" target="$2" lw="$3" blocks n block1 qtext params rest pid line dur sha i p expected kinds_json values_json mention link var1 tail_txt ev
+  local sfact sfirst sline spid sblock stext sparams ssha succ_json
   local -a pieces=()
-  local prefix_ok=false suffix_ok=false order_ok=false tail_ok=false class_ok=false param_ok=false before=0 after=0 parts_ok=false lockw samples bytes
+  local prefix_ok=false suffix_ok=false order_ok=false tail_ok=false class_ok=false param_ok=false before=0 parts_ok=false lockw samples bytes sfound=false stext_ok=false scount=0
   blocks="$(qc1_extract_plans "$log" audit-report)" || return 2
   n="$(grep -c 'duration: .* plan:' <<<"$blocks" || true)"
   [[ "$n" =~ ^[0-9]+$ ]] || n=0
   if (( n == 0 )); then printf '%s\n' '{"statementBlocks":0}'; return 0; fi
   block1="$(awk '/duration: .* plan:/ { c++ } c == 1' <<<"$blocks")"
   mapfile -t pieces < <(qc1_audit_pieces)
-  qtext="$(awk '/^\tQuery Text: / { inq = 1; sub(/^\tQuery Text: /, ""); print; next } inq && /^\tQuery Parameters: / { exit } inq && /^\t[A-Za-z]/ { exit } inq { sub(/^\t/, ""); print }' <<<"$block1")"
-  params="$(awk '/^\tQuery Parameters: / { sub(/^\tQuery Parameters: /, ""); print; exit }' <<<"$block1")"
+  qtext="$(qc1_block_query <<<"$block1")"
+  params="$(qc1_block_params <<<"$block1")"
   expected="$(qc1_audit_expected)"
   kinds_json="$(jq -c '.kinds' <<<"$expected")"
   if (( ${#pieces[@]} == 4 )); then
@@ -1173,30 +1401,50 @@ qc1_audit_report_evidence() { # log target-user-id lockwaits-logged(true|false)
              | if $kind == "uid" then $v == ($q + $target + $q)
                elif $kind == "people" or $kind == "requests" or $kind == "invitations" then ($v | test("^" + $q + "\\{([0-9]+(,[0-9]+)*)?\\}" + $q + "$"))
                else false end ] | all)')"
-  # where it sits in the log: its backend, and the application's own audit statements around it
-  read -r line pid dur _ < <(qc1_log_blocks "$log" | awk -F'\t' 'index($4, "SELECT class, action, count(*) FROM (SELECT action, ") == 1 { print $1, $2, $3; exit }')
+  # where it sits in the log: its backend, and the application's own statements around it
+  read -r line pid dur _ < <(qc1_log_blocks "$log" | awk -F'\t' 'index($4, "SELECT class, action, count(*) FROM (SELECT action, ") == 1 { print $1, $2, $3; exit }') || true
   if [[ -n "${line:-}" ]]; then
     before="$(qc1_log_blocks "$log" | awk -F'\t' -v l="$line" -v p="$pid" '$1 < l && $2 == p && index($4, "UPDATE audit_logs SET ip = ") == 1 { c++ } END { print c + 0 }')"
-    after="$(qc1_log_blocks "$log" | awk -F'\t' -v l="$line" -v p="$pid" '$1 > l && $2 == p && index($4, "SELECT count(*) FROM audit_logs WHERE ip <> ") == 1 { c++ } END { print c + 0 }')"
+    # After it: the first block its backend logged. It must be the facts file's successor statement, text for text (an altered one, another query that starts the same way, or a
+    # different statement in between all fail), with the deleted account as its only parameter. And exactly one block in the whole log starts as the successor does.
+    sfact="$(qc1_fact '.go.auditReport.successor' -j; printf x)"; sfact="${sfact%x}"
+    read -r sline spid _ < <(qc1_log_blocks "$log" | awk -F'\t' -v l="$line" -v p="$pid" '$1 > l && $2 == p { print $1, $2; exit }') || true
+    if [[ -n "${sline:-}" ]]; then
+      sblock="$(awk -v s="$sline" 'NR < s { next } NR > s && /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9:.]+ [A-Z]+ \[[0-9]+\] / { exit } { print }' "$log")"
+      stext="$(qc1_block_query <<<"$sblock")"
+      sparams="$(qc1_block_params <<<"$sblock")"
+      [[ -n "$sfact" && "$stext" == "$sfact" ]] && stext_ok=true
+      sfound=$stext_ok
+    fi
+    sfirst="${sfact%%$'\n'*}"; sfirst="${sfirst:0:90}"
+    scount="$(qc1_log_blocks "$log" | awk -F'\t' -v m="$sfirst" 'm != "" && index($4, m) == 1 { c++ } END { print c + 0 }')"
   fi
+  ssha="$(printf '%s' "${stext:-}" | sha256sum | cut -d' ' -f1)"
+  succ_json="$(jq -nc --argjson found "$sfound" --argjson line "${sline:-null}" --arg pid "${spid:-}" --argjson text_ok "$stext_ok" --arg params "${sparams:-}" --argjson count "$scount" \
+    --argjson bytes "$(printf '%s' "${stext:-}" | wc -c)" --arg sha "$ssha" \
+    '{found: $found, line: $line, backendPid: $pid, textMatchesSource: $text_ok, parameters: $params, blocksInLog: $count, textBytes: $bytes, textSha256: $sha}')"
   sha="$(printf '%s' "$qtext" | sha256sum | cut -d' ' -f1)"
   bytes="$(printf '%s' "$qtext" | wc -c)"
   lockw="$(grep -cE 'still waiting for|acquired [A-Za-z]+Lock on .* after|avoided deadlock' "$log" || true)"; [[ "$lockw" =~ ^[0-9]+$ ]] || lockw=0
   samples="$({ grep -E 'still waiting for|acquired [A-Za-z]+Lock on .* after|avoided deadlock' "$log" || true; } | head -n 3 | cut -c1-200 | jq -Rsc 'split("\n") | map(select(length > 0))')"
-  jq -nc --argjson blocks "$n" --argjson prefix "$prefix_ok" --argjson suffix "$suffix_ok" --argjson order "$order_ok" --argjson parts "$parts_ok" --argjson param "$param_ok" \
-    --argjson before "${before:-0}" --argjson after "${after:-0}" --arg sha "$sha" --argjson bytes "$bytes" --arg pid "${pid:-}" --argjson target "$target" --arg params "$params" \
+  ev="$(jq -nc --argjson blocks "$n" --argjson prefix "$prefix_ok" --argjson suffix "$suffix_ok" --argjson order "$order_ok" --argjson parts "$parts_ok" --argjson param "$param_ok" \
+    --argjson before "${before:-0}" --arg sha "$sha" --argjson bytes "$bytes" --arg pid "${pid:-}" --argjson rline "${line:-null}" --argjson target "$target" --arg params "$params" \
     --argjson pieces "$(printf '%s\n' "${pieces[@]}" | jq -Rsc 'split("\n")[:-1] | map(length)')" --argjson dur "${dur:-null}" --argjson lw "$lw" --argjson lockw "$lockw" --argjson samples "$samples" \
-    --argjson tailok "$tail_ok" --argjson classok "$class_ok" --argjson kinds "$kinds_json" --argjson vals "$values_json" \
+    --argjson tailok "$tail_ok" --argjson classok "$class_ok" --argjson kinds "$kinds_json" --argjson vals "$values_json" --argjson succ "$succ_json" \
     --argjson plan "$(printf '%s\n' "$block1" | qc1_plan_nodes)" '
     { statementBlocks: $blocks,
       identity: { prefixOk: $prefix, suffixOk: $suffix, piecesInOrder: $order, variablePartsNonEmpty: $parts, parametersAreTarget: $param, parameters: $params, parameterKinds: $kinds, parameterValues: ($vals | map(.v)), tailMatchesSource: $tailok, classificationOk: $classok, targetUserId: $target,
-                  backendPid: $pid, auditUpdatesBefore: $before, malformedCountAfter: $after, queryTextBytes: $bytes, queryTextSha256: $sha, fixedPieceLengths: $pieces,
-                  proof: "the statement text is the Go source text (the fixed pieces, the subject-mention and malformed-link constants byte for byte, a classification of the source shape), it took the complete parameter list the source puts in it (the deleted account at every account position, id arrays at the array positions), and it ran in the backend of the erasure own audit UPDATEs before it and its diagnostic count after it; the harness ran, re-ran and substituted nothing" },
+                  backendPid: $pid, reportBlocks: $blocks, reportLine: $rline, auditUpdatesBefore: $before, successor: $succ, queryTextBytes: $bytes, queryTextSha256: $sha, fixedPieceLengths: $pieces },
       durationMs: $dur,
       plan: $plan,
       rowLocks: false,
       rowLocksWhy: "a plain SELECT (no FOR UPDATE / FOR SHARE in its text): it takes an ACCESS SHARE lock on audit_logs only and locks no rows",
-      lockWaits: { logged: $lw, count: $lockw, samples: $samples, note: "log_lock_waits was on while the log was written: a wait longer than deadlock_timeout (1 s) would be logged; an empty count means none was logged, not that no lock was ever briefly waited for" } }'
+      lockWaits: { logged: $lw, count: $lockw, samples: $samples, note: "log_lock_waits was on while the log was written: a wait longer than deadlock_timeout (1 s) would be logged; an empty count means none was logged, not that no lock was ever briefly waited for" } }')"
+  # proven and its proof text come from the one predicate the judge uses; a proof the predicate does not hold is said not to be one.
+  jq -c --argjson t "$target" \
+    --arg yes "the statement text is the Go source text (the fixed pieces, the subject-mention and malformed-link constants byte for byte, a classification of the source shape); it took the complete parameter list the source puts in it (the deleted account at every account position, id arrays at the array positions); it ran in the backend of the erasure own audit UPDATEs before it; and the first statement that backend logged after it is the application own conversion discovery (the Go source text, the deleted account as its only parameter), the only one in the log; the harness ran, re-ran and substituted nothing" \
+    --arg no "NOT PROVEN: at least one of these does not hold (the flags beside this text say which): the statement text is the Go source text; the complete parameter list with the deleted account at every account position; the backend of the erasure own audit UPDATEs before it; the application own conversion discovery, the deleted account its only parameter, as the first statement that backend logged after it and the only one in the log. The judge marks such a row INVALID" \
+    -f <(qc1_audit_identity_defs; printf '%s\n' '(audit_identity_ok(.identity; $t)) as $ok | .identity.proven = $ok | .identity.proof = (if $ok then $yes else $no end)') <<<"$ev"
 }
 
 # The scanner statement (initial | continuation) with its ? placeholders numbered $1, $2 ... (what GORM sends to PostgreSQL), so a generic plan is of the REAL
@@ -1247,20 +1495,64 @@ qc1_contact_request_referrers() {
   psql_db -c "WITH RECURSIVE r(oid) AS (SELECT 'public.contact_requests'::regclass::oid UNION SELECT c.conrelid FROM pg_constraint c JOIN r ON c.confrelid = r.oid WHERE c.contype = 'f') SELECT oid::regclass::text FROM r ORDER BY 1"
 }
 qc1_reset_contact_requests() {
-  local names t n list=""
-  names="$(qc1_contact_request_referrers)" || { echo 'qc1: cannot list the tables that reference contact_requests' >&2; return 1; }
+  local names t n list="" left left_full
+  # Every SQL-only call below takes stdin from /dev/null, and the closure loop
+  # reads the names on fd 3, never fd 0: docker exec -i forwards the caller's
+  # stdin to the container, so a psql_db call inside this loop would otherwise
+  # drain the remaining table names (the first count ate contact_requests and
+  # registrations, the TRUNCATE listed only contact_grants, and the next size
+  # measured over retained filler).
+  names="$(qc1_contact_request_referrers </dev/null)" || { echo 'qc1: cannot list the tables that reference contact_requests' >&2; return 1; }
   grep -qx 'contact_requests' <<<"$names" || { echo 'qc1: contact_requests is not in the foreign-key closure the catalog returned' >&2; return 1; }
-  while IFS= read -r t; do
+  while IFS= read -r t <&3; do
     [[ -n "$t" ]] || continue
     [[ "$t" =~ ^[a-z_][a-z0-9_]*$ ]] || { echo "qc1: refusing the unexpected table name '$t' (another schema or a quoted name)" >&2; return 1; }
     if [[ "$t" != contact_requests ]]; then
-      n="$(psql_db -c "SELECT count(*) FROM $t")" || { echo "qc1: cannot count the rows of $t" >&2; return 1; }
+      n="$(psql_db -c "SELECT count(*) FROM $t" </dev/null)" || { echo "qc1: cannot count the rows of $t" >&2; return 1; }
       [[ "$n" =~ ^[0-9]+$ ]] || { echo "qc1: unreadable row count for $t: '$n'" >&2; return 1; }
       (( n == 0 )) || { echo "qc1: $t holds $n rows that depend on contact_requests; the loader will not delete them. This is not the QC-1 fixture database." >&2; return 1; }
     fi
     list+="${list:+, }$t"
-  done <<<"$names"
-  psql_db -c "TRUNCATE $list" >/dev/null || { echo "qc1: TRUNCATE $list failed" >&2; return 1; }
+  done 3<<<"$names"
+  # One psql session truncates and then proves the table empty, so a writer landing
+  # between two docker exec calls cannot hide behind the caller's bare "not empty":
+  # a non-zero count fails here, naming the count. TRUNCATE prints its own
+  # "TRUNCATE TABLE" line, so only the last line is the count (taken without a
+  # pipe, so a TRUNCATE failure still fails here under any pipefail setting).
+  left_full="$(psql_db -c "TRUNCATE $list; SELECT count(*) FROM contact_requests" </dev/null)" || { echo "qc1: TRUNCATE $list failed" >&2; return 1; }
+  left="$(tail -n 1 <<<"$left_full")"
+  [[ "$left" =~ ^[0-9]+$ ]] || { echo "qc1: unreadable row count for contact_requests after TRUNCATE: '$left'" >&2; return 1; }
+  if (( left != 0 )); then
+    qc1_reset_repopulated "$left" "$list" || true
+    echo "qc1: contact_requests holds $left rows after TRUNCATE $list; the loader stops instead of measuring over another size's rows" >&2
+    return 1
+  fi
+}
+
+# Read-only diagnosis for a TRUNCATE that did not leave the table empty: the
+# referrer counts plus the other backends on this database. Never writes. This
+# names facts for the log; it does not attribute the rows to any writer. With
+# the complete table list truncated and counted in one session, no writer can
+# land between the statement and the count, so a non-zero count means the
+# TRUNCATE list was incomplete or the database is not the fixture's. (Writers
+# of contact_requests are only the request-creation API paths in api_contact.go;
+# the scheduler's sweeps only expire or blank rows and only enqueue rows in
+# jobs: none of that is claimed here as the cause.)
+qc1_reset_repopulated() { # left list
+  local left="$1" list="$2" t n acts jobs
+  local rest="$list, "
+  # $list is the validated comma-separated closure ("a, b, c"); walk it so a
+  # future transitive referrer is named here too, not just the two known today.
+  while [[ -n "$rest" ]]; do
+    t="${rest%%, *}"; rest="${rest#*, }"
+    [[ "$t" != contact_requests ]] || continue
+    n="$(psql_db -c "SELECT count(*) FROM $t" </dev/null 2>/dev/null || echo '?')"
+    echo "qc1: after TRUNCATE ($list): $t holds $n rows" >&2
+  done
+  acts="$(psql_db -c "SELECT coalesce(string_agg(left(pid::text || ' ' || coalesce(application_name,'?') || ' ' || state || ' ' || left(query, 120), 160), ' | '), '(none)') FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND datname = current_database()" </dev/null 2>/dev/null || echo '?')"
+  echo "qc1: after TRUNCATE ($list): open backends: $acts" >&2
+  jobs="$(psql_db -c "SELECT count(*) FROM jobs WHERE created_at > now() - interval '10 minutes'" </dev/null 2>/dev/null || echo '?')"
+  echo "qc1: after TRUNCATE ($list): jobs enqueued in the last 10 minutes: $jobs" >&2
 }
 
 # --- what a deletion left behind, bound to THIS deletion -----------------------------------------------------------------
@@ -1282,6 +1574,68 @@ qc1_outcome_ok() { # deleted blank withText audits kept removed
   [[ "$2" == "$6" && "$3" == "$5" && "$4" == "$(( $5 + $6 ))" ]]
 }
 
+# --- the text of the reasons, byte for byte (#293) -------------------------------------------------------------------------------------
+# A snapshot is one line per reason, in ascending id order, "id|sha256 of the UTF-8 bytes|runes|bytes". It is taken before a deletion (the account's
+# non-blank reasons, by who the parties are) and again after it (the same ids, whatever the reason is now). Counting blank and non-blank rows, which
+# qc1_outcome_ok does, cannot tell a reason that was kept intact from one that was kept mangled; comparing the lines can. The ids the server issues
+# are ascending, and `mixed` removes the first ceil(n/2) of them (set-v1.mjs codesFor), so the first `removed` lines must now be blank and every
+# other line must be unchanged.
+qc1_text_snapshot_sql() { # target  -> the SQL of the before snapshot
+  [[ "${1:-}" =~ ^[0-9]+$ ]] || return 1
+  printf "SELECT id || '|' || encode(sha256(convert_to(reason, 'UTF8')), 'hex') || '|' || char_length(reason) || '|' || octet_length(reason) FROM contact_requests WHERE reason <> '' AND (requester_id = %s OR subject_user_id = %s) ORDER BY id;\n" "$1" "$1"
+}
+qc1_text_snapshot_ids_sql() { # ids  -> the SQL of the after snapshot (the same ids)
+  [[ "${1:-}" =~ ^(-1|[0-9]+(,[0-9]+)*)$ ]] || return 1
+  printf "SELECT id || '|' || encode(sha256(convert_to(reason, 'UTF8')), 'hex') || '|' || char_length(reason) || '|' || octet_length(reason) FROM contact_requests WHERE id IN (%s) ORDER BY id;\n" "$1"
+}
+# "ok|keptIntact|removedBlank|mismatched|missingOrExtra": ok is true only when the after snapshot names exactly the before snapshot's ids, the first
+# `removed` of them are blank (no runes, no bytes) and every other line equals its before line.
+qc1_text_exact() { # before-file after-file removed
+  [[ "${3:-}" =~ ^[0-9]+$ ]] || return 1
+  awk -F'|' -v removed="$3" -v pre="$1" '
+    BEGIN { while ((getline line < pre) > 0) { n++; before[n] = line; split(line, f, "|"); id[n] = f[1] } close(pre) }
+    { m++
+      if (m > n || $1 != id[m]) { odd++; next }
+      if (m <= removed) { if ($3 == "0" && $4 == "0") rem++; else bad++ }
+      else if ($0 == before[m]) kept++
+      else bad++ }
+    END {
+      n += 0; m += 0; odd += (m < n ? n - m : 0)
+      ok = (bad + 0 == 0 && odd + 0 == 0 && removed + 0 <= n && rem + 0 == removed + 0 && kept + 0 == n - removed)
+      printf "%s|%d|%d|%d|%d\n", (ok ? "true" : "false"), kept + 0, rem + 0, bad + 0, odd + 0 }' "$2"
+}
+# What a before snapshot says about the text, as a JSON object: how many reasons, the shortest and longest in runes and bytes. The longest in bytes over
+# the longest in runes is the bytes a rune took (1 for ASCII); the maximum a UTF-8 rune can take is 4.
+qc1_text_shape() { # before-file
+  awk -F'|' '
+    { n++; if (n == 1 || $3 + 0 < rmin) rmin = $3 + 0; if ($3 + 0 > rmax) rmax = $3 + 0; if (n == 1 || $4 + 0 < bmin) bmin = $4 + 0; if ($4 + 0 > bmax) bmax = $4 + 0; rsum += $3; bsum += $4 }
+    END { if (n == 0) { print "null"; exit }
+          printf "{\"rows\":%d,\"runesMin\":%d,\"runesMax\":%d,\"bytesMin\":%d,\"bytesMax\":%d,\"bytesPerRune\":%.3f}\n", n, rmin, rmax, bmin, bmax, bsum / rsum }' "$1"
+}
+# Of the first 20 reasons by id, how many runes are 2-, 3- and 4-byte UTF-8 and how many are combining marks (U+0300 to U+036F), as "w2 w3 w4 combining".
+# A sample (20 reasons of up to 1,000 runes), not all of them: classifying 100,000 reasons with a regular expression each would take longer than the measurement.
+qc1_text_classes_sql() { # target
+  [[ "${1:-}" =~ ^[0-9]+$ ]] || return 1
+  local tpl="SELECT coalesce(sum(length(regexp_replace(reason, '[^\u0080-\u07ff]', '', 'g'))), 0) || ' ' || coalesce(sum(length(regexp_replace(reason, '[^\u0800-\uffff]', '', 'g'))), 0) || ' ' || coalesce(sum(length(regexp_replace(reason, '[^\U00010000-\U0010ffff]', '', 'g'))), 0) || ' ' || coalesce(sum(length(regexp_replace(reason, '[^\u0300-\u036f]', '', 'g'))), 0) FROM (SELECT reason FROM contact_requests WHERE reason <> '' AND (requester_id = __T__ OR subject_user_id = __T__) ORDER BY id LIMIT 20) s;"
+  printf '%s\n' "${tpl//__T__/$1}"
+}
+# The browser's DELETE body against the independent builder (set-v1.mjs `agree`) over the items the server issued before the browser opened the panel: the
+# builder is given the browser's own choices and must reproduce its count, digest and choice vector byte for byte. Prints one JSON object; checked is false,
+# and equal null, when there is nothing comparable (the browser sent no set-v1 review).
+qc1_digest_agreement() { # items-file review-json-file
+  qc1_setv1 agree --items "$1" --review "$2" || jq -nc '{checked:false, equal:null, why:"the comparison itself failed"}'
+}
+# The browser's final screen against the database (set-v1.mjs dom-ids and dom-text; the rules are domTextAgreement in response-accounting.mjs). panel-file is the panel's result
+# (its `screen`), ids-file the JSON array of every request id in the order the server issued them, texts-file {id: text} read from the database for the ids qc1_dom_ids names, skip-file
+# {id, oldText} for the one reason changed behind the page (or the word null). qc1_dom_ids prints nothing when the pager line does not name a whole page of those reasons; qc1_dom_text
+# then reports that page as not matching, and prints {checked:false} only when no screen was captured or the comparison itself failed.
+qc1_dom_ids() { # panel-file ids-file
+  qc1_setv1 dom-ids --panel "$1" --ids "$2" --page "$(qc1_fact .web.displayPage)"
+}
+qc1_dom_text() { # panel-file ids-file texts-file skip-file
+  qc1_setv1 dom-text --panel "$1" --ids "$2" --texts "$3" --skip "$4" --page "$(qc1_fact .web.displayPage)" || jq -nc '{checked:false, why:"the screen comparison itself failed"}'
+}
+
 # --- the app's peak memory over one operation --------------------------------------------------------------------------------
 # VmHWM right after the reset is the baseline. The peak is the highest of the final VmHWM and every VmRSS / VmHWM sampled during the window,
 # above that baseline. The kernel's high-water mark is not a monotone reading you can difference: RSS that falls without an unmap (file pages
@@ -1296,4 +1650,44 @@ qc1_app_peak() { # baseline_kb end_kb samples_file
       if (base !~ /^[0-9]+$/ || (n == 0 && !e)) { print "null", n + 0, "false"; exit }
       print (m > base + 0 ? m - base : 0), n + 0, ((e && endv + 0 < base + 0) ? "true" : "false")
     }' "$3"
+}
+
+# --- the startup app-memory calibration record -------------------------------------------------------------------------------
+# From the readings calibrate() already takes: VmRSS and VmHWM before the
+# reset, the clear_refs write exit status (0 wrote, anything else did not) and
+# VmHWM after it. The verdict rule is unchanged: a failed write never verifies,
+# and the later mark must not exceed the earlier one. The raw readings ride
+# along so a false names its shape (write/exec failure, unreadable re-read,
+# intervening growth, stale mark); no mechanism is claimed, and a non-increase
+# alone is not called a demonstrated reset. Prints the appMemory object.
+qc1_calibration_app_record() { # rss hwm0 write_rc hwm1
+  local rss="${1:-}" hwm0="${2:-}" rc="${3:-}" hwm1="${4:-}" ok=false reset=false
+  local jrss=null jhwm0=null jrc=null jhwm1=null
+  [[ "$rss" =~ ^[0-9]+$ ]] && jrss="$rss"
+  [[ "$hwm0" =~ ^[0-9]+$ ]] && jhwm0="$hwm0"
+  [[ "$rc" =~ ^[0-9]+$ ]] && jrc="$rc"
+  [[ "$hwm1" =~ ^[0-9]+$ ]] && jhwm1="$hwm1"
+  if [[ "$rss" =~ ^[0-9]+$ && "$hwm0" =~ ^[0-9]+$ ]]; then
+    ok=true
+    if [[ "$rc" == 0 && "$hwm1" =~ ^[0-9]+$ ]] && (( hwm1 <= hwm0 )); then reset=true; fi
+  fi
+  jq -nc --argjson ok "$ok" --argjson reset "$reset" --argjson rss "$jrss" --argjson hwm0 "$jhwm0" --argjson rc "$jrc" --argjson hwm1 "$jhwm1" \
+    '{ok:$ok, hwmReset:$reset, rssKb:$rss, hwmBeforeKb:$hwm0, resetWriteRc:$rc, hwmAfterKb:$hwm1}'
+}
+
+# The startup verdict the judge will reach on the calibration block alone (the
+# gate, the database memory source with its sample floor, the app memory source
+# with its reset, WAL, commit): lines of problem text, empty when calibration
+# passes. The wording repeats the judge's (qc1_environment_problems) so an
+# early stop names what the judge would name. An unreadable record fails closed.
+qc1_calibration_problems() { # calibration.json
+  jq -rs '
+    if length != 1 or (.[0] | type) != "object" then error("invalid calibration record") else .[0] |
+    ( if .gate.ok != true then "the gate sampler did not see a known hold" else empty end ),
+    ( if .dbMemory.ok != true then "the database memory source is unreadable" else empty end ),
+    ( if (.dbMemory.samples // 0) < 3 then "database memory sampling is too sparse to trust (fewer than 3 samples in the calibration half second)" else empty end ),
+    ( if .appMemory.ok != true then "the app process memory source is unreadable" else empty end ),
+    ( if .appMemory.hwmReset != true then "the app peak-memory reset failed" else empty end ),
+    ( if .wal.ok != true then "the WAL position is unreadable" else empty end ),
+    ( if .commit.ok != true then "commit statistics are unreadable" else empty end ) end' "$1" 2>/dev/null
 }
