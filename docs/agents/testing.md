@@ -191,13 +191,37 @@ build`, `make e2e`) and CI. Every name below is a test that exists today; the lo
 
 | You changed | Run while iterating | Why this one |
 |---|---|---|
-| The scanner: the scan SQL, batches, cursor, the tombstone discovery markers | `go test . -count=1 -run '^(TestReasonScanNoSkip\|TestReasonScanIsBounded\|TestReasonOrderingMatrix\|TestBatchedScanMatchesTheSingleStatementOnPostgres\|TestTombstoneDiscoveryNumericMarkersAndShape\|TestTombstoneStructuralMatchAndNumericMarker)$'` | The traversal must not skip or repeat a request, every unit stays bounded, the batched scan equals the single statement, and the markers decide what a sweep revisits. Needs `DATABASE_URL`. |
-| A transaction, the attempt ledger or the restore fence | `go test . -count=8 -run '^TestAttemptLifecycle$'`; `go test . -count=1 -run '^TestFencedTransactionsTakeTheTicketFirst$'`; then the restore-fence tests below | `-count=8` because the lifecycle tests are about ordering; the guard reads the whole production tree; the fence tests dump and restore a real database, so they need the `pg_dump` setup in "Restore tests" above (`TestRestoreFence*`, `TestReasonReviewRestoreWithOpenPanel`). |
-| The review UI or its store | `cd web && npx vitest run src/components/ReasonReviewList.test.tsx src/components/ReasonReviewSection.test.tsx src/lib/reasonReviewStore.test.ts`; then `make e2e` (the shards decide which specs run together, so a spec filter after the spec list does not narrow it; with `DATABASE_URL` set, `E2E_SHARDS=1 web/e2e/run.sh --grep "reviewing contact-request reasons"` runs the deletion flow alone, after `cd web && npm run build`), which includes `admin-delete-user.spec.ts` and the `a11y` and `layout` specs | Vitest is the fast loop; the e2e spec drives the real deletion; axe and layout catch what a unit test cannot see. Look at the 390px screenshots (`.cursor/skills/verify-ui`). |
+| The scanner: the scan SQL, batches, cursor, the tombstone discovery markers, the legacy (deleted-accounts) scan | `go test . -count=1 -run '^(TestReasonScanNoSkip\|TestLegacyScanNoSkip\|TestReasonScanIsBounded\|TestReasonOrderingMatrix\|TestBatchedScanMatchesTheSingleStatementOnPostgres\|TestTombstoneDiscoveryNumericMarkersAndShape\|TestTombstoneStructuralMatchAndNumericMarker)$'` | The traversal (live and legacy, T07B-3a) must not skip or repeat a request or an account, every unit stays bounded, the batched scan equals the single statement, and the markers decide what a sweep revisits. Needs `DATABASE_URL`. |
+| A transaction, the attempt ledger, the restore fence or a legacy save (T07B-3b) | `go test . -count=1 -run '^(TestLegacySaveDecidesEachReason\|TestLegacySaveRefusesAStaleSet\|TestLegacySaveStatementOrder)$'`; `go test . -count=8 -run '^TestAttemptLifecycle$'`; `go test . -count=1 -run '^TestFencedTransactionsTakeTheTicketFirst$'`; then the restore-fence tests below | `-count=8` because the lifecycle tests are about ordering; the guard reads the whole production tree; the fence tests dump and restore a real database, so they need the `pg_dump` setup in "Restore tests" above (`TestRestoreFence*`, `TestReasonReviewRestoreWithOpenPanel`). |
+| The review UI or its store, live or legacy | `cd web && npx vitest run src/pages/ReasonReviewLegacy.test.tsx src/components/ReasonReviewList.test.tsx src/components/ReasonReviewSection.test.tsx src/lib/reasonReviewStore.test.ts`; then `make e2e` (the shards decide which specs run together, so a spec filter after the spec list does not narrow it; with `DATABASE_URL` set, `E2E_SHARDS=1 web/e2e/run.sh --grep "reviewing contact-request reasons"` runs the deletion flow alone, and `--grep "the deleted-accounts review"` the legacy review in `admin-reason-review.spec.ts`, after `cd web && npm run build`), which includes `admin-delete-user.spec.ts`, `admin-reason-review.spec.ts` and the `a11y` and `layout` specs | Vitest is the fast loop; the e2e spec drives the real deletion; axe and layout catch what a unit test cannot see. Look at the 390px screenshots (`.cursor/skills/verify-ui`). |
 | Recovery: `restore.sh`, the drill, the deploy tools | `make provision-dry-run` (the dry-run container also runs the drill fixtures, `restore-drill-modes-fixtures.sh` among them; needs Docker), then only the drill cases the change can reach, through `restore-drill.sh` (the case list is its `drill_progress_init` call) | The full drill is long; `docs/agents/deploy.md` ("Full restore drill frequency") is the one place that says when it is owed. |
 
 Run `-run` patterns exactly as written: an unanchored pattern that matches nothing passes
 silently, so read the `--- PASS` lines for the names you meant.
+
+**The full list runs on the final candidate, never in place of it.** A focused row above is the
+edit loop only. The head that is offered for merge runs every command in the first paragraph of
+this section (the `AGENTS.md` list: `go build ./...`, `make lint`, `make deadcode`, `make test`,
+`cd web && npm test && npm run build`, `make e2e`) and CI, whatever focused checks passed earlier.
+`TestReasonCadenceNamesRealTests` (`guards_reason_test.go`) parses each backticked
+`-run` pattern in the table and fails when it names a Go test function that does not
+exist, so a rename or a typo cannot leave a row that runs nothing.
+
+### Reason-review expensive entry points
+
+These runs belong to a candidate, outside CI, and each is run from a clean committed HEAD with
+an evidence directory outside the checkout. None is part of the edit loop. Read the first
+column's own section before a run.
+
+| Entry point | Revision it binds | Duration | What it covers | Artifacts (record fields) |
+|---|---|---|---|---|
+| `scripts/reason-review-hardening.sh` | `revision` and `tree`; `workingTreeClean` and `workingTreeDiffSha256` for a dirty tree | Minutes (defaults: `parameters.fuzzTime` 60s, `raceCount` 10, `webSeeds` 50) | Fuzz and race for the reason envelope and attempt ledger, seeded browser digest | `evidence.json` (`schema` `fold/reason-review-hardening/v1`, `steps`, `failureArtifacts`, `result`) |
+| `scripts/reason-review-scale.sh` (`--dry-run` first; `--legacy-only` through `--qc1-arg`, see "Legacy QC4/5: the deleted-accounts review") | `revision`, `tree`, `workingTreeClean` | Hours (the QC-1 matrix and the drill); `--dry-run` starts nothing | QC-1 measurement and, unless `--only qc1`, the full restore drill; `coverage.kind` is `full` only under the conditions in "Reason-review scale run" | `evidence.json` (`schema` `fold/reason-review-scale/v1`, `requested`, `coverage`, `steps`, `result`) with `qc1/` and `drill/` beside it |
+| `scripts/reason-review-matrix.sh` (`--dry-run` lists the cells) | `revision` (it refuses cells from different revisions) | Reads finished cells; the cells are the hours-long runs | The four cells of "Reason-review scale matrix", `FULL` or `PILOT` | `matrix.json` (`schema` `fold/reason-review-matrix/v2`, `requiredCells`, `status`, `gaps`, `cells`) |
+| `scripts/reason-review-next-changed.sh` (`--dry-run` prints the commands) | The revision of the QC-1 directories it is given | Reads finished runs; its own sampling is hours | The 100,000-reason "Next changed reason" sampling (#298) | `next-changed.json` (see "Sampling Next changed reason") |
+
+The `--crossings-only` diagnostic of the restore drill never counts as a full drill or as
+acceptance: the wrapper records the run as `coverage.kind` `partial` with the reason listed, exit 10.
 
 ### Reason-review scale run
 
