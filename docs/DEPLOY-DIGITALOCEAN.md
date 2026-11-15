@@ -783,8 +783,40 @@ upgrade.
   image on that database needs no `fold migrate down-one`. Rows the previous
   release writes have no hash; the new release finds them by address.
 - **The plaintext address stays.** This release stores the hash beside the
-  plaintext address. The plaintext column is removed only by a later release, so
-  suppressions are not hash-only yet.
+  plaintext address. The next release removes it (see the next note).
+
+### Upgrade notes: suppressions become hash-only (M7.4 R4-SC)
+
+The release that holds migration `00008` removes the plaintext address from
+`suppressions` and from the background job queue. Publishing it
+requires that the release before it already holds `00002` (`v0.1.0` or later);
+the contract gate in CI enforces that prerequisite for the maintainers, so an
+operator upgrading from `v0.1.0` or later has nothing to check. Read this before you upgrade.
+
+- **What changes.** Every `suppressions` row keeps its `address_hash`, now
+  required, and loses the address. The migration also rewrites each
+  `webhook.process` job: its `address` becomes `addressHash`, and a failure
+  message is replaced with a fixed sentence. Jobs still waiting keep working.
+  Nothing is lost that Fold needs: it only ever matched by hash.
+- **A lock for the length of the migration, and a number.** The migration
+  takes an exclusive lock on `suppressions` and row locks on the
+  `webhook.process` jobs, and keeps them until it commits. Measured on one
+  host (PostgreSQL 16, a local container), the whole file took about 0.1
+  seconds for 10,000 suppressions and 1,000 jobs, 0.9 seconds for 100,000 and
+  10,000, and 9.3 seconds for 1,000,000 and 100,000. Those are measurements,
+  not limits. On this guide's path nothing waits, as in the note above; do not
+  run `fold migrate up` by hand against a running server for this release.
+- **If a lock is not free within 5 seconds** the migration fails, applies
+  nothing and the app does not start, as in the note above.
+- **Rolling back needs the dump.** The old release reads the `address` column
+  that is now gone. Its migration runner treats the upgraded database as current
+  and starts, but every mail send then fails on the missing column. Use
+  `upgrade.sh --rollback`, which restores the dump taken before the upgrade
+  (this loses what happened after it). `fold migrate down-one` refuses while
+  any suppression exists, because the addresses cannot be rebuilt from hashes.
+  `TestSuppressionContractNeedsTheDumpToRollBack` records both.
+- **Restoring an older dump** brings back the plaintext addresses it held. That
+  is a property of any restore, not of this release.
 
 ## 7. Monitoring
 

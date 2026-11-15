@@ -101,39 +101,33 @@ func StrongestReason(reasons []string) string {
 var suppressionRank = []string{models.SuppressHardBounce, models.SuppressManual, models.SuppressComplaint}
 
 // NormalizeAddress is the one way Fold turns an email address into the form
-// it matches against stored addresses: surrounding whitespace trimmed, then
+// it hashes and matches: surrounding whitespace trimmed, then
 // lower-cased. It is idempotent and total.
 func NormalizeAddress(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 
-// StoredAddressHash is the lowercase hex SHA-256 of the exact bytes of an
-// address as stored, with no normalizing. It is the value the address_hash
-// CHECK on suppressions ties to the stored address on a UTF8 database.
-// Total: an empty string hashes its own empty bytes. The hash is unkeyed and
-// guessable, a pseudonymous matching value and not encryption.
+// StoredAddressHash is the lowercase hex SHA-256 of the exact bytes of a
+// string, with no normalizing. Total: an empty string hashes its own empty
+// bytes. The hash is unkeyed and guessable, a pseudonymous matching value and
+// not encryption.
 func StoredAddressHash(stored string) string {
 	sum := sha256.Sum256([]byte(stored))
 	return hex.EncodeToString(sum[:])
 }
 
-// AddressHash is the hash a lookup uses for an address a person or caller
-// supplied: StoredAddressHash of NormalizeAddress(s). Callers that look up by
-// hash drop empty normalized inputs first; an empty input still hashes. That
-// SQL and Go agree on these bytes is proven for UTF8 databases by the
-// suppression matching-basis test (R4-S2).
+// AddressHash is the value Fold stores and looks up in place of an address
+// (PLAN 10.1): StoredAddressHash of NormalizeAddress(s). Callers that look up
+// by hash drop empty normalized inputs first; an empty input still hashes.
+// That SQL (migration 00008's backfill) and Go agree on these bytes is proven
+// for UTF8 databases by the suppression matching-basis test.
 func AddressHash(s string) string { return StoredAddressHash(NormalizeAddress(s)) }
 
-// openSuppressionsSQL reads the open email suppressions for a set of
-// normalized addresses and their hashes (R4-S3). A row with a hash matches by
-// hash; a legacy row whose hash is still NULL (written by the previous
-// release or by out-of-band SQL after migration 00002) matches by its stored
-// address. ORDER BY id fixes the order reasons are returned in, which was
-// unspecified before R4-S.
-const openSuppressionsSQL = `SELECT address, address_hash, reason FROM suppressions
-	WHERE channel = 'email' AND cleared_at IS NULL
-	AND (address_hash IN ? OR (address_hash IS NULL AND address IN ?)) ORDER BY id`
+// openSuppressionsSQL reads the open email suppressions for a set of address
+// hashes. ORDER BY id fixes the order reasons are returned in.
+const openSuppressionsSQL = `SELECT address_hash, reason FROM suppressions
+	WHERE channel = 'email' AND cleared_at IS NULL AND address_hash IN ? ORDER BY id`
 
-// suppressionLookupChunk is how many addresses one query carries: two bind
-// lists of this size stay well under the 65,535 bind limit.
+// suppressionLookupChunk is how many addresses one query carries, well under
+// the 65,535 bind limit.
 const suppressionLookupChunk = 500
 
 // OpenSuppressionReasons maps each address to its open email suppression
@@ -142,14 +136,9 @@ const suppressionLookupChunk = 500
 // is the normalized address, and an address with no open row is left out.
 // Empty input runs no query.
 //
-// Both arms match when the normalized input's bytes equal the stored
-// address's bytes: the hash arm through the SHA-256 the address_hash CHECK
-// ties to the stored bytes, the address arm through SQL equality. On a UTF8
-// database with a deterministic libc default collation (proven by the matching
-// basis test) those are the rows text equality matched before the hash
-// existed; elsewhere only ASCII addresses are claimed (inventory 7.4). The
-// hash is computed in Go from the caller's address and never comes from
-// request input.
+// A suppression is stored as the hash of the normalized address and nothing
+// else, so this is the one way to ask about an address. The hash is computed
+// in Go from the caller's address and never comes from request input.
 func OpenSuppressionReasons(db *gorm.DB, addresses []string) (map[string][]string, error) {
 	seen := make(map[string]bool, len(addresses))
 	norm := make([]string, 0, len(addresses))
@@ -172,23 +161,16 @@ func OpenSuppressionReasons(db *gorm.DB, addresses []string) (map[string][]strin
 			hashes = append(hashes, h)
 		}
 		var rows []struct {
-			Address     string
-			AddressHash *string
+			AddressHash string
 			Reason      string
 		}
-		if err := db.Raw(openSuppressionsSQL, hashes, chunk).Scan(&rows).Error; err != nil {
+		if err := db.Raw(openSuppressionsSQL, hashes).Scan(&rows).Error; err != nil {
 			return nil, err
 		}
 		for _, r := range rows {
-			key := r.Address
-			if r.AddressHash != nil {
-				n, ok := byHash[*r.AddressHash]
-				if !ok {
-					continue
-				}
-				key = n
+			if n, ok := byHash[r.AddressHash]; ok {
+				out[n] = append(out[n], r.Reason)
 			}
-			out[key] = append(out[key], r.Reason)
 		}
 	}
 	return out, nil

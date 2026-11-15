@@ -15,9 +15,11 @@ suppressions. The guards named here are parse-only; each test file states its ow
 - Suppression reasons rank in one place, `mail.StrongestReason` (hard bounce, then manual, then
   complaint; an unknown reason counts as manual).
 - Suppression SQL lives only in `mail.OpenSuppressionReasons`, the admin helpers and the webhook
-  writer, and matches by Go-computed hash (`TestSuppressionSQLStaysInItsHelpers`,
-  `TestSuppressionSQLGuardCatchesBypasses`). Matching
-  assumes a UTF8 database with a deterministic default collation (`TestSuppressionMatchingBasis`).
+  writer, and matches by Go-computed hash. `suppressions` has no address column: it stores `address_hash`
+  (`mail.AddressHash`) and nothing else, and a `webhook.process` job carries the same hash
+  (`emailEventJob`), never the address (`TestSuppressionSQLStaysInItsHelpers`,
+  `TestSuppressionSQLGuardCatchesBypasses`, `TestEmailReportJobsCarryNoAddress`). SQL and Go hashing agree
+  on a UTF8 database (`TestSuppressionMatchingBasis`).
 - Notices are delivered by the `notify.deliver` job that `notify.Send` queues, never by their
   callers (`TestNoticesAreDeliveredBySendNotByCallers`).
 

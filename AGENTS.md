@@ -31,7 +31,10 @@ SaaS operator) must be able to run it with `docker compose up`. The shipped arti
 - **PostgreSQL only**, everywhere: production, development, tests (`DATABASE_URL`, DEC-1, DEC-24).
   Use Postgres features freely. `CGO_ENABLED=0`; keep it that way.
 - Schema: versioned **goose** SQL files in `migrations/`, embedded in the binary and run on start
-  under an advisory lock. They are the source of truth; GORM models must match them.
+  under an advisory lock. They are the source of truth; GORM models must match them. The chain is
+  the baseline plus numbered files; `v0.1.0` is tagged, so the DEC-138 baseline-edit window is closed and
+  a file a tagged release holds is never edited. `00008` is the first contract file: `suppressions` stores
+  `address_hash` and no address (PLAN 10.1).
 - **React + Vite + Tailwind** SPA in `web/` (Node major in `.nvmrc`); `web/dist/` is embedded into
   the binary. Release runs `npm run build` before `go build`.
 

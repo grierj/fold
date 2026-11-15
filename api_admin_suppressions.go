@@ -20,9 +20,7 @@ import (
 // openSuppressions maps each suppressed email address to its strongest
 // open reason (a hard bounce or a manual one before a complaint) and when
 // the earliest one began. One read for the whole user list. The key is the
-// address hash: the row's own, or the hash of its stored address while a
-// legacy row's hash is still NULL (R4-S3). Look an account up with
-// mail.AddressHash(email).
+// address hash; look an account up with mail.AddressHash(email).
 func openSuppressions(db *gorm.DB) (map[string]*emailSuppressionJSON, error) {
 	var rows []models.Suppression
 	if err := db.Where("channel = ? AND cleared_at IS NULL", "email").Order("created_at").Find(&rows).Error; err != nil {
@@ -31,10 +29,7 @@ func openSuppressions(db *gorm.DB) (map[string]*emailSuppressionJSON, error) {
 	reasons := map[string][]string{}
 	out := map[string]*emailSuppressionJSON{}
 	for _, r := range rows {
-		key := mail.StoredAddressHash(r.Address)
-		if r.AddressHash != nil {
-			key = *r.AddressHash
-		}
+		key := r.AddressHash
 		reasons[key] = append(reasons[key], r.Reason)
 		if out[key] == nil {
 			out[key] = &emailSuppressionJSON{Since: r.CreatedAt}
@@ -60,7 +55,6 @@ func (a *App) apiAdminClearSuppression(c *gin.Context) {
 		jsonError(c, http.StatusNotFound, "user not found")
 		return
 	}
-	address := mail.NormalizeAddress(u.Email)
 	var cleared int64
 	err = a.DB.Transaction(func(tx *gorm.DB) error {
 		// One statement clears them and says which, so the audit row names
@@ -68,8 +62,8 @@ func (a *App) apiAdminClearSuppression(c *gin.Context) {
 		var reasons []string
 		if err := tx.Raw(`UPDATE suppressions SET cleared_at = ?, cleared_by = ?
 			WHERE channel = 'email' AND cleared_at IS NULL
-			AND (address_hash = ? OR (address_hash IS NULL AND address = ?)) RETURNING reason`,
-			time.Now(), me.ID, mail.AddressHash(u.Email), address).
+			AND address_hash = ? RETURNING reason`,
+			time.Now(), me.ID, mail.AddressHash(u.Email)).
 			Scan(&reasons).Error; err != nil {
 			return err
 		}

@@ -31,23 +31,22 @@ func TestRecipientFactsReadHashedAndLegacySuppressions(t *testing.T) {
 		"legacycomplaintfirst", "legacybouncefirst", "complaintonly", "clean")
 	// An account stored with capitals and padding still matches.
 	app.DB.Model(users["hashed"]).Update("email", " Hashed@Example.COM ")
-	suppressHashed(t, app, "hashed@example.com", models.SuppressHardBounce)
+	suppress(t, app, "hashed@example.com", models.SuppressHardBounce)
 	suppress(t, app, "legacy@example.com", models.SuppressHardBounce)
-	h := mail.StoredAddressHash("cleared@example.com")
 	now := time.Now()
-	if err := app.DB.Create(&models.Suppression{Channel: "email", Address: "cleared@example.com", AddressHash: &h,
+	if err := app.DB.Create(&models.Suppression{Channel: "email", AddressHash: mail.AddressHash("cleared@example.com"),
 		Reason: models.SuppressHardBounce, ClearedAt: &now}).Error; err != nil {
 		t.Fatal(err)
 	}
-	suppressHashed(t, app, "complaintfirst@example.com", models.SuppressComplaint)
-	suppressHashed(t, app, "complaintfirst@example.com", models.SuppressHardBounce)
-	suppressHashed(t, app, "bouncefirst@example.com", models.SuppressHardBounce)
-	suppressHashed(t, app, "bouncefirst@example.com", models.SuppressComplaint)
+	suppress(t, app, "complaintfirst@example.com", models.SuppressComplaint)
+	suppress(t, app, "complaintfirst@example.com", models.SuppressHardBounce)
+	suppress(t, app, "bouncefirst@example.com", models.SuppressHardBounce)
+	suppress(t, app, "bouncefirst@example.com", models.SuppressComplaint)
 	suppress(t, app, "legacycomplaintfirst@example.com", models.SuppressComplaint)
 	suppress(t, app, "legacycomplaintfirst@example.com", models.SuppressHardBounce)
 	suppress(t, app, "legacybouncefirst@example.com", models.SuppressHardBounce)
 	suppress(t, app, "legacybouncefirst@example.com", models.SuppressComplaint)
-	suppressHashed(t, app, "complaintonly@example.com", models.SuppressComplaint)
+	suppress(t, app, "complaintonly@example.com", models.SuppressComplaint)
 
 	var ids []uint
 	for _, u := range users {
@@ -75,15 +74,9 @@ func TestRecipientFactsReadHashedAndLegacySuppressions(t *testing.T) {
 }
 
 // suppressionDump renders every column of every row with the pointer fields
-// (AddressHash, ClearedAt, ClearedBy) shown by value. Printing the structs with
-// %+v shows pointer addresses, which differ between two reads of equal rows.
+// (ClearedAt, ClearedBy) shown by value. Printing the structs with %+v shows
+// pointer addresses, which differ between two reads of equal rows.
 func suppressionDump(rows []models.Suppression) string {
-	str := func(p *string) string {
-		if p == nil {
-			return "<nil>"
-		}
-		return "&" + *p
-	}
 	var out string
 	for _, r := range rows {
 		cleared, by := "<nil>", "<nil>"
@@ -93,8 +86,8 @@ func suppressionDump(rows []models.Suppression) string {
 		if r.ClearedBy != nil {
 			by = fmt.Sprint(*r.ClearedBy)
 		}
-		out += fmt.Sprintf("{ID:%d Channel:%q Address:%q AddressHash:%s Reason:%q Provider:%q Detail:%q CreatedAt:%s ClearedAt:%s ClearedBy:%s}\n",
-			r.ID, r.Channel, r.Address, str(r.AddressHash), r.Reason, r.Provider, r.Detail,
+		out += fmt.Sprintf("{ID:%d Channel:%q AddressHash:%s Reason:%q Provider:%q Detail:%q CreatedAt:%s ClearedAt:%s ClearedBy:%s}\n",
+			r.ID, r.Channel, r.AddressHash, r.Reason, r.Provider, r.Detail,
 			r.CreatedAt.UTC().Format(time.RFC3339Nano), cleared, by)
 	}
 	return out
@@ -108,7 +101,7 @@ func TestSuppressionsSurviveAddressReuseAndErasure(t *testing.T) {
 	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
 	admin := loginAPI(t, app, "admin", "password1234")
 	old := newTestUser(t, app, "pat", "password1234", models.RoleMember)
-	suppressHashed(t, app, "pat@example.com", models.SuppressHardBounce)
+	suppress(t, app, "pat@example.com", models.SuppressHardBounce)
 	suppress(t, app, "sam@example.com", models.SuppressHardBounce)
 
 	var before []models.Suppression

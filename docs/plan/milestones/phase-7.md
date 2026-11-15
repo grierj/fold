@@ -70,7 +70,8 @@ milestones until a first church is live (DEC-145).
     inventory 6.5.2 maps every registered action to one arm.
   - Deleting the only host of a church-wide event needs a replacement host the admin picks. Notice
     fan-outs skip erased recipients.
-  - Suppressions store an address hash beside the plaintext, the expand step (`00002`). An
+  - Suppressions store an address hash beside the plaintext (the expand step, `00002`); `00008` then
+    removes the plaintext column and the address from `webhook.process` jobs. An
     erased person's optional email choices survive as address-hash records (`00005`, owner
     decision 8).
   - Deletion outcomes: attempt ids with a settle route, the restore barrier, the actor seal and
