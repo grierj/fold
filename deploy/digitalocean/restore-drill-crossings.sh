@@ -1306,7 +1306,10 @@ real_current_release_restore() {
   crossing_applied_exactly "$status" "$t4" "$cdir/panel-$t4.json" "$out" \
     || { echo "crossing: the fresh press after reload answered $status in recovery: $(cat "$out")" >&2; return 1; }
   sh_fresh=applied
-  delete_listed
+  # t3 was deleted live after the dump, so recovery lists it (T307): the operator deletes it again, through its panel.
+  status="$(crossing_press "$t3" "$cdir/panel-$t3.json" "$out")"
+  crossing_applied_exactly "$status" "$t3" "$cdir/panel-$t3.json" "$out" \
+    || { echo "crossing: deleting the listed account again answered $status in recovery: $(cat "$out")" >&2; return 1; }
   restore --reopen --checked-church-records
   wait_public; URL="$(public_url)"; login
   crossing_emit cases.jsonl --arg acceptance A-current-release-restore --argjson level "$level" --arg image "$CROSSING_CAND_IMG" \
