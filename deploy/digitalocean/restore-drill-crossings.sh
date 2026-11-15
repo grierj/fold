@@ -110,8 +110,8 @@ CROSSING_PREFLIGHT_BASE=8c07c85265c0f43ab8350cd945efdc14363c21bd
 CROSSING_LANE_DEFAULT="$CROSSING_PREFLIGHT_BASE"
 # T07B-1-V's landing: "Integrate tracked deletion outcomes", level 1, no restore.sh.
 CROSSING_LANDING_DEFAULT=d400b7755f4564c60524167105f31e33bed9b51b
-# T07B-2b's landing: "Integrate reason-review API", level 2, the candidate's schema.
-CROSSING_PRIOR_DEFAULT=6927e896065d172fb1214181cd80fbd554a86eeb
+# T306: "contract suppressions to hash-only (R4-SC)", level 2, the candidate's schema.
+CROSSING_PRIOR_DEFAULT=52e60ff0fd1a90f39d8ae4a887ed555b8efd7dfa
 # ARCH_SHA: the first parent of T07B-2a-V's landing merge a1198e6 (level 0,
 # migrations 00001-00006, no reason-review file).
 CROSSING_ARCHIVE_DEFAULT=89899794046c4f2cd8a59f0fe6d0184a1d825afd

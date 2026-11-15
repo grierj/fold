@@ -212,6 +212,18 @@ new_user() {
   api POST /admin/users "$(jq -n --arg name "$1" --arg email "$2" '{name:$name,email:$email,password:"restore-drill-password",ageBand:"adult",role:"member"}')" | jq -er .user.id
 }
 delete_a() { api DELETE "/admin/users/$A" '{}' >"$WORK/delete-response.json"; }
+# What the operator does in private recovery: delete again each account in
+# recovery-deleted.txt that is still active. Without a list there is nothing to do.
+delete_listed() {
+  local id
+  [[ -f "$DIR/recovery-deleted.txt" ]] || return 0
+  URL=http://localhost:18080; login
+  while read -r id _; do
+    if [[ "$(pg fold -c "SELECT deleted_at IS NULL FROM users WHERE id=$id" </dev/null)" == t ]]; then
+      api DELETE "/admin/users/$id" '{}' >"$WORK/delete-response.json"
+    fi
+  done <"$DIR/recovery-deleted.txt"
+}
 expect_fail() {
   local needle="$1" rc=0; shift
   "$@" >"$WORK/refusal.log" 2>&1 || rc=$?
@@ -383,7 +395,7 @@ reset_case() {
   reset_fixture_databases || return 1
   pg postgres -c 'CREATE DATABASE fold OWNER church TEMPLATE template0'
   dc exec -T db pg_restore -U church -d fold --no-owner --no-acl --single-transaction --exit-on-error <"$DB_DUMP"
-  rm -f "$DIR/recovery.lock" "$DIR/drill-smoke-fail" "$DIR/drill.ready"
+  rm -f "$DIR/recovery.lock" "$DIR/drill-smoke-fail" "$DIR/drill.ready" "$DIR/recovery-deleted.txt"
   drill_note reset/provision
   "$DIR/provision.sh" --skip-harden --allow-os --deploy-dir "$DIR" --source-dir "$SOURCE" --domain groups.example.org --image "$image" >"$WORK/reset-provision.log" 2>&1
   drill_note reset/provision-complete
@@ -445,6 +457,7 @@ for point in after-app-start after-caddy-start mid-smoke before-drop after-drop 
   drill_step "$point"
   reset_case
   restore --dump "$DB_DUMP"
+  delete_listed
   kill_point "$point" --reopen --checked-church-records
   expect_fail 'abort refused' restore --abort
   if [[ "$point" == before-drop || "$point" == after-drop || "$point" == after-floor ]]; then

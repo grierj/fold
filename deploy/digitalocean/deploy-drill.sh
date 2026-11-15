@@ -242,6 +242,8 @@ cp "$DRILL_ROOT"/deploy/digitalocean/{provision.sh,upgrade.sh,checks.sh,backup.s
 cat >"$TOOLS/smoke.sh" <<'SMOKE'
 #!/usr/bin/env bash
 set -euo pipefail
+# shellcheck source=deploy/digitalocean/checks.sh
+source "$(dirname "${BASH_SOURCE[0]}")/checks.sh"
 while [[ $# -gt 0 ]]; do
   if [[ "$1" == --deploy-dir ]]; then dir="$2"; shift 2; else shift; fi
 done

@@ -412,7 +412,7 @@ func TestDirectMailOutcomes(t *testing.T) {
 				if outcome == "complaint" {
 					reason = models.SuppressComplaint
 				}
-				if err := app.DB.Create(&models.Suppression{Address: user.Email, Channel: "email", Reason: reason}).Error; err != nil {
+				if err := app.DB.Create(&models.Suppression{AddressHash: mail.AddressHash(user.Email), Channel: "email", Reason: reason}).Error; err != nil {
 					t.Fatal(err)
 				}
 				app.Mailer = mail.WithSuppressions(app.DB, sender)

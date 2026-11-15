@@ -5,9 +5,8 @@ Read this before adding or changing a file in `migrations/`.
 ## Rules
 
 - Every schema change is a **new** goose file `NNNNN_name.sql`, with Up and Down. Never edit a
-  migration any tagged release has applied. The only exception is the pre-live baseline window in
-  DEC-138, which closes at the first tagged release or first church deployment, whichever comes
-  first.
+  migration any tagged release has applied. The only exception was the pre-live baseline window in
+  DEC-138; it closed with the first tagged release, `v0.1.0`, so no exception remains.
 - The model change and `models.All()` go in the same PR. The migration files are the source of
   truth; GORM models must match them (the drift check in `migrations/migrations_test.go`).
 - **Expand, then contract (DEC-138).** A release may add tables, columns, indexes and constraints
@@ -22,6 +21,8 @@ Read this before adding or changing a file in `migrations/`.
   `TestCIRunsTheContractGate` keeps it in CI and `TestContractGateScript` proves it. The
   publication half is review only: a `release.yml` run, the finalize step summary, GHCR digest,
   release section and attestation naming one digest. A tag alone does not satisfy it.
+  `00008_suppression_address_contract.sql` is the first contract file (it contracts `00002`, held by
+  `v0.1.0`); the release evidence it relied on is in `docs/plan/M7.4-ERASURE-INVENTORY.md` 15.13.
 
 ## Two PRs with the same number
 
@@ -44,6 +45,9 @@ it is for.
 
 - The baseline's Down destroys the schema and refuses while any user exists; it is for scratch
   databases and the down/up test, never application rollback.
+- `00008` makes `suppressions.address_hash` NOT NULL and drops `address`. Its Down refuses while any
+  suppression exists, because the addresses are gone; rolling back to a release that reads `address`
+  restores the dump `upgrade.sh` takes (`docs/DEPLOY-DIGITALOCEAN.md` section 6).
 - A development database migrated by the pre-squash chain must be recreated before a new binary
   runs on it; there is no converter.
 - `scripts/baseline-proof.sh proof` re-proves a tree against the frozen pre-squash chain with a

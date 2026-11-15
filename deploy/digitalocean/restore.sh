@@ -38,7 +38,9 @@ Stops the public site, restores to a new database and swaps the whole database.
 Recovery runs at http://localhost:18080 through an SSH tunnel, workers off.
 Re-delete accounts erased after the backup using the church's records. A known
 zero count permits --reopen-if-none. Otherwise --reopen requires your explicit
---checked-church-records statement. No deleted-account list is saved here.
+--checked-church-records statement. When the comparison succeeds with a nonzero
+count, the ids (and the time each was last deleted) are saved in
+DIR/recovery-deleted.txt, root-only; --reopen refuses until each is deleted again.
 Exit 3 means --reopen-if-none restored the archive but SITE IS CLOSED in
 private recovery. Normal --dump and --resume can finish private recovery with
 exit 0. Once collection is recorded, --resume no longer needs the archive.
@@ -105,7 +107,7 @@ if (( DRILL )); then
 fi
 case "${RESTORE_DRILL_PAUSE:-}" in ''|after-lock|before-swap|mid-pin|recovering) ;; *) fail 'unknown RESTORE_DRILL_PAUSE point' ;; esac
 case "${RESTORE_DRILL_FAULT:-}" in
-  ''|after-create|before-swap|swap-ack-lost|after-swap|half|before-pin|mid-pin|after-pin|after-recovery-create|before-collect-drop|after-collect-drop|before-drop|after-drop|after-floor|after-app-start|after-caddy-start|mid-smoke|stop-fails|bad-recovery|after-abort-intent|before-abort-drop|after-abort-drop|after-abort-start|mid-abort-smoke|abort-drop-ack-lost|during-restore) ;;
+  ''|after-create|before-swap|swap-ack-lost|after-swap|half|before-pin|mid-pin|after-pin|after-recovery-create|before-collect-drop|after-collect-drop|before-list-rename|before-drop|after-drop|after-floor|after-app-start|after-caddy-start|mid-smoke|stop-fails|bad-recovery|after-abort-intent|before-abort-drop|after-abort-drop|after-abort-start|mid-abort-smoke|abort-drop-ack-lost|during-restore) ;;
   *) fail 'unknown RESTORE_DRILL_FAULT point' ;;
 esac
 case "${RESTORE_DRILL_FORCE_TWO_STEP:-0}" in 0|1) ;; *) fail 'RESTORE_DRILL_FORCE_TWO_STEP must be 0 or 1' ;; esac
@@ -230,7 +232,8 @@ read_lock() {
     and (.level|type=="number" and .>=0 and .<=999999999 and .==floor)
     and (.count|type=="string" and test("^(unknown|[0-9]+)$"))
     and (.imageId|test("^sha256:[0-9a-f]{64}$"))
-    and (.phase|type=="string") and (.previous.imageId|test("^sha256:[0-9a-f]{64}$"))' <<<"$STATE" >/dev/null || fail 'invalid recovery.lock; retain it for inspection'
+    and (.phase|type=="string") and (.previous.imageId|test("^sha256:[0-9a-f]{64}$"))
+    and ((.deletedList // null)==null or ((.deletedList.sha256|test("^[0-9a-f]{64}$")) and (.deletedList.count|type=="number" and .>0 and .==floor)))' <<<"$STATE" >/dev/null || fail 'invalid recovery.lock; retain it for inspection'
   DUMP="${DUMP:-$(get .dump)}"
   SOURCE="$(get .source)"; IMAGE="$(nullable .image)"; COMMIT="$(nullable .commit)"
   R="fold_restore_$(get '.nonce[0:16]')"; P="fold_pre_restore_$(get '.nonce[0:16]')"
@@ -326,6 +329,21 @@ service_running() {
   done <<<"$ids"
   return "$active"
 }
+# --reopen refuses while any listed account is still active. A file that is
+# missing or no longer matches the lock cannot be checked, so the operator's
+# --checked-church-records statement (already required for a count above zero)
+# is what remains.
+deleted_list_gate() {
+  local total remaining
+  total="$(jq -r '.deletedList.count // empty' <<<"$STATE")"
+  [[ -n "$total" ]] || return 0
+  if ! deleted_list_load; then
+    echo "restore.sh: $DIR/recovery-deleted.txt is missing or differs from recovery.lock; relying on --checked-church-records" >&2
+    return 0
+  fi
+  remaining="$(deleted_list_remaining)" && [[ "$remaining" =~ ^[0-9]+$ ]] || fail 'could not compare recovery-deleted.txt with the recovery database; nothing reopened'
+  (( remaining == 0 )) || fail "$remaining of $total accounts in $DIR/recovery-deleted.txt are still active; delete them again, then repeat --reopen --checked-church-records. Nothing reopened"
+}
 workers_count() { pg postgres -c "SELECT count(*) FROM pg_stat_activity WHERE datname='fold' AND backend_type='client backend' AND pid<>pg_backend_pid()"; }
 wait_clients() {
   local db_pred="$1" count end=$((SECONDS+WAIT))
@@ -378,6 +396,17 @@ reconcile_needed() {
   printf 'restore.sh: reconcile-needed; classification=%s release=%s\n%s\n' "$CLASS" "$RELEASE" "$DBS" >&2
   fail 'database identity or release changed without its recorded intent. No database was written. Retain the lock; inspect names, oids, sizes and ALLOW_CONNECTIONS with --status. --abort is refused'
 }
+# "Still active" is only meaningful once fold is the restored database.
+deleted_list_status() {
+  local total remaining=unknown
+  total="$(jq -r '.deletedList.count // empty' <<<"$STATE")"
+  [[ -n "$total" ]] || return 0
+  case "$1" in
+    quiesce|create-intent|created|collect-*|collected|pin-*|pinned|swap-*|reconcile-needed|abort-*) remaining=n/a ;;
+    *) if deleted_list_load && remaining="$(deleted_list_remaining 2>/dev/null)" && [[ "$remaining" =~ ^[0-9]+$ ]]; then :; else remaining=unknown; fi ;;
+  esac
+  printf 'deleted list: %s listed in %s/recovery-deleted.txt; still active: %s\n' "$total" "$DIR" "$remaining"
+}
 status() {
   local ids id phase w accepted=no
   if observe; then accepted=yes; fi
@@ -386,6 +415,7 @@ status() {
   if [[ "$phase" == reconcile-needed ]]; then
     printf 'reconcileFrom=%s recheckAccepted=%s; --resume only rechecks and restores that phase\n' "$(nullable .reconcileFrom)" "$accepted"
   fi
+  deleted_list_status "$phase"
   printf 'operations holder (informational; observations may be mid-change): %s\n' "$(cat "$DIR/ops.owner" 2>/dev/null || true)"
   printf 'databases: name|oid|bytes|ALLOW_CONNECTIONS\n%s\n' "$DBS"
   dc ps -a
@@ -541,28 +571,93 @@ collect_failed() {
   record collect-failed
   fail 'archive restore failed; original database untouched; services stopped. Run --abort to reopen the original or --resume to retry'
 }
+# recovery-deleted.txt (owner decision Q5, inventory 11): one "<id> <time>" line per
+# account that is deleted in the live database and active in the archive, root-only.
+# The time is the newest user.deleted audit row, for display; it never selects an id.
+# No names, addresses or audit metadata are written. The caller holds the operations lock.
+# Also removes a temp file a kill left between its write and the rename; it holds ids and times.
+deleted_list_drop() { rm -f -- "$DIR/recovery-deleted.txt" "$DIR"/.recovery-deleted.* && sync -f "$DIR"; }
+deleted_list_write() {
+  local tmp
+  tmp="$(mktemp "$DIR/.recovery-deleted.XXXXXX")" || return 1
+  if ! { printf '%s\n' "$1" >"$tmp" && chmod 600 "$tmp" && chown 0:0 "$tmp" && sync -f "$tmp" && fault_at before-list-rename \
+    && mv -f "$tmp" "$DIR/recovery-deleted.txt" && sync -f "$DIR"; }; then
+    rm -f "$tmp"; return 1
+  fi
+}
+# Times come from the quiesced live database after the ids are fixed; a failed
+# read only makes a time "unknown".
+deleted_list_times() {
+  local sql
+  sql="$(cat <<'SQL'
+COPY (SELECT l.id, COALESCE(to_char(max(a.at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 'unknown')
+  FROM listed l LEFT JOIN audit_logs a ON a.action = 'user.deleted' AND a.target_type = 'user' AND a.target_id = l.id
+  GROUP BY l.id ORDER BY l.id) TO STDOUT;
+SQL
+)"
+  {
+    printf 'BEGIN;\nCREATE TEMP TABLE listed(id bigint PRIMARY KEY);\nCOPY listed FROM STDIN;\n%s\n\\.\n%s\nCOMMIT;\n' "$1" "$sql"
+  } | pg fold -q
+}
+deleted_list_rows() {
+  # shellcheck disable=SC2016 # awk program.
+  awk -F'\t' 'NR==FNR { if ($2 ~ /^[0-9-]+T[0-9:]+Z$/) t[$1]=$2; next } { print $1 " " (($1 in t) ? t[$1] : "unknown") }' \
+    <(printf '%s\n' "$2") <(printf '%s\n' "$1")
+}
+# Sets LISTED to the ids when the file is the one the lock hashed at collection.
+deleted_list_load() {
+  local hash file
+  hash="$(jq -r '.deletedList.sha256 // empty' <<<"$STATE")"
+  file="$DIR/recovery-deleted.txt"
+  [[ -n "$hash" && -f "$file" && ! -L "$file" && "$(stat -c '%u:%a' "$file")" == 0:600 \
+    && "$(sha256sum "$file" | cut -d' ' -f1)" == "$hash" ]] || return 1
+  LISTED="$(awk '{print $1}' "$file")"
+  [[ -n "$LISTED" ]] && ! grep -Evq '^[0-9]+$' <<<"$LISTED" \
+    && [[ "$(grep -c '' <<<"$LISTED")" == "$(jq -r '.deletedList.count' <<<"$STATE")" ]]
+}
+# Prints how many listed ids are still active in the current fold database.
+deleted_list_remaining() {
+  printf 'BEGIN;\nCREATE TEMP TABLE listed(id bigint PRIMARY KEY);\nCOPY listed FROM STDIN;\n%s\n\\.\nSELECT count(*) FROM users u JOIN listed l USING(id) WHERE u.deleted_at IS NULL;\nCOMMIT;\n' "$LISTED" | pg fold -q
+}
 collect() {
-  local count
+  local count=unknown ids="" times="" hash
   # A killed docker exec client can leave pg_restore or the count COPY alive
   # in Postgres. Never restore into or drop R while that backend still owns it.
   wait_clients "datname IN ('fold','$R')" || fail 'restore database clients have not drained; phase kept, no restore or drop sent. Wait, then --resume'
+  # A retry never keeps a file from an earlier attempt or an earlier recovery.
+  deleted_list_drop || fail 'could not remove an old recovery-deleted.txt; phase kept, nothing restored. Wait, then --resume'
   if ! dc exec -T db pg_restore -U church -d "$R" --no-owner --no-acl --single-transaction --exit-on-error <"$DUMP"; then collect_failed; fi
   # Fold's user deletion is soft deletion (apiAdminDeleteUser tx.Delete(u),
   # User embeds gorm.DeletedAt). No production path hard-deletes users.
-  # One stream, no ids on disk. Selection never uses audit timestamp.
-  count=unknown
+  # One stream; the live read is one statement, so one snapshot. Selection
+  # never uses audit timestamp.
   if [[ -n "$(get .origOid)" ]]; then
-    if ! count="$(
+    if ids="$(
       set -o pipefail
       {
         printf 'BEGIN;\nCREATE TEMP TABLE erased_ids(id bigint PRIMARY KEY);\nCOPY erased_ids FROM STDIN;\n'
         pg fold -c 'COPY (SELECT id FROM users WHERE deleted_at IS NOT NULL) TO STDOUT' || exit 1
-        printf '\\.\nSELECT count(*) FROM users u JOIN erased_ids e USING(id) WHERE u.deleted_at IS NULL;\nCOMMIT;\n'
+        printf '\\.\nCOPY (SELECT u.id FROM users u JOIN erased_ids e USING(id) WHERE u.deleted_at IS NULL ORDER BY u.id) TO STDOUT;\nCOMMIT;\n'
       } | pg "$R" -q
-    )"; then count=unknown; fi
+    )"; then
+      if [[ -z "$ids" ]]; then count=0
+      elif ! grep -Evq '^[0-9]+$' <<<"$ids"; then count="$(grep -c '' <<<"$ids")"
+      fi
+    fi
   fi
   [[ "$count" == unknown || "$count" =~ ^[0-9]+$ ]] || count=unknown
-  STATE="$(jq --arg count "$count" '.count=$count' <<<"$STATE")"
+  STATE="$(jq --arg count "$count" '.count=$count | .deletedList=null' <<<"$STATE")"
+  # An unknown or zero count writes no file. The hash is in the lock before collected.
+  if [[ "$count" != unknown && "$count" != 0 ]]; then
+    times="$(deleted_list_times "$ids" 2>/dev/null)" || times=""
+    if deleted_list_write "$(deleted_list_rows "$ids" "$times")"; then
+      hash="$(sha256sum "$DIR/recovery-deleted.txt" | cut -d' ' -f1)"
+      STATE="$(jq --arg hash "$hash" --argjson n "$count" '.deletedList={sha256:$hash,count:$n}' <<<"$STATE")"
+    else
+      rm -f "$DIR"/.recovery-deleted.* "$DIR/recovery-deleted.txt"
+      echo 'restore.sh: could not write recovery-deleted.txt; the count still requires --checked-church-records' >&2
+    fi
+  fi
   record collected
 }
 pin() {
@@ -685,6 +780,19 @@ recovery_start() {
   record recovering
   pause_at recovering
   printf 'Accounts this archive would revive: %s\n' "$(get .count)"
+  if [[ -n "$(jq -r '.deletedList.count // empty' <<<"$STATE")" ]]; then
+    cat <<HELP
+Checklist:
+  1. Open a private tunnel: ssh -N -L 18080:127.0.0.1:18080 <admin>@<droplet>
+  2. Open http://localhost:18080 in Chrome or Firefox and sign in as admin.
+  3. Delete again each account in $DIR/recovery-deleted.txt (root-only: one id and
+     the time it was last deleted per line, no names). Check the church's records too.
+  4. $DIR/restore.sh --status shows how many listed accounts are still active.
+  5. Run $DIR/restore.sh --reopen --checked-church-records; it refuses while any
+     listed account is still active, and keeps the file until the site reopens.
+HELP
+    return
+  fi
   cat <<HELP
 Open a private tunnel: ssh -N -L 18080:127.0.0.1:18080 <admin>@<droplet>
 Open http://localhost:18080 in Chrome or Firefox, sign in as admin, and delete
@@ -715,7 +823,7 @@ write_app_pin() {
   tmp="$(mktemp "$DIR/.recovery-app-pin.XXXXXX")" || return 1
   # shellcheck disable=SC2016 # Compose resolves this explicit image-id override.
   if ! { printf 'services:\n  app:\n    image: ${FOLD_RECOVERY_IMAGE:?}\n    pull_policy: never\n' >"$tmp" \
-    && chmod 600 "$tmp" && chown 0:0 "$tmp" && sync -f "$tmp" \
+    && chmod 600 "$tmp" && chown 0:0 "$tmp" && sync -f "$tmp" && fault_at before-list-rename \
     && mv -f "$tmp" "$DIR/.recovery-app-pin.yml" && sync -f "$DIR"; }; then
     rm -f "$tmp"; return 1
   fi
@@ -787,6 +895,9 @@ finish_cleanup() {
   fault_at after-floor
   remove_stale_pin_saves "$DIR" || fail 'cannot remove stale pin snapshots; keep the lock and retry --resume'
   remove_lock
+  # Only now: a failed reopen, --resume and --status all still need the list.
+  # A kill before this line leaves an orphan, which the next collect removes.
+  deleted_list_drop || echo 'restore.sh: recovery lock removed, but recovery-deleted.txt could not be; delete it by hand' >&2
   echo 'restore.sh: reopened; recovery lock removed after smoke, database cleanup and monotone floor write'
 }
 abort_failed() {
@@ -910,9 +1021,9 @@ if (( DRY )); then
   if [[ -n "$COMMIT" ]]; then dry_run_recovery_check "$DIR" build "$SOURCE" "$COMMIT"; fi
   if [[ "$MODE" == dump ]]; then
     [[ -n "$DUMP" ]] || fail '--dump FILE is required'
-    echo 'dry-run: durable quiesce -> create-intent -> single-transaction pg_restore to fold_restore_<nonce> -> snapshot-safe deleted-id pipe and count -> optional nonce-scoped pin-only -> whole database swap -> labelled restart-no recovery with FOLD_WORKERS=0'
+    echo 'dry-run: durable quiesce -> create-intent -> single-transaction pg_restore to fold_restore_<nonce> -> snapshot-safe deleted-id pipe, count and (for a nonzero count) a root-only recovery-deleted.txt hashed in recovery.lock -> optional nonce-scoped pin-only -> whole database swap -> labelled restart-no recovery with FOLD_WORKERS=0'
   else echo 'dry-run: observe recovery.lock, database names/oids, release values and labelled services before choosing any action'; fi
-  echo 'dry-run: --reopen requires recovering and, for nonzero or unknown count, --checked-church-records; smoke, exact-oid old database drop, monotone floor, lock removed last'
+  echo 'dry-run: --reopen requires recovering, refuses while a listed recovery-deleted.txt account is active and, for nonzero or unknown count, --checked-church-records; smoke, exact-oid old database drop, monotone floor, lock removed last'
   exit 0
 fi
 if [[ "$MODE" == dump ]]; then
@@ -987,6 +1098,7 @@ elif [[ "$MODE" == reopen ]]; then
   [[ "$(get .phase)" == recovering ]] || fail '--reopen requires recovering; interrupted reopens must use --resume first'
   echo "Accounts this archive would revive: $(get .count)"
   [[ "$(get .count)" == 0 || "$CHECKED" == 1 ]] || fail 'nonzero or unknown count requires --checked-church-records after repeating all post-backup erasures'
+  deleted_list_gate
   normal_stopped || fail 'service exclusion: normal services running; use --resume to close first'
   finish_reopen
 fi

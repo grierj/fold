@@ -1099,16 +1099,15 @@ func TestReadEmailRecipientsSuppressions(t *testing.T) {
 	app := testApp(t)
 	users := suppressionFixtureUsers(t, app, "hashed", "legacy", "cleared", "complaintfirst", "bouncefirst", "clean")
 	app.DB.Model(users["legacy"]).Update("email", "Legacy@Example.com ")
-	suppressHashed(t, app, "hashed@example.com", models.SuppressHardBounce)
+	suppress(t, app, "hashed@example.com", models.SuppressHardBounce)
 	suppress(t, app, "legacy@example.com", models.SuppressManual)
-	h := mail.StoredAddressHash("cleared@example.com")
 	now := time.Now()
-	if err := app.DB.Create(&models.Suppression{Channel: "email", Address: "cleared@example.com", AddressHash: &h,
+	if err := app.DB.Create(&models.Suppression{Channel: "email", AddressHash: mail.AddressHash("cleared@example.com"),
 		Reason: models.SuppressHardBounce, ClearedAt: &now}).Error; err != nil {
 		t.Fatal(err)
 	}
-	suppressHashed(t, app, "complaintfirst@example.com", models.SuppressComplaint)
-	suppressHashed(t, app, "complaintfirst@example.com", models.SuppressHardBounce)
+	suppress(t, app, "complaintfirst@example.com", models.SuppressComplaint)
+	suppress(t, app, "complaintfirst@example.com", models.SuppressHardBounce)
 	suppress(t, app, "bouncefirst@example.com", models.SuppressHardBounce)
 	suppress(t, app, "bouncefirst@example.com", models.SuppressComplaint)
 

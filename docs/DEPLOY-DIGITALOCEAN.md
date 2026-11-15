@@ -480,10 +480,21 @@ ssh -N -L 18080:127.0.0.1:18080 <admin>@<droplet>
 Open `http://localhost:18080` in Chrome or Firefox (they keep the secure
 session cookie on `localhost`; Safari is not recommended), sign in as an admin
 and delete again, in Admin → Users, every account that was deleted after the
-dump, using the church's records. `restore.sh` printed how many; it saves no
-list of names or ids. A list view of previously deleted accounts is not built
-(it waits on an open owner question, R4-6e-R), so for an `unknown` count or a
-nonzero one the church's records are the only source. Then re-walk the legacy
+dump. `restore.sh` printed how many. When the count is above zero it also saved
+the list at `/opt/fold/recovery-deleted.txt`: root-only (owner root, mode 600),
+one `<id> <time>` line per account, where the time is the newest deletion record
+for display. It holds no names or addresses. `sudo /opt/fold/restore.sh --status` shows how many listed
+accounts are still active. `--reopen` refuses, naming how many, while any
+listed account is active, even with `--checked-church-records`. A failed reopen
+and `--resume` keep the file; it is removed, with any leftover temporary list
+file, only by the reopen that removes `recovery.lock` (and by the next
+collection, which starts over). When the count is `unknown` or zero,
+or the file is missing or no longer matches the hash in `recovery.lock`, there
+is no list to check against: the church's records are the only source, and
+`--reopen` then relies on `--checked-church-records` (a lost file never leaves
+the site unable to open). The list does not cover accounts created and deleted
+after the dump, and a Droplet Backup or snapshot restore does not produce one.
+Keep using the church's records alongside it. Then re-walk the legacy
 reason review list and each affected deleted account's page, in Admin → Users →
 Deleted accounts with reasons to review (or through the API), and re-decide
 whatever the dump brought back: decisions made after the dump are gone and
@@ -500,7 +511,7 @@ sudo /opt/fold/restore.sh --reopen --checked-church-records
 ```
 
 `--checked-church-records` is required when the count is above zero or unknown.
-It is your statement that you re-deleted everyone; the script cannot check it.
+It is your statement that you re-deleted everyone; where a saved list exists the script also checks it and refuses while a listed account is active, but it cannot see accounts the list lacks.
 It prints the count again. With a count of exactly zero, plain `--reopen`
 works. Reopening removes the recovery instance, starts the app (background work
 starts, still not public) and then Caddy, runs `smoke.sh`, removes the old
@@ -594,6 +605,53 @@ before an erasure restores the person as an active account; neither that sweep
 nor a count selects them, so you re-delete during recovery. No sentence here
 promises every copy of anyone's data is gone: dumps, offsite copies, Droplet
 Backups and snapshots keep what they held until they age out or you delete them.
+
+**What a restore does and does not protect.** The parts above, in one place
+(the same limits are in `docs/plan/M7.4-ERASURE-INVENTORY.md`, section 11):
+
+- **Restart.** Fold remembers in memory the latest fenced commit it saw
+  acknowledged: an account deletion, a settlement of an earlier deletion or reason-save attempt, or a save on
+  the deleted-accounts reason review. If a restore under a running app loses one
+  of those, the next fenced operation (a deletion, a settle or a reason save) is
+  refused with "restore detected", the app logs "Stopping: the database was restored while
+  Fold was running" and exits, and Compose starts it again; the admin's page asks
+  for a reload. A restart also ends that memory, so a deletion started before it
+  can only be reported as "can't tell", never as "nothing was deleted". Use
+  `restore.sh`, which stops the app first; this is the net under a restore done
+  some other way.
+- **The fence has limits.** It counts every fenced change the running app saw
+  committed: an account deletion, a settlement of an earlier deletion or reason-save attempt, and a save
+  on the deleted-accounts reason review. It notices a restore only when the
+  restore loses one of those acknowledged commits, not only a deletion. A dump
+  taken after the latest acknowledged one (nothing it counts was lost), one that
+  loses only a commit whose answer never arrived, and one made while the app was
+  stopped or restarted (a restart ends the app's memory) are not noticed. Do not
+  read a quiet app as proof that no restore happened.
+- **The sweep and the saved list select different accounts, and neither is every
+  erasure.** The daily sweep scrubs accounts that are already deleted and carry
+  the `deleted-<id>@deleted.invalid` address (a dump taken after a deletion can
+  bring one back). The saved list names accounts that are deleted in the live
+  database and active in the dump. An account created and deleted after the dump,
+  an unknown count and anything the church's records do not show are on neither.
+- **A dump taken before a deletion restores that person as active.** The sweep
+  does not select them. Delete them again from the saved list and the church's
+  records before you reopen.
+- **The saved list, as built.** When the count is above zero, `restore.sh` writes
+  `/opt/fold/recovery-deleted.txt` (ids and times only, root-only), `--status`
+  shows how many are still active, and `--reopen` refuses while any is. A zero or
+  unknown count writes none; a lost file falls back to
+  `--checked-church-records`.
+- **A Droplet Backup or snapshot is outside this protection.** The rebuilt disk
+  starts the site and mail before anything can stop them. Treat the time between
+  the rebuild and your clean-up as unprotected.
+- **A lower recovery level is refused** on every scripted path, with no override:
+  restore with the current release.
+- **A rollback reopens alone only at a count of exactly zero.** Otherwise it
+  leaves the site closed in private recovery (exit 3) and you finish by hand.
+
+None of this says every copy of anyone's data is gone. The delete dialog tells
+the admin the same about backups, copies already sent and activity-log
+addresses.
 
 **Gaps in this tooling, stated plainly.**
 
@@ -783,8 +841,40 @@ upgrade.
   image on that database needs no `fold migrate down-one`. Rows the previous
   release writes have no hash; the new release finds them by address.
 - **The plaintext address stays.** This release stores the hash beside the
-  plaintext address. The plaintext column is removed only by a later release, so
-  suppressions are not hash-only yet.
+  plaintext address. The next release removes it (see the next note).
+
+### Upgrade notes: suppressions become hash-only (M7.4 R4-SC)
+
+The release that holds migration `00008` removes the plaintext address from
+`suppressions` and from the background job queue. Publishing it
+requires that the release before it already holds `00002` (`v0.1.0` or later);
+the contract gate in CI enforces that prerequisite for the maintainers, so an
+operator upgrading from `v0.1.0` or later has nothing to check. Read this before you upgrade.
+
+- **What changes.** Every `suppressions` row keeps its `address_hash`, now
+  required, and loses the address. The migration also rewrites each
+  `webhook.process` job: its `address` becomes `addressHash`, and a failure
+  message is replaced with a fixed sentence. Jobs still waiting keep working.
+  Nothing is lost that Fold needs: it only ever matched by hash.
+- **A lock for the length of the migration, and a number.** The migration
+  takes an exclusive lock on `suppressions` and row locks on the
+  `webhook.process` jobs, and keeps them until it commits. Measured on one
+  host (PostgreSQL 16, a local container), the whole file took about 0.1
+  seconds for 10,000 suppressions and 1,000 jobs, 0.9 seconds for 100,000 and
+  10,000, and 9.3 seconds for 1,000,000 and 100,000. Those are measurements,
+  not limits. On this guide's path nothing waits, as in the note above; do not
+  run `fold migrate up` by hand against a running server for this release.
+- **If a lock is not free within 5 seconds** the migration fails, applies
+  nothing and the app does not start, as in the note above.
+- **Rolling back needs the dump.** The old release reads the `address` column
+  that is now gone. Its migration runner treats the upgraded database as current
+  and starts, but every mail send then fails on the missing column. Use
+  `upgrade.sh --rollback`, which restores the dump taken before the upgrade
+  (this loses what happened after it). `fold migrate down-one` refuses while
+  any suppression exists, because the addresses cannot be rebuilt from hashes.
+  `TestSuppressionContractNeedsTheDumpToRollBack` records both.
+- **Restoring an older dump** brings back the plaintext addresses it held. That
+  is a property of any restore, not of this release.
 
 ## 7. Monitoring
 

@@ -113,7 +113,7 @@ func TestMessageTestSend(t *testing.T) {
 		t.Fatalf("someone else's message: %d", w.Code)
 	}
 	// A suppressed address hears so instead of a silent drop.
-	f.app.DB.Create(&models.Suppression{Channel: "email", Address: strings.ToLower(f.hostUser.Email), Reason: models.SuppressHardBounce})
+	f.app.DB.Create(&models.Suppression{Channel: "email", AddressHash: mail.AddressHash(f.hostUser.Email), Reason: models.SuppressHardBounce})
 	hp := f.draft(t, f.host, "Picnic", "<p>Bring a dish</p>", map[string]any{"type": "event_series", "eventId": f.churchEvent.ID})
 	if w := f.host.do("POST", hp+"/test", nil, true); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "message_test_email") {
 		t.Fatalf("suppressed: %d %s", w.Code, w.Body.String())

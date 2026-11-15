@@ -115,7 +115,7 @@ variant "$HEAD_SHA"
 # The revisions named in the drill's defaults, when this checkout has them.
 [[ "$CROSSING_LANE_DEFAULT" == 8c07c85265c0f43ab8350cd945efdc14363c21bd ]]
 [[ "$CROSSING_LANDING_DEFAULT" == d400b7755f4564c60524167105f31e33bed9b51b ]]
-[[ "$CROSSING_PRIOR_DEFAULT" == 6927e896065d172fb1214181cd80fbd554a86eeb ]]
+[[ "$CROSSING_PRIOR_DEFAULT" == 52e60ff0fd1a90f39d8ae4a887ed555b8efd7dfa ]]
 [[ "$CROSSING_ARCHIVE_DEFAULT" == 89899794046c4f2cd8a59f0fe6d0184a1d825afd ]]
 SCHEMA_LANDING_MERGE=a1198e6eca9270a6646d4a825650be3f52022e57
 if git -C "$ROOT" cat-file -e "${CROSSING_LANE_DEFAULT}^{commit}" 2>/dev/null \
@@ -129,10 +129,11 @@ if git -C "$ROOT" cat-file -e "${CROSSING_LANE_DEFAULT}^{commit}" 2>/dev/null \
   [[ "$(git -C "$ROOT" rev-parse "${SCHEMA_LANDING_MERGE}^1")" == "$CROSSING_ARCHIVE_DEFAULT" ]]
   [[ "$(crossing_migration_versions "$ROOT" "$CROSSING_LANE_DEFAULT")" == 1,2,3,4 ]]
   [[ "$(crossing_migration_versions "$ROOT" "$CROSSING_ARCHIVE_DEFAULT")" == 1,2,3,4,5,6 ]]
-  # The candidate adds exactly the reason-review migration to the archive base.
+  # The candidate adds the reason-review migration and the suppression
+  # contract to the archive base.
   [[ "$(crossing_reason_migration_version "$ROOT" "$real_head")" == 7 ]]
-  [[ "$(crossing_migration_difference "$ROOT" "$CROSSING_ARCHIVE_DEFAULT" "$real_head")" == 7 ]]
-  [[ "$(crossing_migration_difference "$ROOT" "$CROSSING_LANE_DEFAULT" "$real_head")" == 5,6,7 ]]
+  [[ "$(crossing_migration_difference "$ROOT" "$CROSSING_ARCHIVE_DEFAULT" "$real_head")" == 7,8 ]]
+  [[ "$(crossing_migration_difference "$ROOT" "$CROSSING_LANE_DEFAULT" "$real_head")" == 5,6,7,8 ]]
   [[ "$(crossing_owner_migration "$ROOT" "$real_head" email_address_optouts)" == 5 ]]
   [[ "$(crossing_owner_migration "$ROOT" "$real_head" admin_operation_attempts)" == 6 ]]
   [[ "$(commit_recovery_level "$ROOT" "$CROSSING_ARCHIVE_DEFAULT")" == 0 ]]

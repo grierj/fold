@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AdminUsers } from "../api/adminUsers";
 import { ApiError } from "../api/core";
@@ -649,22 +650,65 @@ describe("DeleteUserPanel done", () => {
   });
 });
 
-// R4-6c: what a delete does not reach. Landed code still retains network
-// addresses in the activity log (RETAIN_* rows and conversion groups, inventory
-// IR-1 to IR-4, gate G-9), so the IP sentence is shown before the press and after
-// it, whatever the counts say.
-describe("DeleteUserPanel what a delete does not reach", () => {
-  const IP = "Some network (IP) addresses can remain in the activity log, and Fold can't always tell whose address an entry holds.";
-  const BACKUPS = "Deleting reaches Fold's backups only as they expire, so their details can stay in an older backup until then.";
-  const OUTSIDE = "Copies already sent to mailboxes, mail providers and push services are outside Fold, and Fold can't take them back.";
+// R4-6c, R4-6e: what a delete does not reach. Every sentence maps to one residue
+// row in docs/plan/M7.4-ERASURE-INVENTORY.md 11.1, and the panel carries the row
+// as data-residue. Landed code still retains network addresses in the activity
+// log (inventory 6.5.2, the S2 and S3 rows), so the IP sentence is shown before
+// the press and after it, whatever the counts say.
+const REACH: ReadonlyArray<{ sentence: string; row: string; text: string }> = [
+  { sentence: "D-1", row: "RS-1", text: "Backups made before now still hold their details until those backups expire, and restoring one brings the account back until you delete it again." },
+  { sentence: "D-2", row: "RS-2", text: "Emails and notifications already sent, and your server's own logs, are outside Fold, and Fold can't take them back." },
+  { sentence: "D-3", row: "RS-3", text: "Some network (IP) addresses can remain in the activity log, and Fold can't always tell whose address an entry holds." },
+  { sentence: "D-4", row: "RS-4", text: "A household other people still share stays as it was." },
+  { sentence: "D-5", row: "RS-5", text: "Notices other people already received can still mention them until those expire, and a name typed into a group, event or room title stays as written." },
+  { sentence: "D-6", row: "RS-6", text: "Notes an admin typed when checking a guardian, and a teen's consent records, stay so the church can show who agreed." },
+  { sentence: "D-7", row: "RS-7", text: "A contact-request reason you choose to keep stays as written." },
+  { sentence: "D-8", row: "RS-8", text: "If they turned off optional email, or an address of theirs bounced, Fold keeps a code made from that address, not the address, so those choices still hold." },
+  { sentence: "D-9", row: "RS-9", text: "A record that names only an email address they used before, such as an invitation nobody accepted, can't be tied back to them, so Fold leaves it alone." },
+  { sentence: "D-10", row: "RS-11", text: "Messages they wrote, including drafts and ones that never went out, keep their text in the church's message history." },
+];
+// The sentences the answer and the reason review show; they are not in the list.
+const COUNT_NOTES = [
+  { sentence: "D-11", row: "RS-4", text: "Fold left these households as they were, because other people still share them or it couldn't tell whose they were." },
+  { sentence: "D-12", row: "RS-3", text: "These are activity-log entries linked to this person that Fold kept. Some may have no network address. Fold counts entries, not addresses, and a 0 doesn't promise none remain." },
+];
+const REVIEW_NOTES = [
+  { sentence: "D-13", row: "RS-7", text: "Reasons can mention other people." },
+  { sentence: "D-14", row: "RS-7", text: "Blanking removes only the text; the request and its decisions stay." },
+  { sentence: "D-15", row: "RS-7", text: "Fold lists only requests this person made or was asked about. Reasons in other people's requests that mention them aren't listed here." },
+  { sentence: "D-16", row: "RS-1", text: "Blanked text can't be brought back in Fold. Backups made before now still contain it." },
+];
 
-  it("says before the press that backups, outside copies and some network addresses remain, while Delete is on", async () => {
+describe("DeleteUserPanel what a delete does not reach", () => {
+  const IP = REACH[2].text;
+  // The list under the lead line; the same row id can also mark a count's note after the answer.
+  const reachList = () => screen.getByRole("list", { name: /Here is what can remain/ });
+  const reachItem = (row: string) => reachList().querySelector(`li[data-residue="${row}"]`);
+
+  it("says before the press what stays, one sentence per row, while Delete is on", async () => {
     open();
-    expect(await screen.findByText(BACKUPS, { exact: false })).toBeInTheDocument();
-    expect(screen.getByText(OUTSIDE, { exact: false })).toBeInTheDocument();
-    expect(screen.getByText(IP, { exact: false })).toBeInTheDocument();
+    expect(await screen.findByText("A delete doesn't reach everything. Here is what can remain, so you know what to expect:")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Delete account" })).toBeEnabled();
+    expect(reachList().querySelectorAll("li[data-residue]")).toHaveLength(REACH.length);
     expect(screen.queryByText(/Households kept/)).not.toBeInTheDocument();
+  });
+
+  it.each(REACH)("$sentence is one sentence on row $row, before and after the press", async ({ row, text }) => {
+    open();
+    await waitFor(() => expect(deleteButton()).toBeEnabled());
+    expect(reachItem(row)).toHaveTextContent(text);
+    expect(reachList().querySelectorAll(`li[data-residue="${row}"]`)).toHaveLength(1);
+    await press();
+    await screen.findByText("The account was deleted.");
+    expect(reachItem(row)).toHaveTextContent(text);
+  });
+
+  it("gives every row of the list its own id, in order, with a bold label and no second sentence for a row", async () => {
+    open();
+    await waitFor(() => expect(deleteButton()).toBeEnabled());
+    const rows = [...reachList().querySelectorAll("li[data-residue]")];
+    expect(rows.map((li) => li.getAttribute("data-residue"))).toEqual(REACH.map((r) => r.row));
+    for (const li of rows) expect(li.querySelector(".font-semibold")?.textContent).toMatch(/\.$/);
   });
 
   it("is plain text in the panel, not a status or an alert that interrupts", async () => {
@@ -675,15 +719,20 @@ describe("DeleteUserPanel what a delete does not reach", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
-  it("keeps the IP sentence after the delete, including when the report counts nothing kept", async () => {
+  it("never says a delete is complete", async () => {
+    open();
+    await waitFor(() => expect(deleteButton()).toBeEnabled());
+    const list = reachList().parentElement?.textContent ?? "";
+    expect(list).not.toMatch(/\ball (of )?(their|its|the)\b|\bnothing (is|was|remains)\b|\bcompletely\b|\bfully\b|\bwiped\b|\bpermanently\b|\bevery (trace|copy)\b/i);
+  });
+
+  it("keeps every sentence after the delete, including when the report counts nothing kept", async () => {
     for (const activityEntriesKept of [0, 3]) {
       vi.mocked(AdminUsers.remove).mockResolvedValue({ erasure: { ...noErasure, activityEntriesKept } });
       const view = render(<DeleteUserPanel target={target} action="delete" onDone={vi.fn()} />);
       await press();
       await screen.findByText("The account was deleted.");
-      expect(screen.getByText(IP, { exact: false })).toBeInTheDocument();
-      expect(screen.getByText(BACKUPS, { exact: false })).toBeInTheDocument();
-      expect(screen.getByText(OUTSIDE, { exact: false })).toBeInTheDocument();
+      for (const { text } of REACH) expect(screen.getByText(text, { exact: false })).toBeInTheDocument();
       view.unmount();
     }
   });
@@ -698,17 +747,54 @@ describe("DeleteUserPanel what a delete does not reach", () => {
     expect(screen.queryByText(/Households kept/)).not.toBeInTheDocument();
   });
 
-  it("explains the two counts without claiming more than the server says", async () => {
+  it.each(COUNT_NOTES)("$sentence is one sentence on row $row beside the count, only after the answer", async ({ row, text }) => {
     vi.mocked(AdminUsers.remove).mockResolvedValue({ erasure: { ...noErasure, householdsKept: 2, activityEntriesKept: 5 } });
     open();
+    await waitFor(() => expect(deleteButton()).toBeEnabled());
+    expect(screen.queryByText(text, { exact: false })).not.toBeInTheDocument();
     await press();
     await screen.findByText("The account was deleted.");
-    const households = screen.getByText(/Fold left these households as they were/);
-    expect(households).toHaveTextContent("other people still share them");
-    const activity = screen.getByText(/activity-log entries linked to this person/);
-    expect(activity).toHaveTextContent("Fold counts entries, not addresses");
-    expect(activity).toHaveTextContent("a 0 doesn't promise none remain");
-    for (const el of [households, activity]) expect(el.textContent).not.toMatch(/all (gone|removed|erased)|completely|nothing (is |remains|was)/i);
+    const note = screen.getByText(text, { exact: false }).closest("li");
+    expect(note).toHaveAttribute("data-residue", row);
+    expect(note?.textContent ?? "").not.toMatch(/all (gone|removed|erased)|completely|nothing (is |remains|was)/i);
+  });
+
+  // The inventory's 11.1 holds the table the sentences come from. A sentence, a
+  // row id or a data-residue that drifts from it fails here, in either direction.
+  describe("against the inventory's copy map", () => {
+    const inventory = readFileSync("../docs/plan/M7.4-ERASURE-INVENTORY.md", "utf8");
+    const cells = (line: string) => line.split("|").slice(1, -1).map((c) => c.trim());
+    const mapRows = inventory.split("\n").filter((l) => /^\| D-\d+ \|/.test(l)).map(cells);
+    const tableRows = inventory.split("\n").filter((l) => /^\| RS-\d+ \|/.test(l)).map(cells);
+    const shown = [...REACH, ...COUNT_NOTES, ...REVIEW_NOTES];
+
+    it("gives every sentence the dialog shows exactly one map line with the same row and words", () => {
+      expect(mapRows.map((r) => r[0])).toEqual(shown.map((d) => d.sentence));
+      for (const d of shown) {
+        const line = mapRows.find((r) => r[0] === d.sentence);
+        expect(line?.[1], d.sentence).toBe(d.row);
+        expect(line?.[3], d.sentence).toBe(d.text);
+      }
+    });
+
+    it("has a residue row for every row a sentence names, and each row names its sentences", () => {
+      const rows = new Set(tableRows.map((r) => r[0]));
+      for (const d of shown) expect(rows.has(d.row), d.row).toBe(true);
+      for (const r of tableRows) {
+        const named = r[4].match(/D-\d+/g) ?? [];
+        const mapped = shown.filter((d) => d.row === r[0]).map((d) => d.sentence);
+        if (named.length === 0) expect(mapped, r[0] + " is not told, so no sentence maps to it").toEqual([]);
+        else expect(named.sort(), r[0]).toEqual(mapped.sort());
+      }
+    });
+
+    it("keeps one list item per row in the panel and one residue row per list item", async () => {
+      open();
+      await waitFor(() => expect(deleteButton()).toBeEnabled());
+      const ids = [...reachList().querySelectorAll("li[data-residue]")].map((li) => li.getAttribute("data-residue"));
+      expect(ids).toEqual(REACH.map((d) => d.row));
+      expect(new Set(ids).size).toBe(ids.length);
+    });
   });
 
   it("does not show the delete notes for a disable", async () => {
@@ -1309,6 +1395,19 @@ describe("DeleteUserPanel reason review", () => {
     expect(screen.getByText("Before you delete this account, choose for each contact-request reason below whether Fold keeps the text or blanks it. Reasons can mention other people. Blanking removes only the text; the request and its decisions stay.")).toBeInTheDocument();
     expect(screen.getByText("Fold lists only requests this person made or was asked about. Reasons in other people's requests that mention them aren't listed here.")).toBeInTheDocument();
     expect(screen.getByText("Your choices stay on this page only until you delete or close it.")).toBeInTheDocument();
+  });
+
+  it("maps each review sentence to its residue row", async () => {
+    serve({ start: page([A, B]) });
+    open();
+    await screen.findByText("Reason text 1");
+    const rowOf = (text: string) => screen.getByText(text, { exact: false }).closest("[data-residue]")?.getAttribute("data-residue");
+    expect(rowOf("Reasons can mention other people.")).toBe("RS-7");
+    expect(rowOf("Blanking removes only the text; the request and its decisions stay.")).toBe("RS-7");
+    expect(rowOf("Fold lists only requests this person made or was asked about.")).toBe("RS-7");
+    await choose(1, 2, "Blank text");
+    await choose(2, 2, "Keep text");
+    expect(rowOf("Blanked text can't be brought back in Fold. Backups made before now still contain it.")).toBe("RS-1");
   });
 
   it("sends the count, the set digest and one choice per loaded reason, in order", async () => {

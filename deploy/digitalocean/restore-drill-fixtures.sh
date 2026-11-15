@@ -271,7 +271,11 @@ restore() {
   fi
   [[ "$(cat "$WORK/case-$iteration/tombstoned")" == t ]]
   echo t >"$WORK/collection-race-user"
-  if (( iteration==3 )); then printf '{"count":1}\n' >"$DIR/recovery.lock"; else printf '{"count":2}\n' >"$DIR/recovery.lock"; fi
+  if (( iteration==3 )); then
+    # The real tool saves B's id and audit time (restore.sh collect) and hashes the file in the lock.
+    printf '31 2030-01-01T23:59:59Z\n' >"$DIR/recovery-deleted.txt"; chmod 600 "$DIR/recovery-deleted.txt"
+    jq -n --arg h "$(sha256sum "$DIR/recovery-deleted.txt" | cut -d' ' -f1)" '{count:1,deletedList:{sha256:$h,count:1}}' >"$DIR/recovery.lock"
+  else printf '{"count":2}\n' >"$DIR/recovery.lock"; fi
   echo "$iteration" >>"$WORK/restores"
 }
 dc() {

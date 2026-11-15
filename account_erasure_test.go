@@ -386,12 +386,12 @@ func TestAccountErasureLeavesSuppressionsAlone(t *testing.T) {
 	db := s.app.DB
 	const addr = "suppressed.person@x.test"
 	u := newTestUser(t, s.app, addr, erasurePW, models.RoleMember)
-	hash := mail.StoredAddressHash(addr)
+	hash := mail.AddressHash(addr)
 	cleared := time.Now().Add(-time.Hour)
 	rows := []models.Suppression{
-		{Channel: "email", Address: addr, AddressHash: &hash, Reason: models.SuppressHardBounce},
-		{Channel: "email", Address: addr, AddressHash: &hash, Reason: models.SuppressComplaint, ClearedAt: &cleared, ClearedBy: &s.admin.ID},
-		{Channel: "email", Address: addr, Reason: models.SuppressManual},
+		{Channel: "email", AddressHash: hash, Reason: models.SuppressHardBounce},
+		{Channel: "email", AddressHash: hash, Reason: models.SuppressComplaint, ClearedAt: &cleared, ClearedBy: &s.admin.ID},
+		{Channel: "email", AddressHash: hash, Reason: models.SuppressManual},
 	}
 	for i := range rows {
 		if err := db.Create(&rows[i]).Error; err != nil {

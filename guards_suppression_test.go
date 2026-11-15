@@ -13,12 +13,12 @@ import (
 	"fold/internal/guardkit"
 )
 
-// R4-S4: suppression SQL lives in four places. The suppressions table holds
-// an address (plaintext until R4-SC) and its hash, and a reader must look at
-// the hash first and the address only on a NULL-hash row. A second reader that
-// compares `address = ...` or `lower(btrim(...))` again would miss hashed rows
-// the day R4-SC drops the plaintext column. So production source may name the
-// table, or models.Suppression, only inside these helpers; everything else goes through
+// Suppression SQL lives in four places. The suppressions table holds the hash
+// of an address and never the address (PLAN 10.1, migration 00008), so every
+// reader matches by hash. A second reader that compares `address = ...` or
+// `lower(btrim(...))` again would reintroduce a plaintext column. So production
+// source may name the table, or models.Suppression, only inside these helpers,
+// and none of them may name an address column; everything else goes through
 // mail.OpenSuppressionReasons.
 //
 // Parse-only, the same stance as the mail guard. Known limits: table names
@@ -32,15 +32,21 @@ var suppressionSQLAllowed = map[string][]string{
 	"models/models.go":          {"Suppression", "All"},
 }
 
+// plaintextAddressRe finds the word address in suppression SQL. The column
+// is address_hash, which is one word to the regexp, so only a bare address
+// matches.
+var plaintextAddressRe = regexp.MustCompile(`\baddress\b`)
+
 var suppressionTableRe = regexp.MustCompile(`\b(from|join|update|into|table)\s+(public\.)?suppressions\b`)
 
 // suppressionSQLViolations checks parsed sources keyed by slash path from the
 // repository root. A flag outside an allowed top-level function, constant or
 // type is a violation; so is an allowed helper (outside models/) that never
 // mentions the hash, a flagged literal in an allowed helper that normalizes
-// in SQL, and an allowance that no longer matches any source.
+// in SQL or names a plaintext address column, and an allowance that no longer
+// matches any source.
 func suppressionSQLViolations(sources map[string]string, allowed map[string][]string) []string {
-	const hint = " (read open suppressions with mail.OpenSuppressionReasons; hash first, then the address of a NULL-hash row)"
+	const hint = " (read open suppressions with mail.OpenSuppressionReasons; match by address_hash, which is all a suppression stores)"
 	parsed := guardkit.Sources(sources).Parse(0)
 	positions := parsed.Fset
 	bad := append([]string(nil), parsed.Problems...)
@@ -74,6 +80,9 @@ func suppressionSQLViolations(sources map[string]string, allowed map[string][]st
 						flagged = append(flagged, at()+": SQL on the suppressions table in "+owner)
 						if isAllowed && (strings.Contains(text, "lower(") || strings.Contains(text, "btrim(")) {
 							bad = append(bad, at()+": "+owner+" normalizes an address in SQL (lower/btrim); normalize in Go with mail.NormalizeAddress"+hint)
+						}
+						if isAllowed && plaintextAddressRe.MatchString(text) {
+							bad = append(bad, at()+": "+owner+" names the plaintext address column, which suppressions no longer has; match by address_hash"+hint)
 						}
 					}
 				case *ast.SelectorExpr:
@@ -143,7 +152,7 @@ func TestSuppressionSQLStaysInItsHelpers(t *testing.T) {
 func cleanSuppressionSources() map[string]string {
 	return map[string]string{
 		"internal/mail/suppress.go": `package mail
-const openSuppressionsSQL = "SELECT address, address_hash, reason FROM suppressions WHERE address_hash IN ?"
+const openSuppressionsSQL = "SELECT address_hash, reason FROM suppressions WHERE address_hash IN ?"
 func OpenSuppressionReasons() { _ = StoredAddressHash }
 `,
 		"api_admin_suppressions.go": `package main
@@ -152,10 +161,10 @@ func openSuppressions() { var rows []models.Suppression; _ = rows[0].AddressHash
 func (a *App) apiAdminClearSuppression() { q := "UPDATE suppressions SET cleared_at = ? WHERE address_hash = ?"; _ = q }
 `,
 		"api_email_webhooks.go": `package main
-func applyEmailEvent() { q := "INSERT INTO suppressions (channel, address, address_hash) VALUES (?, ?, ?)"; _ = q }
+func applyEmailEvent() { q := "INSERT INTO suppressions (channel, address_hash) VALUES (?, ?)"; _ = q }
 `,
 		"models/models.go": `package models
-type Suppression struct{ AddressHash *string }
+type Suppression struct{ AddressHash string }
 func All() []any { return []any{&Suppression{}} }
 `,
 		"api_other.go": `package main
@@ -173,7 +182,7 @@ func TestSuppressionSQLGuardCatchesBypasses(t *testing.T) {
 		want         string // a substring of the violation
 	}{
 		"a second subquery that normalizes in SQL": {"api_other.go", `package main
-func other() { q := "SELECT 1 WHERE EXISTS (SELECT 1 FROM suppressions s WHERE s.address = lower(btrim(users.email)))"; _ = q }
+func other() { q := "SELECT 1 WHERE EXISTS (SELECT 1 FROM suppressions s WHERE s.address_hash = lower(btrim(users.email)))"; _ = q }
 `, "api_other.go:2"},
 		"a Table call": {"api_other.go", `package main
 func other() { db.Table("suppressions").Find(&x) }
@@ -202,11 +211,18 @@ func openSuppressions() { var rows []models.Suppression; _ = rows[0].AddressHash
 func (a *App) apiAdminClearSuppression() { q := "UPDATE suppressions SET cleared_at = ? WHERE address_hash = ?"; _ = q }
 func anotherReader() { q := "SELECT reason FROM suppressions WHERE address_hash = ?"; _ = q }
 `, "api_admin_suppressions.go:5"},
+		"an allowed function that names the plaintext address column": {"api_email_webhooks.go", `package main
+func applyEmailEvent() { q := "INSERT INTO suppressions (channel, address, address_hash) VALUES (?, ?, ?)"; _ = q }
+`, "names the plaintext address column"},
+		"an allowed reader that matches the address": {"internal/mail/suppress.go", `package mail
+const openSuppressionsSQL = "SELECT address_hash, reason FROM suppressions WHERE address_hash IN ? OR address IN ?"
+func OpenSuppressionReasons() { _ = StoredAddressHash }
+`, "names the plaintext address column"},
 		"an allowed function that normalizes in SQL": {"api_email_webhooks.go", `package main
-func applyEmailEvent() { q := "INSERT INTO suppressions (address, address_hash) SELECT lower(btrim(email)), ?"; _ = q }
+func applyEmailEvent() { q := "INSERT INTO suppressions (address_hash) SELECT lower(btrim(email))"; _ = q }
 `, "normalizes an address in SQL"},
 		"an allowed function that never uses the hash": {"api_email_webhooks.go", `package main
-func applyEmailEvent() { q := "INSERT INTO suppressions (channel, address) VALUES (?, ?)"; _ = q }
+func applyEmailEvent() { q := "INSERT INTO suppressions (channel, provider) VALUES (?, ?)"; _ = q }
 `, "never mentions address_hash"},
 		"an allowed helper that was renamed": {"api_email_webhooks.go", `package main
 func applyEvent() {}
