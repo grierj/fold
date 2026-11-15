@@ -617,11 +617,14 @@ Backups and snapshots keep what they held until they age out or you delete them.
   can only be reported as "can't tell", never as "nothing was deleted". Use
   `restore.sh`, which stops the app first; this is the net under a restore done
   some other way.
-- **The fence has limits.** It notices a restore only when the restore loses a
-  deletion this running app saw committed. A dump taken after the latest such
-  deletion, one that loses only a deletion whose answer never arrived, and one
-  made while the app was stopped are not noticed. Do not read a quiet app as
-  proof that no restore happened.
+- **The fence has limits.** It counts every fenced change the running app saw
+  committed: an account deletion, a settle of an earlier deletion, and a save
+  on the deleted-accounts reason review. It notices a restore only when the
+  restore loses one of those acknowledged commits, not only a deletion. A dump
+  taken after the latest acknowledged one (nothing it counts was lost), one that
+  loses only a commit whose answer never arrived, and one made while the app was
+  stopped or restarted (a restart ends the app's memory) are not noticed. Do not
+  read a quiet app as proof that no restore happened.
 - **The sweep and the saved list select different accounts, and neither is every
   erasure.** The daily sweep scrubs accounts that are already deleted and carry
   the `deleted-<id>@deleted.invalid` address (a dump taken after a deletion can

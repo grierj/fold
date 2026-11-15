@@ -664,7 +664,7 @@ const REACH: ReadonlyArray<{ sentence: string; row: string; text: string }> = [
   { sentence: "D-6", row: "RS-6", text: "Notes an admin typed when checking a guardian, and a teen's consent records, stay so the church can show who agreed." },
   { sentence: "D-7", row: "RS-7", text: "A contact-request reason you choose to keep stays as written." },
   { sentence: "D-8", row: "RS-8", text: "If they turned off optional email, or an address of theirs bounced, Fold keeps a code made from that address, not the address, so those choices still hold." },
-  { sentence: "D-9", row: "RS-9", text: "Anything sent to an email address they used before, such as an old invitation, can't be tied back to them, so Fold leaves it alone." },
+  { sentence: "D-9", row: "RS-9", text: "A record that names only an email address they used before, such as an invitation nobody accepted, can't be tied back to them, so Fold leaves it alone." },
 ];
 // The sentences the answer and the reason review show; they are not in the list.
 const COUNT_NOTES = [

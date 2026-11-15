@@ -115,7 +115,7 @@ const REACH_ROWS = [
   {
     row: "RS-9",
     label: "Old addresses.",
-    text: "Anything sent to an email address they used before, such as an old invitation, can't be tied back to them, so Fold leaves it alone.",
+    text: "A record that names only an email address they used before, such as an invitation nobody accepted, can't be tied back to them, so Fold leaves it alone.",
   },
 ] as const;
 // The two counts the delete answers with, in words (account_erasure_report.go;
