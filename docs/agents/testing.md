@@ -768,6 +768,8 @@ without it; none is written before then.
 
 - The result goes in `docs/plan/M7.4-ERASURE-INVENTORY.md`, section 12.3, "#298 navigation samples",
   copied from `next-changed.json`, with the original observations kept beside it.
+  Grier's closing criterion for #298 (Nov 14, 2026) is a pooled p95 under 300 ms in both configurations with
+  every over-target press listed; an isolated press over 300 ms under a passing p95 is listed, not profiled.
 - **Checks that run without Docker**: `qc1-panel-fixtures.mjs` (the repeated presses, their origins,
   the uncounted moves, a run that stops part-way, the load deltas, the profiler and the parsers) and
   `make reason-review-scale-test` (`reason-review-next-changed.sh --self-test`: hand-computed p50, p95
