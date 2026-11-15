@@ -480,10 +480,21 @@ ssh -N -L 18080:127.0.0.1:18080 <admin>@<droplet>
 Open `http://localhost:18080` in Chrome or Firefox (they keep the secure
 session cookie on `localhost`; Safari is not recommended), sign in as an admin
 and delete again, in Admin → Users, every account that was deleted after the
-dump, using the church's records. `restore.sh` printed how many; it saves no
-list of names or ids. A list view of previously deleted accounts is not built
-(it waits on an open owner question, R4-6e-R), so for an `unknown` count or a
-nonzero one the church's records are the only source. Then re-walk the legacy
+dump. `restore.sh` printed how many. When the count is above zero it also saved
+the list at `/opt/fold/recovery-deleted.txt`: root-only (owner root, mode 600),
+one `<id> <time>` line per account, where the time is the newest deletion record
+for display. It holds no names or addresses. `sudo /opt/fold/restore.sh --status` shows how many listed
+accounts are still active. `--reopen` refuses, naming how many, while any
+listed account is active, even with `--checked-church-records`. A failed reopen
+and `--resume` keep the file; it is removed, with any leftover temporary list
+file, only by the reopen that removes `recovery.lock` (and by the next
+collection, which starts over). When the count is `unknown` or zero,
+or the file is missing or no longer matches the hash in `recovery.lock`, there
+is no list to check against: the church's records are the only source, and
+`--reopen` then relies on `--checked-church-records` (a lost file never leaves
+the site unable to open). The list does not cover accounts created and deleted
+after the dump, and a Droplet Backup or snapshot restore does not produce one.
+Keep using the church's records alongside it. Then re-walk the legacy
 reason review list and each affected deleted account's page, in Admin → Users →
 Deleted accounts with reasons to review (or through the API), and re-decide
 whatever the dump brought back: decisions made after the dump are gone and
@@ -500,7 +511,7 @@ sudo /opt/fold/restore.sh --reopen --checked-church-records
 ```
 
 `--checked-church-records` is required when the count is above zero or unknown.
-It is your statement that you re-deleted everyone; the script cannot check it.
+It is your statement that you re-deleted everyone; where a saved list exists the script also checks it and refuses while a listed account is active, but it cannot see accounts the list lacks.
 It prints the count again. With a count of exactly zero, plain `--reopen`
 works. Reopening removes the recovery instance, starts the app (background work
 starts, still not public) and then Caddy, runs `smoke.sh`, removes the old

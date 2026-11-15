@@ -466,6 +466,23 @@ change_model '.count=0 | .app.running=true | .caddy.running=true'
 printf '9 2026-01-01T00:00:00Z\n' >"$DIR/recovery-deleted.txt"; chmod 600 "$DIR/recovery-deleted.txt"
 "$DIR/recovery-tools/restore.sh" --deploy-dir "$DIR" --drill --dump "$ARCHIVE" >"$WORK/out" 2>&1
 [[ ! -e "$DIR/recovery-deleted.txt" ]]
+# A kill after the temp list is written and before the rename leaves a
+# .recovery-deleted.* file with ids and times. The retry and the final cleanup
+# each remove every such file, not only recovery-deleted.txt.
+seed quiesce Q; rm "$DIR/recovery.lock"
+change_model '.app.running=true | .caddy.running=true'
+rc=0
+env RESTORE_DRILL_FAULT=before-list-rename "$DIR/recovery-tools/restore.sh" --deploy-dir "$DIR" --drill --dump "$ARCHIVE" >"$WORK/out" 2>&1 || rc=$?
+[[ "$rc" == 137 ]]
+compgen -G "$DIR/.recovery-deleted.*" >/dev/null; [[ ! -e "$DIR/recovery-deleted.txt" ]]
+run_restore --resume >"$WORK/out" 2>&1 || true
+[[ "$(cat "$DIR/recovery-deleted.txt")" == $'1 2026-11-14T10:00:00Z\n2 2026-11-14T10:00:00Z' ]]
+[[ -z "$(compgen -G "$DIR/.recovery-deleted.*")" ]]
+printf '5 2026-01-01T00:00:00Z\n' >"$DIR/.recovery-deleted.stray"
+change_model '.remaining=0'
+run_restore --reopen --checked-church-records >"$WORK/out" 2>&1
+[[ ! -e "$DIR/recovery.lock" && ! -e "$DIR/recovery-deleted.txt" ]]
+[[ -z "$(compgen -G "$DIR/.recovery-deleted.*")" ]]
 # Installation from both source modes carries the full protocol, and an
 # image pin starts only the app pull, never normal services or smoke.
 for mode in image build; do

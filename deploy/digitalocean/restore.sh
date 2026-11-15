@@ -107,7 +107,7 @@ if (( DRILL )); then
 fi
 case "${RESTORE_DRILL_PAUSE:-}" in ''|after-lock|before-swap|mid-pin|recovering) ;; *) fail 'unknown RESTORE_DRILL_PAUSE point' ;; esac
 case "${RESTORE_DRILL_FAULT:-}" in
-  ''|after-create|before-swap|swap-ack-lost|after-swap|half|before-pin|mid-pin|after-pin|after-recovery-create|before-collect-drop|after-collect-drop|before-drop|after-drop|after-floor|after-app-start|after-caddy-start|mid-smoke|stop-fails|bad-recovery|after-abort-intent|before-abort-drop|after-abort-drop|after-abort-start|mid-abort-smoke|abort-drop-ack-lost|during-restore) ;;
+  ''|after-create|before-swap|swap-ack-lost|after-swap|half|before-pin|mid-pin|after-pin|after-recovery-create|before-collect-drop|after-collect-drop|before-list-rename|before-drop|after-drop|after-floor|after-app-start|after-caddy-start|mid-smoke|stop-fails|bad-recovery|after-abort-intent|before-abort-drop|after-abort-drop|after-abort-start|mid-abort-smoke|abort-drop-ack-lost|during-restore) ;;
   *) fail 'unknown RESTORE_DRILL_FAULT point' ;;
 esac
 case "${RESTORE_DRILL_FORCE_TWO_STEP:-0}" in 0|1) ;; *) fail 'RESTORE_DRILL_FORCE_TWO_STEP must be 0 or 1' ;; esac
@@ -575,11 +575,12 @@ collect_failed() {
 # account that is deleted in the live database and active in the archive, root-only.
 # The time is the newest user.deleted audit row, for display; it never selects an id.
 # No names, addresses or audit metadata are written. The caller holds the operations lock.
-deleted_list_drop() { rm -f -- "$DIR/recovery-deleted.txt" && sync -f "$DIR"; }
+# Also removes a temp file a kill left between its write and the rename; it holds ids and times.
+deleted_list_drop() { rm -f -- "$DIR/recovery-deleted.txt" "$DIR"/.recovery-deleted.* && sync -f "$DIR"; }
 deleted_list_write() {
   local tmp
   tmp="$(mktemp "$DIR/.recovery-deleted.XXXXXX")" || return 1
-  if ! { printf '%s\n' "$1" >"$tmp" && chmod 600 "$tmp" && chown 0:0 "$tmp" && sync -f "$tmp" \
+  if ! { printf '%s\n' "$1" >"$tmp" && chmod 600 "$tmp" && chown 0:0 "$tmp" && sync -f "$tmp" && fault_at before-list-rename \
     && mv -f "$tmp" "$DIR/recovery-deleted.txt" && sync -f "$DIR"; }; then
     rm -f "$tmp"; return 1
   fi
@@ -822,7 +823,7 @@ write_app_pin() {
   tmp="$(mktemp "$DIR/.recovery-app-pin.XXXXXX")" || return 1
   # shellcheck disable=SC2016 # Compose resolves this explicit image-id override.
   if ! { printf 'services:\n  app:\n    image: ${FOLD_RECOVERY_IMAGE:?}\n    pull_policy: never\n' >"$tmp" \
-    && chmod 600 "$tmp" && chown 0:0 "$tmp" && sync -f "$tmp" \
+    && chmod 600 "$tmp" && chown 0:0 "$tmp" && sync -f "$tmp" && fault_at before-list-rename \
     && mv -f "$tmp" "$DIR/.recovery-app-pin.yml" && sync -f "$DIR"; }; then
     rm -f "$tmp"; return 1
   fi
