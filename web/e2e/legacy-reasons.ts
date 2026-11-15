@@ -95,6 +95,67 @@ export async function makeLegacy(request: APIRequestContext, suffix: string, for
   return { id: String(subject.id), texts, requestIds, former, subjectEmail: subject.email };
 }
 
+export type Reason = { requestId: number; text: string; login: string };
+export type Many = { id: string; subjectEmail: string; former: string; reasons: Reason[] };
+
+// A person with many reasons: `askers` leaders each ask them for their email in
+// each of `groups` groups, so `askers * groups` reasons, returned in the order a
+// review lists them (ascending request id). A requester may have 10 open requests
+// (policy.ContactOpenLimit), so more than 10 groups needs each request withdrawn
+// the moment it is made; a withdrawn request keeps its reason, as a settled one
+// does. `deleted` soft-deletes the person afterwards (the legacy review's state);
+// otherwise they stay live, for the delete panel's review. Two accounts made with
+// different `suffix` never share a person or a group.
+export async function makeMany(
+  request: APIRequestContext,
+  suffix: string,
+  former: string,
+  opts: { askers: number; groups: number; withdraw: boolean; deleted: boolean },
+): Promise<Many> {
+  const admin = await apiAs(request, ADMIN);
+  const login = `mn-subject-${suffix}`;
+  const subject = await makePerson(admin, login, former);
+  const people: Person[] = [];
+  for (let i = 1; i <= opts.askers; i++) people.push(await makePerson(admin, `mn-ask${i}-${suffix}`, `Ash ${i} Many ${suffix}`));
+  const groupIds: number[] = [];
+  for (let g = 1; g <= opts.groups; g++) {
+    const { group } = await admin("POST", "/groups", { name: `Many study ${g} ${suffix}`, description: "Many reasons proof", visibility: "public", tags: [] });
+    const id = numberAt(group, "id");
+    groupIds.push(id);
+    for (const p of people) await admin("POST", `/admin/groups/${id}/members`, { userId: p.id, role: "leader" });
+    await admin("POST", `/admin/groups/${id}/members`, { userId: subject.id, role: "member" });
+  }
+  await (await apiAs(request, login))("PUT", "/me", { hideContactFromLeaders: true });
+  const reasons: Reason[] = [];
+  for (const [i] of people.entries()) {
+    const asker = `mn-ask${i + 1}-${suffix}`;
+    const as = await apiAs(request, asker);
+    for (const [g, groupId] of groupIds.entries()) {
+      const text = `Many ${i + 1}-${g + 1} ${suffix}: please share your email so I can organize rides`;
+      const res = await as("POST", "/contact-requests", { subjectUserId: subject.id, contextType: "group", contextId: groupId, fields: "email", reason: text });
+      const requestId = numberAt(res, "request", "id");
+      if (opts.withdraw) await as("POST", `/contact-requests/${requestId}/withdraw`, {});
+      reasons.push({ requestId, text, login: asker });
+    }
+  }
+  reasons.sort((a, b) => a.requestId - b.requestId);
+  if (opts.deleted) await tombstone(request, subject.id);
+  return { id: String(subject.id), subjectEmail: subject.email, former, reasons };
+}
+
+// Another admin session decides one reason through the API: one mint, one PUT.
+// Only the deleted-accounts review has this route.
+export async function decideElsewhere(request: APIRequestContext, id: string, reasonText: string, choice: "keep" | "remove") {
+  const admin = await apiAs(request, ADMIN);
+  const item = (await pageOf(admin, id)).find((it) => it.reason.includes(reasonText));
+  if (!item) throw new Error(`no reason holding ${reasonText}`);
+  const minted = await admin("POST", "/admin/operation-attempts", { kind: "legacy_reason_save", subjectUserId: Number(id) });
+  await admin("PUT", `/admin/erasure-reasons/legacy/${id}`, {
+    attemptId: stringAt(minted, "attemptId"),
+    decisions: [{ requestId: item.requestId, reviewHash: item.reviewHash, choice }],
+  });
+}
+
 // What the server lists for an account now, as this admin reads it.
 export async function pageOf(admin: Admin, id: string) {
   const page = await admin("POST", `/admin/erasure-reasons/legacy/${id}/page`, { after: null });
