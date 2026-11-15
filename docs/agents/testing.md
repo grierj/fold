@@ -193,7 +193,7 @@ build`, `make e2e`) and CI. Every name below is a test that exists today; the lo
 |---|---|---|
 | The scanner: the scan SQL, batches, cursor, the tombstone discovery markers, the legacy (deleted-accounts) scan | `go test . -count=1 -run '^(TestReasonScanNoSkip\|TestLegacyScanNoSkip\|TestReasonScanIsBounded\|TestReasonOrderingMatrix\|TestBatchedScanMatchesTheSingleStatementOnPostgres\|TestTombstoneDiscoveryNumericMarkersAndShape\|TestTombstoneStructuralMatchAndNumericMarker)$'` | The traversal (live and legacy, T07B-3a) must not skip or repeat a request or an account, every unit stays bounded, the batched scan equals the single statement, and the markers decide what a sweep revisits. Needs `DATABASE_URL`. |
 | A transaction, the attempt ledger, the restore fence or a legacy save (T07B-3b) | `go test . -count=1 -run '^(TestLegacySaveDecidesEachReason\|TestLegacySaveRefusesAStaleSet\|TestLegacySaveStatementOrder)$'`; `go test . -count=8 -run '^TestAttemptLifecycle$'`; `go test . -count=1 -run '^TestFencedTransactionsTakeTheTicketFirst$'`; then the restore-fence tests below | `-count=8` because the lifecycle tests are about ordering; the guard reads the whole production tree; the fence tests dump and restore a real database, so they need the `pg_dump` setup in "Restore tests" above (`TestRestoreFence*`, `TestReasonReviewRestoreWithOpenPanel`). |
-| The review UI or its store, live or legacy | `cd web && npx vitest run src/pages/ReasonReviewLegacy.test.tsx src/components/ReasonReviewList.test.tsx src/components/ReasonReviewSection.test.tsx src/lib/reasonReviewStore.test.ts`; then `make e2e` (the shards decide which specs run together, so a spec filter after the spec list does not narrow it; with `DATABASE_URL` set, `E2E_SHARDS=1 web/e2e/run.sh --grep "reviewing contact-request reasons"` runs the deletion flow alone, and `--grep "the deleted-accounts review"` the legacy review in `admin-reason-review.spec.ts`, after `cd web && npm run build`), which includes `admin-delete-user.spec.ts`, `admin-reason-review.spec.ts` and the `a11y` and `layout` specs | Vitest is the fast loop; the e2e spec drives the real deletion; axe and layout catch what a unit test cannot see. Look at the 390px screenshots (`.cursor/skills/verify-ui`). |
+| The review UI or its store, live or legacy | `cd web && npx vitest run src/pages/ReasonReviewLegacy.test.tsx src/components/ReasonReviewList.test.tsx src/components/ReasonReviewSection.test.tsx src/lib/reasonReviewStore.test.ts`; then `make e2e` (the shards decide which specs run together, so a spec filter after the spec list does not narrow it; with `DATABASE_URL` set, `E2E_SHARDS=1 web/e2e/run.sh --grep "reviewing contact-request reasons"` runs the deletion flow alone, and `--grep "the deleted-accounts review"` the legacy review in `admin-reason-review.spec.ts`, and `--grep "long reason reviews"` the long-history session spec, after `cd web && npm run build`), which includes `admin-delete-user.spec.ts`, `admin-reason-review.spec.ts`, `reason-review-session.spec.ts` and the `a11y` and `layout` specs | Vitest is the fast loop; the e2e spec drives the real deletion; axe and layout catch what a unit test cannot see. Look at the 390px screenshots (`.cursor/skills/verify-ui`). |
 | Recovery: `restore.sh`, the drill, the deploy tools | `make provision-dry-run` (the dry-run container also runs the drill fixtures, `restore-drill-modes-fixtures.sh` among them; needs Docker), then only the drill cases the change can reach, through `restore-drill.sh` (the case list is its `drill_progress_init` call) | The full drill is long; `docs/agents/deploy.md` ("Full restore drill frequency") is the one place that says when it is owed. |
 
 Run `-run` patterns exactly as written: an unanchored pattern that matches nothing passes
@@ -826,3 +826,28 @@ deleted-accounts review (`admin-reason-review.spec.ts`, `legacy-reasons.ts`, the
 pages in `ui-pages.ts`) cannot be reached without it. It refuses the caller and any admin (400), answers 200
 only when exactly one live account became a tombstone and 404 otherwise; a deleted admin is covered by the Go
 tests, not by this route.
+
+### Long reason reviews (#295)
+
+`web/e2e/reason-review-session.spec.ts` drives both reason reviews at a length that takes several pages:
+216 reasons on a deleted account (three saves of 100, 100 and 16) and 110 in the delete panel (a walk of
+100 and 10, shown 50 at a time). `makeMany` in `legacy-reasons.ts` makes them through the API (a
+requester may hold 10 open requests, so a long history withdraws each request as it makes it; the legacy
+account is then tombstoned by the seed route above). It covers the keyboard alone, accessible names and
+live regions, a dropped save, settle or read (`page.route` abort), a changed set, close, reload, and an
+ended session, and records what each keeps in the report: `kept`/`lost` rows as `retention`
+annotations and timings as `observed-time` annotations (read them with
+`--reporter=json` and `PLAYWRIGHT_JSON_OUTPUT_NAME`). The retention table in
+`docs/plan/M7.4-ERASURE-INVENTORY.md` 12.3 is read from those rows; change the spec and the table together.
+Every test runs whole at 390 and again at 1280 px (a `viewport` test option, so a reload, a sign-in or
+an ended session keeps it), and each state is checked by `checkState` (`helpers.ts`: axe and layout at the
+width the test is at, no resizing); no browser but Chromium runs. Real phones, screen readers and a real clock are items in `docs/FIRST-CHURCH-CHECKS.md`.
+
+The spec moves the test binary's attempt clock (11 minutes, then 61 minutes 30 seconds) instead of
+waiting, and ends a session by setting the admin's password through another admin, which ends their
+sessions; clearing cookies would also clear the CSRF token and give a 403, not the 401 a session
+expiry gives. Re-run `setClock` through `apiAs` each time: another `apiAs` on the same context
+replaces the CSRF token a held client carries. To prove the retention assertions bite, make the carry a
+no-op (`carry.current = null` in `ReasonReviewLegacy.tsx`'s `reload`, `store.reset(null)` in
+`DeleteUserPanel.tsx`'s `walk`) and rebuild `web/dist` and the binary: the deleted-accounts and panel
+tests must fail, then revert.
