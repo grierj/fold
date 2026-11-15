@@ -114,7 +114,11 @@ date with the evidence. For other changes, use targeted checks. A recent run doe
 satisfy a release gate: assess whether its candidate and evidence cover the changes being
 released.
 
-`scripts/reason-review-scale.sh` runs this drill, and the QC-1 measurement, behind one entry
-point with a revision-bound record (`docs/agents/testing.md`, "Reason-review scale run"). It does
-not decide when the drill is owed: a full drill step needs `--drill-reason`, which it records
-beside the run date, and this section stays the only statement of the frequency.
+- The full drill is owed only on those established triggers, never because a candidate is
+  being prepared or a reviewer asks for one more run.
+- `--crossings-only` is a partial diagnostic and never counts as the full drill, so it does not
+  reset the 30 days.
+
+`scripts/reason-review-scale.sh` wraps this drill (`docs/agents/testing.md`, "Reason-review scale
+run") and requires `--drill-reason` for a full drill step; this section stays the only statement
+of the frequency.
