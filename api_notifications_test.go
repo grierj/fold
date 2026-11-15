@@ -6,6 +6,7 @@ import (
 	"fold/internal/audit"
 	"fold/internal/mail"
 	"fold/internal/notify"
+	"fold/internal/policy"
 	"fold/models"
 	"net/http"
 	"strings"
@@ -1139,5 +1140,260 @@ func TestReadEmailRecipientsSuppressions(t *testing.T) {
 	_, _, reasons, _, err := readEmailRecipient(app.DB, users["bouncefirst"].ID, true)
 	if err != nil || strings.Join(reasons, ",") != "hard_bounce,complaint" {
 		t.Fatalf("readEmailRecipient: %v, %v", reasons, err)
+	}
+}
+
+// A notice about a teen or a child carries a Teen or Child badge for the
+// people who already see them, never for the person themself, and a person
+// with no access to the subject gets no row to badge at all (DEC-20, DEC-150).
+func TestNotificationsBadgeTeenAndChildSubjects(t *testing.T) {
+	t.Run("account requests badge a teen for admins only", func(t *testing.T) {
+		app := testApp(t)
+		newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+		admin := loginAPI(t, app, "admin", "password1234")
+		anon := anonClient(t, app, "10.4.0.7")
+		for _, body := range []map[string]any{
+			signupBody("Teen Tess", "tess@example.com", "teen", teenBirthDate()),
+			signupBody("Adult Alex", "alex@example.com", "adult", ""),
+		} {
+			if w := anon.do("POST", "/api/v1/account-requests", body, true); w.Code != http.StatusOK {
+				t.Fatalf("signup: %d %s", w.Code, w.Body.String())
+			}
+		}
+		var teen, adult *notificationJSON
+		for _, n := range feed(t, admin, "") {
+			n := n
+			switch {
+			case n.Kind == notify.AccountRequested && strings.Contains(n.Title, "Teen Tess"):
+				teen = &n
+			case n.Kind == notify.AccountRequested && strings.Contains(n.Title, "Adult Alex"):
+				adult = &n
+			}
+		}
+		if teen == nil || adult == nil {
+			t.Fatalf("admin feed is missing a request: %+v", feed(t, admin, ""))
+		}
+		if teen.SubjectKind != "teen" || adult.SubjectKind != "" {
+			t.Fatalf("badges: teen %q adult %q", teen.SubjectKind, adult.SubjectKind)
+		}
+		// The badge is a field, not title text: the title is the same for both.
+		for _, n := range []*notificationJSON{teen, adult} {
+			if strings.Contains(n.Title, "(teen)") || strings.Contains(n.Title+n.Body, "@") {
+				t.Fatalf("badge or contact detail in text: %q %q", n.Title, n.Body)
+			}
+		}
+	})
+
+	t.Run("a leader's bell badges a teen who left, and the teen's own bell does not", func(t *testing.T) {
+		f := newDepartureTestFixture(t)
+		birth := time.Now().UTC().AddDate(-15, 0, 0)
+		if err := f.app.DB.Model(f.subject).Updates(map[string]any{"account_type": models.AccountTeen, "birth_date": birth}).Error; err != nil {
+			t.Fatal(err)
+		}
+		facts := loadDepartureFactsForTest(t, f, f.subject, f.subject, time.Now().UTC())
+		if facts.Origin != policy.OccurrenceOriginDepartureSelf {
+			t.Fatalf("origin %q", facts.Origin)
+		}
+		if err := f.app.DB.Transaction(func(tx *gorm.DB) error { return notifyDeparture(tx, facts, 0, 0) }); err != nil {
+			t.Fatal(err)
+		}
+		var left []notificationJSON
+		for _, n := range feed(t, f.leaderC, "") {
+			if n.Kind == notify.MembershipLeft {
+				left = append(left, n)
+			}
+		}
+		if len(left) != 1 || left[0].SubjectKind != "teen" {
+			t.Fatalf("leader's row: %+v", left)
+		}
+		for _, n := range feed(t, f.subjectC, "") {
+			if n.SubjectKind != "" {
+				t.Fatalf("the teen's own bell badges them: %+v", n)
+			}
+		}
+		// A viewer with no access has no row: the feed is the owner's only.
+		outsider := newTestUser(t, f.app, "outside reader", "password1234", models.RoleMember)
+		if ns := feed(t, loginAPI(t, f.app, outsider.Email, "password1234"), ""); len(ns) != 0 {
+			t.Fatalf("an outsider has rows: %+v", ns)
+		}
+	})
+
+	t.Run("an adult who left is not badged", func(t *testing.T) {
+		f := newDepartureTestFixture(t)
+		facts := loadDepartureFactsForTest(t, f, f.subject, f.subject, time.Now().UTC())
+		if err := f.app.DB.Transaction(func(tx *gorm.DB) error { return notifyDeparture(tx, facts, 0, 0) }); err != nil {
+			t.Fatal(err)
+		}
+		for _, n := range feed(t, f.leaderC, "") {
+			if n.SubjectKind != "" {
+				t.Fatalf("an adult is badged: %+v", n)
+			}
+		}
+	})
+
+	t.Run("a stored row with no kind, or a damaged one, shows none", func(t *testing.T) {
+		app := testApp(t)
+		u := newTestUser(t, app, "reader", "password1234", models.RoleMember)
+		c := loginAPI(t, app, "reader", "password1234")
+		for i, data := range []string{`{}`, `{"subjectKind":"adult"}`, `{"subjectKind":9}`} {
+			row := models.Notification{UserID: u.ID, Kind: notify.MembershipLeft, Category: notify.CatGroups,
+				Title: fmt.Sprintf("Row %d", i), Link: "/", Actions: "[]", BatchCount: 1, Data: data}
+			if err := app.DB.Create(&row).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := app.DB.Create(&models.Notification{UserID: u.ID, Kind: notify.MembershipLeft, Category: notify.CatGroups,
+			Title: "Teen row", Link: "/", Actions: "[]", BatchCount: 1, Data: `{"subjectKind":"teen"}`}).Error; err != nil {
+			t.Fatal(err)
+		}
+		for _, n := range feed(t, c, "") {
+			want := ""
+			if n.Title == "Teen row" {
+				want = "teen"
+			}
+			if n.SubjectKind != want {
+				t.Fatalf("%s: kind %q, want %q", n.Title, n.SubjectKind, want)
+			}
+		}
+	})
+}
+
+// The household helpers read the row's own kind, and a person's own id never
+// keeps its badge on their own notice.
+func TestSubjectKindHelpers(t *testing.T) {
+	app := testApp(t)
+	parent := newTestUser(t, app, "badge-parent", "pw", models.RoleMember)
+	household := models.Household{Name: "Badge family", CreatedBy: parent.ID}
+	if err := app.DB.Create(&household).Error; err != nil {
+		t.Fatal(err)
+	}
+	person := func(first, kind string) uint {
+		p := models.HouseholdPerson{HouseholdID: household.ID, FirstName: first, Kind: kind, CreatedBy: parent.ID}
+		if err := app.DB.Create(&p).Error; err != nil {
+			t.Fatal(err)
+		}
+		return p.ID
+	}
+	for _, tc := range []struct {
+		id   uint
+		want string
+	}{
+		{person("Kai", models.HouseholdChild), notify.SubjectChild},
+		{person("Tess", models.HouseholdTeen), notify.SubjectTeen},
+		{person("Sam", models.HouseholdAdult), ""},
+		{999999, ""},
+	} {
+		got, err := subjectKindOfHousehold(app.DB, tc.id)
+		if err != nil || got != tc.want {
+			t.Errorf("household person %d: %q %v, want %q", tc.id, got, err, tc.want)
+		}
+	}
+	if got, err := subjectKindOfUser(app.DB, parent.ID); err != nil || got != "" {
+		t.Errorf("adult user: %q %v", got, err)
+	}
+	if got, err := subjectKindOfUser(app.DB, 999999); err != nil || got != "" {
+		t.Errorf("missing user: %q %v", got, err)
+	}
+	self := uint(7)
+	if got := badgeForRecipients(notify.SubjectTeen, &self, []uint{3, 7}); got != "" {
+		t.Errorf("a teen's own recipient list keeps the badge: %q", got)
+	}
+	if got := badgeForRecipients(notify.SubjectTeen, &self, []uint{3, 8}); got != notify.SubjectTeen {
+		t.Errorf("another recipient lost the badge: %q", got)
+	}
+	if got := badgeForRecipients(notify.SubjectChild, nil, []uint{3}); got != notify.SubjectChild {
+		t.Errorf("a person with no account lost the badge: %q", got)
+	}
+}
+
+// A registration notice about a household person is badged only for a holder
+// who runs the event or is an admin; an ordinary holder gets the same notice
+// without it (DEC-20, DEC-150).
+func TestRegistrationNoticeBadgesHouseholdPersonOnlyForRunners(t *testing.T) {
+	f := newDepartureTestFixture(t)
+	admin := newTestUser(t, f.app, "badge admin", "password1234", models.RoleAdmin)
+	start := time.Now().UTC().Add(72 * time.Hour).Truncate(time.Hour)
+	occ, _ := addDepartureRegistration(t, f, f.subject, "Badge supper", models.VisibilityPublic, nil, start, start.Add(time.Hour), models.OccurrenceScheduled, models.RegGoing)
+	var ev models.Event
+	if err := f.app.DB.First(&ev, occ.EventID).Error; err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name   string
+		holder *models.User
+		kind   string
+		want   string
+	}{
+		{"ordinary holder, child", f.subject, models.HouseholdChild, ""},
+		{"ordinary holder, teen", f.subject, models.HouseholdTeen, ""},
+		{"group leader, child", f.leader, models.HouseholdChild, notify.SubjectChild},
+		{"group leader, teen", f.leader, models.HouseholdTeen, notify.SubjectTeen},
+		{"admin, child", admin, models.HouseholdChild, notify.SubjectChild},
+		{"admin, adult person", admin, models.HouseholdAdult, ""},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			household := models.Household{Name: fmt.Sprintf("Badge family %d", i), CreatedBy: tc.holder.ID}
+			if err := f.app.DB.Create(&household).Error; err != nil {
+				t.Fatal(err)
+			}
+			person := models.HouseholdPerson{HouseholdID: household.ID, FirstName: fmt.Sprintf("Kid%d", i), Kind: tc.kind, CreatedBy: tc.holder.ID}
+			if err := f.app.DB.Create(&person).Error; err != nil {
+				t.Fatal(err)
+			}
+			reg := models.Registration{OccurrenceID: occ.ID, HouseholdPersonID: &person.ID, RegisteredBy: &tc.holder.ID,
+				Status: models.RegCancelled, Source: models.RegSourceWeb, AttendanceMode: models.AttendanceInPerson}
+			if err := f.app.DB.Create(&reg).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := f.app.DB.Transaction(func(tx *gorm.DB) error {
+				return notifyRegistrationRemoved(tx, &ev, &occ, reg, "", nil)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			c := loginAPI(t, f.app, tc.holder.Email, "password1234")
+			var got *notificationJSON
+			for _, n := range feed(t, c, "") {
+				n := n
+				if n.Kind == notify.RegistrationRemoved && strings.Contains(n.Body, person.FirstName+"'s") {
+					got = &n
+				}
+			}
+			if got == nil {
+				t.Fatalf("holder has no removal notice for %s: %+v", person.FirstName, feed(t, c, ""))
+			}
+			if got.SubjectKind != tc.want {
+				t.Fatalf("subjectKind %q, want %q", got.SubjectKind, tc.want)
+			}
+		})
+	}
+}
+
+// Admins other than the teen get the Teen badge on a consent change; the
+// teen's own bell never does.
+func TestTeenConsentNoticeBadgesTeenForOtherAdmins(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	other := newTestUser(t, app, "other-admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	teen := consentTeen(t, app)
+	// An admin account that is the teen is active once consent is granted.
+	if err := app.DB.Model(teen).Update("role", models.RoleAdmin).Error; err != nil {
+		t.Fatal(err)
+	}
+	apiDo(t, admin, "POST", consentPath(teen), map[string]string{"scope": "account", "status": "granted", "evidenceText": "Paper"}, 200)
+	var rows []models.Notification
+	if err := app.DB.Where("kind = ?", notify.TeenConsentChanged).Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	badge := map[uint]string{}
+	for _, n := range rows {
+		badge[n.UserID] = notify.SubjectKindOf(n.Data)
+	}
+	if badge[other.ID] != notify.SubjectTeen {
+		t.Errorf("the other admin's badge %q, want teen (%+v)", badge[other.ID], rows)
+	}
+	if got, ok := badge[teen.ID]; !ok || got != "" {
+		t.Errorf("the teen's own row: present %v, badge %q, want present and none", ok, got)
 	}
 }

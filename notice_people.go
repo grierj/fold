@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"fold/internal/jobs"
+	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/models"
 
@@ -211,4 +212,57 @@ func recipientZone(tx *gorm.DB, userID uint) (*time.Location, error) {
 		return userZoneIn(tx, zones[0]), nil
 	}
 	return userZoneIn(tx, ""), nil
+}
+
+// subjectKindOfUser is the badge kind for a person a notice is about:
+// notify.SubjectTeen for a teen account, "" for an adult or an account that
+// no longer exists. A failed read is an error, so a notice is never written
+// without a badge it should have.
+func subjectKindOfUser(tx *gorm.DB, id uint) (string, error) {
+	var accountType string
+	switch err := tx.Unscoped().Model(&models.User{}).Where("id = ?", id).Select("account_type").Take(&accountType).Error; {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		return "", nil
+	case err != nil:
+		return "", err
+	}
+	if accountType == models.AccountTeen {
+		return notify.SubjectTeen, nil
+	}
+	return "", nil
+}
+
+// subjectKindOfHousehold is the badge kind for a household person: the row's
+// own kind, notify.SubjectChild or notify.SubjectTeen, and "" for an adult
+// or a row that is gone.
+func subjectKindOfHousehold(tx *gorm.DB, id uint) (string, error) {
+	var kind string
+	switch err := tx.Unscoped().Model(&models.HouseholdPerson{}).Where("id = ?", id).Select("kind").Take(&kind).Error; {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		return "", nil
+	case err != nil:
+		return "", err
+	}
+	switch kind {
+	case models.HouseholdTeen:
+		return notify.SubjectTeen, nil
+	case models.HouseholdChild:
+		return notify.SubjectChild, nil
+	}
+	return "", nil
+}
+
+// badgeForRecipients keeps a subject's badge only when none of the people the
+// notice goes to is that subject: a teen's own bell never labels them (DEC-20,
+// DEC-150). subject is the subject's user id, nil for someone with no account.
+// Every caller already names only recipients who may see the person.
+func badgeForRecipients(kind string, subject *uint, recipients []uint) string {
+	if subject != nil {
+		for _, id := range recipients {
+			if id == *subject {
+				return ""
+			}
+		}
+	}
+	return kind
 }

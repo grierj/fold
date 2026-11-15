@@ -150,6 +150,8 @@ export interface Notification {
   read: boolean;
   archived: boolean;
   waiting: boolean;
+  /** Who the row is about when they are a teen or a child; never set on their own bell. */
+  subjectKind?: "teen" | "child";
   resolution?: NotificationResolution;
 }
 

@@ -20,21 +20,22 @@ import (
 // ---------------------------------------------------------------------------
 
 type notificationJSON struct {
-	ID         uint            `json:"id"`
-	Kind       string          `json:"kind"`
-	SubjectID  *uint           `json:"subjectId,omitempty"` // the group an inline action is about
-	Category   string          `json:"category"`
-	Title      string          `json:"title"`
-	Body       string          `json:"body"`
-	Link       string          `json:"link"`
-	Actions    []notify.Action `json:"actions"`
-	BatchCount int             `json:"batchCount"`
-	CreatedAt  time.Time       `json:"createdAt"`
-	UpdatedAt  time.Time       `json:"updatedAt"`
-	Read       bool            `json:"read"`
-	Archived   bool            `json:"archived"`
-	Waiting    bool            `json:"waiting"` // an open task, counted until resolved
-	Resolution *resolutionJSON `json:"resolution,omitempty"`
+	ID          uint            `json:"id"`
+	Kind        string          `json:"kind"`
+	SubjectID   *uint           `json:"subjectId,omitempty"` // the group an inline action is about
+	Category    string          `json:"category"`
+	Title       string          `json:"title"`
+	Body        string          `json:"body"`
+	Link        string          `json:"link"`
+	Actions     []notify.Action `json:"actions"`
+	BatchCount  int             `json:"batchCount"`
+	CreatedAt   time.Time       `json:"createdAt"`
+	UpdatedAt   time.Time       `json:"updatedAt"`
+	Read        bool            `json:"read"`
+	Archived    bool            `json:"archived"`
+	Waiting     bool            `json:"waiting"`               // an open task, counted until resolved
+	SubjectKind string          `json:"subjectKind,omitempty"` // "teen" or "child": who the row is about, stored by the writer only for a recipient who already sees them (DEC-150)
+	Resolution  *resolutionJSON `json:"resolution,omitempty"`
 }
 
 type resolutionJSON struct {
@@ -49,7 +50,8 @@ func toNotificationJSON(n *models.Notification, me uint, names publicNames) noti
 		ID: n.ID, Kind: n.Kind, SubjectID: n.SubjectID, Category: n.Category, Title: n.Title, Body: n.Body, Link: n.Link,
 		Actions: []notify.Action{}, BatchCount: n.BatchCount, CreatedAt: n.CreatedAt, UpdatedAt: n.UpdatedAt,
 		Read: n.ReadAt != nil, Archived: n.ArchivedAt != nil || (n.ExpiresAt != nil && !n.ExpiresAt.After(time.Now())),
-		Waiting: n.Waiting && n.ResolvedAt == nil,
+		Waiting:     n.Waiting && n.ResolvedAt == nil,
+		SubjectKind: notify.SubjectKindOf(n.Data),
 	}
 	if out.Waiting {
 		_ = json.Unmarshal([]byte(n.Actions), &out.Actions)

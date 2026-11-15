@@ -426,7 +426,7 @@ func contactNotice(tx *gorm.DB, r models.ContactRequest, role noticeRole, recipi
 	if err := tx.Model(&models.User{}).Where("id IN ? AND status = ? AND password_hash IS NOT NULL", recipients, models.UserActive).Order("id").Pluck("id", &active).Error; err != nil {
 		return err
 	}
-	_, err := notify.Send(tx, notify.Msg{Kind: k.notice(role), To: active, SubjectType: k.target, SubjectID: r.ID, Link: fmt.Sprintf("/%s/%d", k.route, r.ID), DedupeKey: fmt.Sprintf("%s:%d:%s", k.dedupe, r.ID, key), Vars: notify.Vars{Teen: r.NeedsAdmin}})
+	_, err := notify.Send(tx, notify.Msg{Kind: k.notice(role), To: active, SubjectType: k.target, SubjectID: r.ID, Link: fmt.Sprintf("/%s/%d", k.route, r.ID), DedupeKey: fmt.Sprintf("%s:%d:%s", k.dedupe, r.ID, key)})
 	return err
 }
 func resolveContactTasks(tx *gorm.DB, r models.ContactRequest, actor *uint, outcome string) error {

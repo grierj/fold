@@ -9,6 +9,9 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"fold/internal/testdb"
 )
 
 // The promotion email carries the video link (M1.8); the bell never does.
@@ -96,11 +99,11 @@ func TestTeenGuardianTaskExplainsConsent(t *testing.T) {
 	if !ok {
 		t.Fatal("missing guardian notification")
 	}
-	title, body := kind.Render(Vars{Person: "Taylor", Change: "teen_account", Teen: true})
+	title, body := kind.Render(Vars{Person: "Taylor", Change: "teen_account", SubjectKind: SubjectTeen})
 	if !strings.Contains(title, "Taylor") || !strings.Contains(body, "does not let the teen sign in") {
 		t.Fatalf("account-targeted task: %s %s", title, body)
 	}
-	title, body = kind.RenderForEmail(Vars{Person: "Taylor", Actor: "Pat", Change: "teen_account", Teen: true})
+	title, body = kind.RenderForEmail(Vars{Person: "Taylor", Actor: "Pat", Change: "teen_account", SubjectKind: SubjectTeen})
 	if strings.Contains(title+body, "Taylor") || strings.Contains(title+body, "Pat") {
 		t.Fatal("minor name leaked to email")
 	}
@@ -116,7 +119,7 @@ func TestAddRequestNoticesAreSeparateSafeTasks(t *testing.T) {
 		if !ok || k.BatchWindow != 0 || len(k.Actions) != 0 || !k.AllowEmail || k.Waiting != (key != AddUpdated) {
 			t.Fatalf("unsafe add kind: %s %+v", key, k)
 		}
-		v := Vars{Person: "Private teen", Actor: "Private requester", Group: "Secret group", Event: "Secret event", Note: "private@example.com", Teen: true}
+		v := Vars{Person: "Private teen", Actor: "Private requester", Group: "Secret group", Event: "Secret event", Note: "private@example.com", SubjectKind: SubjectTeen}
 		title, body := k.Render(v)
 		emailTitle, emailBody := k.RenderForEmail(v)
 		for _, secret := range []string{v.Person, v.Actor, v.Group, v.Event, v.Note} {
@@ -132,7 +135,7 @@ func TestOccurrenceUpdateNoticeIsSafeAndNavigationOnly(t *testing.T) {
 	if !ok || k.BatchWindow != 0 || len(k.Actions) != 0 || k.Waiting || !k.AllowEmail {
 		t.Fatalf("unsafe occurrence update: %+v", k)
 	}
-	vars := Vars{Person: "Private teen", Actor: "Hidden host", Group: "Hidden organizer", Event: "Secret series", Note: "private@example.com", Teen: true}
+	vars := Vars{Person: "Private teen", Actor: "Hidden host", Group: "Hidden organizer", Event: "Secret series", Note: "private@example.com", SubjectKind: SubjectTeen}
 	title, body := k.Render(vars)
 	emailTitle, emailBody := k.RenderForEmail(vars)
 	for _, secret := range []string{vars.Person, vars.Actor, vars.Group, vars.Event, vars.Note} {
@@ -148,7 +151,7 @@ func TestOccurrenceAddedAndChangedAreNamesFreeNavigationOnly(t *testing.T) {
 		if !ok || k.BatchWindow != 0 || k.Waiting || len(k.Actions) != 0 || !k.AllowEmail {
 			t.Fatal("unsafe kind", key)
 		}
-		v := Vars{Person: "Private teen", Actor: "Private leader", Group: "Hidden group", Event: "Secret series", Note: "private@example.com", Teen: true}
+		v := Vars{Person: "Private teen", Actor: "Private leader", Group: "Hidden group", Event: "Secret series", Note: "private@example.com", SubjectKind: SubjectTeen}
 		title, body := k.Render(v)
 		et, eb := k.RenderForEmail(v)
 		for _, secret := range []string{v.Person, v.Actor, v.Group, v.Event, v.Note} {
@@ -278,4 +281,121 @@ func TestLostAccessCopyText(t *testing.T) {
 func jsonString(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+// A person's Teen or Child badge is a bell badge in words, never title text,
+// and never reaches an email or a lock screen (DEC-150).
+func TestSubjectKindBadgeStaysOutOfText(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		kind string
+		vars Vars
+	}{
+		{"teen account request", AccountRequested, Vars{Person: "Tess", Change: "Self-signup", SubjectKind: SubjectTeen}},
+		{"child household link", HouseholdLinkPending, Vars{Person: "Kai", Actor: "Pat", SubjectKind: SubjectChild}},
+		{"teen household link", HouseholdLinkPending, Vars{Person: "Tess", Actor: "Pat", SubjectKind: SubjectTeen}},
+	} {
+		k, ok := Lookup(tc.kind)
+		if !ok {
+			t.Fatalf("%s: kind missing", tc.name)
+		}
+		plain := tc.vars
+		plain.SubjectKind = ""
+		title, body := k.Render(tc.vars)
+		plainTitle, plainBody := k.Render(plain)
+		if title != plainTitle || body != plainBody {
+			t.Errorf("%s: the badge changed the text: %q %q vs %q %q", tc.name, title, body, plainTitle, plainBody)
+		}
+		for _, s := range []string{"(teen)", "(child)", "Teen", "Child"} {
+			if strings.Contains(title+body, s) {
+				t.Errorf("%s: text repeats the badge %q: %q %q", tc.name, s, title, body)
+			}
+		}
+		et, eb := k.RenderForEmail(tc.vars)
+		pt, pb, _ := k.RenderForPush(tc.vars)
+		if text := et + eb + pt + pb; strings.Contains(text, tc.vars.Person) || strings.Contains(text, "(teen)") || strings.Contains(text, "(child)") {
+			t.Errorf("%s: email or push names the person or carries the badge: %q", tc.name, text)
+		}
+	}
+}
+
+func TestSubjectKindIsStoredAndOnlyTeenOrChild(t *testing.T) {
+	register(Kind{Key: "test.subject", Category: CatGroups, Render: func(v Vars) (string, string) { return "A person " + v.Person, "" }})
+	defer delete(registry, "test.subject")
+	db := testdb.Shared(t)
+	uid := user(t, db, "subject-reader")
+	for _, tc := range []struct {
+		name, kind, want string
+	}{
+		{"teen", SubjectTeen, SubjectTeen},
+		{"child", SubjectChild, SubjectChild},
+		{"adult", "adult", ""},
+		{"none", "", ""},
+		{"made up", "admin", ""},
+	} {
+		if _, err := Send(db, Msg{Kind: "test.subject", To: []uint{uid}, Link: "/x", Data: map[string]any{"groupId": 4},
+			Vars: Vars{Person: tc.name, SubjectKind: tc.kind}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := rows(t, db, uid)
+	if len(got) != 5 {
+		t.Fatalf("rows: %d", len(got))
+	}
+	for i, want := range []string{SubjectTeen, SubjectChild, "", "", ""} {
+		if kind := SubjectKindOf(got[i].Data); kind != want {
+			t.Errorf("row %d stores %q, want %q (data %s)", i, kind, want, got[i].Data)
+		}
+		if !strings.Contains(got[i].Data, `"groupId"`) {
+			t.Errorf("row %d lost the writer's data: %s", i, got[i].Data)
+		}
+	}
+	for _, bad := range []string{"", "{}", "not json", `{"subjectKind":"adult"}`, `{"subjectKind":7}`, `{"subjectKind":"teen"}`} {
+		want := ""
+		if bad == `{"subjectKind":"teen"}` {
+			want = SubjectTeen
+		}
+		if kind := SubjectKindOf(bad); kind != want {
+			t.Errorf("SubjectKindOf(%q) = %q, want %q", bad, kind, want)
+		}
+	}
+}
+
+// A merged row keeps the badge only when every notice folded into it is about
+// the same kind of person; any mix, adult included, drops it.
+func TestBatchedMergeKeepsTheBadgeOnlyWhenEveryRowAgrees(t *testing.T) {
+	register(Kind{Key: "test.merge.subject", Category: CatGroups, BatchWindow: time.Hour,
+		Render: func(v Vars) (string, string) { return "People " + itoa(v.Count), "" }})
+	defer delete(registry, "test.merge.subject")
+	db := testdb.Shared(t)
+	for _, tc := range []struct {
+		name  string
+		kinds []string
+		want  string
+	}{
+		{"all teens", []string{SubjectTeen, SubjectTeen, SubjectTeen}, SubjectTeen},
+		{"all children", []string{SubjectChild, SubjectChild}, SubjectChild},
+		{"teen then child", []string{SubjectTeen, SubjectChild}, ""},
+		{"teen then adult", []string{SubjectTeen, ""}, ""},
+		{"adult then teen", []string{"", SubjectTeen}, ""},
+		{"mixed, then the first kind again", []string{SubjectTeen, SubjectChild, SubjectTeen}, ""},
+	} {
+		uid := user(t, db, "merge-"+strings.ReplaceAll(tc.name, " ", "-"))
+		for _, kind := range tc.kinds {
+			if _, err := Send(db, Msg{Kind: "test.merge.subject", To: []uint{uid}, Link: "/x", GroupKey: "people:1",
+				Data: map[string]any{"groupId": 1}, Vars: Vars{SubjectKind: kind}}); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+		}
+		got := rows(t, db, uid)
+		if len(got) != 1 || got[0].BatchCount != len(tc.kinds) {
+			t.Fatalf("%s: not one merged row: %+v", tc.name, got)
+		}
+		if kind := SubjectKindOf(got[0].Data); kind != tc.want {
+			t.Errorf("%s: merged row badge %q, want %q (data %s)", tc.name, kind, tc.want, got[0].Data)
+		}
+		if !strings.Contains(got[0].Data, `"groupId"`) {
+			t.Errorf("%s: merge lost the row's data: %s", tc.name, got[0].Data)
+		}
+	}
 }

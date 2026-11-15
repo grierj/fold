@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { AdminIcon, BellIcon, CalendarIcon, CheckIcon, ChevronRightIcon, GroupsIcon, UserPlusIcon } from "./icons";
 import { Link, NavLink, useNavigate } from "react-router-dom";
+import { Badge as PersonBadge } from "./ui/Badge";
 import { Button } from "./ui/Button";
 import { EmptyState } from "./ui/EmptyState";
 import { Illustration } from "./ui/Illustration";
@@ -72,6 +73,7 @@ function NotificationRow({
           <time dateTime={n.updatedAt} title={new Date(n.updatedAt).toLocaleString()}>
             {relativeTime(n.updatedAt)}
           </time>
+          {n.subjectKind && <PersonBadge>{n.subjectKind === "child" ? "Child" : "Teen"}</PersonBadge>}
           {n.waiting && <span className="font-semibold text-text-muted">Waiting on you</span>}
         </div>
         {handled ? (
