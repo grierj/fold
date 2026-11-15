@@ -501,7 +501,7 @@ scripts/reason-review-matrix.sh --out $E/matrix.json \
 ```
 
 Each run takes hours, needs a **dedicated** Docker daemon (the nested runner makes one; a shared
-daemon makes the run a pilot) and starts from a clean commit. All four cells must be measured on
+daemon makes the run a pilot) and starts from a clean commit. Run the cells one after another on a host with no other nested run: the cells share the host's CPUs, so another run during a cell makes its times noisier (the `8ef97ff7` cells took 4,900 to 7,246 s each, about 6.6 hours for the four). Leave the checkout alone while a cell runs; it records the tree it started from. All four cells must be measured on
 one revision: the report refuses to call a matrix `FULL` when they differ. A pass-through argument
 makes the wrapper record that step `partial`, which the matrix accepts (it requires `pass` or
 `partial`, exit 0). `scripts/reason-review-matrix.sh --dry-run` lists the cells.
@@ -601,7 +601,12 @@ argument above 128 KiB. `qc1-fixtures.sh` runs the runner's real `record()` on s
   failure is a finding for engineering disposition (R4-C06), never a gap and never a waiver.
 - The result goes in `docs/plan/M7.4-ERASURE-INVENTORY.md`, section 12.3, "#294/#293 scale matrix":
   the revision, environment, fixtures, timings, audits, WAL, memory, gaps and budget failures from
-  `matrix.json`, with the sha256 of each artifact. The artifacts stay outside the checkout.
+  `matrix.json`, with the sha256 of each artifact. The artifacts stay outside the checkout. Each
+  matrix gets its own subsection beside the earlier ones, which stay as recorded; copy the figures
+  from `matrix.json` and the cells' records, never retype them. A `PILOT` may close #293 and #294
+  only with every gap in its `gaps` named in the status line and Grier's dated answer quoted
+  ("Yes - run matrix; PILOT gaps may close if named", Nov 14, 2026); it is never rounded up to
+  `FULL`. The record at `8ef97ff7` is such a `PILOT`.
 - **Checks that run without Docker**: `qc1-fixtures.sh` (the judge's charset, shape, exactness and
   agreement rules, the snapshot comparison, `set-v1.mjs agree` and `dom-text`, and the matrix report
   over four consistent full cells: the one FULL control and each way it is spoiled after the rows are

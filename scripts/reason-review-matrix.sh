@@ -31,8 +31,8 @@
 #
 # Status. FULL only when every required cell is present, all name the same revision (the one given, else HEAD of this checkout), and every one of them passes all of
 # that with coverage full, release evidence, nothing missing, pending, invalid or aborted. Anything else is PILOT, and the record lists every gap by name: an absent
-# cell, a cell of another revision, a cell whose recomputed coverage is not full, the cases a cell reports as pending (at the time of writing the legacy discovery and
-# legacy PUT cases, which are not built, so a real matrix is a PILOT until they are), a status that disagrees with its rows, a runner record that is missing or failed. A
+# cell, a cell of another revision, a cell whose recomputed coverage is not full, the cases a cell reports as pending (the legacy discovery and
+# legacy PUT cases, which a matrix cell does not measure (`qc1-measure.sh --legacy-only` does), so a matrix of default cells is a PILOT), a status that disagrees with its rows, a runner record that is missing or failed. A
 # budget failure is a finding for engineering disposition (R4-C06), never a gap in the matrix and never a waiver; the record carries each cell's budget failures by kind.
 # Exit status: 0 for FULL, 10 for PILOT, 2 for a refusal before anything was written.
 set -euo pipefail
@@ -248,11 +248,11 @@ assemble() {
 		    ($have[] | select(.evidence.invalid > 0) | "cell \(.name): \(.evidence.invalid) invalid finding(s), first: \(.evidence.invalidFindings[0])"),
 		    ($have[] | select(.evidence.missing > 0) | "cell \(.name): \(.evidence.missing) expected measurement(s) missing, first: \(.evidence.missingCases[0])"),
 		    ($have[] | select(.recompute.ok and .evidence.coverage != "full") | "cell \(.name): coverage is \(.evidence.coverage // "unknown"), not full: \(.evidence.coverageReasons | join("; "))"),
-		    ($have[] | select(.evidence.pending > 0) | "cell \(.name): \(.evidence.pending) case(s) pending, not built: \(.evidence.pendingCases | join(", "))"),
+		    ($have[] | select(.evidence.pending > 0) | "cell \(.name): \(.evidence.pending) case(s) pending, not measured in a matrix run: \(.evidence.pendingCases | join(", "))"),
 		    ($have[] | select(.recompute.ok and (.evidence.complete != true or .evidence.releaseEvidence != true) and .evidence.pending == 0 and .evidence.invalid == 0 and .evidence.missing == 0 and (.evidence.aborted | not)) | "cell \(.name): its evidence is not complete release evidence") ] as $gaps
 		| {schema:"fold/reason-review-matrix/v2", revision:(if $revision != "" then $revision else ($revs[0] // null) end), requiredCells:$required,
 		   status:(if ($gaps | length) == 0 and ($have | length) == ($required | length) then "FULL" else "PILOT" end), gaps:$gaps,
-		   onlyPendingCases:(($gaps | length) > 0 and ($gaps | all(test("pending, not built")))),
+		   onlyPendingCases:(($gaps | length) > 0 and ($gaps | all(test("pending, not measured in a matrix run")))),
 		   cells:$cells,
 		   oldEnvelopeComparison:([$have[] | select(.name == "ascii-spread") | .figures[] | {size, oldEnvelope}] | if length == 0 then null else . end),
 		   note:"FULL means every required cell is present, on one revision, with a status recomputed from its rows and environment that is complete, full coverage and release evidence, a runner record that finished cleanly and no collection failure. A PILOT names its gaps; neither is a waiver of a budget failure."}'
@@ -332,7 +332,7 @@ if ((self_test)); then
 	expect honest PILOT 10 "cell ascii-head: coverage is pilot" "${all[@]}"
 	jq -e '.gaps | any(test("cell ascii-head: the saved evidence-status.json differs")) | not' "$work/out-honest.json" >/dev/null || { echo "self-test honest: a status equal to the recomputed one is called a mismatch" >&2; exit 1; }
 	jq -e '.cells[] | select(.name == "ascii-head") | .recompute.savedEqualsRecomputed == true and .evidence.releaseEvidence == false and .evidence.pending > 0' "$work/out-honest.json" >/dev/null || { echo "self-test honest: the cell does not carry the recomputed status" >&2; exit 1; }
-	jq -e '.gaps | any(test("cell ascii-head: .* case.s. pending, not built"))' "$work/out-honest.json" >/dev/null || { echo "self-test honest: the pending legacy cases are not named" >&2; exit 1; }
+	jq -e '.gaps | any(test("cell ascii-head: .* case.s. pending, not measured in a matrix run"))' "$work/out-honest.json" >/dev/null || { echo "self-test honest: the pending legacy cases are not named" >&2; exit 1; }
 	stub ascii-head
 	# a status that was true of its rows when it was written, and a file that was cut afterwards or an environment that was edited afterwards: neither is the run the status describes
 	honest ascii-tail
