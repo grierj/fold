@@ -116,7 +116,9 @@ export async function makeMany(
   const login = `mn-subject-${suffix}`;
   const subject = await makePerson(admin, login, former);
   const people: Person[] = [];
-  for (let i = 1; i <= opts.askers; i++) people.push(await makePerson(admin, `mn-ask${i}-${suffix}`, `Ash ${i} Many ${suffix}`));
+  // Named to sort last: the admin users list shows 25 a page by name, and the specs that share this
+  // database (teen-consent) look for their user on the first page.
+  for (let i = 1; i <= opts.askers; i++) people.push(await makePerson(admin, `mn-ask${i}-${suffix}`, `Zzz Asker ${i} Many ${suffix}`));
   const groupIds: number[] = [];
   for (let g = 1; g <= opts.groups; g++) {
     const { group } = await admin("POST", "/groups", { name: `Many study ${g} ${suffix}`, description: "Many reasons proof", visibility: "public", tags: [] });
