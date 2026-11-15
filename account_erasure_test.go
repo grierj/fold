@@ -4423,7 +4423,7 @@ func erasureWantNotice(t testing.TB, r models.ContactRequest, to uint) models.No
 	if !ok {
 		t.Fatalf("kind %q is not registered", kind)
 	}
-	v := notify.Vars{Teen: r.NeedsAdmin, Count: 1}
+	v := notify.Vars{Count: 1}
 	title, body := k.Render(v)
 	emailTitle, emailBody := k.RenderForEmail(v)
 	pushTitle, pushBody, _ := k.RenderForPush(v)

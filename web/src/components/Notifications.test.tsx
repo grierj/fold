@@ -224,3 +224,26 @@ describe("NotificationBell", () => {
     expect(bell).toHaveFocus();
   });
 });
+
+describe("a row about a teen or a child", () => {
+  it("shows a Teen or Child badge in words in the bell, and none on an adult's row", async () => {
+    api.list.mockResolvedValue({
+      waiting: [],
+      waitingTotal: 0,
+      notifications: [
+        item({ id: 11, title: "Row for teen", subjectKind: "teen" }),
+        item({ id: 12, title: "Row for child", subjectKind: "child" }),
+        item({ id: 13, title: "Row for adult" }),
+      ],
+      next: "",
+    });
+    renderBell();
+    await userEvent.click(await screen.findByRole("button", { name: /Alerts/ }));
+    const rowOf = async (title: string) => (await screen.findByRole("link", { name: new RegExp(title) })).closest("li")!;
+    expect(within(await rowOf("Row for teen")).getByText("Teen")).toBeInTheDocument();
+    expect(within(await rowOf("Row for child")).getByText("Child")).toBeInTheDocument();
+    const adult = await rowOf("Row for adult");
+    expect(within(adult).queryByText("Teen")).toBeNull();
+    expect(within(adult).queryByText("Child")).toBeNull();
+  });
+});

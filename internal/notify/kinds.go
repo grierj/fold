@@ -94,7 +94,13 @@ type Vars struct {
 	Count      int    // how many events this row covers; Send sets it (to 1 for a new row) unless the caller gave one, as system.job_dead does for its tries
 	KeptCount  int    // departure summary: exact dates retained
 	EndedCount int    // departure summary: upcoming registrations ended
-	Teen       bool   // the subject is a teen account (badge in words; no contact details ever)
+	// SubjectKind is who the notice is about when that person is a teen or a
+	// child: SubjectTeen or SubjectChild, empty for an adult or no one. The
+	// writer sets it only for a recipient who already sees that person and
+	// is not that person (DEC-20, DEC-150). Send stores it in Data under
+	// DataSubjectKind; the bell shows it as a badge, never in the text, so
+	// no email or push carries it.
+	SubjectKind string
 	// ManageURL is a full signed URL the recipient can act on (for
 	// example a registration manage link). It appears in the email body
 	// only, never in the bell, and only on rows for that recipient.
@@ -167,6 +173,38 @@ type Kind struct {
 	// DataEventTitle (LostAccessCopyText), never from the teen's stored text.
 	// Every other copy check still applies.
 	CopyWithoutSubjectAccess bool
+}
+
+// SubjectTeen and SubjectChild are the Vars.SubjectKind values that show a
+// badge. An adult subject has no badge, so it is the empty string.
+const (
+	SubjectTeen  = "teen"
+	SubjectChild = "child"
+)
+
+// DataSubjectKind is the Data key under which Send stores a notice's
+// SubjectKind, so the bell can show the badge from the stored row (Vars are
+// not stored). A row has it only when every notice folded into it named a
+// subject of that kind (see merge).
+const DataSubjectKind = "subjectKind"
+
+// badgeKind is kind when it is one that shows a badge, else "".
+func badgeKind(kind string) string {
+	if kind == SubjectTeen || kind == SubjectChild {
+		return kind
+	}
+	return ""
+}
+
+// SubjectKindOf reads the badge kind from a stored row's data: "teen",
+// "child", or "" for none or a damaged row.
+func SubjectKindOf(data string) string {
+	var d map[string]any
+	if json.Unmarshal([]byte(data), &d) != nil {
+		return ""
+	}
+	kind, _ := d[DataSubjectKind].(string)
+	return badgeKind(kind)
 }
 
 // DataEventTitle is the Data key under which a CopyWithoutSubjectAccess
@@ -555,16 +593,12 @@ func init() {
 		Key: AccountRequested, Category: CatAdmin, Waiting: true, AllowEmail: true,
 		Actions: []Action{{Key: ActionApproveAccount, Label: "Approve"}},
 		Render: func(v Vars) (string, string) {
-			who := or(v.Person, "Someone")
-			if v.Teen {
-				who += " (teen)"
-			}
-			return who + " requested an account", or(v.Change, "Self-signup") + ". Needs an admin's approval."
+			return or(v.Person, "Someone") + " requested an account", or(v.Change, "Self-signup") + ". Needs an admin's approval."
 		},
 		RenderEmailSafe: func(Vars) (string, string) {
 			return "New account request in Fold", "Someone asked for an account. Sign in to review it."
 		},
-		// No name and no teen badge on a lock screen.
+		// No name and no Teen or Child badge on a lock screen.
 		AllowPush: true, PushRender: func(Vars) (string, string) { return "A new account request is waiting", "" },
 	})
 	register(Kind{
@@ -665,18 +699,15 @@ func init() {
 		// group, resolved when an admin confirms or rejects it. No inline
 		// button: confirming needs a check note on the Approvals tab. The
 		// bell names the people for admins; the email variant names
-		// nobody, since a minor is involved. Change is the kind in words
-		// ("child" or "teen").
+		// nobody, since a minor is involved. The bell row carries the
+		// person's Child or Teen badge (SubjectKind), so the title does not
+		// repeat it; Change is "teen_account" for an account-targeted link.
 		Key: HouseholdLinkPending, Category: CatAdmin, Waiting: true, AllowEmail: true,
 		Render: func(v Vars) (string, string) {
 			if v.Change == "teen_account" {
 				return "Check a guardian link for " + or(v.Person, "a teen account"), "The account is waiting for consent. Confirming this link does not let the teen sign in yet."
 			}
-			who := or(v.Person, "Someone")
-			if v.Change != "" {
-				who += " (" + v.Change + ")"
-			}
-			return or(v.Actor, "Someone") + " added " + who + " to their household",
+			return or(v.Actor, "Someone") + " added " + or(v.Person, "Someone") + " to their household",
 				"The link needs an admin to confirm it before the person can be registered."
 		},
 		RenderEmailSafe: func(Vars) (string, string) {

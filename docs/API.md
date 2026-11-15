@@ -1834,8 +1834,14 @@ off". In-app notifications are unaffected. Transactional mail (password reset,
 invitations, verification) is not notification email and always sends.
 
 A notification is `{id, kind, subjectId?, category, title, body, link, actions,
-batchCount, createdAt, updatedAt, read, archived, waiting, resolution?}`. IDs are
-numeric. Resolution is `{outcome, by, byMe, at}`. Feed cursors are opaque; invalid
+batchCount, createdAt, updatedAt, read, archived, waiting, subjectKind?,
+resolution?}`. IDs are numeric. `subjectKind` is `"teen"` or `"child"` when the row
+is about a teen or a child and its writer judged that this recipient is an admin, or a
+leader or host who sees that person badged (DEC-20), and is not that person (DEC-150);
+an ordinary household holder's notice about their own household person has none. It is absent for an adult, for the
+person themself, and for a batched row whose notices named different kinds. It is
+the only place the badge appears: titles, bodies, email and push never carry it.
+Resolution is `{outcome, by, byMe, at}`. Feed cursors are opaque; invalid
 filters/cursors return 400. `waiting` is the separate task section, with its
 full count in `waitingTotal`.
 

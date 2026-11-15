@@ -206,13 +206,58 @@ func eventNoticeVarsIn(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence,
 	return vars, link, nil
 }
 
-func addPersonVar(tx *gorm.DB, vars *notify.Vars, reg models.Registration) error {
+// addPersonVar names the household person a registration notice is about and,
+// for a recipient who runs the event or is an admin, sets the person's Child or
+// Teen badge (DEC-150).
+func addPersonVar(tx *gorm.DB, vars *notify.Vars, ev *models.Event, reg models.Registration) error {
 	if reg.HouseholdPersonID == nil {
 		return nil
 	}
 	name, err := householdPersonName(tx, *reg.HouseholdPersonID)
+	if err != nil {
+		return err
+	}
 	vars.Person = name
-	return err
+	kind, err := subjectKindOfHousehold(tx, *reg.HouseholdPersonID)
+	if err != nil {
+		return err
+	}
+	if kind == "" {
+		return nil
+	}
+	// An ordinary holder knows their own household and gets no badge; the
+	// badge goes only to someone who runs the event or administers the church,
+	// whom DEC-20 has badge minors on attendee lists (DEC-150).
+	shown, err := runsEventOrAdmin(tx, ev, registrationHolder(reg))
+	if err != nil {
+		return err
+	}
+	if shown {
+		vars.SubjectKind = kind
+	}
+	return nil
+}
+
+// runsEventOrAdmin reports whether the user is an active admin or one of the
+// event's runners (its group's leaders, or its hosts for a church-wide event).
+func runsEventOrAdmin(tx *gorm.DB, ev *models.Event, userID uint) (bool, error) {
+	var n int64
+	if err := activeAdmins(tx).Where("id = ?", userID).Count(&n).Error; err != nil {
+		return false, err
+	}
+	if n > 0 {
+		return true, nil
+	}
+	runners, err := eventRunnerIDs(tx, ev)
+	if err != nil {
+		return false, err
+	}
+	for _, id := range runners {
+		if id == userID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // notifyRegistrationPromoted tells one person they are in off the
@@ -232,7 +277,7 @@ func notifyRegistrationPromoted(tx *gorm.DB, ev *models.Event, o *models.EventOc
 	if err != nil {
 		return err
 	}
-	if err := addPersonVar(tx, &vars, reg); err != nil {
+	if err := addPersonVar(tx, &vars, ev, reg); err != nil {
 		return err
 	}
 	if actor != nil && *actor == userID {
@@ -357,7 +402,7 @@ func notifyRegistrationRemoved(tx *gorm.DB, ev *models.Event, o *models.EventOcc
 	if err != nil {
 		return err
 	}
-	if err := addPersonVar(tx, &vars, reg); err != nil {
+	if err := addPersonVar(tx, &vars, ev, reg); err != nil {
 		return err
 	}
 	vars.Note = note
@@ -379,7 +424,7 @@ func notifyRegistrationNotRestored(tx *gorm.DB, ev *models.Event, o *models.Even
 	if err != nil {
 		return err
 	}
-	if err := addPersonVar(tx, &vars, reg); err != nil {
+	if err := addPersonVar(tx, &vars, ev, reg); err != nil {
 		return err
 	}
 	end := noticeEnd(o)

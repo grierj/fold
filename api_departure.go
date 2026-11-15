@@ -580,10 +580,15 @@ func notifyDeparture(tx *gorm.DB, facts departureFacts, kept, ended int) error {
 			return err
 		}
 		actor := facts.Subject.ID
+		subjectKind, err := subjectKindOfUser(tx, actor)
+		if err != nil {
+			return err
+		}
 		_, err = notify.Send(tx, notify.Msg{
 			Kind: notify.MembershipLeft, To: leaders, Actor: &actor,
 			SubjectType: "group", SubjectID: facts.GroupID, Link: "/groups/" + strconv.FormatUint(uint64(facts.GroupID), 10),
-			Vars: notify.Vars{Person: facts.SubjectName, Group: facts.GroupName}, // group-ok: current leaders can see their group
+			// The leaving member is the actor, so Send skips them; the group's leaders see its members (DEC-20).
+			Vars: notify.Vars{Person: facts.SubjectName, Group: facts.GroupName, SubjectKind: subjectKind}, // group-ok: current leaders can see their group
 			Data: map[string]any{"groupId": facts.GroupID, "subjectUserId": facts.Subject.ID},
 			DedupeKey: "membership-left:" + strconv.FormatUint(uint64(facts.SubjectMembership.ID), 10) + ":" +
 				strconv.FormatUint(uint64(facts.SubjectMembership.Tenure), 10),

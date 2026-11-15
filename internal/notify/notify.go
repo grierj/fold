@@ -266,8 +266,16 @@ func Send(tx *gorm.DB, m Msg) ([]uint, error) {
 		return nil, ErrBadLink
 	}
 	data := "{}"
-	if len(m.Data) > 0 {
-		b, err := json.Marshal(m.Data)
+	stored := m.Data
+	if kind := badgeKind(m.Vars.SubjectKind); kind != "" {
+		stored = make(map[string]any, len(m.Data)+1)
+		for key, v := range m.Data {
+			stored[key] = v
+		}
+		stored[DataSubjectKind] = kind
+	}
+	if len(stored) > 0 {
+		b, err := json.Marshal(stored)
 		if err != nil {
 			return nil, err
 		}
@@ -563,6 +571,10 @@ func merge(tx *gorm.DB, k Kind, m Msg, uid uint, now time.Time) (bool, uint, err
 		return false, 0, err
 	}
 	n := open.BatchCount + 1
+	data, err := mergedData(open.Data, badgeKind(m.Vars.SubjectKind))
+	if err != nil {
+		return false, 0, err
+	}
 	title, body := k.Render(withCount(m.Vars, n))
 	emailTitle, emailBody := k.RenderForEmail(withCount(m.Vars, n))
 	pushTitle, pushBody, _ := k.RenderForPush(withCount(m.Vars, n))
@@ -570,9 +582,28 @@ func merge(tx *gorm.DB, k Kind, m Msg, uid uint, now time.Time) (bool, uint, err
 		"batch_count": n, "title": title, "body": body,
 		"email_title": emailTitle, "email_body": emailBody,
 		"push_title": pushTitle, "push_body": pushBody,
-		"updated_at": now, "seen_at": nil,
+		"data": data, "updated_at": now, "seen_at": nil,
 	}).Error
 	return true, open.ID, err
+}
+
+// mergedData is a merged row's data after one more notice joins it: the
+// badge stays only when the row and the new notice name the same subject
+// kind, and is dropped when they differ (a row about a teen and one about an
+// adult is about neither alone). Every other key is kept.
+func mergedData(stored, incoming string) (string, error) {
+	d := map[string]any{}
+	if err := json.Unmarshal([]byte(stored), &d); err != nil && stored != "" {
+		return "", err
+	}
+	if d == nil {
+		d = map[string]any{}
+	}
+	if SubjectKindOf(stored) != incoming {
+		delete(d, DataSubjectKind)
+	}
+	b, err := json.Marshal(d)
+	return string(b), err
 }
 
 // Resolve closes every open copy of a task (all admins' rows about one
