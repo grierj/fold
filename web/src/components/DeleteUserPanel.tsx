@@ -1,5 +1,5 @@
 import { publicName } from "../lib/can";
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
 import { AdminUsers } from "../api/adminUsers";
 import { ApiError } from "../api/core";
 import { useAuth } from "../auth";
@@ -69,15 +69,55 @@ const REVIEW_IRREVERSIBLE = "Blanked text can't be brought back in Fold. Backups
 // reloaded the review, so ERROR_COPY's "reload this page" would be wrong here.
 const REVIEW_NEEDED = "This person has contact-request reasons to review before the account can be deleted. They are listed below.";
 
-// What a delete does not reach (R4-6c, DEC-144, O-12). Shown before the press
-// and again once the account is gone. The IP line stays for as long as landed
-// code can leave a personal address in the activity log (RETAIN_* rows and the
-// conversion groups, inventory 6.5.2 IR-1 to IR-4, gate G-9); take it out only
-// when that is no longer true, never because the count came back as 0.
-const REACH_LEAD = "Some traces can remain after a delete, so you know what to expect:";
-const REACH_BACKUPS = "Deleting reaches Fold's backups only as they expire, so their details can stay in an older backup until then.";
-const REACH_OUTSIDE = "Copies already sent to mailboxes, mail providers and push services are outside Fold, and Fold can't take them back.";
-const REACH_IP = "Some network (IP) addresses can remain in the activity log, and Fold can't always tell whose address an entry holds.";
+// What a delete does not reach (R4-6c, R4-6e, DEC-144, DEC-148). Shown before the
+// press and again once the account is gone. Every sentence here, and each
+// sentence above and below that tells what stays, maps to one residue row in
+// docs/plan/M7.4-ERASURE-INVENTORY.md 11.1; data-residue carries the row id and
+// DeleteUserPanel.test.tsx reads that map. A sentence changes only with its row.
+// The network-address line stays for as long as landed code can leave a
+// personal address in the activity log (inventory 6.5.2, the S2 and S3 rows);
+// take it out only when that is no longer true, never because the count came
+// back as 0.
+const REACH_LEAD = "A delete doesn't reach everything. Here is what can remain, so you know what to expect:";
+const REACH_ROWS = [
+  {
+    row: "RS-1",
+    label: "Backups.",
+    text: "Backups made before now still hold their details until those backups expire, and restoring one brings the account back until you delete it again.",
+  },
+  {
+    row: "RS-2",
+    label: "Email, notifications and logs.",
+    text: "Emails and notifications already sent, and your server's own logs, are outside Fold, and Fold can't take them back.",
+  },
+  {
+    row: "RS-3",
+    label: "Activity log.",
+    text: "Some network (IP) addresses can remain in the activity log, and Fold can't always tell whose address an entry holds.",
+  },
+  { row: "RS-4", label: "Households.", text: "A household other people still share stays as it was." },
+  {
+    row: "RS-5",
+    label: "Other people's records.",
+    text: "Notices other people already received can still mention them until those expire, and a name typed into a group, event or room title stays as written.",
+  },
+  {
+    row: "RS-6",
+    label: "Safeguarding.",
+    text: "Notes an admin typed when checking a guardian, and a teen's consent records, stay so the church can show who agreed.",
+  },
+  { row: "RS-7", label: "Reasons you keep.", text: "A contact-request reason you choose to keep stays as written." },
+  {
+    row: "RS-8",
+    label: "Email choices.",
+    text: "If they turned off optional email, or an address of theirs bounced, Fold keeps a code made from that address, not the address, so those choices still hold.",
+  },
+  {
+    row: "RS-9",
+    label: "Old addresses.",
+    text: "Anything sent to an email address they used before, such as an old invitation, can't be tied back to them, so Fold leaves it alone.",
+  },
+] as const;
 // The two counts the delete answers with, in words (account_erasure_report.go;
 // inventory "Report semantics": a count of entries, never proof of ownership).
 const KEPT_HOUSEHOLDS = "Fold left these households as they were, because other people still share them or it couldn't tell whose they were.";
@@ -765,8 +805,8 @@ function PanelBody({ target, action, onDone }: PanelProps) {
           {hasReasons && (
             <>
               <div className="space-y-1 text-text-muted">
-                <p>{REVIEW_INTRO}</p>
-                <p>{REVIEW_LIMIT}</p>
+                <p data-residue="RS-7">{REVIEW_INTRO}</p>
+                <p data-residue="RS-7">{REVIEW_LIMIT}</p>
                 <p>{REVIEW_MEMORY}</p>
               </div>
               <ReasonProgress store={store} done={review.phase === "done"} />
@@ -829,7 +869,11 @@ function PanelBody({ target, action, onDone }: PanelProps) {
 // The note that blanked text cannot come back, only when a reason is to be blanked.
 function Irreversible({ store }: { store: ReasonReviewStore }) {
   const remove = useSyncExternalStore(store.subscribe, () => store.getSnapshot().remove);
-  return remove > 0 ? <p className="text-text-muted">{REVIEW_IRREVERSIBLE}</p> : null;
+  return remove > 0 ? (
+    <p className="text-text-muted" data-residue="RS-1">
+      {REVIEW_IRREVERSIBLE}
+    </p>
+  ) : null;
 }
 
 // What the server said about the attempt, in words (never color alone). The
@@ -878,10 +922,10 @@ function Outcome({ phase, statusBox }: { phase: Phase; statusBox: RefObject<HTML
 function KeptNotes() {
   return (
     <ul className="list-disc space-y-1 pl-5 text-text-muted">
-      <li>
+      <li data-residue="RS-4">
         <span className="font-semibold">Households kept:</span> {KEPT_HOUSEHOLDS}
       </li>
-      <li>
+      <li data-residue="RS-3">
         <span className="font-semibold">Activity entries kept:</span> {KEPT_ACTIVITY}
       </li>
     </ul>
@@ -889,19 +933,16 @@ function KeptNotes() {
 }
 
 function Reach() {
+  const lead = useId();
   return (
     <div className="space-y-1 text-text-muted">
-      <p>{REACH_LEAD}</p>
-      <ul className="list-disc space-y-1 pl-5">
-        <li>
-          <span className="font-semibold">Backups.</span> {REACH_BACKUPS}
-        </li>
-        <li>
-          <span className="font-semibold">Email and notifications.</span> {REACH_OUTSIDE}
-        </li>
-        <li>
-          <span className="font-semibold">Activity log.</span> {REACH_IP}
-        </li>
+      <p id={lead}>{REACH_LEAD}</p>
+      <ul aria-labelledby={lead} className="list-disc space-y-1 pl-5">
+        {REACH_ROWS.map(({ row, label, text }) => (
+          <li key={row} data-residue={row}>
+            <span className="font-semibold">{label}</span> {text}
+          </li>
+        ))}
       </ul>
     </div>
   );

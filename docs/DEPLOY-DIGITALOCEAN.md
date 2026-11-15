@@ -606,6 +606,48 @@ nor a count selects them, so you re-delete during recovery. No sentence here
 promises every copy of anyone's data is gone: dumps, offsite copies, Droplet
 Backups and snapshots keep what they held until they age out or you delete them.
 
+**What a restore does and does not protect.** The parts above, in one place
+(the same limits are in `docs/plan/M7.4-ERASURE-INVENTORY.md`, section 11):
+
+- **Restart.** Fold remembers in memory the last deletion it saw committed. If a
+  restore under a running app loses one, the next deletion is refused with
+  "restore detected", the app logs "Stopping: the database was restored while
+  Fold was running" and exits, and Compose starts it again; the admin's page asks
+  for a reload. A restart also ends that memory, so a deletion started before it
+  can only be reported as "can't tell", never as "nothing was deleted". Use
+  `restore.sh`, which stops the app first; this is the net under a restore done
+  some other way.
+- **The fence has limits.** It notices a restore only when the restore loses a
+  deletion this running app saw committed. A dump taken after the latest such
+  deletion, one that loses only a deletion whose answer never arrived, and one
+  made while the app was stopped are not noticed. Do not read a quiet app as
+  proof that no restore happened.
+- **The sweep and the saved list select different accounts, and neither is every
+  erasure.** The daily sweep scrubs accounts that are already deleted and carry
+  the `deleted-<id>@deleted.invalid` address (a dump taken after a deletion can
+  bring one back). The saved list names accounts that are deleted in the live
+  database and active in the dump. An account created and deleted after the dump,
+  an unknown count and anything the church's records do not show are on neither.
+- **A dump taken before a deletion restores that person as active.** The sweep
+  does not select them. Delete them again from the saved list and the church's
+  records before you reopen.
+- **The saved list, as built.** When the count is above zero, `restore.sh` writes
+  `/opt/fold/recovery-deleted.txt` (ids and times only, root-only), `--status`
+  shows how many are still active, and `--reopen` refuses while any is. A zero or
+  unknown count writes none; a lost file falls back to
+  `--checked-church-records`.
+- **A Droplet Backup or snapshot is outside this protection.** The rebuilt disk
+  starts the site and mail before anything can stop them. Treat the time between
+  the rebuild and your clean-up as unprotected.
+- **A lower recovery level is refused** on every scripted path, with no override:
+  restore with the current release.
+- **A rollback reopens alone only at a count of exactly zero.** Otherwise it
+  leaves the site closed in private recovery (exit 3) and you finish by hand.
+
+None of this says every copy of anyone's data is gone. The delete dialog tells
+the admin the same about backups, copies already sent and activity-log
+addresses.
+
 **Gaps in this tooling, stated plainly.**
 
 - `restore.sh` restores the database only. It does not touch the uploads volume
