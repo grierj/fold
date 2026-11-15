@@ -610,7 +610,7 @@ Backups and snapshots keep what they held until they age out or you delete them.
 (the same limits are in `docs/plan/M7.4-ERASURE-INVENTORY.md`, section 11):
 
 - **Restart.** Fold remembers in memory the latest fenced commit it saw
-  acknowledged: an account deletion, a settle of an earlier deletion, or a save on
+  acknowledged: an account deletion, a settlement of an earlier deletion or reason-save attempt, or a save on
   the deleted-accounts reason review. If a restore under a running app loses one
   of those, the next fenced operation (a deletion, a settle or a reason save) is
   refused with "restore detected", the app logs "Stopping: the database was restored while
@@ -620,7 +620,7 @@ Backups and snapshots keep what they held until they age out or you delete them.
   `restore.sh`, which stops the app first; this is the net under a restore done
   some other way.
 - **The fence has limits.** It counts every fenced change the running app saw
-  committed: an account deletion, a settle of an earlier deletion, and a save
+  committed: an account deletion, a settlement of an earlier deletion or reason-save attempt, and a save
   on the deleted-accounts reason review. It notices a restore only when the
   restore loses one of those acknowledged commits, not only a deletion. A dump
   taken after the latest acknowledged one (nothing it counts was lost), one that
