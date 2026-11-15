@@ -1306,6 +1306,7 @@ real_current_release_restore() {
   crossing_applied_exactly "$status" "$t4" "$cdir/panel-$t4.json" "$out" \
     || { echo "crossing: the fresh press after reload answered $status in recovery: $(cat "$out")" >&2; return 1; }
   sh_fresh=applied
+  delete_listed
   restore --reopen --checked-church-records
   wait_public; URL="$(public_url)"; login
   crossing_emit cases.jsonl --arg acceptance A-current-release-restore --argjson level "$level" --arg image "$CROSSING_CAND_IMG" \
@@ -1473,6 +1474,7 @@ ARCHIVE
   [[ "$after_sha" == "$candidate_sha" ]] || { echo "crossing: the trigger functions after the recovery boot are not the candidate's" >&2; return 1; }
   [[ "$(docker inspect --format '{{.Image}}' "$rid")" == "$(docker image inspect --format '{{.Id}}' "$CROSSING_CAND_IMG")" ]]
   drill_step "archive-$id/reopen-review-and-delete"
+  delete_listed
   restore --reopen --checked-church-records
   DB_DUMP="$original_dump"
   wait_public
