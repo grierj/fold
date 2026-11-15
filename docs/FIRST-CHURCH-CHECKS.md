@@ -34,7 +34,7 @@ been drilled only on disposable Compose stacks with fixture recovery levels. Tha
 does not verify the restore procedure and does not authorize a release. Every
 restore item below is unchecked, and a release at `recoveryPolicy` 1 or higher
 (this tree reports 2) stays unpublishable until they are done (#310). Inventory
-section 11 cross-references these items.
+section 11 cross-references these items. The exact-head full restore drill has not passed yet (#310, inventory 15.16): its latest run stopped in `lineage/l0-build`.
 
 - [ ] **`docker compose up` on a real domain.** Fill `.env` (set `FOLD_VERSION` to the published release), run `docker compose pull && docker compose up -d`. You should see Caddy get a certificate, `https://<domain>/healthz` answer, and the setup wizard at `/setup`.
 - [ ] **Pull-only install on a machine with no Go and no Node (R1 slice 1, C10).** After the first release is tagged and the `release` workflow is green, make the `ghcr.io/grierj/fold` package public (or `docker login ghcr.io` with a read token), then on a fresh server with only Docker run `docker compose pull && docker compose up -d` with `FOLD_VERSION` set to that exact version. You should see the image pull with no build step (try an `arm64` machine too, if one is around) and the setup page at `/setup`. Also run `gh attestation verify oci://ghcr.io/grierj/fold@<digest> --repo grierj/fold` with the digest from the workflow summary: you should see it verified.
