@@ -609,9 +609,11 @@ Backups and snapshots keep what they held until they age out or you delete them.
 **What a restore does and does not protect.** The parts above, in one place
 (the same limits are in `docs/plan/M7.4-ERASURE-INVENTORY.md`, section 11):
 
-- **Restart.** Fold remembers in memory the last deletion it saw committed. If a
-  restore under a running app loses one, the next deletion is refused with
-  "restore detected", the app logs "Stopping: the database was restored while
+- **Restart.** Fold remembers in memory the latest fenced commit it saw
+  acknowledged: an account deletion, a settle of an earlier deletion, or a save on
+  the deleted-accounts reason review. If a restore under a running app loses one
+  of those, the next fenced operation (a deletion, a settle or a reason save) is
+  refused with "restore detected", the app logs "Stopping: the database was restored while
   Fold was running" and exits, and Compose starts it again; the admin's page asks
   for a reload. A restart also ends that memory, so a deletion started before it
   can only be reported as "can't tell", never as "nothing was deleted". Use

@@ -665,17 +665,18 @@ const REACH: ReadonlyArray<{ sentence: string; row: string; text: string }> = [
   { sentence: "D-7", row: "RS-7", text: "A contact-request reason you choose to keep stays as written." },
   { sentence: "D-8", row: "RS-8", text: "If they turned off optional email, or an address of theirs bounced, Fold keeps a code made from that address, not the address, so those choices still hold." },
   { sentence: "D-9", row: "RS-9", text: "A record that names only an email address they used before, such as an invitation nobody accepted, can't be tied back to them, so Fold leaves it alone." },
+  { sentence: "D-10", row: "RS-11", text: "Messages they wrote, including drafts and ones that never went out, keep their text in the church's message history." },
 ];
 // The sentences the answer and the reason review show; they are not in the list.
 const COUNT_NOTES = [
-  { sentence: "D-10", row: "RS-4", text: "Fold left these households as they were, because other people still share them or it couldn't tell whose they were." },
-  { sentence: "D-11", row: "RS-3", text: "These are activity-log entries linked to this person that Fold kept. Some may have no network address. Fold counts entries, not addresses, and a 0 doesn't promise none remain." },
+  { sentence: "D-11", row: "RS-4", text: "Fold left these households as they were, because other people still share them or it couldn't tell whose they were." },
+  { sentence: "D-12", row: "RS-3", text: "These are activity-log entries linked to this person that Fold kept. Some may have no network address. Fold counts entries, not addresses, and a 0 doesn't promise none remain." },
 ];
 const REVIEW_NOTES = [
-  { sentence: "D-12", row: "RS-7", text: "Reasons can mention other people." },
-  { sentence: "D-13", row: "RS-7", text: "Blanking removes only the text; the request and its decisions stay." },
-  { sentence: "D-14", row: "RS-7", text: "Fold lists only requests this person made or was asked about. Reasons in other people's requests that mention them aren't listed here." },
-  { sentence: "D-15", row: "RS-1", text: "Blanked text can't be brought back in Fold. Backups made before now still contain it." },
+  { sentence: "D-13", row: "RS-7", text: "Reasons can mention other people." },
+  { sentence: "D-14", row: "RS-7", text: "Blanking removes only the text; the request and its decisions stay." },
+  { sentence: "D-15", row: "RS-7", text: "Fold lists only requests this person made or was asked about. Reasons in other people's requests that mention them aren't listed here." },
+  { sentence: "D-16", row: "RS-1", text: "Blanked text can't be brought back in Fold. Backups made before now still contain it." },
 ];
 
 describe("DeleteUserPanel what a delete does not reach", () => {

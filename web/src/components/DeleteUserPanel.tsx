@@ -117,6 +117,11 @@ const REACH_ROWS = [
     label: "Old addresses.",
     text: "A record that names only an email address they used before, such as an invitation nobody accepted, can't be tied back to them, so Fold leaves it alone.",
   },
+  {
+    row: "RS-11",
+    label: "Messages.",
+    text: "Messages they wrote, including drafts and ones that never went out, keep their text in the church's message history.",
+  },
 ] as const;
 // The two counts the delete answers with, in words (account_erasure_report.go;
 // inventory "Report semantics": a count of entries, never proof of ownership).

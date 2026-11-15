@@ -49,6 +49,7 @@ const RESIDUE: Array<[row: string, words: RegExp]> = [
   ["RS-7", /A contact-request reason you choose to keep stays as written/],
   ["RS-8", /Fold keeps a code made from that address, not the address/],
   ["RS-9", /can't be tied back to them, so Fold leaves it alone/],
+  ["RS-11", /Messages they wrote, including drafts and ones that never went out/],
 ];
 const IP_NOTE = RESIDUE[2][1];
 const KEPT_HOUSEHOLDS_NOTE = /Fold left these households as they were/;
