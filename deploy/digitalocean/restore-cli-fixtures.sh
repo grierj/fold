@@ -323,6 +323,41 @@ for count in 0 2 unknown; do
   fi
   [[ ! -e "$DIR/recovery.lock" ]]
 done
+# Q5: recovery-deleted.txt is the saved list of accounts to delete again. Its
+# ids and times, mode, hash and life cycle all come from the installed command.
+listed() {
+  local n="$1" rows="" i
+  for ((i=1; i<=n; i++)); do rows+="$i 2026-11-14T10:00:00Z"$'\n'; done
+  printf '%s' "$rows" >"$DIR/recovery-deleted.txt"; chmod 600 "$DIR/recovery-deleted.txt"
+  change_state --arg h "$(sha256sum "$DIR/recovery-deleted.txt" | cut -d' ' -f1)" --argjson n "$n" '.deletedList={sha256:$h,count:$n}'
+}
+seed recovering A; listed 2; change_model '.remaining=2'
+rejected '2 of 2 accounts' run_restore --reopen --checked-church-records
+phase_is recovering; [[ -f "$DIR/recovery-deleted.txt" ]]
+run_restore --status >"$WORK/out"; grep -q 'deleted list: 2 listed.*still active: 2' "$WORK/out"
+change_model '.remaining=1'
+rejected '1 of 2 accounts' run_restore --reopen --checked-church-records
+phase_is recovering
+change_model '.remaining=0'
+run_restore --status >"$WORK/out"; grep -q 'still active: 0' "$WORK/out"
+run_restore --reopen --checked-church-records >"$WORK/out" 2>&1
+[[ ! -e "$DIR/recovery.lock" && ! -e "$DIR/recovery-deleted.txt" ]]
+# A failed reopen keeps the list, --resume reuses it, and only the reopen that
+# removes the lock removes the file.
+seed recovering A; listed 2; change_model '.remaining=0'
+before_hash="$(sha256sum "$DIR/recovery-deleted.txt" | cut -d' ' -f1)"
+rejected reopen-failed env RESTORE_FIXTURE_SMOKE_FAIL=1 "$DIR/recovery-tools/restore.sh" --deploy-dir "$DIR" --drill --reopen --checked-church-records
+phase_is reopen-failed; [[ -f "$DIR/recovery-deleted.txt" ]]
+run_restore --resume >"$WORK/out" 2>&1; phase_is recovering
+[[ "$(sha256sum "$DIR/recovery-deleted.txt" | cut -d' ' -f1)" == "$before_hash" ]]
+run_restore --reopen --checked-church-records >"$WORK/out" 2>&1
+[[ ! -e "$DIR/recovery.lock" && ! -e "$DIR/recovery-deleted.txt" ]]
+# A file that no longer matches the lock cannot be checked: the operator's own
+# statement is what remains, and it says so.
+seed recovering A; listed 2; change_model '.remaining=2'
+printf '3 2026-11-14T10:00:00Z\n' >>"$DIR/recovery-deleted.txt"
+run_restore --reopen --checked-church-records >"$WORK/out" 2>&1
+grep -q 'differs from recovery.lock' "$WORK/out"; [[ ! -e "$DIR/recovery.lock" ]]
 seed pre-drop-intent C drop-intent
 rejected reopen-failed env RESTORE_FIXTURE_SMOKE_FAIL=1 "$DIR/recovery-tools/restore.sh" --deploy-dir "$DIR" --drill --resume
 [[ "$(jq -er .cleanup "$DIR/recovery.lock")" == drop-intent ]]
@@ -407,7 +442,30 @@ for count in 0 2 unknown; do
   env "${env_args[@]}" "$DIR/recovery-tools/restore.sh" --deploy-dir "$DIR" --drill --dump "$ARCHIVE" --reopen-if-none >"$WORK/out" 2>&1 || rc=$?
   if [[ "$count" == 0 ]]; then [[ "$rc" == 0 && ! -e "$DIR/recovery.lock" ]]
   else [[ "$rc" == 3 ]]; grep -q 'SITE IS CLOSED' "$WORK/out"; phase_is recovering; fi
+  # Only a known nonzero count saves a list: a zero or unknown count writes none.
+  if [[ "$count" == 2 ]]; then
+    [[ "$(stat -c '%u:%a' "$DIR/recovery-deleted.txt")" == 0:600 ]]
+    [[ "$(cat "$DIR/recovery-deleted.txt")" == $'1 2026-11-14T10:00:00Z\n2 2026-11-14T10:00:00Z' ]]
+    [[ "$(jq -er .deletedList.sha256 "$DIR/recovery.lock")" == "$(sha256sum "$DIR/recovery-deleted.txt" | cut -d' ' -f1)" ]]
+    [[ "$(jq -er .deletedList.count "$DIR/recovery.lock")" == 2 ]]
+    # The hash was recorded in the same write that recorded collected.
+    [[ "$(jq -er '[.history[]|.phase]|index("collected")' "$DIR/recovery.lock")" != null ]]
+  else [[ ! -e "$DIR/recovery-deleted.txt" ]]
+    if [[ -f "$DIR/recovery.lock" ]]; then [[ "$(jq -r '.deletedList // "none"' "$DIR/recovery.lock")" == none ]]; fi
+  fi
 done
+# A failed time lookup keeps the ids and shows "unknown"; an old file never
+# survives into a collection that finds nothing to list.
+seed quiesce Q; rm "$DIR/recovery.lock"
+change_model '.app.running=true | .caddy.running=true'
+printf '9 2026-01-01T00:00:00Z\n' >"$DIR/recovery-deleted.txt"; chmod 600 "$DIR/recovery-deleted.txt"
+env RESTORE_FIXTURE_TIMES_FAIL=1 "$DIR/recovery-tools/restore.sh" --deploy-dir "$DIR" --drill --dump "$ARCHIVE" >"$WORK/out" 2>&1
+[[ "$(cat "$DIR/recovery-deleted.txt")" == $'1 unknown\n2 unknown' ]]
+seed quiesce Q; rm "$DIR/recovery.lock"
+change_model '.count=0 | .app.running=true | .caddy.running=true'
+printf '9 2026-01-01T00:00:00Z\n' >"$DIR/recovery-deleted.txt"; chmod 600 "$DIR/recovery-deleted.txt"
+"$DIR/recovery-tools/restore.sh" --deploy-dir "$DIR" --drill --dump "$ARCHIVE" >"$WORK/out" 2>&1
+[[ ! -e "$DIR/recovery-deleted.txt" ]]
 # Installation from both source modes carries the full protocol, and an
 # image pin starts only the app pull, never normal services or smoke.
 for mode in image build; do

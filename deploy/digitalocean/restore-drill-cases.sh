@@ -389,8 +389,49 @@ smoke_interruption() {
   rm -f "$DIR/drill.ready"
 }
 
+# Q5: the saved list is exactly the given ids, root-only, hashed in the lock,
+# and holds nothing but "<id> <UTC time or unknown>" per line.
+assert_deleted_list() {
+  local file="$DIR/recovery-deleted.txt" got want
+  [[ -f "$file" && ! -L "$file" && "$(stat -c '%u:%a' "$file")" == 0:600 ]]
+  [[ "$(jq -er .deletedList.sha256 "$DIR/recovery.lock")" == "$(sha256sum "$file" | cut -d' ' -f1)" ]]
+  [[ "$(jq -er .deletedList.count "$DIR/recovery.lock")" == "$#" ]]
+  got="$(awk '{print $1}' "$file" | sort -n | paste -sd, -)"
+  want="$(printf '%s\n' "$@" | sort -n | paste -sd, -)"
+  [[ "$got" == "$want" ]]
+  if grep -Evq '^[0-9]+ ([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z|unknown)$' "$file"; then
+    echo 'recovery-deleted.txt holds more than ids and times' >&2; return 1
+  fi
+  if grep -Eqi 'example\.invalid|member|@' "$file"; then echo 'recovery-deleted.txt holds a name or an address' >&2; return 1; fi
+}
+# The saved list gates the reopen: refused while a listed account is active,
+# kept by a failed reopen and reused by --resume, gone once the reopen succeeds.
+deleted_list_lifecycle() {
+  local hash
+  assert_private; assert_deleted_list "$A"
+  hash="$(sha256sum "$DIR/recovery-deleted.txt" | cut -d' ' -f1)"
+  restore --status >"$WORK/list-status.log"
+  grep -q 'deleted list: 1 listed in .*still active: 1' "$WORK/list-status.log"
+  expect_fail 'still active' restore --reopen --checked-church-records
+  assert_private
+  [[ "$(pg fold -c "SELECT deleted_at IS NULL FROM users WHERE id=$A")" == t ]]
+  [[ "$(sha256sum "$DIR/recovery-deleted.txt" | cut -d' ' -f1)" == "$hash" ]]
+  URL=http://localhost:18080; login; delete_a
+  restore --status >"$WORK/list-status.log"
+  grep -q 'deleted list: 1 listed in .*still active: 0' "$WORK/list-status.log"
+  touch "$DIR/drill-smoke-fail"
+  expect_fail reopen-failed restore --reopen --checked-church-records
+  assert_closed
+  [[ "$(sha256sum "$DIR/recovery-deleted.txt" | cut -d' ' -f1)" == "$hash" ]]
+  rm "$DIR/drill-smoke-fail"
+  restore --resume; assert_private; assert_deleted_list "$A"
+  [[ "$(sha256sum "$DIR/recovery-deleted.txt" | cut -d' ' -f1)" == "$hash" ]]
+  restore --reopen --checked-church-records
+  [[ ! -e "$DIR/recovery.lock" && ! -e "$DIR/recovery-deleted.txt" ]]
+}
+
 count_races() {
-  local gate=$((16#464f4c44434f4e)) delete_pid original_dump="$DB_DUMP" expected tombstoned
+  local gate=$((16#464f4c44434f4e)) delete_pid original_dump="$DB_DUMP" expected tombstoned a_time
   for timing in before-stop during-stop; do
     drill_step "gate/$timing"
     reset_case
@@ -436,22 +477,34 @@ count_races() {
   restore --dump "$DB_DUMP"
   [[ "$(jq -er .count "$DIR/recovery.lock")" == 1 ]]
   assert_private
+  # B's deletion committed after the archive but its audit time is before it:
+  # the list holds B, with that time, and only B.
+  assert_deleted_list "$B"
+  [[ "$(cat "$DIR/recovery-deleted.txt")" == "$B $(date -u -d "$(cat "$WORK/b-audit-start.txt")" +%FT%TZ)" ]]
   DB_DUMP="$original_dump"
   drill_step created-after-backup
   reset_case
+  a_time="$(pg fold -c "SELECT to_char(max(at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') FROM audit_logs WHERE action='user.deleted' AND target_id=$A")"
   D="$(new_user 'After backup' after-backup@example.invalid)"
   api DELETE "/admin/users/$D" '{}' >/dev/null
   restore --dump "$DB_DUMP"
   [[ "$(jq -er .count "$DIR/recovery.lock")" == 1 ]]
   [[ "$(pg fold -c "SELECT count(*) FROM users WHERE id=$D")" == 0 ]]
+  # D was created and deleted after the backup: not in the archive, so not listed.
+  assert_deleted_list "$A"
+  [[ "$(cat "$DIR/recovery-deleted.txt")" == "$A $a_time" ]]
+  deleted_list_lifecycle
   # A current database without users cannot establish the comparison. The
-  # archive remains restorable, but reopening needs the church-records check.
+  # archive remains restorable, but reopening needs the church-records check,
+  # and no list is written (an old file is removed, not reused).
   drill_step unknown-current
   reset_case; dc stop caddy app
   pg postgres -c 'DROP DATABASE fold' -c 'CREATE DATABASE fold OWNER church TEMPLATE template0'
+  printf '%s 2026-01-01T00:00:00Z\n' "$A" >"$DIR/recovery-deleted.txt"; chmod 600 "$DIR/recovery-deleted.txt"
   rc=0; restore --dump "$DB_DUMP" --reopen-if-none >"$WORK/unknown-auto-reopen.log" 2>&1 || rc=$?
   [[ "$rc" == 3 ]]; grep -q 'SITE IS CLOSED' "$WORK/unknown-auto-reopen.log"
   [[ "$(jq -er .count "$DIR/recovery.lock")" == unknown ]]
+  [[ ! -e "$DIR/recovery-deleted.txt" && "$(jq -r '.deletedList // "none"' "$DIR/recovery.lock")" == none ]]
   expect_fail checked-church-records restore --reopen
   reopen_checked
 }
@@ -567,6 +620,7 @@ archive_failures() {
   expect_fail recovery-failed env RESTORE_DRILL_FAULT=bad-recovery "$DIR/restore.sh" --deploy-dir "$DIR" --drill --dump "$DB_DUMP"
   [[ "$(phase)" == recovery-failed ]]; assert_failed_interval
   restore --resume; assert_private
+  delete_listed
   touch "$DIR/drill-smoke-fail"
   expect_fail reopen-failed restore --reopen --checked-church-records
   assert_closed
@@ -678,8 +732,9 @@ domain=groups.example.org
 RELEASE
       rc=0
       RESTORE_DRILL_OPERATION=1 "$DIR/upgrade.sh" --rollback --deploy-dir "$DIR" --source-dir "$SOURCE" >"$WORK/rollback-$mode-$revived.log" 2>&1 || rc=$?
-      if [[ "$revived" == yes ]]; then [[ "$rc" == 3 ]]; grep -q 'SITE IS CLOSED' "$WORK/rollback-$mode-$revived.log"; assert_private; [[ "$(jq -er .count "$DIR/recovery.lock")" == 1 ]]; reopen_checked
-      else [[ "$rc" == 0 && ! -e "$DIR/recovery.lock" ]]; wait_public; fi
+      if [[ "$revived" == yes ]]; then [[ "$rc" == 3 ]]; grep -q 'SITE IS CLOSED' "$WORK/rollback-$mode-$revived.log"; assert_private; [[ "$(jq -er .count "$DIR/recovery.lock")" == 1 ]]
+        assert_deleted_list "$A"; reopen_checked; [[ ! -e "$DIR/recovery-deleted.txt" ]]
+      else [[ "$rc" == 0 && ! -e "$DIR/recovery.lock" && ! -e "$DIR/recovery-deleted.txt" ]]; wait_public; fi
       for file in restore.sh provision.sh upgrade.sh smoke.sh; do cmp "$DIR/$file" "$DIR/recovery-tools/$file"; done
       [[ ! -f "$DIR/go.mod" && ! -d "$DIR/web" ]]
     done
@@ -717,6 +772,7 @@ cleanup_and_tamper_cases() {
     for tamper in return-pre replace-fold; do
       drill_step "$point/$tamper"
       reset_case; restore --dump "$DB_DUMP"
+      delete_listed
       kill_point "$point" --reopen --checked-church-records
       pre="$(nonce_db fold_pre_restore_)"
       if [[ "$tamper" == return-pre ]]; then
@@ -748,6 +804,7 @@ cleanup_and_tamper_cases() {
   # A drop failure after smoke leaves the site open; clearing the external
   # cause lets --resume rerun smoke and finish cleanup.
   reset_case; restore --dump "$DB_DUMP"
+  delete_listed
   kill_point before-drop --reopen --checked-church-records
   pre="$(nonce_db fold_pre_restore_)"
   # P refuses connections by design. A test-only session already inside P
@@ -759,6 +816,7 @@ cleanup_and_tamper_cases() {
   rm "$WORK/fail-pre-drop"; restore --resume
   [[ ! -e "$DIR/recovery.lock" ]]
   reset_case; restore --dump "$DB_DUMP"
+  delete_listed
   touch "$WORK/fail-floor"
   expect_fail cleanup-failed restore --reopen --checked-church-records
   [[ "$(phase)" == cleanup-failed && "$(jq -er .cleanup "$DIR/recovery.lock")" == dropped ]]
@@ -817,6 +875,7 @@ concurrency_cases() {
   unchanged_loser 75 "$DIR/restore.sh" --deploy-dir "$DIR" --drill --abort
   release_barrier
   # A reopen held by its real smoke helper excludes an outside resume.
+  delete_listed
   rm -f "$DIR/drill.ready"
   env RESTORE_DRILL_FAULT=mid-smoke RESTORE_DRILL_OPERATION=1 "$DIR/restore.sh" --deploy-dir "$DIR" --drill --reopen --checked-church-records >"$WORK/reopen-lock.log" 2>&1 & holder=$!
   wait_file "$DIR/drill.ready" '^mid-smoke|'
@@ -916,6 +975,7 @@ lifecycle_cases() {
     for ((i=0;i<90;i++)); do dc exec -T db pg_isready -U church >/dev/null 2>&1 && break; sleep 1; done
     for id in $(dc ps -a -q app caddy) "$(recovery_ids)"; do [[ "$(docker inspect --format '{{.State.Running}}' "$id")" == false ]]; done
     restore --resume; assert_private
+    delete_listed
     kill_point after-caddy-start --reopen --checked-church-records
     systemctl restart docker
     dc up -d registry smtp push-sink
@@ -1046,6 +1106,7 @@ review_cleanup_retry_cases() {
     for point in after-app-start after-caddy-start mid-smoke; do
       drill_step "$initial/$point" 15
       reset_case; restore --dump "$DB_DUMP"
+      delete_listed
       case "$initial" in
         drop-failed)
           touch "$WORK/fail-pre-drop"
@@ -1195,6 +1256,7 @@ ARCHIVE
   [[ "$(pg fold -c 'SELECT count(*)=3 AND count(DISTINCT version_id)=3 FROM goose_db_version WHERE version_id BETWEEN 2 AND 4 AND is_applied')" == t ]]
   funcs="$(pg fold -c "SELECT pg_get_functiondef(oid) FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname IN ('reject_consent_change','add_request_identity','add_request_completed') ORDER BY proname")"
   grep -q NEW.ip <<<"$funcs"; grep -q v.add_childcare_ages_note <<<"$funcs"
+  delete_listed
   restore --reopen --checked-church-records
   DB_DUMP="$original_dump"
   reset_case

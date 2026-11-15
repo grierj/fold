@@ -143,7 +143,13 @@ elif [[ "$sql" == *pg_stat_activity* ]]; then
   [[ "$sql" != *fold_restore_* ]] || extra="$(read_model '.outsideRClients // 0')"
   jq -r --argjson extra "$extra" '(.outsideClients // 0) + $extra + (if .recovery.exists and .recovery.running then 1 else 0 end)' "$model"
 elif [[ "$sql" == *'COPY (SELECT id FROM users'* ]]; then [[ "${RESTORE_FIXTURE_SOURCE_UNREADABLE:-0}" == 0 ]] || exit 1; printf '1\n2\n'
-elif [[ "$sql" == *'CREATE TEMP TABLE erased_ids'* ]]; then read_model '.count // 2'
+elif [[ "$sql" == *'CREATE TEMP TABLE erased_ids'* ]]; then
+  # The archive-side comparison prints the revived ids, one per line.
+  jq -r '(.count // 2) as $n | if $n>0 then range(1; $n+1) else empty end' "$model"
+elif [[ "$sql" == *'COPY (SELECT l.id'* ]]; then
+  [[ "${RESTORE_FIXTURE_TIMES_FAIL:-0}" == 0 ]] || exit 1
+  jq -r '(.count // 2) as $n | if $n>0 then range(1; $n+1) | "\(.)\t2026-11-14T10:00:00Z" else empty end' "$model"
+elif [[ "$sql" == *'CREATE TEMP TABLE listed'* ]]; then read_model '.remaining // 0'
 elif [[ "$sql" == *'SELECT datallowconn'* ]]; then echo t
 elif [[ "$sql" == CREATE\ DATABASE* ]]; then
   [[ -n "$name" ]] || exit 99
