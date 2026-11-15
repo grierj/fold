@@ -577,7 +577,51 @@ copy_tree() {
     rm -rf "$stage"
     die "copy into $dest failed"
   fi
+  if ! prune_stale_tree "$stage" "$dest"; then
+    rm -rf "$stage"
+    die "could not remove files the new source no longer has from $dest"
+  fi
   rm -rf "$stage"
+}
+
+# prune_stale_tree STAGE DEST: remove from DEST every file or directory the
+# staged source lacks, so an on-box build compiles exactly the new release. A
+# release that deletes a Go file must not leave the old copy next to its
+# replacement (the build would fail on a redeclared symbol). The deploy
+# directory also holds runtime state the source never has; the names below are
+# the whole of it and are never touched, and neither is deploy/digitalocean.
+# The first deploy that carried no manifest cannot say what it installed, so
+# this compares against the new tree rather than an old list.
+prune_stale_tree() {
+  local stage="$1" dest="$2" keep name rel
+  local -a keep_names=(
+    .env '.env.*' backup.env data backup.lock ops.lock ops.owner '.ops.owner.*'
+    recovery.lock recovery-policy-floor 'recovery-policy-floor.*' '.recovery-policy-floor.*'
+    deploy-tools recovery-tools '.deploy-tools.*' '.old-deploy-tools.*'
+    '.recovery-tools.*' '.old-recovery-tools.*' .deploy-drill 'drill.*' dumps
+    'release.prev*' '.tmp.*' '.pin-save.*'
+    docker-compose.yml Caddyfile .env.example
+  )
+  while IFS= read -r name; do
+    keep_names+=("$name")
+  done < <(runtime_tools)
+  local -a find_args=(. -mindepth 1 '(' -path ./deploy/digitalocean)
+  for keep in "${keep_names[@]}"; do
+    find_args+=(-o -path "./$keep")
+  done
+  find_args+=(')' -prune -o -print0)
+  # Deepest first, so a directory is looked at after what it holds.
+  while IFS= read -r -d '' rel; do
+    rel="${rel#./}"
+    if [[ -e "$stage/$rel" || -L "$stage/$rel" ]]; then
+      continue
+    fi
+    if [[ -d "$dest/$rel" && ! -L "$dest/$rel" ]]; then
+      rmdir "$dest/$rel" 2>/dev/null || true
+    else
+      rm -f "$dest/$rel"
+    fi
+  done < <(cd "$dest" && find "${find_args[@]}" | sort -rz)
 }
 
 # The shipped docker-compose.yml pulls ${FOLD_IMAGE_REPO}:${FOLD_VERSION} and
