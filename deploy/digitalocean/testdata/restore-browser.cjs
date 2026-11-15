@@ -73,7 +73,7 @@ async function runPrivateBrowser(options) {
     // The panel states what a delete does not reach before the press, and the
     // 390px screenshot is taken with that text on screen.
     await row.getByText(REACH_LEAD, { exact: true }).waitFor({ state: 'visible' });
-    for (const label of ['Backups.', 'Email and notifications.', 'Activity log.']) await row.getByText(label, { exact: true }).waitFor({ state: 'visible' });
+    for (const label of ['Backups.', 'Email, notifications and logs.', 'Activity log.']) await row.getByText(label, { exact: true }).waitFor({ state: 'visible' });
     await page.screenshot({ path: screenshot, fullPage: true });
     stage = 'delete';
     // One real press: the panel mints an attempt id, then sends the DELETE with
