@@ -134,6 +134,62 @@ test("a leader sends now and the page follows it: sent with counts, or failed wi
   expect(csp).toEqual([]);
 });
 
+// Pictures (DEC-118): a leader adds one to a new message (which saves the
+// draft first), describes it, sends, and the read page and the captured email
+// both show it, the email by its full address with its description. The
+// email is read from the dev outbox, so this runs in the dev shard.
+const PICNIC_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+
+test("a leader adds a picture and sends: the read page and the email show it", async ({ page, request }) => {
+  test.skip((await request.get("/dev/outbox")).status() !== 200, "Reads the sent email from the dev outbox (E2E_APP_ENV=dev)");
+  const csp = await watchCSP(page);
+  const admin = await apiAs(request, "grier");
+  const { groups } = (await admin("GET", "/groups")) as { groups: { id: number; name: string }[] };
+  const room = groups.find((g) => g.name === "Room 201 class")!;
+  const subject = `Picnic photos ${Date.now()}`;
+
+  await signInTo(page, "lee", `/messages/new?group=${room.id}`);
+  await expect(page.getByRole("status").filter({ hasText: /^\d+ (people|person);/ })).toBeVisible();
+  await page.getByRole("textbox", { name: "Subject" }).fill(subject);
+  const body = page.getByRole("textbox", { name: "Message" });
+  await body.click();
+  await page.keyboard.type("Here is the table from the picnic.");
+
+  await page.getByRole("button", { name: "Add image" }).click();
+  await page.locator('input[type="file"]').setInputFiles({ name: "picnic.png", mimeType: "image/png", buffer: PICNIC_PNG });
+  await page.getByRole("button", { name: "Add picture" }).click();
+  await expect(page.getByRole("alert")).toContainText("Say what the picture shows");
+  await page.getByRole("textbox", { name: "What the picture shows" }).fill("The picnic table");
+  await page.getByRole("button", { name: "Add picture" }).click();
+  // A new message is saved as a draft first, so it has an address now.
+  await expect(page).toHaveURL(/\/messages\/\d+$/);
+  await expect(body.locator("img")).toHaveAttribute("alt", "The picnic table");
+  const id = Number(page.url().match(/\/messages\/(\d+)$/)![1]);
+  expect(await body.locator("img").getAttribute("src")).toMatch(new RegExp(`^/uploads/messages/${id}/[0-9a-f]{32}\\.png$`));
+
+  await page.getByRole("button", { name: "Send now" }).click();
+  await page.getByRole("group", { name: /^Send to \d+ (people|person) now\?$/ }).getByRole("button", { name: "Send now" }).click();
+  await expect(page.getByText(/^Sent to \d+ (people|person)/).first()).toBeVisible({ timeout: 20_000 });
+
+  // What a reader opens from the push: the picture, loaded from this site.
+  await page.goto(`/messages/${id}/read`);
+  const shown = page.getByRole("img", { name: "The picnic table" });
+  await expect(shown).toBeVisible();
+  await expect.poll(() => shown.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)).toBe(true);
+
+  // The email: its plain part names the picture, its HTML part links to it by full address.
+  let htmlPath = "";
+  await expect.poll(async () => {
+    const section = (await (await page.request.get("/dev/outbox")).text()).split("<section").find((s) => s.includes(subject)) ?? "";
+    expect(section === "" || section.includes("[Image: The picnic table]")).toBe(true);
+    htmlPath = section.match(/href="(\/dev\/outbox\/\d+\/html)"/)?.[1] ?? "";
+    return htmlPath;
+  }, { timeout: 20_000 }).not.toBe("");
+  const html = await (await page.request.get(htmlPath)).text();
+  expect(html).toMatch(new RegExp(`<img src="https?://[^"/]+/uploads/messages/${id}/[0-9a-f]{32}\\.png" alt="The picnic table" style="max-width:100%;height:auto;`));
+  expect(csp).toEqual([]);
+});
+
 // "Push notification too" (M3.13d2, DEC-123): on by default, the summary
 // counts who also gets a push, the list marks them in words, and turning
 // it off is saved with the draft. Its own group and member, so no other

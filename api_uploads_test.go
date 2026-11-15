@@ -5,7 +5,10 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"fold/internal/content"
+	"fold/storage"
 	"image"
+	"image/jpeg"
 	"image/png"
 	"io"
 	"mime/multipart"
@@ -588,4 +591,265 @@ func TestMeasureUploadRequests(t *testing.T) {
 	requireFreeSlots(t)
 	wantCode(t, "avatar after the waves", postUpload(t, f.memberC, f.avatarPath, "avatar", tinyPNG(t), uploadOptions{}), http.StatusOK, "")
 	wantCode(t, "cover after the waves", postUpload(t, f.leaderC, f.coverPath, "cover", tinyPNG(t), uploadOptions{}), http.StatusOK, "")
+}
+
+// messageImageFixture is a leader with a saved draft in a group they lead,
+// someone else's draft, and a client for a member who can't compose.
+type messageImageFixture struct {
+	composeFixture
+	draft, other uint
+}
+
+func newMessageImageFixture(t *testing.T) messageImageFixture {
+	t.Helper()
+	f := messageImageFixture{composeFixture: newComposeFixture(t)}
+	mk := func(c *apiClient, groupID uint) uint {
+		var out struct {
+			Message messageJSON `json:"message"`
+		}
+		w := c.do("POST", "/api/v1/messages", map[string]any{"subject": "Pictures", "bodyHtml": "<p>Hi</p>", "audience": map[string]any{"type": "group", "groupId": groupID}}, true)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("draft: %d %s", w.Code, w.Body.String())
+		}
+		decodeJSON(t, w, &out)
+		return out.Message.ID
+	}
+	f.draft = mk(f.leader, f.group.ID)
+	f.other = mk(f.host, f.otherGroup.ID)
+	return f
+}
+
+func (f messageImageFixture) imagesPath(id uint) string {
+	return "/api/v1/messages/" + itoa(id) + "/images"
+}
+
+func (f messageImageFixture) upload(t *testing.T, c *apiClient, id uint, data []byte) messageImageResponseJSON {
+	t.Helper()
+	w := postUpload(t, c, f.imagesPath(id), "image", data, uploadOptions{})
+	if w.Code != http.StatusOK {
+		t.Fatalf("upload: %d %s", w.Code, w.Body.String())
+	}
+	var out messageImageResponseJSON
+	decodeJSON(t, w, &out)
+	return out
+}
+
+// saveBody puts body in a draft the way the composer does.
+func (f messageImageFixture) saveBody(t *testing.T, c *apiClient, id uint, groupID uint, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	return c.do("PUT", "/api/v1/messages/"+itoa(id), map[string]any{"subject": "Pictures", "bodyHtml": body, "audience": map[string]any{"type": "group", "groupId": groupID}}, true)
+}
+
+func (f messageImageFixture) folder(t *testing.T, id uint) []string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(f.app.Uploads.(*storage.LocalStore).Dir, "messages", itoa(id)))
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		out = append(out, e.Name())
+	}
+	return out
+}
+
+// A leader adds a picture to their own draft: it is stored under the
+// message's folder, re-encoded (no EXIF, turned upright), served without a
+// session, and answered as {key, url}. Nothing limits how many (Grier,
+// Nov 14 2026).
+func TestMessageImageUploadStoresReencodedPicture(t *testing.T) {
+	f := newMessageImageFixture(t)
+	in := imagetest.WithEXIF(imagetest.JPEGBytes(t, imagetest.BlockImage(2, 3, imagetest.GridColors)), imagetest.ExifBlock(6))
+	got := f.upload(t, f.leader, f.draft, in)
+	if !strings.HasPrefix(got.Key, "messages/"+itoa(f.draft)+"/") || !strings.HasSuffix(got.Key, ".jpg") || got.URL != "/uploads/"+got.Key {
+		t.Fatalf("answer = %+v", got)
+	}
+	if _, ok := content.ImageMessageID(got.URL); !ok {
+		t.Fatalf("the sanitizer would not keep %q", got.URL)
+	}
+	stored := uploadedBytes(t, f.app, got.URL)
+	for name, pat := range map[string][]byte{"Exif marker": []byte("Exif"), "maker string": imagetest.GPSMarker, "GPS latitude": imagetest.GPSLatitude} {
+		if bytes.Contains(stored, pat) {
+			t.Errorf("stored picture still contains the %s", name)
+		}
+	}
+	if _, err := jpeg.Decode(bytes.NewReader(stored)); err != nil {
+		t.Fatalf("stored picture is not a JPEG: %v", err)
+	}
+	// Served to anyone with the address: an inbox has no session.
+	req := httptest.NewRequest("GET", got.URL, nil)
+	rec := httptest.NewRecorder()
+	f.leader.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("signed-out read: %d %v", rec.Code, rec.Header())
+	}
+	// Admins may add to anyone's draft, and there is no count limit.
+	for range 12 {
+		f.upload(t, f.leader, f.draft, tinyPNG(t))
+	}
+	f.upload(t, f.admin, f.draft, tinyPNG(t))
+	if n := len(f.folder(t, f.draft)); n != 14 {
+		t.Fatalf("folder holds %d, want 14", n)
+	}
+}
+
+func TestMessageImageUploadRefusals(t *testing.T) {
+	f := newMessageImageFixture(t)
+	tmp := uploadTempFiles(t)
+	pic := tinyPNG(t)
+	post := func(c *apiClient, id uint, data []byte, o uploadOptions) *httptest.ResponseRecorder {
+		return postUpload(t, c, f.imagesPath(id), "image", data, o)
+	}
+	wantCode(t, "not an image", post(f.leader, f.draft, []byte("just words, not a picture"), uploadOptions{}), http.StatusBadRequest, "file_type")
+	wantCode(t, "html", post(f.leader, f.draft, []byte("<svg onload=alert(1)>"), uploadOptions{}), http.StatusBadRequest, "file_type")
+	wantCode(t, "empty", post(f.leader, f.draft, nil, uploadOptions{}), http.StatusBadRequest, "file_unreadable")
+	wantCode(t, "over 5MB", post(f.leader, f.draft, append(append([]byte(nil), pic...), bytes.Repeat([]byte{0}, images.MaxUploadBytes)...), uploadOptions{}), http.StatusBadRequest, "file_too_large")
+	wantCode(t, "no csrf", post(f.leader, f.draft, pic, uploadOptions{badToken: true}), http.StatusForbidden, "")
+	wantCode(t, "someone else's draft", post(f.leader, f.other, pic, uploadOptions{}), http.StatusNotFound, "")
+	wantCode(t, "not a composer", post(f.member, f.draft, pic, uploadOptions{}), http.StatusNotFound, "")
+	wantCode(t, "no such message", post(f.leader, 999999, pic, uploadOptions{}), http.StatusNotFound, "")
+	// A missing field is a missing file.
+	wantCode(t, "wrong field", postUpload(t, f.leader, f.imagesPath(f.draft), "avatar", pic, uploadOptions{}), http.StatusBadRequest, "file_unreadable")
+	// A message that is sending, sent or cancelled can't take another.
+	for _, status := range []string{models.MessageSending, models.MessageSent, models.MessageFailed, models.MessageCancelled} {
+		f.app.DB.Model(&models.Message{}).Where("id = ?", f.draft).Update("status", status)
+		wantCode(t, status, post(f.leader, f.draft, pic, uploadOptions{}), http.StatusConflict, "message_locked")
+	}
+	// An automatic reminder is read only.
+	f.app.DB.Model(&models.Message{}).Where("id = ?", f.draft).Updates(map[string]any{"status": models.MessageDraft, "category": models.MessageCategoryReminder})
+	wantCode(t, "reminder", post(f.admin, f.draft, pic, uploadOptions{}), http.StatusConflict, "message_reminder")
+	if n := len(f.folder(t, f.draft)) + len(f.folder(t, f.other)); n != 0 {
+		t.Fatalf("a refused upload stored %d files", n)
+	}
+	if got := uploadTempFiles(t); got != tmp {
+		t.Errorf("a refused upload left temp files: %d, was %d", got, tmp)
+	}
+	requireFreeSlots(t)
+}
+
+// A body may show only pictures uploaded to its own message.
+func TestMessageSaveRefusesAnotherMessagesPicture(t *testing.T) {
+	f := newMessageImageFixture(t)
+	mine := f.upload(t, f.leader, f.draft, tinyPNG(t))
+	theirs := f.upload(t, f.host, f.other, tinyPNG(t))
+	img := func(url string) string { return `<p>Hi</p><img src="` + url + `" alt="A picture">` }
+
+	w := f.saveBody(t, f.leader, f.draft, f.group.ID, img(mine.URL))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), mine.URL) {
+		t.Fatalf("own picture: %d %s", w.Code, w.Body.String())
+	}
+	wantCode(t, "another message's", f.saveBody(t, f.leader, f.draft, f.group.ID, img(theirs.URL)), http.StatusBadRequest, "message_image")
+	wantCode(t, "next message's id", f.saveBody(t, f.leader, f.draft, f.group.ID, img(strings.Replace(mine.URL, "/messages/"+itoa(f.draft)+"/", "/messages/"+itoa(f.draft+1)+"/", 1))), http.StatusBadRequest, "message_image")
+	// A new message has no folder yet.
+	w = f.leader.do("POST", "/api/v1/messages", map[string]any{"subject": "New", "bodyHtml": img(mine.URL), "audience": map[string]any{"type": "group", "groupId": f.group.ID}}, true)
+	wantCode(t, "create with a picture", w, http.StatusBadRequest, "message_image")
+	// An outside picture is dropped by the sanitizer, not refused.
+	w = f.saveBody(t, f.leader, f.draft, f.group.ID, `<p>Hi</p><img src="https://evil.example/p.gif" alt="x">`)
+	var out struct {
+		Message messageJSON `json:"message"`
+	}
+	decodeJSON(t, w, &out)
+	if w.Code != http.StatusOK || out.Message.BodyHTML != "<p>Hi</p>" {
+		t.Fatalf("outside picture: %d %s", w.Code, w.Body.String())
+	}
+	var row models.Message
+	f.app.DB.First(&row, f.draft)
+	if strings.Contains(row.BodyText, "Image") {
+		t.Fatalf("plain text: %q", row.BodyText)
+	}
+	// A picture with no description is dropped too; the plain text names the rest.
+	f.saveBody(t, f.leader, f.draft, f.group.ID, `<p>Hi</p><img src="`+mine.URL+`" alt="  ">`)
+	f.app.DB.First(&row, f.draft)
+	if strings.Contains(row.BodyHTML, "<img") {
+		t.Fatalf("blank description kept: %q", row.BodyHTML)
+	}
+	f.saveBody(t, f.leader, f.draft, f.group.ID, img(mine.URL))
+	f.app.DB.First(&row, f.draft)
+	if row.BodyText != "Hi\n\n[Image: A picture]" {
+		t.Fatalf("plain text: %q", row.BodyText)
+	}
+}
+
+// Pictures a draft's body no longer shows are removed when it is sent, and a
+// discarded draft's all go; one another message holds stays.
+func TestMessageImagesArePrunedAtSendAndDiscard(t *testing.T) {
+	f := newMessageImageFixture(t)
+	used := f.upload(t, f.leader, f.draft, tinyPNG(t))
+	unused := f.upload(t, f.leader, f.draft, tinyPNG(t))
+	elsewhere := f.upload(t, f.host, f.other, tinyPNG(t))
+	if w := f.saveBody(t, f.leader, f.draft, f.group.ID, `<p>Hi</p><img src="`+used.URL+`" alt="Used">`); w.Code != http.StatusOK {
+		t.Fatalf("save: %d %s", w.Code, w.Body.String())
+	}
+	// Saving never prunes: a picture is uploaded before the body that shows it.
+	if n := len(f.folder(t, f.draft)); n != 2 {
+		t.Fatalf("after save: %d files", n)
+	}
+	if w := f.leader.do("POST", "/api/v1/messages/"+itoa(f.draft)+"/schedule", map[string]any{}, true); w.Code != http.StatusOK {
+		t.Fatalf("schedule: %d %s", w.Code, w.Body.String())
+	}
+	runMessageJobs(t, f.app)
+	left := f.folder(t, f.draft)
+	if len(left) != 1 || "messages/"+itoa(f.draft)+"/"+left[0] != used.Key {
+		t.Fatalf("after send: %v, want only %s (not %s)", left, used.Key, unused.Key)
+	}
+	if len(f.folder(t, f.other)) != 1 || elsewhere.Key == "" {
+		t.Fatal("another message's picture was touched")
+	}
+	// Discarding a draft removes every picture it has.
+	if w := f.host.do("POST", "/api/v1/messages/"+itoa(f.other)+"/cancel", nil, true); w.Code != http.StatusOK {
+		t.Fatalf("discard: %d %s", w.Code, w.Body.String())
+	}
+	if n := len(f.folder(t, f.other)); n != 0 {
+		t.Fatalf("discarded draft keeps %d files", n)
+	}
+	if len(f.folder(t, f.draft)) != 1 {
+		t.Fatal("a sent message's picture was removed")
+	}
+}
+
+// pausingUploads holds each Put until released, so a test can run another
+// request while a picture is half stored.
+type pausingUploads struct {
+	*storage.LocalStore
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (p pausingUploads) Put(ctx context.Context, key string, src io.Reader, size int64, mime string) error {
+	p.entered <- struct{}{}
+	<-p.release
+	return p.LocalStore.Put(ctx, key, src, size, mime)
+}
+
+// A send or a discard can't pass an upload that is storing its file: the
+// upload holds the message's row, so the prune that follows sees the file and
+// removes it. Without that the file would outlive the message with nothing to
+// remove it.
+func TestMessageImageUploadHoldsOffDiscardUntilStored(t *testing.T) {
+	f := newMessageImageFixture(t)
+	local := f.app.Uploads.(*storage.LocalStore)
+	pause := pausingUploads{LocalStore: local, entered: make(chan struct{}, 1), release: make(chan struct{})}
+	f.app.Uploads = pause
+	uploaded := make(chan *httptest.ResponseRecorder, 1)
+	pic := tinyPNG(t)
+	go func() { uploaded <- postUpload(t, f.leader, f.imagesPath(f.draft), "image", pic, uploadOptions{}) }()
+	awaitDBSignal(t, pause.entered)
+	discard := bgDo(f.leader, "POST", "/api/v1/messages/"+itoa(f.draft)+"/cancel", nil)
+	select {
+	case r := <-discard:
+		t.Fatalf("the discard finished while a picture was being stored: %+v", r)
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(pause.release)
+	if w := <-uploaded; w.Code != http.StatusOK {
+		t.Fatalf("upload: %d %s", w.Code, w.Body.String())
+	}
+	if r := awaitResult(t, discard); r.code != http.StatusOK {
+		t.Fatalf("discard: %+v", r)
+	}
+	f.app.Uploads = local
+	if n := len(f.folder(t, f.draft)); n != 0 {
+		t.Fatalf("a discarded draft keeps %d files", n)
+	}
+	wantCode(t, "after discard", postUpload(t, f.leader, f.imagesPath(f.draft), "image", pic, uploadOptions{}), http.StatusConflict, "message_locked")
 }

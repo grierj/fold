@@ -253,6 +253,13 @@ type coverUploadResponseJSON struct {
 	ImageURL string `json:"imageUrl"`
 }
 
+// messageImageResponseJSON answers a picture upload for a message: the
+// storage key and the address to put in the body (DEC-118).
+type messageImageResponseJSON struct {
+	Key string `json:"key"`
+	URL string `json:"url"`
+}
+
 type avatarUploadResponseJSON struct {
 	AvatarURL string `json:"avatarUrl"`
 }
