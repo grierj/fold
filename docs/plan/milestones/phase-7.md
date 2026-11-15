@@ -96,10 +96,15 @@ milestones until a first church is live (DEC-145).
   G-9 is closed: the checklist at the end of 6.5.2 is ticked against #385's merge. C3 is not,
   because #311 audits it on master, and nothing here claims C3 or M7.4.
 - Open work:
-  - [#301](https://github.com/grierj/fold/issues/301) and
-    [#302](https://github.com/grierj/fold/issues/302) the one-time review list for reasons of
-    accounts deleted before the review step existed (owner decision 7): the API and page are built
-    in #383. Still unmeasured or unchecked: the QC4/5 scale measurements ([#292](https://github.com/grierj/fold/issues/292)),
+  - Recorded closed, no longer open work: [#301](https://github.com/grierj/fold/issues/301) and
+    [#302](https://github.com/grierj/fold/issues/302), the one-time review list for reasons of
+    accounts deleted before the review step existed (owner decision 7), built in #383 (`d93d0825`)
+    and recorded in inventory 15.12, with reruns at `43d4df9b`; and
+    [#292](https://github.com/grierj/fold/issues/292), closed Nov 14, 2026 on the pilot QC4/5
+    record in inventory 12.3 (a local cgroup approximation, not a real droplet, and not release
+    evidence). None of this signs C4 or M7.4.
+  - Still unmeasured or unchecked for the reason review: the wider scale matrix
+    ([#293](https://github.com/grierj/fold/issues/293), [#294](https://github.com/grierj/fold/issues/294)),
     and the real-phone and real-restore hand checks in `docs/FIRST-CHURCH-CHECKS.md`.
   - [#303](https://github.com/grierj/fold/issues/303) and
     [#305](https://github.com/grierj/fold/issues/305) design, review and build conversion-IP
@@ -121,7 +126,7 @@ milestones until a first church is live (DEC-145).
   - [#311](https://github.com/grierj/fold/issues/311) milestone sign-off against C1–C5.
   - Follow-ups: [#312](https://github.com/grierj/fold/issues/312) (deletion e2e helper),
     [#313](https://github.com/grierj/fold/issues/313) (recovery level docs), and the
-    reason-review test follow-ups [#292](https://github.com/grierj/fold/issues/292)–[#298](https://github.com/grierj/fold/issues/298).
+    reason-review test follow-ups [#293](https://github.com/grierj/fold/issues/293)–[#298](https://github.com/grierj/fold/issues/298).
 - Brief: [`R2-R3-R4-people.md`](../briefs/audit-2026-11/R2-R3-R4-people.md) (R4).
 
 **M7.5 Notification delivery outbox (R6)**
