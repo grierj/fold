@@ -13,6 +13,7 @@ are in `docs/plan/M7.4-ERASURE-INVENTORY.md` (section numbers below point there)
   audit details, throttles last. Add an erasure step there, never in a caller.
 - `erasureOptions` carries only what differs: `Actor` (nil for the system sweep), `IP`, and
   `Live` (the admin path's locked row, successors, host picks and reason plan).
+- A message's pictures (`messages/<messageID>/…`, DEC-118) are church content tied to the message, not to the author: erasing an account has no step for them, and the message and its author line follow the same rules as before.
 - Deleting an account scrubs the user row to a tombstone and deletes its tokens, calendar link,
   devices and owned throttle keys.
 - `eraseAuditDetailsIn` runs in this order: (1) the six class `UPDATE`s of

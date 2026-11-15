@@ -20,7 +20,7 @@ vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2, name: "Lee Leader",
 vi.mock("../api/site", async (importActual) => ({ ...(await importActual<typeof import("../api/site")>()), Site: { get: vi.fn().mockResolvedValue({ name: "Grace", timezone: "America/Boise" }) } }));
 vi.mock("../api/messages", () => ({ previewHTMLPath: (id: number) => `/api/v1/messages/${id}/preview.html`, Messages: {
     options: vi.fn(), audiencePreview: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(),
-    schedule: vi.fn(), cancel: vi.fn(), preview: vi.fn(), test: vi.fn(), recipients: vi.fn(), retry: vi.fn(),
+    schedule: vi.fn(), cancel: vi.fn(), preview: vi.fn(), test: vi.fn(), recipients: vi.fn(), retry: vi.fn(), uploadImage: vi.fn(),
   } }));
 
 beforeAll(polyfillEditorLayout);
@@ -91,6 +91,41 @@ describe("MessageComposerPage", () => {
     expect(screen.getByRole("textbox", { name: "Subject" })).toHaveValue("Snacks");
     await user.click(screen.getByRole("button", { name: "Save draft" }));
     await waitFor(() => expect(Messages.update).toHaveBeenCalledWith(9, expect.objectContaining({ subject: "Snacks" })));
+  });
+
+  it("adds a picture to a new message by saving the draft first", async () => {
+    const user = userEvent.setup();
+    vi.mocked(Messages.uploadImage).mockResolvedValue({ key: "messages/9/aa.png", url: "/uploads/messages/9/aa.png" });
+    const router = open("/messages/new?group=7");
+    await editorReady();
+    await user.click(screen.getByRole("button", { name: "Add image" }));
+    await user.upload(document.querySelector<HTMLInputElement>('input[type="file"]')!, new File(["png"], "picnic.png", { type: "image/png" }));
+    await user.type(screen.getByRole("textbox", { name: "What the picture shows" }), "Our picnic table");
+    await user.click(screen.getByRole("button", { name: "Add picture" }));
+    await waitFor(() => expect(Messages.uploadImage).toHaveBeenCalledWith(9, expect.any(File)));
+    expect(Messages.create).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(router.state.location.pathname).toBe("/messages/9"));
+    await waitFor(() => expect(document.querySelector('.rich-text-editable img[src="/uploads/messages/9/aa.png"]')).toHaveAttribute("alt", "Our picnic table"));
+    // The next one goes straight to the saved message.
+    await user.click(screen.getByRole("button", { name: "Add image" }));
+    await user.upload(document.querySelector<HTMLInputElement>('input[type="file"]')!, new File(["png"], "two.png", { type: "image/png" }));
+    await user.type(screen.getByRole("textbox", { name: "What the picture shows" }), "Chairs");
+    await user.click(screen.getByRole("button", { name: "Add picture" }));
+    await waitFor(() => expect(Messages.uploadImage).toHaveBeenCalledTimes(2));
+    expect(Messages.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("needs someone to send to before it can save a draft for a picture", async () => {
+    const user = userEvent.setup();
+    open("/messages/new");
+    await editorReady();
+    await user.click(screen.getByRole("button", { name: "Add image" }));
+    await user.upload(document.querySelector<HTMLInputElement>('input[type="file"]')!, new File(["png"], "picnic.png", { type: "image/png" }));
+    await user.type(screen.getByRole("textbox", { name: "What the picture shows" }), "Table");
+    await user.click(screen.getByRole("button", { name: "Add picture" }));
+    expect(await screen.findByText("Choose who this message is for first. A picture is added to a saved draft.")).toBeInTheDocument();
+    expect(Messages.create).not.toHaveBeenCalled();
+    expect(Messages.uploadImage).not.toHaveBeenCalled();
   });
 
   it("previews the saved email in a sandboxed frame, with the plain text", async () => {

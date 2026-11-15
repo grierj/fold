@@ -90,6 +90,7 @@ export const ERROR_COPY = {
   message_when: "Pick a time from now to a year ahead.",
   message_channel: "Texting isn't set up yet. Send this as an email.",
   message_not_yours: "You can't send to those people. Choose one of your own groups or events.",
+  message_image: "A picture in this message wasn't added to it here. Take it out and add it again.",
   message_push_only: "An announcement always goes by email. Turn on \"Push notification too\" to also send a short notification.",
   message_audience: "Choose who gets this message.",
   message_audience_gone: "That group or event isn't there anymore. Choose another.",

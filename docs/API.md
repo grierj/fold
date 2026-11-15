@@ -342,7 +342,7 @@ GET /uploads/<key>  → the stored image (public; nosniff + 1-day cache)
 ```
 
 Keys are server-generated (`avatars/<userId>/<id>.<ext>`,
-`covers/<groupId>/<id>.<ext>`); path traversal is rejected. Local storage
+`covers/<groupId>/<id>.<ext>`, `messages/<messageId>/<32 hex>.<jpg|png|gif>`); path traversal is rejected. Local storage
 lives under `UPLOAD_DIR` (`./data/uploads` default, `/data/uploads` in the
 compose stack, persisted on the `/data` volume). See AGENTS.md for the
 S3-replacement seam.
@@ -1659,7 +1659,10 @@ GET  /api/v1/messages/:id                → 200 {message} | 404               (
 PUT  /api/v1/messages/:id                → 200 {message} | 400 | 403 | 404 | 409
 POST /api/v1/messages/:id/schedule       → 200 {message, summary} | 400 | 409   body: {scheduledAt?} (absent: now)
 POST /api/v1/messages/:id/cancel         → 200 {message} | 409               (audited message.cancelled)
+POST /api/v1/messages/:id/images         → 200 {key, url} | 400 | 404 | 409 | 503   multipart field `image` (CSRF; DEC-118)
 ```
+
+`POST /messages/:id/images` adds one picture to a draft (or scheduled message) its author or an admin may still edit (`loadOwnMessage`, then `message_locked` 409 once it is sending, sent, failed or cancelled; `message_reminder` 409 for an automatic reminder). It reads the file like an avatar or cover (`readImageUpload`: JPEG, PNG or GIF by content, re-encoded so no EXIF or text chunk remains, 5MB, the shared two processing slots; `file_type`, `file_too_large`, `file_unreadable`, `image_unsupported`, `image_too_large`, `upload_busy`, `upload_canceled`) and stores it as `messages/<messageID>/<32 hex>.<jpg|png|gif>`. It answers `{key, url}`; `url` (`/uploads/messages/<id>/<hex>.<ext>`) is the `src` to put in `bodyHtml` with a non-blank `alt` (up to 300 characters). No count or total size limit applies (Grier, Nov 14, 2026). `POST` and `PUT /messages` keep an `<img>` only when its `src` is exactly such an address and its `alt` is not blank, and answer 400 `message_image` when the body shows a picture that belongs to a different message (a new message has none yet, so add pictures after the first save). The picture is served at `GET /uploads/<key>` without a session, which is what lets an inbox load it: the address is unguessable but not secret once sent. Email and guardian copies link each picture as `SITE_URL` plus that address with `style="max-width:100%;height:auto;"` (the preview frame and `preview.html` keep the relative address, so they load wherever the app is reached, while the test send carries `SITE_URL`); nothing is attached; the plain text says `[Image: alt]`. The upload holds the message row `FOR SHARE` while the file is stored, so a send's claim or a discard waits for it and its prune then removes a picture the body does not show; once the message is sending, sent, failed or cancelled the upload answers `message_locked`. A picture the saved body does not show is removed when the message is sent, and a discarded draft's are all removed (`POST /messages/:id/cancel` on a draft); a cancelled scheduled message keeps its own. `GET /messages/:id/read` returns the sanitized body with these pictures, and the preview frame's CSP is `img-src 'self'`.
 
 `?event=<id>` narrows the answer to that one event by the same rules (no groups; no events when the viewer may not write to it; a malformed id is 400), for the date page's "Email people going". `GET /auth/me` and `POST /auth/login` also answer `canCompose` (true for admins without reading anything), so the nav offers Messages only to people who can write (M3.4c).
 

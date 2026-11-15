@@ -286,3 +286,34 @@ func TestTestSendInFlightWindow(t *testing.T) {
 		}
 	})
 }
+
+// The preview frame may load only pictures from this site (img-src 'self'), so
+// it points at them by relative address and loads wherever the app is reached
+// (dev server, 127.0.0.1), whatever SITE_URL says; the mail that leaves, test
+// send included, carries the church's address (DEC-118).
+func TestPreviewLoadsOnlyPicturesFromThisSite(t *testing.T) {
+	f := newMessageImageFixture(t)
+	id, url := f.pictureDraft(t, "Our picnic table")
+	w := f.leader.do("GET", "/api/v1/messages/"+itoa(id)+"/preview.html", nil, false)
+	csp := w.Header().Get("Content-Security-Policy")
+	if w.Code != http.StatusOK || !strings.Contains(csp, "img-src 'self';") || strings.Contains(csp, "https:") || strings.Contains(csp, "data:") {
+		t.Fatalf("csp: %d %q", w.Code, csp)
+	}
+	if !strings.Contains(w.Body.String(), `<img src="`+url+`" alt="Our picnic table" style="max-width:100%;height:auto;`) || strings.Contains(w.Body.String(), `src="http`) {
+		t.Fatalf("preview html:\n%s", w.Body.String())
+	}
+	if w := f.leader.do("POST", "/api/v1/messages/"+itoa(id)+"/test", nil, true); w.Code != http.StatusOK {
+		t.Fatalf("test send: %d %s", w.Code, w.Body.String())
+	}
+	sent, err := devOutbox(t, f.app).LatestTo(f.leaderUser.Email)
+	if err != nil || !strings.Contains(sent.HTML, `<img src="http://localhost:8080`+url+`"`) {
+		t.Fatalf("test send html (%v):\n%s", err, sent.HTML)
+	}
+	var out struct {
+		Preview renderedMessage `json:"preview"`
+	}
+	decodeJSON(t, f.leader.do("GET", "/api/v1/messages/"+itoa(id)+"/preview", nil, false), &out)
+	if !strings.Contains(out.Preview.Text, "[Image: Our picnic table]") {
+		t.Fatalf("preview text: %q", out.Preview.Text)
+	}
+}

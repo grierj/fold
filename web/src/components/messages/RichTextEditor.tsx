@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { EditorContent, getMarkRange, useEditor, useEditorState, type Editor } from "@tiptap/react";
+import Image from "@tiptap/extension-image";
 import StarterKit from "@tiptap/starter-kit";
-import { Field, FormError, Input, Select, useField } from "../ui/Field";
+import { Messages } from "../../api/messages";
+import { errorText } from "../../lib/errors";
+import { prepareUpload } from "../../lib/image";
+import { Field, FormError, HiddenFileInput, Input, Select, useField } from "../ui/Field";
 import { Button } from "../ui/Button";
 import { Menu } from "../ui/Menu";
 import { ToolbarButton } from "../ui/ToolbarButton";
@@ -9,16 +13,19 @@ import { ListIcon, ListOrderedIcon } from "../icons";
 import { MERGE_FIELDS } from "../../lib/messages";
 
 // The composer's email editor (M3.4c, PLAN 7.3): TipTap with bold, italic,
-// underline, two heading sizes, lists, quotes, links, a button block and
-// merge fields. No images yet (DEC-118). It emits only what the server's
-// sanitizer keeps (internal/content): p, br, strong, em, u, s, h2, h3, ul,
-// ol, li, blockquote, hr and links (http, https, mailto, or a link merge
-// field) with class="fold-button" for a button. TipTap's own CSS is off
+// underline, two heading sizes, lists, quotes, links, a button block,
+// pictures and merge fields. It emits only what the server's sanitizer keeps
+// (internal/content): p, br, strong, em, u, s, h2, h3, ul, ol, li,
+// blockquote, hr, links (http, https, mailto, or a link merge field) with
+// class="fold-button" for a button, and img whose address the composer's own
+// upload made (DEC-118), each with a description. TipTap's own CSS is off
 // (it would be an inline <style>, which the CSP refuses); index.css styles
 // .rich-text instead. This module is loaded with import(), so pages that
 // don't write email never download TipTap.
 
 const BUTTON_CLASS = "fold-button";
+// The longest description the server keeps (content.MaxAltLen).
+const MAX_ALT = 300;
 const LINK_FIELDS = ["{{event_link}}", "{{manage_link}}"];
 const LINK_FIELD_RE = /^\{\{\s*(event_link|manage_link)\s*\}\}$/i;
 
@@ -39,10 +46,15 @@ const kit = (isAllowedUri: (url: string) => boolean) => StarterKit.configure({
     isAllowedUri: (url) => isAllowedUri(url),
   },
 });
-const extensions = [kit(allowedHref)];
+// A picture is a block of its own, shrunk to the column. Only the composer's
+// own uploads are read in (pasted or loaded HTML with any other image loses
+// it, as the server's sanitizer would). Its class is the editor's styling; the
+// sanitizer drops it from what is stored.
+const picture = Image.extend({ parseHTML: () => [{ tag: 'img[src^="/uploads/messages/"]' }] }).configure({ inline: false, allowBase64: false, HTMLAttributes: { class: "max-w-full h-auto" } });
+const extensions = [kit(allowedHref), picture];
 // The read-only view keeps only real addresses: a link to a merge field
 // ({{event_link}}) has no address until it is sent, so it reads as text.
-const viewExtensions = [kit((url) => allowedHref(url) && !LINK_FIELD_RE.test(url.trim()))];
+const viewExtensions = [kit((url) => allowedHref(url) && !LINK_FIELD_RE.test(url.trim())), picture];
 
 // normalizeHref turns what someone typed into an address the server keeps,
 // or "" when it can't be one.
@@ -63,9 +75,16 @@ export function normalizeHref(typed: string): string {
   }
 }
 
-type Panel = null | "link" | "button";
+type Panel = null | "link" | "button" | "image";
 
-function Toolbar({ editor, oneEvent, panel, onPanel }: { editor: Editor; oneEvent: boolean; panel: Panel; onPanel: (p: Panel) => void }) {
+// What the editor needs to add a picture to a message: its id once saved,
+// and a way to save a new one first (a picture belongs to a saved message).
+export interface PictureTarget {
+  messageId: number | null;
+  save: () => Promise<{ id: number } | { error: string }>;
+}
+
+function Toolbar({ editor, oneEvent, panel, onPanel, pictures }: { editor: Editor; oneEvent: boolean; panel: Panel; onPanel: (p: Panel) => void; pictures: boolean }) {
   const on = useEditorState({
     editor,
     selector: ({ editor: e }) => ({
@@ -95,6 +114,7 @@ function Toolbar({ editor, oneEvent, panel, onPanel }: { editor: Editor; oneEven
       <ToolbarButton label="Quote" pressed={on.quote} onClick={() => run((c) => c.toggleBlockquote())}><span aria-hidden="true">“</span>&nbsp;Quote</ToolbarButton>
       <ToolbarButton label="Link" pressed={on.link} aria-expanded={panel === "link"} onClick={() => onPanel(panel === "link" ? null : "link")}>Link</ToolbarButton>
       <ToolbarButton label="Button" pressed={on.button} aria-expanded={panel === "button"} onClick={() => onPanel(panel === "button" ? null : "button")}>Button</ToolbarButton>
+      {pictures && <ToolbarButton label="Add image" aria-expanded={panel === "image"} onClick={() => onPanel(panel === "image" ? null : "image")}>Image</ToolbarButton>}
       <Menu
         tone="quiet"
         text="Insert field"
@@ -181,6 +201,81 @@ function LinkPanel({ editor, kind, oneEvent, onClose }: { editor: Editor; kind: 
   );
 }
 
+const PICTURE_TYPES = /^image\/(jpeg|png|gif)$/;
+
+// ImagePanel adds one picture: choose it, say what it shows (the words email
+// and screen readers use; required), and it is uploaded to the message and
+// put in the body where the cursor is.
+function ImagePanel({ editor, pictures, onClose }: { editor: Editor; pictures: PictureTarget; onClose: () => void }) {
+  const [file, setFile] = useState<File | null>(null);
+  const [alt, setAlt] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const chooser = useRef<HTMLInputElement>(null);
+  const words = useRef<HTMLInputElement>(null);
+
+  function pick(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    if (!PICTURE_TYPES.test(f.type)) { setFile(null); setError("Choose a JPEG, PNG or GIF picture."); return; }
+    setFile(f);
+    setError("");
+    words.current?.focus();
+  }
+
+  async function apply() {
+    if (busy) return;
+    if (!file) { setError("Choose a picture first."); return; }
+    if (!alt.trim()) { setError("Say what the picture shows, in a few words."); words.current?.focus(); return; }
+    setBusy(true);
+    setError("");
+    try {
+      let id = pictures.messageId;
+      if (id === null) {
+        const saved = await pictures.save();
+        if ("error" in saved) { setError(saved.error); return; }
+        id = saved.id;
+      }
+      const { url } = await Messages.uploadImage(id, await prepareUpload(file, 1600));
+      editor.chain().focus().setImage({ src: url, alt: alt.trim() }).run();
+      onClose();
+    } catch (e) {
+      setError(errorText(e, "We couldn't add that picture."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Enter in the description adds the picture instead of sending the message.
+  function onKeyDown(e: KeyboardEvent) {
+    if (e.key === "Enter" && (e.target as HTMLElement).tagName === "INPUT") { e.preventDefault(); void apply(); }
+    if (e.key === "Escape") { e.preventDefault(); onClose(); editor.commands.focus(); }
+  }
+
+  return (
+    <div role="group" aria-label="Add a picture" className="space-y-3 border-b border-border bg-sunken p-3" onKeyDown={onKeyDown}>
+      <div className="space-y-1">
+        <p className="label">Picture</p>
+        <p className="field-hint">A JPEG, PNG or GIF under 5 MB. It goes in the email as a link to your church's site.</p>
+        <div className="flex flex-wrap items-center gap-3">
+          <Button variant="secondary" size="sm" onClick={() => chooser.current?.click()} disabled={busy}>{file ? "Choose a different picture" : "Choose a picture"}</Button>
+          <span className="text-sm text-text-muted wrap-anywhere">{file ? file.name : "No picture chosen yet."}</span>
+        </div>
+        <HiddenFileInput ref={chooser} accept="image/jpeg,image/png,image/gif" onChange={pick} />
+      </div>
+      <Field label="What the picture shows" hint="A few words for people who can't see it. It also shows if the picture doesn't load.">
+        <Input ref={words} value={alt} maxLength={MAX_ALT} onChange={(e) => { setAlt(e.target.value); setError(""); }} />
+      </Field>
+      {error && <FormError>{error}</FormError>}
+      <div className="flex flex-wrap gap-2">
+        <Button variant="secondary" size="sm" onClick={() => void apply()} disabled={busy}>{busy ? "Adding…" : "Add picture"}</Button>
+        <Button variant="ghost" size="sm" onClick={() => { onClose(); editor.commands.focus(); }} disabled={busy}>Cancel</Button>
+      </div>
+    </div>
+  );
+}
+
 // htmlOf is what the editor holds, or "" when it holds nothing.
 // Empty paragraphs at the end (the editor keeps one to type into) are left out.
 const htmlOf = (e: Editor) => (e.isEmpty ? "" : e.getHTML().replace(/(<p><\/p>)+$/, ""));
@@ -188,11 +283,13 @@ const htmlOf = (e: Editor) => (e.isEmpty ? "" : e.getHTML().replace(/(<p><\/p>)+
 // RichTextEditor sits inside a <Field>, which labels it and carries its
 // hint and error. onChange gets the HTML ("" when empty); onReady gets the
 // starting HTML as the editor writes it, so a page can compare edits to it.
-export function RichTextEditor({ value, onChange, onReady, oneEvent }: {
+export function RichTextEditor({ value, onChange, onReady, oneEvent, pictures }: {
   value: string;
   onChange: (html: string) => void;
   onReady?: (html: string) => void;
   oneEvent: boolean;
+  // Left out, there is no Add image button.
+  pictures?: PictureTarget;
 }) {
   const w = useField("RichTextEditor");
   const [panel, setPanel] = useState<Panel>(null);
@@ -222,8 +319,9 @@ export function RichTextEditor({ value, onChange, onReady, oneEvent }: {
   if (!editor) return null;
   return (
     <div className="rounded-md border border-border-strong bg-surface">
-      <Toolbar editor={editor} oneEvent={oneEvent} panel={panel} onPanel={setPanel} />
-      {panel && <LinkPanel key={panel} editor={editor} kind={panel} oneEvent={oneEvent} onClose={() => setPanel(null)} />}
+      <Toolbar editor={editor} oneEvent={oneEvent} panel={panel} onPanel={setPanel} pictures={!!pictures} />
+      {panel === "image" && pictures && <ImagePanel key="image" editor={editor} pictures={pictures} onClose={() => setPanel(null)} />}
+      {(panel === "link" || panel === "button") && <LinkPanel key={panel} editor={editor} kind={panel} oneEvent={oneEvent} onClose={() => setPanel(null)} />}
       <EditorContent editor={editor} />
     </div>
   );

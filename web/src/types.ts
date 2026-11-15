@@ -1845,6 +1845,11 @@ export interface CoverUploadResponse {
   imageUrl: string;
 }
 
+export interface MessageImageResponse {
+  key: string;
+  url: string;
+}
+
 export interface AvatarUploadResponse {
   avatarUrl: string;
 }

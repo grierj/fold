@@ -1486,3 +1486,51 @@ func TestRetryDailyLimitCopyMatches(t *testing.T) {
 		t.Fatalf("the message_retry_daily_limit copy doesn't match dailyMessagesPerGroup: %q", line)
 	}
 }
+
+// pictureDraft makes a draft in the fixture's group that shows one picture
+// (described by alt), and returns its id and the picture's address.
+func (f messageImageFixture) pictureDraft(t *testing.T, alt string) (uint, string) {
+	t.Helper()
+	pic := f.upload(t, f.leader, f.draft, tinyPNG(t))
+	body := `<p>Hi {{first_name}}</p><img src="` + pic.URL + `" alt="` + alt + `"><p>See you.</p>`
+	if w := f.saveBody(t, f.leader, f.draft, f.group.ID, body); w.Code != http.StatusOK {
+		t.Fatalf("save: %d %s", w.Code, w.Body.String())
+	}
+	return f.draft, pic.URL
+}
+
+// A picture goes by its address on the church's site, not as an attachment:
+// the HTML part names it in full with its description and room to shrink, the
+// plain part says "[Image: ...]", and a guardian's copy is the same (DEC-118,
+// DEC-19).
+func TestMessagePipelineLinksPicturesByAddress(t *testing.T) {
+	f := newMessageImageFixture(t)
+	f.app.Config.SiteURL = "https://church.example/"
+	parent := newTestUser(t, f.app, "parent", "password1234", models.RoleMember)
+	f.app.DB.Create(&models.GuardianLink{GuardianUserID: parent.ID, TeenUserID: &f.teen.ID, Status: models.GuardianConfirmed})
+	f.app.DB.Create(&models.Setting{Key: settingGuardianCopies, Value: "true"})
+	id, url := f.pictureDraft(t, "Our picnic table")
+	if w := f.leader.do("POST", "/api/v1/messages/"+itoa(id)+"/schedule", map[string]any{}, true); w.Code != http.StatusOK {
+		t.Fatalf("schedule: %d %s", w.Code, w.Body.String())
+	}
+	runMessageJobs(t, f.app)
+	want := `<img src="https://church.example` + url + `" alt="Our picnic table" style="max-width:100%;height:auto;`
+	for name, to := range map[string]string{"reader": f.teen.Email, "guardian copy": parent.Email} {
+		got, err := devOutbox(t, f.app).LatestTo(to)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !strings.Contains(got.HTML, want) || strings.Count(got.HTML, "<img") != 1 {
+			t.Errorf("%s html:\n%s", name, got.HTML)
+		}
+		if !strings.Contains(got.Body, "[Image: Our picnic table]") {
+			t.Errorf("%s text:\n%s", name, got.Body)
+		}
+		if strings.Contains(got.HTML, `src="/uploads`) {
+			t.Errorf("%s: a relative picture address reached the inbox", name)
+		}
+	}
+	if got, _ := devOutbox(t, f.app).LatestTo(f.teen.Email); got.Subject == "" {
+		t.Fatal("no email for the reader")
+	}
+}

@@ -119,24 +119,29 @@ func firstName(name string) string {
 	return name
 }
 
-func (a *App) renderMessage(m *models.Message, u *models.User, vals map[string]string) (renderedMessage, error) {
+func (a *App) renderMessage(m *models.Message, u *models.User, vals map[string]string, baseURL string) (renderedMessage, error) {
 	footer, err := footerFactsIn(a.DB)
 	if err != nil {
 		return renderedMessage{}, err
 	}
-	return a.renderMessageWith(m, u, u.Email, vals, footer)
+	return a.renderMessageWith(m, u, u.Email, vals, footer, baseURL)
 }
 
 // renderMessageWith renders with the church's name and address already
 // read, so a batch reads them once, not once per email.
-func (a *App) renderMessageWith(m *models.Message, u *models.User, to string, vals map[string]string, f footerFacts) (renderedMessage, error) {
+// baseURL makes the body's picture addresses absolute: an inbox has no site
+// to be relative to, so a delivered email passes the church's address. The
+// preview passes "" and keeps them relative, since its page is served by this
+// site and its CSP (img-src 'self') only matches the origin the viewer reached
+// the app on, which SITE_URL need not be (dev server, 127.0.0.1).
+func (a *App) renderMessageWith(m *models.Message, u *models.User, to string, vals map[string]string, f footerFacts, baseURL string) (renderedMessage, error) {
 	site := f.site
 	cat := messageCategory(m)
 	token := a.unsubscribeToken(u.ID, categoryScope(cat), to)
 	html, err := content.RenderEmail(content.EmailPage{
 		Church: site, Subject: content.Merge(m.Subject, vals, false), Body: content.Merge(m.BodyHTML, vals, true),
 		Footer:      notify.YoureGetting(cat, site) + ".",
-		SettingsURL: a.emailSettingsURL(token), Address: f.addressLines(),
+		SettingsURL: a.emailSettingsURL(token), Address: f.addressLines(), BaseURL: baseURL,
 	})
 	if err != nil {
 		return renderedMessage{}, err
@@ -153,8 +158,10 @@ func (a *App) renderMessageWith(m *models.Message, u *models.User, to string, va
 // they would get it. The audience is checked again first, since roles and
 // events change after a draft is saved: a preview shows an event's title
 // and time only to someone who may still write to its people. false means
-// the error response was sent.
-func (a *App) renderedForViewer(c *gin.Context) (*models.Message, renderedMessage, bool) {
+// the error response was sent. baseURL is "" for a page shown here, which
+// keeps pictures relative, and the church's address for mail that leaves
+// (renderMessageWith).
+func (a *App) renderedForViewer(c *gin.Context, baseURL string) (*models.Message, renderedMessage, bool) {
 	m, ok := a.loadOwnMessage(c)
 	if !ok {
 		return nil, renderedMessage{}, false
@@ -168,7 +175,7 @@ func (a *App) renderedForViewer(c *gin.Context) (*models.Message, renderedMessag
 	vals, err := a.sampleValues(m, me)
 	if err == nil {
 		var r renderedMessage
-		if r, err = a.renderMessage(m, me, vals); err == nil {
+		if r, err = a.renderMessage(m, me, vals, baseURL); err == nil {
 			return m, r, true
 		}
 	}
@@ -181,21 +188,22 @@ func (a *App) renderedForViewer(c *gin.Context) (*models.Message, renderedMessag
 // apiPreviewMessage answers the subject and plain-text part as the viewer
 // would get them; apiPreviewMessageHTML is the HTML part, for an iframe.
 func (a *App) apiPreviewMessage(c *gin.Context) {
-	if _, r, ok := a.renderedForViewer(c); ok {
+	if _, r, ok := a.renderedForViewer(c, ""); ok {
 		c.JSON(http.StatusOK, messagePreviewResponseJSON{Preview: r})
 	}
 }
 
 func (a *App) apiPreviewMessageHTML(c *gin.Context) {
-	if _, r, ok := a.renderedForViewer(c); ok {
+	if _, r, ok := a.renderedForViewer(c, ""); ok {
 		serveEmailHTML(c, r.HTML)
 	}
 }
 
 // emailPreviewCSP is the policy for a page that shows an email's HTML (the
 // composer's preview and the dev outbox): email needs inline styles, and
-// nothing in it may run, load anything but images, or reach the app.
-const emailPreviewCSP = "default-src 'none'; style-src 'unsafe-inline'; img-src https: data:; base-uri 'none'; form-action 'none'; " +
+// nothing in it may run, load anything but pictures from this site (the
+// composer's own uploads, DEC-118), or reach the app.
+const emailPreviewCSP = "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; form-action 'none'; " +
 	"frame-ancestors 'self'; sandbox allow-popups allow-popups-to-escape-sandbox"
 
 func serveEmailHTML(c *gin.Context, html string) {
@@ -210,7 +218,7 @@ func serveEmailHTML(c *gin.Context, html string) {
 // written, under a lock on the viewer's row, before the send, so parallel
 // requests can't pass the count together.
 func (a *App) apiTestMessage(c *gin.Context) {
-	m, r, ok := a.renderedForViewer(c)
+	m, r, ok := a.renderedForViewer(c, a.emailBaseURL())
 	if !ok {
 		return
 	}

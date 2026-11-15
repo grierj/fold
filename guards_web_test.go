@@ -173,6 +173,7 @@ var tsContracts = []struct {
 	{departureConfirmationResponseJSON{}, "DepartureConfirmationResponse"},
 	{coverUploadResponseJSON{}, "CoverUploadResponse"},
 	{avatarUploadResponseJSON{}, "AvatarUploadResponse"},
+	{messageImageResponseJSON{}, "MessageImageResponse"},
 	{userResponseJSON{}, "UserResponse"},
 	{usersResponseJSON{}, "UsersResponse"},
 	{eventSeriesResponseJSON{}, "EventSeriesResponse"},
