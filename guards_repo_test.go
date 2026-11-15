@@ -1,13 +1,18 @@
 package main
 
 import (
+	"go/ast"
+	"go/token"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"testing"
+
+	"fold/internal/guardkit"
 )
 
 func TestDependabotCoversEveryEcosystem(t *testing.T) {
@@ -133,40 +138,97 @@ func TestTestLayoutGuardCatchesMilestoneFiles(t *testing.T) {
 	}
 }
 
-// --- Python (AGENTS "No Python") ---
+// --- Python (AGENTS "No Python in the serving stack", DEC-151) ---
 
-var pythonRe = regexp.MustCompile(`(?m)(^|[\s;|&(` + "`" + `$])python[23]?(\s|$)`)
+var (
+	// pythonRe finds the interpreter as a command word: bare, quoted (`ENTRYPOINT ["python3"]`,
+	// a Go literal), inside a JSON-style list, or behind a path (`/usr/bin/python3`, a shebang).
+	pythonRe = regexp.MustCompile(`(?m)(^|[\s;|&(/=,\[` + "`" + `$"'])python[23]?(\.\d+)*(\s|$|["'\],;)])`)
+	// pythonImageRe finds a Python base or service image: a Dockerfile FROM (with flags such as
+	// --platform) or a compose `image:` key.
+	pythonImageRe = regexp.MustCompile(`(?im)^\s*(-\s*)?(FROM\s+(--\S+\s+)*|image:\s*["']?)(\S+/)?python([:@\s"']|$)`)
+)
 
-func pythonViolations(path, src string) []string {
-	if strings.HasSuffix(path, ".py") {
-		return []string{path + ": Python file; Fold tooling is shell or Go only. Rewrite it as a shell script or a Go program"}
+// servingPath reports whether a repo path ships in, or runs as part of, what a church
+// deploys. Developer tooling (scripts/, web/scripts/, web/e2e/, .cursor/, .github/, the
+// Makefile) is outside it and may use Python.
+func servingPath(p string) bool {
+	if !strings.Contains(p, "/") {
+		return strings.HasPrefix(p, "Dockerfile") || p == "Caddyfile" || isComposeFile(p)
+	}
+	for _, dir := range []string{"deploy/", "templates/", "migrations/", "web/src/", "web/public/"} {
+		if strings.HasPrefix(p, dir) {
+			return true
+		}
+	}
+	return p == "web/index.html"
+}
+
+// isComposeFile matches the names Compose reads at the repo root: docker-compose.* and
+// compose.*, with their override variants.
+func isComposeFile(p string) bool {
+	ext := path.Ext(p)
+	return (strings.HasPrefix(p, "docker-compose") || strings.HasPrefix(p, "compose.")) && (ext == ".yml" || ext == ".yaml")
+}
+
+// pythonViolations checks one file. A .py file anywhere in the serving stack fails; the
+// interpreter named in the text of a Dockerfile, a compose file or deploy/ fails too.
+// templates/, migrations/ and the frontend are checked for .py files only: their text is
+// prose and SQL.
+func pythonViolations(p, src string) []string {
+	if !servingPath(p) {
+		return nil
+	}
+	if strings.HasSuffix(p, ".py") {
+		return []string{p + ": Python file in the serving stack; Python never ships or runs in what a church deploys (DEC-151). Rewrite it as shell or Go"}
+	}
+	if !strings.HasPrefix(p, "deploy/") && !strings.HasPrefix(path.Base(p), "Dockerfile") && !isComposeFile(path.Base(p)) {
+		return nil
 	}
 	var out []string
 	for i, line := range strings.Split(src, "\n") {
-		if pythonRe.MatchString(line) {
-			out = append(out, path+":"+strconv.Itoa(i+1)+": runs Python; use shell (awk, sed, a free port via the Go binary) or Go instead")
+		if pythonRe.MatchString(line) || pythonImageRe.MatchString(line) {
+			out = append(out, p+":"+strconv.Itoa(i+1)+": runs or ships Python in the serving stack (DEC-151); use shell or Go instead")
 		}
 	}
 	return out
 }
 
-// scriptFiles are the tracked files that run commands.
-func scriptFiles(t *testing.T) []string {
+// goPythonViolations flags a string literal in production Go source that names the
+// interpreter, which is how an exec.Command("python3", ...) would start it. The check is
+// parse-only: a command built from pieces escapes it.
+func goPythonViolations(sources guardkit.Sources) []string {
+	parsed := sources.Parse(0)
+	out := append([]string(nil), parsed.Problems...)
+	for _, f := range parsed.Files {
+		ast.Inspect(f.AST, func(n ast.Node) bool {
+			lit, ok := n.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+			if s, err := strconv.Unquote(lit.Value); err == nil && pythonRe.MatchString(s) {
+				out = append(out, f.Path+":"+strconv.Itoa(parsed.Fset.Position(lit.Pos()).Line)+": production Go names a Python interpreter (DEC-151)")
+			}
+			return true
+		})
+	}
+	return out
+}
+
+// servingFiles are the files in the working tree that belong to the serving stack.
+func servingFiles(t *testing.T) []string {
 	var files []string
 	err := filepath.WalkDir(".", func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() && (p == "web/node_modules" || p == ".git" || p == "web/dist" || p == "data") {
-			return filepath.SkipDir
-		}
 		if d.IsDir() {
+			if n := d.Name(); n == ".git" || n == "node_modules" || n == "dist" || p == "data" {
+				return filepath.SkipDir
+			}
 			return nil
 		}
-		base := filepath.Base(p)
-		ext := filepath.Ext(p)
-		if ext == ".sh" || ext == ".py" || ext == ".yml" || ext == ".yaml" || ext == ".mjs" || base == "Makefile" || base == "Dockerfile" ||
-			(strings.HasPrefix(p, ".cursor/skills/") && ext != ".md") {
+		if p = filepath.ToSlash(p); servingPath(p) {
 			files = append(files, p)
 		}
 		return nil
@@ -177,8 +239,8 @@ func scriptFiles(t *testing.T) []string {
 	return files
 }
 
-func TestNoPython(t *testing.T) {
-	for _, p := range scriptFiles(t) {
+func TestNoPythonInServingStack(t *testing.T) {
+	for _, p := range servingFiles(t) {
 		src, err := os.ReadFile(p)
 		if err != nil {
 			t.Fatal(err)
@@ -187,16 +249,83 @@ func TestNoPython(t *testing.T) {
 			t.Error(v)
 		}
 	}
+	for _, v := range goPythonViolations(guardkit.Production(t)) {
+		t.Error(v)
+	}
 }
 
-func TestPythonGuardCatchesVerifyFoldPython(t *testing.T) {
-	// Lines from .cursor/skills/verify-fold/verify-fold before b6c132e.
-	old := "  python3 - \"$1\" \"$2\" <<'PY'\n  port=\"$(python3 -c 'import socket')\"\n# No Python: shell and Go only.\n"
-	if got := pythonViolations("verify-fold", old); len(got) != 2 {
-		t.Fatalf("want 2 violations, got %v", got)
+func TestPythonGuardScopesToServingStack(t *testing.T) {
+	// Python in the verify-fold skill script is tooling, so allowed.
+	oldVerify := "  python3 - \"$1\" \"$2\" <<'PY'\n  port=\"$(python3 -c 'import socket')\"\n"
+	runnerLine := `  "${CP}(python3?|perl|ruby|php)( |\$)|no scripting language is installed in the runner"` + "\n"
+	for _, c := range []struct {
+		name, path, src string
+		want            int
+	}{
+		{"Dockerfile runs python", "Dockerfile", "RUN python3 build.py\n", 1},
+		{"Dockerfile base image", "Dockerfile", "FROM python:3.12-slim\n", 1},
+		{"Dockerfile base image with registry", "Dockerfile", "FROM docker.io/library/python:3.12\n", 1},
+		{"Dockerfile go base", "Dockerfile", "FROM golang:1.27-bookworm AS build\nFROM gcr.io/distroless/static-debian12:nonroot\n", 0},
+		{"Dockerfile base image with platform", "Dockerfile", "FROM --platform=$BUILDPLATFORM python:3.12 AS build\n", 1},
+		{"Dockerfile base image digest", "Dockerfile.prod", "FROM python@sha256:abc\n", 1},
+		{"Dockerfile quoted entrypoint", "Dockerfile", "ENTRYPOINT [\"python3\"]\n", 1},
+		{"Dockerfile quoted entrypoint with args", "Dockerfile", "ENTRYPOINT [\"python3\", \"app.py\"]\n", 1},
+		{"Dockerfile absolute interpreter", "Dockerfile", "CMD [\"/usr/bin/python3\", \"app.py\"]\n", 1},
+		{"Dockerfile versioned interpreter", "Dockerfile", "RUN python3.12 build.py\n", 1},
+		{"deploy python file", "deploy/x.py", "", 1},
+		{"deploy shebang absolute", "deploy/a.sh", "#!/usr/bin/python3\n", 1},
+		{"deploy shebang env", "deploy/a.sh", "#!/usr/bin/env python3\n", 1},
+		{"deploy shell prose", "deploy/a.sh", "# no pythonic tooling here\n", 0},
+		{"compose quoted command", "docker-compose.yml", "    command: [\"python3\", \"app.py\"]\n", 1},
+		{"compose bare list command", "docker-compose.yml", "    command: [python3, app.py]\n", 1},
+		{"compose image", "docker-compose.yml", "    image: python:3.12\n", 1},
+		{"compose quoted registry image", "docker-compose.yaml", "    image: \"docker.io/library/python:3.12\"\n", 1},
+		{"compose list image", "docker-compose.yml", "  - image: python\n", 1},
+		{"compose other image", "docker-compose.yml", "    image: postgres:17\n    command: [\"postgres\"]\n", 0},
+		{"compose.yaml command", "compose.yaml", "    command: python3 app.py\n", 1},
+		{"compose.yml image", "compose.yml", "    image: python:3\n", 1},
+		{"compose override", "compose.override.yaml", "    entrypoint: [\"python3\"]\n", 1},
+		{"compose.yaml python file prose", "compose.yaml", "    # pythonic\n", 0},
+		{"deploy script runs python", "deploy/digitalocean/a.sh", "python3 -c 'print(1)'\n", 1},
+		{"compose command", "docker-compose.yml", "    command: python3 app.py\n", 1},
+		{"web source python file", "web/src/x.py", "", 1},
+		{"templates python file", "templates/x.py", "", 1},
+		{"tooling python file", "scripts/tool.py", "print(1)\n", 0},
+		{"web tooling python file", "web/scripts/tool.py", "", 0},
+		{"verify skill old lines", ".cursor/skills/verify-fold/verify-fold", oldVerify, 0},
+		{"e2e server script", "web/e2e/server.sh", "port=\"$(python3 -c 'x')\"\n", 0},
+		{"Makefile", "Makefile", "\tpython3 tool.py\n", 0},
+		{"workflow", ".github/workflows/test.yml", "      - run: python3 x.py\n", 0},
+		{"runner compat forbids line", "deploy/digitalocean/runner-compat-fixtures.sh", runnerLine, 0},
+		{"migration prose", "migrations/00001_baseline.sql", "-- python is not needed\n", 0},
+	} {
+		if got := pythonViolations(c.path, c.src); len(got) != c.want {
+			t.Errorf("%s: want %d violations, got %v", c.name, c.want, got)
+		}
 	}
-	if got := pythonViolations("tool.py", ""); len(got) != 1 {
-		t.Fatalf(".py file not caught: %v", got)
+
+	for _, p := range []string{"compose.yaml", "compose.yml", "compose.override.yml", "docker-compose.yaml", "docker-compose.prod.yml", "Dockerfile.dev"} {
+		if !servingPath(p) {
+			t.Errorf("%s is not in the serving stack", p)
+		}
+	}
+	for _, p := range []string{"compose.md", "compose.go", "composer.json", "web/compose.yaml"} {
+		if servingPath(p) {
+			t.Errorf("%s is in the serving stack", p)
+		}
+	}
+
+	abs := guardkit.Sources{"api.go": "package main\n\nimport \"os/exec\"\n\nfunc f() { _ = exec.Command(\"/usr/bin/python3\", \"x.py\") }\nvar shebang = \"#!/usr/bin/python3\\n\"\n"}
+	if got := goPythonViolations(abs); len(got) != 2 {
+		t.Errorf("Go absolute interpreter and shebang: want 2 violations, got %v", got)
+	}
+	exec := guardkit.Sources{"api.go": "package main\n\nimport \"os/exec\"\n\nfunc f() { _ = exec.Command(\"python3\", \"x.py\") }\n"}
+	if got := goPythonViolations(exec); len(got) != 1 {
+		t.Errorf("Go exec of python3: want 1 violation, got %v", got)
+	}
+	prose := guardkit.Sources{"api.go": "package main\n\nvar msg = \"No Python here\"\nvar other = \"pythonic\"\n"}
+	if got := goPythonViolations(prose); len(got) != 0 {
+		t.Errorf("Go prose flagged: %v", got)
 	}
 }
 

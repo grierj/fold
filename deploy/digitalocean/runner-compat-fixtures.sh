@@ -77,7 +77,7 @@ FORBIDS=(
   "(gensub|strftime|systime|asorti?|patsplit|strtonum|PROCINFO|FPAT|IGNORECASE)\(?|BusyBox awk is not gawk"
   "${CP}(ps|pgrep|pkill|pidof|killall|free|vmstat|top)( |\$)|procps is not installed"
   "${CP}(ss|lsof|netstat|nc|ncat|socat)( |\$)|no socket tool is installed"
-  "${CP}(python3?|perl|ruby|php)( |\$)|no scripting language is installed (NO Python: tooling is shell or Go)"
+  "${CP}(python3?|perl|ruby|php)( |\$)|no scripting language is installed in the runner"
   "${CP}(rsync|xxd|bc|zcat|unzip|sudo)( |\$)|not installed in the runner"
 )
 

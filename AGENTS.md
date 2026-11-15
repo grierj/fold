@@ -258,7 +258,8 @@ One-off pages outside the standard presentation layer, such as the server-render
 (`templates/setup.html`), don't have to match the React components.
 
 Docs say "recommended", never "supported" (a line that must quote the word ends with
-`wording-ok:`). No Python: tooling is shell or Go.
+`wording-ok:`). No Python in the serving stack (DEC-151): the Dockerfile, compose files, `deploy/`,
+the binary and the frontend never run or ship it. Developer tooling (scripts, verify, CI) may use it.
 
 ## Development
 
@@ -373,7 +374,7 @@ tests in that area's `docs/agents/` file.
 | Schema changes are new goose files; models match them | `migrations/migrations_test.go`, `TestBaselineFileShape` (see `docs/agents/migrations.md`) |
 | Work reaches master only through a PR with `test`, `web` and `provision` green on a head containing master's tip | GitHub ruleset on `master` (no bypass actors); `scripts/merge-rules-check.sh` in CI (`TestCIRunsTheMergeRulesCheck`, `TestMergeRulesCheckScript`) |
 | `go vet`, `gofmt` and staticcheck are clean | `make lint` in CI |
-| No Python | `TestNoPython` |
+| No Python in the serving stack (DEC-151) | `TestNoPythonInServingStack`, `TestPythonGuardScopesToServingStack` |
 | Docs say "recommended", never "supported" | `TestDocsSayRecommendedNotSupported` |
 | One Node version: `.nvmrc` | `TestNodeVersionComesFromNvmrc` |
 | A build never deletes `web/dist/README.txt` | `keep-dist-readme` plugin in `web/vite.config.ts` |
