@@ -203,7 +203,7 @@ The script will:
 5. Enable a fail2ban sshd jail (5 retries, 1 hour ban).
 6. Turn on unattended security upgrades. The machine does not reboot itself. After a kernel update, `/var/run/reboot-required` appears; reboot in a quiet window.
 7. Install Docker Engine and the Compose plugin from Docker's Ubuntu repository when `docker compose version` is not already working.
-8. Copy the stack to `/opt/fold` (with `--image`: only `docker-compose.yml`, `Caddyfile` and `.env.example`; with `--allow-onbox-build`: the whole checkout, including `docker-compose.build.yml`), pin `FOLD_VERSION` in `.env`, write `/opt/fold/.env` mode 600 with a new `SESSION_SECRET` and `DB_PASSWORD`, and refuse to continue if that file is not mode 600 or is committed in git.
+8. Copy the stack to `/opt/fold` (with `--image`: only `docker-compose.yml`, `Caddyfile` and `.env.example`; with `--allow-onbox-build`: the whole checkout, including `docker-compose.build.yml`, and any file the previous checkout had that this one lacks is removed, so the build compiles exactly the new source; `.env`, `backup.env`, `data`, the locks, the recovery files and the installed tools are never touched), pin `FOLD_VERSION` in `.env`, write `/opt/fold/.env` mode 600 with a new `SESSION_SECRET` and `DB_PASSWORD`, and refuse to continue if that file is not mode 600 or is committed in git.
 9. Install `/opt/fold/backup.sh` and a cron job at 02:30 in the droplet's timezone.
 10. After Compose is up, run `smoke.sh`: wait until the db and app containers are healthy, request `https://$DOMAIN/healthz`, check the TLS certificate, and fail if 5432 or 8080 is reachable. It also runs `fold push check` and warns, without failing, if the app can't reach a browser push service on port 443. The same script runs from cron every five minutes (`logger -t fold-health` on failure).
 11. Read `sshd -T` and fail if root login or password login is still on. Fail if `ufw` is not active.
@@ -384,7 +384,7 @@ These notes are interim and the steps are recommended, not a promise. They
 describe `/opt/fold/restore.sh` as written in this tree. Local drills on a
 disposable Compose stack have exercised it; the checks on a real droplet in
 [FIRST-CHURCH-CHECKS.md](FIRST-CHURCH-CHECKS.md#live-install-m51-m53) have not
-been done (#310; the exact-head full drill has not passed yet, inventory 15.16). No release that reports `recoveryPolicy` 1 or higher may be
+been done (#310; the exact-head full drill passed on a disposable runner, inventory 15.17). No release that reports `recoveryPolicy` 1 or higher may be
 published until they are. Account erasure still has open work (see `STATUS.md`,
 M7.4); nothing here says a restore brings back or removes every trace of anyone.
 
