@@ -1477,17 +1477,15 @@ ARCHIVE
   [[ "$after_sha" == "$candidate_sha" ]] || { echo "crossing: the trigger functions after the recovery boot are not the candidate's" >&2; return 1; }
   [[ "$(docker inspect --format '{{.Image}}' "$rid")" == "$(docker image inspect --format '{{.Id}}' "$CROSSING_CAND_IMG")" ]]
   drill_step "archive-$id/reopen-review-and-delete"
-  delete_listed
-  restore --reopen --checked-church-records
-  DB_DUMP="$original_dump"
-  wait_public
-  URL="$(public_url)"; login
+  # The archive lists $a_member as deleted after it was taken (T307), so the operator deletes it again in private recovery, which runs the candidate,
+  # and only then reopens: reopen refuses while a listed account is active.
+  URL=http://localhost:18080; login
   fence_before="$(pg fold -c "SELECT value::bigint FROM settings WHERE key='restore_fence'")"
   [[ "$fence_before" =~ ^[0-9]+$ ]]
-  # The reopened app serves the review route over the archive's own rows.
+  # The recovery app serves the review route over the archive's own rows.
   page="$(api POST "/admin/users/$a_member/erasure-reasons/page" '{"after":null}')"
   jq -e '.reviewRequired == true and (.items | length) == 2 and .next == null and (.items | all(.reviewHash | test("^[0-9a-f]{64}$")))' <<<"$page" >/dev/null \
-    || { echo "crossing: the reopened app did not serve the two-item review: $page" >&2; return 1; }
+    || { echo "crossing: the recovery app did not serve the two-item review: $page" >&2; return 1; }
   first="$(jq -er '.items[0].requestId' <<<"$page")"
   kept="$(jq -er '.items[1].requestId' <<<"$page")"
   body="$(crossing_set_body "$(jq -c '.items' <<<"$page")" "")"
@@ -1501,6 +1499,10 @@ ARCHIVE
   [[ "$(pg fold -c "SELECT count(*) FROM audit_logs WHERE action IN ('add.reason_kept','add.reason_removed') AND target_id IN ($first,$kept)")" == 2 ]]
   fence_after="$(pg fold -c "SELECT value::bigint FROM settings WHERE key='restore_fence'")"
   (( fence_after > fence_before )) || { echo "crossing: the delete did not advance the restore fence ($fence_before -> $fence_after)" >&2; return 1; }
+  restore --reopen --checked-church-records
+  DB_DUMP="$original_dump"
+  wait_public
+  URL="$(public_url)"; login
   ajson="$(dc exec -T app /fold version --json)"
   jq -e --arg v "$CROSSING_CAND_TAG" --argjson l "$CROSSING_CANDIDATE_LEVEL" '.version == $v and .recoveryPolicy == $l' <<<"$ajson" >/dev/null \
     || { echo "crossing: the reopened app is not the committed head at level $CROSSING_CANDIDATE_LEVEL" >&2; return 1; }
