@@ -129,7 +129,7 @@ Output is one `key=value` line on stdout; refusals exit 1 and change nothing unl
 | `uploads-stage` | Extracts into `/data/.restore-NONCE/uploads` and prints `staged inode=I files=N`. |
 | `uploads-observe` | `observe live=I\|none staged=I\|none complete=yes\|no exchange=none\|intent\|done drop=none\|intent\|done receipt=present\|absent`. Read-only. `complete=yes` needs a completed receipt and folders on disk that carry the recorded identities; a replaced tree reports `no`. |
 | `uploads-exchange` | Swaps `/data/uploads` and the staged tree with `mv --exchange` (renameat2, no copying fallback) and prints `exchanged live=I old=J`. `--expect-live I --expect-staged J` refuses unless the identities are that pair or its swap. `--probe` creates `/data/.restore-probe-NONCE/{a,b}`, exchanges them, removes them and any other empty `.restore-probe-*` tree, never touches `/data/uploads`, and prints `probe ok`. |
-| `uploads-drop` | `--identity I` removes the tree at `/data/.restore-NONCE/uploads` (the staged tree before the exchange, the old live tree after it) and prints `dropped identity=I`. `I` must equal the identity the receipt records for that tree (staged inode before the exchange, old live inode after it), and the tree on disk must match it; anything else is refused. `--release` deletes the receipt and the staging folder (`released`). A staging folder that is a symlink is refused before the receipt is read, for a drop and for a release. |
+| `uploads-drop` | `--identity I` removes the tree at `/data/.restore-NONCE/uploads` (the staged tree before the exchange, the old live tree after it) and prints `dropped identity=I`. `I` must equal the identity the receipt records for that tree (staged inode before the exchange, old live inode after it), and the tree on disk must match it; anything else is refused. `--release` deletes the receipt and the staging folder (`released`), and refuses while a receipt records a tree whose removal it never confirmed (a tree that vanished without a drop is not a cleaned one; the receipt stays). A staging folder that is a symlink is refused before the receipt is read, for a drop and for a release. |
 
 Identity is the directory's inode number, read from `observe`.
 
@@ -139,7 +139,10 @@ nonce, the archive SHA-256, the live and staged identities, `stageState` (`pendi
 and synchronized. A stage is `complete` only after extraction, normalization (owner 65532, modes 755/644) and
 filesystem synchronization; an existing inode alone proves nothing. Retries: a completed matching stage is
 recognized; an incomplete one is cleared (only the recorded inode) and rebuilt; an unrelated, symlinked or
-mismatched target refuses. Exchange records intent first and accepts either the unchanged pair or the swapped
+mismatched target refuses. A stage killed between creating the staged folder and recording its inode leaves a pending
+receipt beside an empty, unnamed folder (or, earlier, only the unpublished `.receipt.new`): a retry rebuilds it, and
+`uploads-drop --identity I` removes exactly that empty folder when `I` is its inode, and refuses one that holds anything.
+Exchange records intent first and accepts either the unchanged pair or the swapped
 pair, so a lost acknowledgement resolves on retry; on a filesystem without `RENAME_EXCHANGE` it changes
 neither tree. Drop records the identity as intent before unlinking, accepts an absent tree only under that
 intent, and removes the receipt only on `--release`, which `restore.sh` calls after its own lock durably

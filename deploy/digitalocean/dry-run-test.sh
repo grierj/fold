@@ -390,10 +390,10 @@ STUB
   expect_failure 'below host level 1' "$local_root/dir/upgrade.sh" "${upgrade_args[@]}" --image fixture:zero
   diff -r "$local_root/tools" "$local_root/dir/deploy-tools"
   [[ -z "$(find "$local_root/dir" -maxdepth 1 -name '.*deploy-tools.*' -print)" ]]
-  printf '5\n' >"$local_root/dir/deploy-tools/deploy-tools-version"
+  printf '6\n' >"$local_root/dir/deploy-tools/deploy-tools-version"
   before="$(snapshot)"; : >"$FIXTURE_LOG"
-  expect_failure 'older than installed version 5' "$local_root/tools/upgrade.sh" "${upgrade_args[@]}" --image fixture:one
-  expect_failure 'older than installed version 5' "${provision[@]}" --image fixture:one
+  expect_failure 'older than installed version 6' "$local_root/tools/upgrade.sh" "${upgrade_args[@]}" --image fixture:one
+  expect_failure 'older than installed version 6' "${provision[@]}" --image fixture:one
   [[ "$before" == "$(snapshot)" && ! -s "$FIXTURE_LOG" ]]
   cp "$local_root/tools/deploy-tools-version" "$local_root/dir/deploy-tools/"
   fixture_case='truthful dry runs'
@@ -566,6 +566,10 @@ SHIM
   local -a restore=("$work/tools/restore.sh" --deploy-dir "$work/site")
   "${restore[@]}" --dry-run --dump "$work/archive" >"$work/out"
   grep -q 'snapshot-safe' "$work/out"
+  grep -q 'stays format 1' "$work/out"
+  "${restore[@]}" --dry-run --dump "$work/archive" --uploads "$work/uploads" >"$work/out"
+  grep -q 'format 2' "$work/out"
+  [[ ! -s "$RESTORE_FIXTURE_LOG" ]]
   [[ ! -e "$work/site/ops.lock" && ! -e "$work/site/recovery-tools" && ! -s "$RESTORE_FIXTURE_LOG" ]]
   for phase in --resume --abort --reopen --status; do "${restore[@]}" --dry-run "$phase" >"$work/out"; done
   for row in RESTORE_DRILL_PAUSE=after-lock RESTORE_DRILL_FAULT=after-create RESTORE_DRILL_FORCE_TWO_STEP=1; do

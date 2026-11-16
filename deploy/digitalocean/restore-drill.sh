@@ -92,6 +92,7 @@ drill_progress_init bootstrap base-proof recovery-interruptions reopen-interrupt
   count_races archive_failures pin_and_abort_cases cleanup_and_tamper_cases concurrency_cases lifecycle_cases \
   legacy_archive_case review_reconciliation_cases review_backup_archive_cases review_cleanup_retry_cases \
   review_orphaned_restore_case review_moving_tag_case \
+  uploads_erasure_cases uploads_interruption_cases backup_exclusion_cases \
   real_binary_refusals real_level_lineage real_same_level_rollback real_current_release_restore real_older_archive_restore final-verification
 else
 drill_progress_init "${CROSSINGS_ONLY_PLAN[@]}"
@@ -584,6 +585,7 @@ drill_case_end
 for drill_family in count_races archive_failures pin_and_abort_cases cleanup_and_tamper_cases concurrency_cases lifecycle_cases \
   legacy_archive_case review_reconciliation_cases review_backup_archive_cases review_cleanup_retry_cases \
   review_orphaned_restore_case review_moving_tag_case \
+  uploads_erasure_cases uploads_interruption_cases backup_exclusion_cases \
   real_binary_refusals real_level_lineage real_same_level_rollback real_current_release_restore real_older_archive_restore; do
   drill_case_begin "$drill_family"
   # A bare call preserves errexit inside the acceptance function. Never put

@@ -257,6 +257,13 @@ if [[ -n "${STUB_SYNC_LOG:-}" ]]; then
     echo "sync ${last##*/}" >>"$STUB_SYNC_LOG"
   fi
 fi
+# STUB_RECEIPT_KILL_N=N kills the caller at the Nth flush of a receipt being
+# written: before the receipt is published, so the old one (or none) stays.
+if [[ -n "${STUB_RECEIPT_KILL_N:-}" && "${*: -1}" == */.receipt.new ]]; then
+  n=$(( $(cat "$STUB_DIR/receipt.n" 2>/dev/null || echo 0) + 1 ))
+  echo "$n" >"$STUB_DIR/receipt.n"
+  if [[ "$n" == "$STUB_RECEIPT_KILL_N" ]]; then kill -9 "$PPID"; sleep 1; exit 137; fi
+fi
 if [[ " $* " == *" -f "* && -n "${STUB_SYNC_KILL_N:-}" ]]; then
   n=$(( $(cat "$STUB_DIR/sync.n" 2>/dev/null || echo 0) + 1 ))
   echo "$n" >"$STUB_DIR/sync.n"
@@ -1148,6 +1155,109 @@ case_uploads_refusals() {
   [[ -z "$(ls -A "$SB/elsewhere")" ]] || fail "a symlinked ancestor was written through"
 }
 
+# A recorded tree that vanished with no drop is not a cleaned one: the release
+# refuses however often it is asked and keeps the receipt, before and after the
+# exchange. Once the tree is back and dropped under its recorded identity (or
+# when the receipt records no tree at all) the release goes through.
+case_uploads_release_needs_drop() {
+  new_sandbox releasedrop
+  make_tgz "$FOLD_BACKUP_RESTORE_ARCHIVE"
+  local live0 parent="$SB/data/.restore-$N1" i
+  live0="$(stat -c %i "$SB/data/uploads")"
+  stage_ok
+  "$REAL_MV" "$parent/uploads" "$parent/held"
+  for i in 1 2; do
+    run_bk uploads-drop --nonce "$N1" --release
+    expect_rc 1
+    [[ "$ERR" == *"never confirmed"* && -f "$parent/receipt" && -d "$parent/held" ]] || fail "a vanished stage was released ($i): $ERR"
+  done
+  "$REAL_MV" "$parent/held" "$parent/uploads"
+  run_bk uploads-drop --nonce "$N1" --identity "$STAGED_INO"
+  expect_rc 0
+  run_bk uploads-drop --nonce "$N1" --release
+  expect_rc 0
+  [[ "$OUT" == released && ! -e "$parent" ]] || fail "a confirmed drop was not released: $OUT"
+  # After the exchange the old tree is the recorded one.
+  stage_ok
+  run_bk uploads-exchange --nonce "$N1"
+  expect_rc 0
+  "$REAL_MV" "$parent/uploads" "$parent/held"
+  run_bk uploads-drop --nonce "$N1" --release
+  expect_rc 1
+  [[ -f "$parent/receipt" && -d "$parent/held" ]] || fail "a vanished old tree was released"
+  "$REAL_MV" "$parent/held" "$parent/uploads"
+  run_bk uploads-drop --nonce "$N1" --identity "$live0"
+  expect_rc 0
+  run_bk uploads-drop --nonce "$N1" --release
+  expect_rc 0
+  [[ ! -e "$parent" ]] || fail "the old tree's confirmed drop was not released"
+}
+
+# A stage killed around its first two receipt writes. Kill 1 leaves only the
+# unpublished receipt; kill 2 leaves the staged folder created, empty and
+# unnamed by a pending receipt. Both must converge by a retry and by an abort
+# (drop, then release), without touching the live tree or any other path.
+case_uploads_receipt_window() {
+  new_sandbox receiptwindow
+  make_tgz "$FOLD_BACKUP_RESTORE_ARCHIVE"
+  echo old >"$SB/data/uploads/old.txt"
+  local live0 parent="$SB/data/.restore-$N1" n after sino
+  live0="$(stat -c %i "$SB/data/uploads")"
+  for n in 1 2; do
+    for after in resume abort; do
+      "$REAL_RM" -rf "$parent" "$STUB_DIR/receipt.n"
+      STUB_RECEIPT_KILL_N="$n" run_bk uploads-stage --nonce "$N1"
+      [[ "$RC" == 137 ]] || fail "kill $n: stage was not killed ($RC)"
+      [[ "$(stat -c %i "$SB/data/uploads")" == "$live0" && -f "$SB/data/uploads/old.txt" ]] || fail "kill $n: the live tree changed"
+      if [[ "$n" == 1 ]]; then
+        [[ -e "$parent/.receipt.new" && ! -e "$parent/receipt" && ! -e "$parent/uploads" ]] || fail "kill 1 left an unexpected layout"
+        observe
+        [[ "$O_RECEIPT" == absent && "$O_STAGED" == none ]] || fail "kill 1 observation: $OUT"
+      else
+        [[ -f "$parent/receipt" && -d "$parent/uploads" ]] || fail "kill 2 left an unexpected layout"
+        grep -qx 'stageState=pending' "$parent/receipt" || fail "kill 2 receipt is not pending"
+        grep -qx 'stageInode=' "$parent/receipt" || fail "kill 2 receipt names an inode"
+        [[ -z "$(find "$parent/uploads" -mindepth 1 -print -quit)" ]] || fail "kill 2 folder is not empty"
+        observe
+        [[ "$O_RECEIPT" == present && "$O_STAGED" != none && "$O_COMPLETE" == no ]] || fail "kill 2 observation: $OUT"
+        sino="$O_STAGED"
+        run_bk uploads-exchange --nonce "$N1"
+        expect_rc 1
+        [[ "$(stat -c %i "$SB/data/uploads")" == "$live0" ]] || fail "an unnamed stage was exchanged"
+      fi
+      if [[ "$after" == resume ]]; then
+        stage_ok
+        [[ "$STAGED_FILES" == 2 && -f "$parent/uploads/avatars/1/a.jpg" ]] || fail "kill $n: the retry did not converge"
+        run_bk uploads-drop --nonce "$N1" --identity "$STAGED_INO"
+        expect_rc 0
+      elif [[ "$n" == 2 ]]; then
+        # Only the empty folder this attempt made may go: never another inode,
+        # never a folder that holds anything.
+        run_bk uploads-drop --nonce "$N1" --identity "$live0"
+        expect_rc 1
+        run_bk uploads-drop --nonce "$N1" --identity 123456789
+        expect_rc 1
+        echo stray >"$parent/uploads/stray"
+        run_bk uploads-drop --nonce "$N1" --identity "$sino"
+        expect_rc 1
+        [[ -f "$parent/uploads/stray" ]] || fail "a folder with content was dropped"
+        "$REAL_RM" -f "$parent/uploads/stray"
+        "$REAL_RM" -f "$STUB_DIR/sync.n"
+        STUB_SYNC_KILL_N=1 run_bk uploads-drop --nonce "$N1" --identity "$sino"
+        [[ "$RC" == 137 ]] || fail "drop not killed after removal ($RC)"
+        [[ ! -e "$parent/uploads" ]] || fail "the empty folder survived its drop"
+        run_bk uploads-drop --nonce "$N1" --identity "$sino"
+        expect_rc 0
+        [[ "$OUT" == "dropped identity=$sino" ]] || fail "retried drop: $OUT"
+      fi
+      run_bk uploads-drop --nonce "$N1" --release
+      expect_rc 0
+      [[ ! -e "$parent" ]] || fail "kill $n/$after: release left the staging folder"
+      [[ "$(stat -c %i "$SB/data/uploads")" == "$live0" && -f "$SB/data/uploads/old.txt" ]] || fail "kill $n/$after: the live tree changed"
+    done
+  done
+}
+
 case_uploads_drop_ownership() {
   new_sandbox dropown
   make_tgz "$FOLD_BACKUP_RESTORE_ARCHIVE"
@@ -1315,7 +1425,7 @@ case_adopt_flush() {
 ALL_CASES=(help_and_self_test retention_boundaries schedule_boundaries partial_config tar_before_dump
   pair_completion_and_modes status_format failure_at_each_step ciphertext_only_upload secret_sentinels
   recovery_refusal contention restore_test long_running_health health_states loop_resumes_after_recovery
-  uploads_validate uploads_lifecycle uploads_interruptions uploads_refusals uploads_drop_ownership
+  uploads_validate uploads_lifecycle uploads_interruptions uploads_refusals uploads_release_needs_drop uploads_receipt_window uploads_drop_ownership
   uploads_drop_symlink_parent sync_failures adopt adopt_flush)
 
 run_case() {
@@ -1364,6 +1474,16 @@ run_probes() {
   fi
   if mutate recovery-refusal 's/if \[\[ -e "$dir\/recovery.lock" || -L "$dir\/recovery.lock" \]\]; then # probe:recovery/if false; then/'; then
     probe recovery-refusal recovery_refusal || bad=1
+  else
+    bad=1
+  fi
+  if mutate empty-stage-adoption 's/^  adopt_empty_stage$/  :/'; then
+    probe empty-stage-adoption uploads_receipt_window || bad=1
+  else
+    bad=1
+  fi
+  if mutate release-needs-drop 's/if \[\[ -n "\$R_STAGE_INO" \&\& "\$R_DROP_DONE" != "\$(drop_identity)" \]\]; then/if false; then/'; then
+    probe release-needs-drop uploads_release_needs_drop || bad=1
   else
     bad=1
   fi

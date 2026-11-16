@@ -1270,3 +1270,438 @@ assert_statement_history() {
   # lost acknowledgement and forced two-step resumes.
   jq -s -e '[.[] | select(.command|contains("RENAME TO"))] | group_by(.nonce) | all(.[]; [.[].command] | map(scan("RENAME TO")) | length<=2)' "$WORK/restore-command-history.jsonl" >/dev/null
 }
+
+# --- M5.2: uploads, the backup service and the scheduler -----------------------
+# Real containers, the real backup image and the real release: a photo of someone
+# erased after the backup is restored with the archive and must be gone, from the
+# disk and from its URL, before the site reopens. The backup service in this
+# drill idles (see deploy-drill.sh); a case runs one real backup with exec.
+UPLOAD_PNG_B64='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+UPLOAD_FOREIGN_NONCE=ffffffffffffffffffffffffffffffff
+backup_image() { docker image inspect --format '{{.Id}}' ghcr.io/grierj/fold-backup:drill </dev/null; }
+# One-shot root shell over the uploads volume, using the backup image's tools.
+# Arguments after the script are its $1, $2, ...
+uploads_sh() {
+  local script="$1"
+  shift
+  docker run --rm --network none --pull never --user 0 --entrypoint bash -v "${PROJECT}_uploads:/data" "$(backup_image)" -c "$script" bash "$@" </dev/null
+}
+photo_files() { uploads_sh 'find /data/uploads -type f -path "*/avatars/$1/*" | wc -l' "$1"; }
+# The files directly in a person's photo folder (not those of a folder inside it).
+avatar_top_files() { uploads_sh 'find "/data/uploads/avatars/$1" -mindepth 1 -maxdepth 1 -type f 2>/dev/null | wc -l' "$1"; }
+marker_exists() { [[ "$(uploads_sh 'test -f /data/uploads/marker/f && echo yes || echo no')" == yes ]]; }
+# The archives of the backup volume and the status files, as one comparable text.
+volume_snapshot() {
+  docker run --rm --network none --pull never --user 0 --entrypoint bash \
+    -v "${PROJECT}_backups:/backups:ro" -v "${PROJECT}_backup-status:/backup-status:ro" "$(backup_image)" -c '
+      cd /backups && find . -maxdepth 1 -type f -printf "%f %s %T@ %m\n" | sort && { sha256sum -- * 2>/dev/null | sort || true; }
+      cd /backup-status && for f in LAST_OK status.json; do if [[ -f $f ]]; then echo "== $f"; cat "$f"; fi; done' </dev/null
+}
+# A backup operation attempted now, in a one-off container of the same service:
+# it works whether or not the long-running one is stopped.
+backup_attempt() { dc run --rm --no-deps -T --entrypoint /usr/local/bin/backup.sh backup "$@" </dev/null; }
+# A real backup, then its pair copied out under its own names.
+backup_pair() {
+  local out stamp id
+  out="$(dc exec -T backup backup.sh now </dev/null)" || return 1
+  stamp="$(sed -n 's/^published stamp=\([0-9]\{8\}-[0-9]\{4\}\) .*/\1/p' <<<"$out")"
+  [[ -n "$stamp" ]] || return 1
+  id="$(dc ps -q backup)"
+  docker cp "$id:/backups/fold-$stamp.dump" "$WORK/fold-$stamp.dump" || return 1
+  docker cp "$id:/backups/uploads-$stamp.tgz" "$WORK/uploads-$stamp.tgz" || return 1
+  chown 0:0 "$WORK/fold-$stamp.dump" "$WORK/uploads-$stamp.tgz"; chmod 600 "$WORK/fold-$stamp.dump" "$WORK/uploads-$stamp.tgz"
+  printf '%s\n' "$stamp"
+}
+member_login() {
+  local jar="$1" email="$2" token
+  rm -f "$jar"
+  token="$(curl -fsS -b "$jar" -c "$jar" "$URL/api/v1/auth/csrf" | jq -er .csrfToken)"
+  curl -fsS -b "$jar" -c "$jar" -X POST -H "X-CSRF-Token: $token" -H 'Content-Type: application/json' \
+    --data-binary "$(jq -n --arg e "$email" '{email:$e,password:"restore-drill-password"}')" "$URL/api/v1/auth/login" >/dev/null
+}
+# Prints the path of the stored photo (/uploads/...).
+member_photo() {
+  local jar="$1" token url
+  printf '%s' "$UPLOAD_PNG_B64" | base64 -d >"$WORK/photo.png"
+  token="$(curl -fsS -b "$jar" -c "$jar" "$URL/api/v1/auth/csrf" | jq -er .csrfToken)"
+  url="$(curl -fsS -b "$jar" -c "$jar" -X POST -H "X-CSRF-Token: $token" -F "avatar=@$WORK/photo.png;type=image/png" "$URL/api/v1/me/avatar" | jq -er .avatarUrl)"
+  printf '/uploads/%s\n' "${url#*/uploads/}"
+}
+http_code() { curl -s -o /dev/null -w '%{http_code}' "$1"; }
+uploads_private() {
+  local id
+  [[ "$(phase)" == recovering ]]
+  for id in $(dc ps -q caddy app); do [[ "$(docker inspect --format '{{.State.Running}}' "$id")" == false ]]; done
+  id="$(recovery_ids)"; [[ -n "$id" && "$id" != *$'\n'* ]]
+  curl -fsS http://localhost:18080/healthz >/dev/null
+  if port_open "$PUBLIC_PORT"; then echo 'public port still open' >&2; return 1; fi
+}
+# The backup service container by label, so it can be read even when the deployed
+# Compose no longer defines the service (a pin to an older release).
+backup_state() { docker ps -a --filter "label=com.docker.compose.project=$PROJECT" --filter label=com.docker.compose.service=backup --format '{{.State}}' </dev/null; }
+backup_armed() { [[ "$(backup_state)" == running ]]; }
+backup_stopped() { [[ "$(backup_state)" == exited ]]; }
+# Earlier cases leave photos and staging folders behind; a case starts from none.
+reset_uploads() { uploads_sh 'find /data/uploads -mindepth 1 -delete; rm -rf /data/.restore-*'; }
+# Like kill_point, for points where the lock may be gone afterwards.
+kill_at() {
+  local point="$1" rc=0
+  shift
+  drill_note "fault/$point"
+  env RESTORE_DRILL_OPERATION=1 RESTORE_DRILL_FAULT="$point" "$DIR/restore.sh" --deploy-dir "$DIR" --drill "$@" >"$WORK/fault-$point.log" 2>&1 || rc=$?
+  cat "$WORK/fault-$point.log"
+  [[ "$rc" == 137 ]]
+}
+# A pair whose uploads hold a marker the live volume no longer has, and a member
+# photo; the database holds that member.
+prepare_uploads_pair() {
+  local z stamp
+  reset_case
+  reset_uploads
+  z="$(new_user 'Photo Z' photo-z@example.invalid)"
+  member_login "$WORK/z.jar" photo-z@example.invalid
+  member_photo "$WORK/z.jar" >/dev/null
+  uploads_sh 'rm -rf /data/uploads/marker; mkdir -p /data/uploads/marker && echo archived >/data/uploads/marker/f && chown -R 65532:65532 /data/uploads/marker'
+  stamp="$(backup_pair)"
+  PAIR_DUMP="$WORK/fold-$stamp.dump"; PAIR_UPLOADS="$WORK/uploads-$stamp.tgz"
+  uploads_sh 'rm -rf /data/uploads/marker'
+  ! marker_exists
+}
+uploads_tree_digest() {
+  uploads_sh 'cd /data && find uploads -mindepth 0 -printf "%p %y %u:%g %m %s\n" | sort; find uploads -type f -exec sha256sum {} + | sort'
+}
+
+# The acceptance drill. X has a photo and is erased live after the backup; the
+# restore brings the photo back with the archive; the people re-delete X in
+# private recovery; settle removes the photo before the site reopens.
+uploads_erasure_cases() {
+  local x y stamp dump uploads photo
+  reset_case
+  reset_uploads
+  x="$(new_user 'Photo X' photo-x@example.invalid)"; y="$(new_user 'Photo Y' photo-y@example.invalid)"
+  member_login "$WORK/x.jar" photo-x@example.invalid
+  photo="$(member_photo "$WORK/x.jar")"
+  [[ "$(http_code "$URL$photo")" == 200 && "$(photo_files "$x")" -ge 1 ]]
+  stamp="$(backup_pair)"; dump="$WORK/fold-$stamp.dump"; uploads="$WORK/uploads-$stamp.tgz"
+  # The pair is root-owned and private, as a preserved archive is.
+  [[ "$(stat -c '%u:%a' "$uploads")" == 0:600 ]]
+  login
+  api DELETE "/admin/users/$x" '{}' >/dev/null
+  restore --dump "$dump" --uploads "$uploads"
+  [[ "$(jq -er .format "$DIR/recovery.lock")" == 2 && "$(jq -er .uploads.state "$DIR/recovery.lock")" == exchanged ]]
+  uploads_private
+  [[ "$(photo_files "$x")" -ge 1 ]]
+  assert_deleted_list "$x"
+  # In private recovery X is deleted again, as the checklist says.
+  delete_listed
+  # A crash before settle: the restored photo is still there and nothing is public.
+  start_paused before-settle --reopen --checked-church-records
+  assert_closed
+  [[ "$(photo_files "$x")" -ge 1 && "$(avatar_top_files "$x")" -ge 1 && -z "$(recovery_ids)" ]]
+  kill_holder
+  [[ "$(phase)" == reopen-intent ]]
+  restore --resume; uploads_private
+  [[ "$(avatar_top_files "$x")" -ge 1 ]]
+  # A nested folder under X's photos makes settle refuse. The refusal comes after
+  # it removed X's photo (it empties what it may), so this runs after the proof
+  # above and cannot hide it: the site stays closed, the folder is left alone,
+  # and --resume returns to private recovery.
+  uploads_sh 'mkdir -p "/data/uploads/avatars/$1/nested" && echo x >"/data/uploads/avatars/$1/nested/f" && chown -R 65532:65532 "/data/uploads/avatars/$1"' "$x"
+  expect_fail reopen-failed restore --reopen --checked-church-records
+  [[ "$(phase)" == reopen-failed ]]
+  assert_closed
+  [[ "$(avatar_top_files "$x")" == 0 && "$(photo_files "$x")" == 1 ]]
+  restore --resume; uploads_private
+  uploads_sh 'rm -rf "/data/uploads/avatars/$1/nested"' "$x"
+  # After settle, still closed: the photo is gone.
+  start_paused after-settle --reopen --checked-church-records
+  assert_closed
+  [[ "$(photo_files "$x")" == 0 ]]
+  release_barrier
+  [[ ! -e "$DIR/recovery.lock" && -z "$(recovery_ids)" ]]
+  wait_public; URL="$(public_url)"
+  [[ "$(http_code "$URL$photo")" == 404 ]]
+  # The reopened app writes into the exchanged folder, and nothing of the
+  # staging area or the old folder is left.
+  member_login "$WORK/y.jar" photo-y@example.invalid
+  member_photo "$WORK/y.jar" >/dev/null
+  [[ "$(photo_files "$y")" -ge 1 ]]
+  [[ "$(uploads_sh 'ls -A /data | grep -c "^\.restore" || true')" == 0 ]]
+  backup_armed
+  # The statement history shows the one database swap and no uploads SQL.
+  reset_case
+}
+
+# Interruptions of every durable uploads step and of the scheduler, each followed
+# by a retry that converges.
+uploads_interruption_cases() {
+  local point before after live_before
+  # The caller is killed while the stage helper is still running (held by the
+  # drill wrapper). The helper is still there; a foreign one blocks the retry;
+  # then the owned one is removed before anything looks at the folders.
+  prepare_uploads_pair
+  printf 'stage\n' >"$WORK/helper-hold"
+  kill_at during-uploads-stage --dump "$PAIR_DUMP" --uploads "$PAIR_UPLOADS"
+  [[ -n "$(docker ps -q --filter label=fold.uploads.role=stage --filter "label=fold.recovery.nonce=$(jq -er .nonce "$DIR/recovery.lock")")" ]]
+  rm -f "$WORK/helper-hold"
+  docker run -d --name drill-foreign-helper --label "fold.project=$PROJECT" --label fold.uploads.role=stage \
+    --label "fold.recovery.nonce=$UPLOAD_FOREIGN_NONCE" --entrypoint sleep "$(backup_image)" 600 >/dev/null
+  expect_fail 'foreign uploads helper' restore --resume
+  [[ -n "$(docker ps -q --filter name=drill-foreign-helper)" && "$(phase)" == collected ]]
+  docker rm -f drill-foreign-helper >/dev/null
+  restore --resume
+  [[ -z "$(docker ps -aq --filter label=fold.uploads.role)" ]]
+  uploads_private; marker_exists
+  restore --reopen
+  [[ ! -e "$DIR/recovery.lock" ]]
+  # The stage helper dies while it writes its receipt: at the first write (only
+  # the unpublished receipt exists) or the second (the staged folder exists,
+  # empty, and the receipt is still pending and does not name it). A retry and
+  # an abort both converge, the abort removes only that empty folder, and the
+  # live folder is never exchanged, changed or removed.
+  cat >"$WORK/helper-shim.sh" <<'SHIM'
+sync() {
+  if [[ -n "${FOLD_DRILL_DIE_RECEIPT:-}" && "${*: -1}" == */.receipt.new ]]; then
+    DRILL_RECEIPT_N=$(( ${DRILL_RECEIPT_N:-0} + 1 ))
+    if [[ "$DRILL_RECEIPT_N" == "$FOLD_DRILL_DIE_RECEIPT" ]]; then trap - EXIT TERM INT; exit 137; fi
+  fi
+  command sync "$@"
+}
+SHIM
+  for point in 2 1; do
+    for point_next in resume abort; do
+      prepare_uploads_pair
+      before="$(uploads_tree_digest)"
+      printf '%s\n' "$point" >"$WORK/helper-die"
+      expect_fail 'staging the uploads failed' restore --dump "$PAIR_DUMP" --uploads "$PAIR_UPLOADS"
+      rm -f "$WORK/helper-die"
+      [[ "$(phase)" == collected && "$(jq -er .uploads.state "$DIR/recovery.lock")" == stage-intent ]]
+      [[ -z "$(docker ps -aq --filter label=fold.uploads.role=stage)" ]]
+      if [[ "$point" == 2 ]]; then
+        [[ "$(uploads_sh 'cd /data/.restore-* && ls -A . | LC_ALL=C sort | tr "\n" " "; test -z "$(ls -A uploads)" && echo empty')" == '.receipt.new receipt uploads empty' ]]
+        [[ "$(uploads_sh 'grep -c "^stageState=pending$\|^stageInode=$" /data/.restore-*/receipt')" == 2 ]]
+      else
+        [[ "$(uploads_sh 'cd /data/.restore-* && ls -A . | tr "\n" " "')" == '.receipt.new ' ]]
+      fi
+      if [[ "$point_next" == resume ]]; then
+        restore --resume
+        uploads_private; marker_exists
+        restore --reopen
+        [[ ! -e "$DIR/recovery.lock" ]]
+      else
+        restore --abort
+        [[ ! -e "$DIR/recovery.lock" ]]
+        [[ "$(uploads_tree_digest)" == "$before" ]]
+        ! marker_exists
+        [[ "$(uploads_sh 'ls -A /data | grep -c "^\.restore" || true')" == 0 ]]
+        backup_armed
+      fi
+      [[ -z "$(docker ps -aq --filter label=fold.uploads.role)" ]]
+    done
+  done
+  rm -f "$WORK/helper-shim.sh"
+  # Staging finished, not acknowledged; then the exchange finished, not
+  # acknowledged, with both archives gone.
+  for point in after-uploads-stage after-uploads-exchange; do
+    prepare_uploads_pair
+    kill_at "$point" --dump "$PAIR_DUMP" --uploads "$PAIR_UPLOADS"
+    if [[ "$point" == after-uploads-exchange ]]; then
+      mv "$PAIR_DUMP" "$WORK/held.dump"; mv "$PAIR_UPLOADS" "$WORK/held.tgz"
+      restore --resume
+      mv "$WORK/held.dump" "$PAIR_DUMP"; mv "$WORK/held.tgz" "$PAIR_UPLOADS"
+    else restore --resume; fi
+    uploads_private; marker_exists
+    restore --reopen
+    [[ ! -e "$DIR/recovery.lock" ]]
+  done
+  # Removal of the old folder: killed while it runs (held), and after it returns.
+  for point in during-uploads-drop after-uploads-drop; do
+    prepare_uploads_pair
+    restore --dump "$PAIR_DUMP" --uploads "$PAIR_UPLOADS"
+    uploads_private
+    [[ "$point" != during-uploads-drop ]] || printf 'drop\n' >"$WORK/helper-hold"
+    kill_at "$point" --reopen
+    [[ "$(phase)" == pre-dropped && "$(jq -er .uploads.state "$DIR/recovery.lock")" == old-drop-intent ]]
+    if [[ "$point" == during-uploads-drop ]]; then [[ -n "$(docker ps -q --filter label=fold.uploads.role=drop)" ]]; fi
+    rm -f "$WORK/helper-hold"
+    mv "$PAIR_UPLOADS" "$WORK/held.tgz"
+    restore --resume
+    mv "$WORK/held.tgz" "$PAIR_UPLOADS"
+    [[ ! -e "$DIR/recovery.lock" && -z "$(docker ps -aq --filter label=fold.uploads.role)" ]]
+    [[ "$(uploads_sh 'ls -A /data | grep -c "^\.restore" || true')" == 0 ]]
+    marker_exists
+  done
+  # Killed while settle runs: a lock on users keeps the real settle container
+  # blocked in its account lookup, so it is there when the caller dies.
+  prepare_uploads_pair
+  restore --dump "$PAIR_DUMP" --uploads "$PAIR_UPLOADS"
+  uploads_private
+  sql_hold settlehold fold 'LOCK TABLE users IN ACCESS EXCLUSIVE MODE'
+  kill_at during-settle --reopen
+  [[ -n "$(recovery_ids)" ]]
+  sql_release settlehold
+  restore --resume
+  uploads_private
+  restore --reopen
+  [[ ! -e "$DIR/recovery.lock" ]]
+  # A pre-swap abort leaves the original database and the live folder exactly as
+  # they were, and a staged tree that was never exchanged is removed.
+  prepare_uploads_pair
+  before="$(uploads_tree_digest)"
+  capture_original
+  kill_at before-swap --dump "$PAIR_DUMP" --uploads "$PAIR_UPLOADS"
+  [[ "$(jq -er .uploads.state "$DIR/recovery.lock")" == staged ]]
+  restore --abort
+  [[ ! -e "$DIR/recovery.lock" ]]
+  after="$(uploads_tree_digest)"
+  [[ "$before" == "$after" ]]
+  ! marker_exists
+  [[ "$(pg fold -c 'SELECT value FROM drill_sentinel WHERE id=2')" == live ]]
+  [[ "$(dc exec -T db sha256sum "/var/lib/postgresql/data/$(jq -er .path "$WORK/original-heap.json")" </dev/null | cut -d' ' -f1)" == "$(jq -er .digest "$WORK/original-heap.json")" ]]
+  backup_armed
+  # Aborts interrupted at removal and around the scheduler converge too.
+  for point in after-uploads-drop before-scheduler after-scheduler after-lock-remove; do
+    prepare_uploads_pair
+    before="$(uploads_tree_digest)"
+    kill_at before-swap --dump "$PAIR_DUMP" --uploads "$PAIR_UPLOADS"
+    kill_at "$point" --abort
+    if [[ -e "$DIR/recovery.lock" ]]; then
+      restore --abort
+    fi
+    [[ ! -e "$DIR/recovery.lock" ]]
+    backup_armed
+    [[ "$(uploads_tree_digest)" == "$before" ]]
+    ! marker_exists
+  done
+  # The scheduler around a reopen: armed whenever the lock is gone, and a kill on
+  # either side of arming or of the lock's removal converges.
+  for point in before-scheduler after-scheduler after-lock-remove; do
+    prepare_uploads_pair
+    restore --dump "$PAIR_DUMP" --uploads "$PAIR_UPLOADS"
+    uploads_private
+    kill_at "$point" --reopen
+    case "$point" in
+      before-scheduler) [[ -e "$DIR/recovery.lock" ]]; backup_stopped ;;
+      after-scheduler) [[ -e "$DIR/recovery.lock" ]]; backup_armed ;;
+      after-lock-remove) [[ ! -e "$DIR/recovery.lock" ]]; backup_armed ;;
+    esac
+    if [[ -e "$DIR/recovery.lock" ]]; then restore --resume; fi
+    [[ ! -e "$DIR/recovery.lock" ]]
+    backup_armed
+  done
+  uploads_scheduler_pin_cases
+  reset_case
+}
+
+# A pin to a Compose file with no backup service installs the guarded host full
+# cron; a pin to one whose backup service does not share the locks is never
+# started, keeps the lock and says the scheduler failed.
+uploads_scheduler_pin_cases() {
+  local nobackup uncoordinated cron="$DIR/.drill-cron/fold-backup"
+  git -C "$SOURCE" checkout -q --detach "$HIGH_COMMIT"
+  awk '/^  backup:/ {skip=1; next} skip && /^  [^ ]/ {skip=0} skip && /^[^ ]/ {skip=0} !skip {print}' "$SOURCE/docker-compose.yml" >"$WORK/compose-nobackup.yml"
+  ! grep -q '^  backup:' "$WORK/compose-nobackup.yml"
+  cp "$WORK/compose-nobackup.yml" "$SOURCE/docker-compose.yml"
+  # The build override the restore also selects defines backup too (deploy-drill.sh);
+  # a Compose with no backup service has neither. The merged configuration is
+  # what decides, so it is read back.
+  printf 'services:\n  app:\n    build: .\n' >"$SOURCE/docker-compose.build.yml"
+  git -C "$SOURCE" rm -q --ignore-unmatch Dockerfile.backup
+  docker compose --project-directory "$SOURCE" --env-file "$DIR/.env" -f "$SOURCE/docker-compose.yml" -f "$SOURCE/docker-compose.build.yml" config --no-interpolate --format json </dev/null \
+    | jq -e '.services | has("backup") | not' >/dev/null
+  git -C "$SOURCE" -c user.name=drill -c user.email=drill@example.invalid commit -qam 'compose without a backup service'
+  nobackup="$(git -C "$SOURCE" rev-parse HEAD)"
+  git -C "$SOURCE" checkout -q --detach "$HIGH_COMMIT"
+  sed -i '/^      FOLD_RECOVERY_DIR: /d' "$SOURCE/docker-compose.yml"
+  git -C "$SOURCE" -c user.name=drill -c user.email=drill@example.invalid commit -qam 'backup service without the coordination variable'
+  uncoordinated="$(git -C "$SOURCE" rev-parse HEAD)"
+  git -C "$SOURCE" checkout -q --detach "$HIGH_COMMIT"
+  git -C "$SOURCE" reset -q --hard "$HIGH_COMMIT"
+  reset_case
+  rm -f "$cron"
+  restore --dump "$DB_DUMP" --commit "$nobackup" --source-dir "$SOURCE"
+  assert_private
+  delete_listed
+  restore --reopen --checked-church-records
+  [[ ! -e "$DIR/recovery.lock" ]]
+  grep -q 'backup.sh >>' "$cron"; ! grep -q -- '--expire-only' "$cron"
+  backup_stopped
+  git -C "$SOURCE" checkout -q --detach "$HIGH_COMMIT"
+  reset_case
+  restore --dump "$DB_DUMP" --commit "$uncoordinated" --source-dir "$SOURCE"
+  assert_private
+  delete_listed
+  expect_fail 'cleanup-failed' restore --reopen --checked-church-records
+  [[ "$(phase)" == cleanup-failed && "$(jq -er .at "$DIR/recovery.lock")" == scheduler ]]
+  backup_stopped
+  [[ "$(docker inspect --format '{{.State.Running}}' "$(dc ps -q app)")" == true ]]
+  # Put the coordination line back by hand (the drill's fixture), then retry.
+  git -C "$SOURCE" show "$HIGH_COMMIT:docker-compose.yml" >"$DIR/docker-compose.yml"
+  restore --resume
+  [[ ! -e "$DIR/recovery.lock" ]]
+  backup_armed
+  git -C "$SOURCE" checkout -q --detach "$HIGH_COMMIT"
+}
+
+# A backup and a restore never overlap, in either direction, with the real
+# container as uid 65532 on the shared lock.
+backup_exclusion_cases() {
+  local rc state before after held truncated length size
+  reset_case
+  [[ "$(stat -c '%u:%g:%a' "$DIR/backup.lock")" == 0:65532:640 && "$(stat -c '%a' "$DIR/.env")" == 600 ]]
+  # A real backup holds the lock (its dump is blocked behind a table lock), and
+  # restore waits its bounded time, then refuses with nothing stopped.
+  sql_hold backupblock fold 'LOCK TABLE users IN ACCESS EXCLUSIVE MODE'
+  dc exec -T backup backup.sh now >"$WORK/held-backup.log" 2>&1 </dev/null &
+  holder=$!
+  for ((i=0;i<300;i++)); do if ! flock -n "$DIR/backup.lock" true; then held=1; break; fi; sleep .1; done
+  [[ "${held:-0}" == 1 ]]
+  rc=0; RESTORE_DRILL_WAIT=2 restore --dump "$DB_DUMP" >"$WORK/busy-restore.log" 2>&1 || rc=$?
+  [[ "$rc" == 75 && ! -e "$DIR/recovery.lock" ]]
+  [[ "$(docker inspect --format '{{.State.Running}}' "$(dc ps -q app)")" == true ]]
+  sql_release backupblock
+  wait_holder
+  grep -q '^published ' "$WORK/held-backup.log"
+  # The host holds the lock: the real container, as uid 65532, refuses.
+  before="$(volume_snapshot)"
+  (
+    backup_coord_acquire "$DIR"
+    rc=0; backup_attempt now >"$WORK/host-held.log" 2>&1 || rc=$?
+    [[ "$rc" == 75 ]]
+    grep -q 'host backup lock' "$WORK/host-held.log"
+  )
+  [[ "$before" == "$(volume_snapshot)" ]]
+  # Under recovery.lock, at three points, no archive, expiry, upload or status
+  # file changes, whatever backup operation is tried.
+  size="$(stat -c %s "$DB_DUMP")"; truncated=""
+  for length in "$((size/2))" "$((size*3/4))" "$((size-1024))" "$((size-128))"; do
+    (( length>0 )) || continue
+    head -c "$length" "$DB_DUMP" >"$WORK/truncated-exclusion.dump"
+    if dc exec -T db pg_restore -l <"$WORK/truncated-exclusion.dump" >/dev/null 2>&1; then truncated="$WORK/truncated-exclusion.dump"; break; fi
+  done
+  [[ -n "$truncated" ]]
+  for state in quiesce collect-failed terminal-cleanup; do
+    reset_case
+    case "$state" in
+      quiesce)
+        rc=0; env RESTORE_DRILL_OPERATION=1 RESTORE_DRILL_FAULT=stop-fails "$DIR/restore.sh" --deploy-dir "$DIR" --drill --dump "$DB_DUMP" >"$WORK/quiesce.log" 2>&1 || rc=$?
+        [[ "$rc" != 0 && "$(phase)" == quiesce ]] ;;
+      collect-failed)
+        rc=0; restore --dump "$truncated" >"$WORK/collect-failed.log" 2>&1 || rc=$?
+        [[ "$rc" != 0 && "$(phase)" == collect-failed ]] ;;
+      terminal-cleanup)
+        restore --dump "$DB_DUMP"
+        delete_listed
+        kill_at after-drop --reopen --checked-church-records
+        [[ "$(phase)" == pre-dropped ]] ;;
+    esac
+    before="$(volume_snapshot)"
+    rc=0; backup_attempt now >"$WORK/refused-now.log" 2>&1 || rc=$?
+    [[ "$rc" == 75 ]]
+    rc=0; backup_attempt restore-test >"$WORK/refused-test.log" 2>&1 || rc=$?
+    [[ "$rc" == 75 ]]
+    after="$(volume_snapshot)"
+    [[ "$before" == "$after" ]]
+  done
+  reset_case
+}

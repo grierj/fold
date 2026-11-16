@@ -1067,7 +1067,9 @@ cmd_uploads_stage() {
       fi
       clear_incomplete
     else
-      [[ -z "$(find -P "$PARENT" -mindepth 1 -maxdepth 1 -print -quit)" ]] \
+      # No receipt yet: a first attempt killed while writing it leaves at most
+      # the unpublished .receipt.new beside nothing else.
+      [[ -z "$(find -P "$PARENT" -mindepth 1 -maxdepth 1 ! -name .receipt.new -print -quit)" ]] \
         || die "an unrelated staging area exists; nothing was changed" 1
       init_receipt "$sha" "$live_ino"
       receipt_write
@@ -1237,10 +1239,40 @@ drop_release() {
   if [[ -e "$STAGED" || -L "$STAGED" ]]; then
     die "a staged or old tree still exists; nothing was released" 1
   fi
+  # A receipt that records a tree is released only once the helper itself
+  # recorded that tree's removal: a tree that vanished without it is not a
+  # cleaned one, and the receipt is what still says so.
+  if [[ -e "$RCPT" || -L "$RCPT" ]]; then
+    receipt_read || die "the staging receipt is unreadable; nothing was released" 1
+    [[ "$R_NONCE" == "$NONCE" ]] || die "the staging receipt belongs to another recovery; nothing was released" 1
+    if [[ -n "$R_STAGE_INO" && "$R_DROP_DONE" != "$(drop_identity)" ]]; then
+      die "the receipt records a tree whose removal it never confirmed; nothing was released" 1
+    fi
+  fi
   rm -f -- "$RCPT" "$PARENT/.receipt.new" || die "could not remove the receipt" 1
   rmdir -- "$PARENT" || die "the staging folder is not empty; nothing was released" 1
   syncfs_path "$DATA_DIR" || die "could not synchronize the release" 1
   echo released
+}
+
+# adopt_empty_stage: the staged folder is created before the receipt records its
+# inode (stageState=extracting), so a kill in between leaves a pending receipt
+# and a folder the receipt does not name. Extraction cannot have begun (the
+# extracting receipt precedes tar), so the only folder this can be is the empty
+# one that attempt made. It is named by the caller's identity, must be a plain
+# empty folder, and is written into the receipt before the ordinary drop checks,
+# so the intent and removal that follow are keyed on a recorded identity as
+# usual. Anything else at that path (content, a link, another inode) refuses.
+adopt_empty_stage() {
+  [[ "$R_STAGE_STATE" == pending && -z "$R_STAGE_INO" && "$R_EXCHANGE" == none && -z "$R_DROP_INTENT" ]] || return 0
+  [[ -e "$STAGED" || -L "$STAGED" ]] || return 0
+  plain_dir "$STAGED" || die "the staged path is not a plain folder; nothing was dropped" 1
+  [[ "$(dir_ino "$STAGED")" == "$OPT_IDENTITY" ]] \
+    || die "that tree is not the one at the staged path; nothing was dropped" 1
+  [[ -z "$(find -P "$STAGED" -mindepth 1 -print -quit)" ]] \
+    || die "the staged folder holds files the receipt does not account for; nothing was dropped" 1
+  R_STAGE_INO="$OPT_IDENTITY"
+  receipt_write
 }
 
 cmd_uploads_drop() {
@@ -1266,7 +1298,8 @@ cmd_uploads_drop() {
   fi
   [[ -z "$R_DROP_DONE" ]] || die "a different tree was already dropped; nothing was changed" 1
   [[ "$R_EXCHANGE" != intent ]] || die "the exchange is unresolved; nothing was dropped" 1
-  [[ -n "$(drop_identity)" && "$OPT_IDENTITY" == "$(drop_identity)" ]] \
+  adopt_empty_stage
+  [[ -n "$(drop_identity)"&& "$OPT_IDENTITY" == "$(drop_identity)" ]] \
     || die "that tree is not the one the receipt records; nothing was dropped" 1
   if [[ -n "$R_DROP_INTENT" ]]; then
     [[ "$R_DROP_INTENT" == "$OPT_IDENTITY" ]] || die "a different drop is recorded; nothing was changed" 1

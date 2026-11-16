@@ -1560,6 +1560,7 @@ CROSSINGS_ONLY_PLAN=(bootstrap base-prerequisites "${CROSSINGS_ONLY_FAMILIES[@]}
 DRILL_FULL_PLAN_NAMES=(bootstrap base-proof recovery-interruptions reopen-interruptions abort-interruptions tamper accidental-app-reuse abort-ack-loss operations-lock recovery-configuration
   count_races archive_failures pin_and_abort_cases cleanup_and_tamper_cases concurrency_cases lifecycle_cases legacy_archive_case review_reconciliation_cases
   review_backup_archive_cases review_cleanup_retry_cases review_orphaned_restore_case review_moving_tag_case
+  uploads_erasure_cases uploads_interruption_cases backup_exclusion_cases
   real_binary_refusals real_level_lineage real_same_level_rollback real_current_release_restore real_older_archive_restore final-verification)
 
 drill_mode_banner() {

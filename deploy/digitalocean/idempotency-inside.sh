@@ -367,6 +367,11 @@ out1="$(run_real 2>&1)"
 printf '%s\n' "$out1"
 snapshot /tmp/fold-snap-1
 secret="$(env_value /opt/fold/.env SESSION_SECRET)"
+# The backup service shares this directory's locks: the path is in .env (and so is
+# byte-stable on the second run, which the snapshot compares) and backup.lock is
+# root-owned, group 65532, mode 640.
+[[ "$(env_value /opt/fold/.env FOLD_BACKUP_COORD)" == /opt/fold ]]
+[[ "$(stat -c '%u:%g:%a' /opt/fold/backup.lock)" == 0:65532:640 ]]
 [[ -n "$secret" ]]
 if grep -qF "$secret" <<<"$out1"; then
   echo "idempotency: first run printed SESSION_SECRET" >&2

@@ -215,11 +215,11 @@ assert_compose_private() {
       next
     }
     /^[^ #]/ && !/^  / { svc = ""; inports = 0 }
-    (svc == "db" || svc == "app") && $1 == "ports:" && NF > 1 {
+    (svc == "db" || svc == "app" || svc == "backup") && $1 == "ports:" && NF > 1 {
       print svc " " $0
       next
     }
-    (svc == "db" || svc == "app") && $1 == "ports:" { inports = 1; next }
+    (svc == "db" || svc == "app" || svc == "backup") && $1 == "ports:" { inports = 1; next }
     inports && /^[[:space:]]+- / {
       line = $0
       gsub(/["'\''[:space:]]/, "", line)
@@ -231,7 +231,7 @@ assert_compose_private() {
     inports { inports = 0 }
   ' "$file")"
   if [[ -n "$bad" ]]; then
-    check_fail "compose publishes ${bad//$'\n'/; } for Postgres or the app. Keep them on the compose network, or bind 127.0.0.1 only. A public Docker port bypasses ufw." || return
+    check_fail "compose publishes ${bad//$'\n'/; } for Postgres, the app or the backup service. Keep them on the compose network, or bind 127.0.0.1 only. A public Docker port bypasses ufw." || return
   fi
 }
 
@@ -313,7 +313,7 @@ assert_published_ports() {
     svc="${line%%|*}"
     rest="${line#*|}"
     pubs="${rest#*|}"
-    if [[ "$svc" == "db" || "$svc" == "app" ]]; then
+    if [[ "$svc" == "db" || "$svc" == "app" || "$svc" == "backup" ]]; then
       if publishers_are_public "$pubs"; then
         check_fail "${svc} publishes '${pubs}'. Docker published ports bypass ufw. Keep Postgres and the app on the compose network (127.0.0.1 only if a local client needs them)." || return
       fi
@@ -675,7 +675,7 @@ recovery_accepts() {
     abort-failed)
       if [[ "$at" == drop ]]; then
         [[ "$observation" == B || "$observation" == Q+ || ( "$observation" == Q && "$drop_intent" == 1 ) ]]
-      else [[ ( "$at" == start || "$at" == smoke ) && "$observation" == Q ]]; fi ;;
+      else [[ ( "$at" == start || "$at" == smoke || "$at" == uploads ) && "$observation" == Q ]]; fi ;;
     *) return 1 ;;
   esac
 }
@@ -692,6 +692,14 @@ recovery_abort_allowed() {
 # A separate inode coordinates backup/expiry with publication of recovery.lock.
 # Backup never takes ops.lock. Lock order for restore/upgrade is ops (fd 9),
 # then backup (fd 6); a standalone backup takes only fd 6. Never replace it.
+#
+# The container backup service locks the same inode through a read-only bind of
+# this directory, as uid 65532. Every host acquisition therefore leaves the file
+# root-owned, group 65532, mode 640 (read for the group is all flock needs), and
+# upgrades an older mode-600 file in place. Nothing else in the directory
+# changes mode: .env, backup.env, ops.lock, recovery.lock and release records
+# stay root-only.
+BACKUP_COORD_GID=65532
 backup_coord_open() {
   local dir="$1" path="$1/backup.lock" saved_umask
   [[ -d "$dir" && ! -L "$path" && ( ! -e "$path" || -f "$path" ) ]] || {
@@ -703,7 +711,10 @@ backup_coord_open() {
     exec 6>>"$path" || { umask "$saved_umask"; return 1; }
     umask "$saved_umask"
   fi
-  chmod 600 "$path" || return 1
+  # chown first: the group may read the file only once its mode allows it.
+  if ! { chown "0:${BACKUP_COORD_GID}" "$path" && chmod 640 "$path"; }; then
+    check_fail "could not set backup.lock to root:${BACKUP_COORD_GID} mode 640; run as root"; return 1
+  fi
 }
 
 backup_coord_acquire() {
@@ -720,4 +731,163 @@ backup_coord_acquire() {
 
 backup_coord_release() {
   flock -u 6 && exec 6>&-
+}
+
+# --- Uploads restore capability (M5.2) ---------------------------------------
+# Mirrors the recovery policy readers: restoreUploads is an integer in
+# `fold version --json`, or the one-line deploy/restore-uploads at a source
+# commit. Absent means 0; malformed metadata refuses.
+image_restore_uploads() {
+  local json level
+  command -v jq >/dev/null || { check_fail "jq is required to read restoreUploads"; return 1; }
+  json="$(docker run --rm --network none --pull never --entrypoint /fold "$1" version --json)" || {
+    check_fail "cannot read restoreUploads from image $1"; return 1;
+  }
+  level="$(jq -ers '
+    if length != 1 or (.[0] | type) != "object" then error("expected one object")
+    else .[0] | if has("restoreUploads") then .restoreUploads else 0 end
+    | if type == "number" and . >= 0 and . == floor then tostring
+      else error("expected integer restoreUploads") end end' <<<"$json")" || {
+    check_fail "unparsable restoreUploads in image $1"; return 1;
+  }
+  parse_recovery_level "$level"
+}
+
+commit_restore_uploads() {
+  local source="$1" sha="$2" paths
+  paths="$(git -C "$source" ls-tree "$sha" -- deploy/restore-uploads)" || return 1
+  if [[ -z "$paths" ]]; then
+    printf '0\n'
+    return 0
+  fi
+  read_recovery_level git -C "$source" show "$sha:deploy/restore-uploads"
+}
+
+# --- Backup service and scheduler (M5.2) -------------------------------------
+# backup_service_defined DIR: 0 the deployed Compose defines a backup service,
+# 1 it does not, 2 the configuration could not be read. An unreadable
+# configuration is never the same as an absent service.
+backup_service_defined() {
+  local config
+  config="$(compose_in "$1" config --format json 2>/dev/null)" || return 2
+  jq -e '.services | type == "object"' <<<"$config" >/dev/null 2>&1 || return 2
+  if jq -e '.services.backup != null' <<<"$config" >/dev/null 2>&1; then return 0; fi
+  return 1
+}
+
+# backup_coordination_check DIR: the backup service in the resolved Compose
+# configuration shares this directory's backup.lock and recovery.lock: its
+# FOLD_RECOVERY_DIR is /coord, over a read-only bind of DIR, and the lock and the
+# directory are what uid 65532 needs to open and search them. A service that
+# cannot see the lock would run a backup straight through a restore.
+backup_coordination_check() {
+  local dir="$1" real config lock mode
+  real="$(cd "$dir" && pwd -P)" || return 1
+  config="$(compose_in "$dir" config --format json 2>/dev/null)" || {
+    check_fail "cannot resolve the Compose configuration in ${dir}; the backup coordination was not verified"; return 1;
+  }
+  if ! jq -e --arg dir "$dir" --arg real "$real" '
+    .services.backup as $b
+    | $b != null
+    and (($b.environment // {}).FOLD_RECOVERY_DIR == "/coord")
+    and ([($b.volumes // [])[] | select(.target == "/coord")] | length == 1)
+    and all(($b.volumes // [])[] | select(.target == "/coord");
+      .type == "bind" and (.read_only == true) and (.source == $dir or .source == $real))' <<<"$config" >/dev/null 2>&1; then
+    check_fail "the backup service is not coordinated with ${dir}: FOLD_RECOVERY_DIR must be /coord over a read-only bind of this directory. Run the current ${dir}/provision.sh --deploy-dir ${dir}, which writes FOLD_BACKUP_COORD to .env; no service was stopped or started"
+    return 1
+  fi
+  lock="$dir/backup.lock"
+  [[ -f "$lock" && ! -L "$lock" && "$(stat -c '%u:%g:%a' "$lock")" == "0:${BACKUP_COORD_GID}:640" ]] || {
+    check_fail "${lock} is not root-owned, group ${BACKUP_COORD_GID}, mode 640, so the backup service cannot lock it. Run the current provision.sh --deploy-dir ${dir}"; return 1;
+  }
+  mode="$(stat -c '%a' "$dir")"
+  (( 8#$mode & 1 )) || {
+    check_fail "${dir} (mode ${mode}) cannot be searched by the backup service, so it cannot see recovery.lock. Run the current provision.sh --deploy-dir ${dir}"; return 1;
+  }
+}
+
+# The host cron file. A disposable drill keeps it inside its own directory and
+# never touches the machine's /etc/cron.d.
+backup_cron_dir() {
+  if [[ "${DEPLOY_DRILL:-}" == 1 ]]; then printf '%s/.drill-cron\n' "$1"; else printf '/etc/cron.d\n'; fi
+}
+
+# backup_cron_text DIR full|expire: the text of /etc/cron.d/fold-backup. The
+# full cron runs the host backup; the expire-only cron is what replaces it once
+# the container backup service has proven itself (cutover), and only expires.
+backup_cron_text() {
+  local dir="$1" kind="$2"
+  printf 'SHELL=/bin/bash\nPATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin\n'
+  case "$kind" in
+    full)
+      printf '# 02:30 in the droplet timezone (timedatectl). Local dumps plus optional offsite.\n'
+      printf '30 2 * * * root %s/backup.sh >> /var/log/fold-backup.log 2>&1\n' "$dir" ;;
+    expire)
+      printf '# 02:30 in the droplet timezone (timedatectl). Container backups run in the backup service; this only expires the older host archives.\n'
+      printf '30 2 * * * root %s/backup.sh --expire-only >> /var/log/fold-backup.log 2>&1\n' "$dir" ;;
+    *) return 1 ;;
+  esac
+}
+
+# backup_cron_install DIR full|expire: write the cron file by temp file and
+# rename, mode 644, only when its content changes.
+backup_cron_install() {
+  local dir="$1" kind="$2" cron_dir tmp
+  cron_dir="$(backup_cron_dir "$dir")"
+  mkdir -p "$cron_dir" || return 1
+  tmp="$(mktemp "$cron_dir/.tmp.XXXXXX")" || return 1
+  if ! { backup_cron_text "$dir" "$kind" >"$tmp" && chmod 644 "$tmp"; }; then rm -f "$tmp"; return 1; fi
+  if [[ -f "$cron_dir/fold-backup" ]] && cmp -s "$tmp" "$cron_dir/fold-backup"; then rm -f "$tmp"; return 0; fi
+  mv -f "$tmp" "$cron_dir/fold-backup" || { rm -f "$tmp"; return 1; }
+}
+
+# backup_cron_kind DIR: full, expire or none, from the installed cron file.
+backup_cron_kind() {
+  local file
+  file="$(backup_cron_dir "$1")/fold-backup"
+  [[ -f "$file" ]] || { echo none; return 0; }
+  if grep -q -- '--expire-only' "$file"; then echo expire; else echo full; fi
+}
+
+# backup_scheduler_select MODE DIR: choose and arm the one scheduler that makes
+# backups after a recovery or a cutover. The modes are explicit.
+#   recovery        Called once a reopen or abort has passed its smoke and
+#                   cleanup. When the deployed (possibly pinned) Compose defines
+#                   a backup service, check its coordination again on that
+#                   resolved configuration and start it without pulling; when it
+#                   does not, install the guarded host full-backup cron. Never
+#                   replaces an existing host full cron with expire-only, and an
+#                   uncoordinated service is never started.
+#   cutover-success Called by provision only after the container backup has run
+#                   successfully. Replaces the host full cron with the
+#                   expire-only cron at the same time. Never used by a recovery.
+# The scheduler may run while recovery.lock still exists, but a backup refuses
+# to do any work under that lock.
+backup_scheduler_select() {
+  local mode="$1" dir="$2" rc=0 id state
+  backup_service_defined "$dir" || rc=$?
+  case "$mode" in
+    recovery)
+      case "$rc" in
+        0)
+          backup_coordination_check "$dir" || return 1
+          compose_in "$dir" up -d --no-deps --pull never backup || {
+            check_fail "could not start the backup service from the local image; recovery state kept for a retry"; return 1;
+          }
+          id="$(compose_in "$dir" ps -q backup)" || return 1
+          [[ -n "$id" && "$id" != *$'\n'* ]] || { check_fail "expected one backup container"; return 1; }
+          state="$(docker inspect --format '{{.State.Running}}' "$id")" || return 1
+          [[ "$state" == true ]] || { check_fail "the backup service is not running after it was started"; return 1; }
+          echo "scheduler: container backup service" ;;
+        1)
+          backup_cron_install "$dir" full || { check_fail "could not install the host backup cron"; return 1; }
+          echo "scheduler: host backup cron" ;;
+        *) check_fail "cannot read the Compose configuration to choose the backup scheduler"; return 1 ;;
+      esac ;;
+    cutover-success)
+      [[ "$rc" == 0 ]] || { check_fail "no backup service is defined; the host full-backup cron stays"; return 1; }
+      backup_cron_install "$dir" expire || { check_fail "could not install the expire-only cron"; return 1; }
+      echo "scheduler: container backup service; host cron expires only" ;;
+    *) check_fail "unknown backup scheduler mode"; return 1 ;;
+  esac
 }

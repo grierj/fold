@@ -704,7 +704,7 @@ install_runtime_files() {
   if (( DRY_RUN )); then
     echo "dry-run: install backup.sh smoke.sh email-dns.sh upgrade.sh provision.sh checks.sh restore.sh compose.recovery.yml backup.env.example into $DEPLOY_DIR"
     echo "dry-run: install $SCRIPT_DIR/backup.env.example to $DEPLOY_DIR/backup.env.example mode 644"
-    echo "dry-run: initialize $DEPLOY_DIR/backup.lock mode 600 without replacing its inode"
+    echo "dry-run: initialize $DEPLOY_DIR/backup.lock root-owned, group 65532, mode 640 without replacing its inode (the backup service locks it through a read-only bind)"
     echo "dry-run: install $SCRIPT_DIR/deploy-tools-version to $DEPLOY_DIR/deploy-tools-version mode 644"
     return 0
   fi
@@ -798,6 +798,20 @@ ensure_release_pin() {
   echo "release: building on this machine (docker-compose.build.yml, COMPOSE_FILE in .env)"
 }
 
+# The backup service shares this directory's backup.lock and recovery.lock
+# through a read-only bind (docker-compose.yml, FOLD_BACKUP_COORD). Written on
+# every run, a pin-only run included, and byte-stable when unchanged.
+ensure_backup_coord() {
+  local env_file="$DEPLOY_DIR/.env"
+  [[ "$DEPLOY_DIR" =~ ^/[A-Za-z0-9._/@+-]+$ ]] \
+    || die "--deploy-dir may use only letters, digits and . _ / @ + - so Compose can bind it for the backup service"
+  if (( DRY_RUN )) && [[ ! -f "$env_file" ]]; then
+    echo "dry-run: set FOLD_BACKUP_COORD=${DEPLOY_DIR} in ${env_file}"
+    return 0
+  fi
+  set_env_value "$env_file" FOLD_BACKUP_COORD "$DEPLOY_DIR"
+}
+
 write_env() {
   local env_file="$DEPLOY_DIR/.env"
   if [[ -f "$env_file" ]]; then
@@ -814,10 +828,12 @@ write_env() {
     else
       echo "dry-run: chmod 600 $env_file"
     fi
+    ensure_backup_coord
     return 0
   fi
   if (( DRY_RUN )); then
     echo "dry-run: write $env_file mode 600 (DOMAIN=$DOMAIN; SESSION_SECRET and DB_PASSWORD generated; values not shown)"
+    ensure_backup_coord
     return 0
   fi
   local session dbpass
@@ -850,6 +866,7 @@ write_env() {
   if [[ -n "$SMTP_URL" ]]; then
     echo "provision.sh: SMTP settings were written to $env_file. They may also be in your shell history." >&2
   fi
+  ensure_backup_coord
 }
 
 install_smoke_cron() {
@@ -861,12 +878,8 @@ EOF
 }
 
 install_backup_cron() {
-  write_file /etc/cron.d/fold-backup 644 "pg_dump at 02:30 local time" <<EOF
-SHELL=/bin/bash
-PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
-# 02:30 in the droplet timezone (timedatectl). Local dumps plus optional offsite.
-30 2 * * * root ${DEPLOY_DIR}/backup.sh >> /var/log/fold-backup.log 2>&1
-EOF
+  # The cron text lives in checks.sh, shared with restore.sh's scheduler choice.
+  backup_cron_text "$DEPLOY_DIR" full | write_file /etc/cron.d/fold-backup 644 "pg_dump at 02:30 local time"
   write_file /etc/logrotate.d/fold-backup 644 "weekly rotate of the backup log" <<'EOF'
 /var/log/fold-backup.log {
   weekly
@@ -965,12 +978,22 @@ restore_release_pin() {
 
 deploy_stack() {
   local -a cmd=(docker compose --project-directory "$DEPLOY_DIR")
-  local config image actual
+  local config image actual has_backup=0 rc=0
+  # The backup service is fetched or built with the app, so arming it after a
+  # recovery never has to. An unreadable Compose file is left to the app checks
+  # below, which stop with their own message.
+  if (( ! DRY_RUN )); then
+    backup_service_defined "$DEPLOY_DIR" || rc=$?
+    [[ "$rc" != 0 ]] || has_backup=1
+  fi
   if [[ -n "$IMAGE" ]]; then
-    if (( PIN_ONLY )); then step "${cmd[@]}" pull app; else step "${cmd[@]}" pull; fi
+    if (( PIN_ONLY )); then
+      # A failed backup pull is a pin failure: the saved pin is restored.
+      if (( has_backup )); then step "${cmd[@]}" pull app backup; else step "${cmd[@]}" pull app; fi
+    else step "${cmd[@]}" pull; fi
   else
-    (( ! DRY_RUN )) || echo "dry-run: build app before up (previously up --build)"
-    step "${cmd[@]}" build app
+    (( ! DRY_RUN )) || echo "dry-run: build app (and backup, when Compose defines it) before up (previously up --build)"
+    if (( has_backup )); then step "${cmd[@]}" build app backup; else step "${cmd[@]}" build app; fi
   fi
   if (( ! DRY_RUN )); then
     config="$("${cmd[@]}" config --format json)" || { restore_release_pin; return 1; }
