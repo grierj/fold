@@ -1574,7 +1574,6 @@ export interface AdminJobsResponse {
 
 // GET /admin/backup (M5.2). A field the state or the files cannot vouch for
 // is null, never zero.
-/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON; no page reads it yet. */
 export interface AdminBackupStatus {
   state: "unwatched" | "missing" | "unreadable" | "stale" | "ok";
   lastOkAt: string | null;
