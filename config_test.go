@@ -757,3 +757,27 @@ func TestFreshVolumesAreWritableByTheAppUser(t *testing.T) {
 		})
 	}
 }
+
+// FOLD_BACKUP_DIR is the read-only status directory (M5.2): empty is fine
+// (unwatched), a relative path is refused with a message that names the
+// variable and not its value.
+func TestBackupDirConfiguration(t *testing.T) {
+	t.Setenv("APP_ENV", "prod")
+	t.Setenv("SESSION_SECRET", "test-session-secret-at-least-32-bytes")
+	t.Setenv("DATABASE_URL", "postgres://unused")
+	t.Setenv("FOLD_BACKUP_DIR", "")
+	if cfg, err := LoadConfig(); err != nil || cfg.BackupDir != "" {
+		t.Fatalf("unset: %+v %v", cfg, err)
+	}
+	t.Setenv("FOLD_BACKUP_DIR", "/backup-status")
+	if cfg, err := LoadConfig(); err != nil || cfg.BackupDir != "/backup-status" {
+		t.Fatalf("absolute: %+v %v", cfg, err)
+	}
+	for _, v := range []string{"relative-SENTINEL", "./backup-SENTINEL", "../status", " /x"} {
+		t.Setenv("FOLD_BACKUP_DIR", v)
+		_, err := LoadConfig()
+		if err == nil || !strings.Contains(err.Error(), "FOLD_BACKUP_DIR") || strings.Contains(err.Error(), v) {
+			t.Fatalf("%q: want a value-free refusal, got %v", v, err)
+		}
+	}
+}

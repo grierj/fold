@@ -1648,6 +1648,24 @@ POST /api/v1/admin/jobs/:id/dismiss → 200 {status: "dismissed"} | 404 | 409 (a
 
 Admins only (403 otherwise). The list holds background jobs that ran out of attempts (`dead`), latest failure first, at most 100 (`more` says there are more). `adminJob` is `{id, kind, label, runsDaily, attempts, lastError, failedAt}`: `label` says what the job does in plain words (its kind when the server doesn't know it), `runsDaily` means tomorrow's run tries again by itself, and `lastError` is the job's last error, one line, without email addresses. A job's payload is never shown. `deliveries` is `{queued, deferred, failed, oldestQueuedAt}`: counts of notice email deliveries only, never a recipient or error text. `queued` are waiting to send; `deferred` stopped after the last try and wait for an admin to retry their dead `notify.deliver` job; `failed` were refused or could not be sent (mail not set up) in the last 7 days; `oldestQueuedAt` is when the oldest queued one was written, or null. Dismissing a dead `notify.deliver` job marks its waiting email as suppressed, so it is never sent; pushes already queued for that notice keep their own rules. Retry queues the job again from its first attempt; Dismiss sets it aside, and it is deleted with finished jobs after 30 days. Retrying or dismissing a job that is no longer dead answers 409 `job_handled`. When a job dies, every active admin gets one bell task (`system.job_dead`, never emailed or pushed, not required to be read) titled "A background task stopped: <label>", saying it could not finish after N tries and linking to `/admin?tab=system`; it never carries the payload or the error text. Retry or Dismiss closes every admin's copy as `retried` or `dismissed` in the same transaction as the audit row. The alert is written after the job is marked dead, in its own transaction that locks the job row and writes nothing if the job is no longer dead; it is not atomic with the death, so a process that stops in between, or an error writing it, loses the alert while the job still shows here (DEC-111).
 
+### Backup status: the System page (M5.2)
+
+```
+GET /api/v1/admin/backup → 200 {state, lastOkAt, dumpBytes, uploadsBytes, offsite, lastFailedAt, lastFailedStep}
+```
+
+Admins only (401 signed out, 403 otherwise; `policy.CanSeeBackupStatus`). The answer is never cached (`Cache-Control: no-store`) and is read fresh from `FOLD_BACKUP_DIR` on every call; there is no migration or startup gate. Every file condition is a 200 with a `state`, so a missing or damaged file is something the page explains, never an error:
+
+- `unwatched`: `FOLD_BACKUP_DIR` is not set (a bare binary). Every other field is null.
+- `missing`: the directory is readable and no `LAST_OK` is in it, so no backup has finished yet.
+- `unreadable`: the directory or `LAST_OK` can't be trusted: not a directory, not a plain file (a link, a folder), bigger than a few hundred bytes, not exactly one UTC `YYYY-MM-DDTHH:MM:SSZ` line, an impossible date, or more than an hour ahead of the server's clock. Every other field is null.
+- `stale`: `LAST_OK` is more than 36 hours old. Exactly 36 hours is still `ok`.
+- `ok`: `LAST_OK` is 36 hours old or less.
+
+`lastOkAt` is `LAST_OK` as a UTC time (null for `unwatched`, `missing` and `unreadable`). `dumpBytes`, `uploadsBytes` and `offsite` (`off` or `uploaded`) come from `status.json` and are null unless that file is format 1, its `lastOk.finishedAt` equals `LAST_OK` and its sizes and `offsite` are valid, so a damaged, newer-format or out-of-date `status.json` never hides a good `lastOkAt` and a missing detail is null, never `0`. `lastFailedAt` and `lastFailedStep` describe a failed try only when it is newer than `LAST_OK` (or when there is no `LAST_OK` at all); an older failure is history the last success already answered. `lastFailedStep` is one of `config`, `uploads`, `dump`, `expire`, `encrypt` or `upload`; a step this server does not know is null while `lastFailedAt` stays. The answer never carries file content, paths, bucket names or raw errors. It does not say whether a restore is under way.
+
+The same answer is `fold backup status [--json]`. It needs only `FOLD_BACKUP_DIR` (no `DATABASE_URL`, no `SESSION_SECRET`) and exits 0 for `ok`, 1 for `stale`, `missing` or `unreadable`, and 2 for bad usage, an unset `FOLD_BACKUP_DIR` or a relative one. `--json` prints the object above on one line; without it, a few plain lines. Neither prints a path.
+
 ### Messages: the composer (M3.4a)
 
 ```

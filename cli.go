@@ -10,6 +10,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"time"
 
 	"fold/internal/dbopen"
 	"fold/internal/push"
@@ -33,6 +34,9 @@ commands:
                                --force rotates with a SESSION_SECRET that can't
                                open the current key)
   push check                   connect to each push service on port 443
+  backup status                say whether the nightly backup is current; exits 0 when it
+                               is, 1 when it is overdue, missing or unreadable
+                               (needs only FOLD_BACKUP_DIR, an absolute path)
   version                      print the version
 `
 
@@ -55,6 +59,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runMigrate(args, asJSON, stdout, stderr)
 	case "push":
 		return runPush(args, asJSON, stdout, stderr)
+	case "backup":
+		return runBackup(args, asJSON, stdout, stderr)
 	case "version":
 		if asJSON {
 			// recoveryPolicy is the restore tooling's compatibility level
@@ -147,6 +153,65 @@ func runMigrate(args []string, asJSON bool, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "%05d  %-10s  %s\n", r.Version, r.State, r.Name)
 	}
 	return 0
+}
+
+// backupNow is the clock `fold backup status` judges by; tests replace it.
+var backupNow = time.Now
+
+// runBackup is `fold backup status` (M5.2). It reads only FOLD_BACKUP_DIR: no
+// database and no session secret, so an operator can run it from a bare shell
+// or a monitoring job. Exit 0 ok, 1 overdue, missing or unreadable, 2 bad
+// usage or no directory to read. Output never names a path or file content.
+func runBackup(args []string, asJSON bool, stdout, stderr io.Writer) int {
+	if len(args) != 1 || args[0] != "status" {
+		fmt.Fprintf(stderr, "fold: unknown backup command %q (want status)\n", strings.Join(args, " "))
+		return 2
+	}
+	dir, err := backupDir()
+	if err != nil {
+		fmt.Fprintln(stderr, "fold:", err)
+		return 2
+	}
+	if dir == "" {
+		fmt.Fprintln(stderr, "fold: FOLD_BACKUP_DIR is not set. Set it to the directory that holds the backup service's LAST_OK (Compose mounts it at /backup-status in the app container)")
+		return 2
+	}
+	st := readBackupStatus(dir, backupNow())
+	if asJSON {
+		_ = json.NewEncoder(stdout).Encode(st)
+	} else {
+		writeBackupStatus(stdout, st)
+	}
+	if st.State == backupOK {
+		return 0
+	}
+	return 1
+}
+
+// writeBackupStatus is the plain-text answer: one line for the state, then
+// what is known. It reads only the typed fields.
+func writeBackupStatus(w io.Writer, st backupStatusJSON) {
+	const stamp = "2006-01-02 15:04 UTC"
+	switch st.State {
+	case backupOK:
+		fmt.Fprintf(w, "backups: ok, last finished %s\n", st.LastOkAt.UTC().Format(stamp))
+	case backupStale:
+		fmt.Fprintf(w, "backups: overdue, last finished %s\n", st.LastOkAt.UTC().Format(stamp))
+	case backupMissing:
+		fmt.Fprintln(w, "backups: none has finished yet")
+	default:
+		fmt.Fprintln(w, "backups: the status can't be read")
+	}
+	if st.DumpBytes != nil && st.UploadsBytes != nil && st.Offsite != nil {
+		fmt.Fprintf(w, "database %d bytes, photos %d bytes, offsite copy %s\n", *st.DumpBytes, *st.UploadsBytes, *st.Offsite)
+	}
+	if st.LastFailedAt != nil {
+		step := "an unknown step"
+		if st.LastFailedStep != nil {
+			step = "step " + *st.LastFailedStep
+		}
+		fmt.Fprintf(w, "last try failed %s, at %s\n", st.LastFailedAt.UTC().Format(stamp), step)
+	}
 }
 
 // pushCheckDial is how `fold push check` connects; tests replace it so
