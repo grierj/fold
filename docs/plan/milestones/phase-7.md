@@ -38,8 +38,7 @@ milestones until a first church is live (DEC-145).
 **M7.4 Account erasure (R4, DEC-144)**
 - Scope: an independently reviewed per-table inventory first, then anonymise or delete so that
   deleting an account erases the person, with a backups note in the admin screen. Opt-out and
-  suppression records keep a hashed address (10.1); plaintext suppression addresses are a
-  disclosed temporary stage, not approval.
+  suppression records keep a hashed address (10.1); suppressions are hash-only since `00008`.
 - Delivered so far (how it works: [`docs/agents/erasure.md`](../../agents/erasure.md)):
   - The inventory, [`M7.4-ERASURE-INVENTORY.md`](../M7.4-ERASURE-INVENTORY.md), written over the
     37 tables of the M7.7 baseline. Migrations `00005` and `00006` have since added
@@ -85,58 +84,53 @@ milestones until a first church is live (DEC-145).
   - The T07B aggregate (1a, 1b, 1c, 2a, 2b, 2c, 3a and 3b; not T07B-6) is on master: 1a to 2c in
     #299 (`9e8bddb4`), 3a and 3b in #383 (`d93d0825`). That is the T07B half of C4's merge
     condition; R4-T07A (#282) is the other. The inventory's section 15.12 holds the evidence and
-    its limits. It does not sign C4 or M7.4: #311's audit does that.
+    its limits. #311's audit (inventory 15.19) signs C4 and M7.4.
   - Operator recovery: `deploy/digitalocean/restore.sh` and `compose.recovery.yml` restore a
     nightly dump into a private recovery instance. Scripted provision, upgrade and rollback refuse
     a lower recovery level. The tree is at recovery level 2 (`deploy/recovery-policy`).
   - A CI gate refuses a contract migration whose expand step is not in an earlier tagged release
     (`scripts/contract-gate.sh`).
-- Done means conditions C1–C5 hold on master ([#311](https://github.com/grierj/fold/issues/311)).
-  #311's audit ran on master `33df6535` on Nov 15, 2026 and is recorded in inventory 15.18: **C1 to C4
-  hold; C5 does not, so M7.4 is not Done and #311 stays open.** C1: R4-SC (#404) with `00002` in the
-  published `v0.1.0` (Grier's Q2 answer, Nov 14, 2026). C2: R4-2d2 in #299, owner decision 8 (Nov 5,
-  2026). C3: #385 (arm (b), DG-9 items 1 to 3), owner decisions 5 and 9 to 12 and DEC-148, with every IR
-  item and retained-IP action mapped to one arm in 15.18 and 6.5.2. C4: #282, #299 and #383.
-  C5 is open because the sentinel proof (#309, PR #407) and the recovery drill record (#310, PR #409) are
-  not merged, and the inventory's OPEN register still reads O-1, O-19 and O-20 as open. Grier's Q6
-  answer (Nov 14, 2026) lets this run merge the M7.4 slices; it does not make an open pull request
-  merged. M7.4 is marked Done only in a later reviewed docs commit, after those merge and #311's audit
-  is rerun.
-- Open work:
-  - Recorded closed, no longer open work: [#301](https://github.com/grierj/fold/issues/301) and
-    [#302](https://github.com/grierj/fold/issues/302), the one-time review list for reasons of
-    accounts deleted before the review step existed (owner decision 7), built in #383 (`d93d0825`)
-    and recorded in inventory 15.12, with reruns at `43d4df9b`; and
-    [#292](https://github.com/grierj/fold/issues/292), closed Nov 14, 2026 on the pilot QC4/5
-    record in inventory 12.3 (a local cgroup approximation, not a real droplet, and not release
-    evidence). None of this signs C4 or M7.4.
-  - Still unmeasured or unchecked for the reason review: the wider scale matrix
-    ([#293](https://github.com/grierj/fold/issues/293), [#294](https://github.com/grierj/fold/issues/294)),
-    and the real-phone and real-restore hand checks in `docs/FIRST-CHURCH-CHECKS.md`.
-  - [#303](https://github.com/grierj/fold/issues/303) and
-    [#305](https://github.com/grierj/fold/issues/305) design, review and build conversion-IP
-    minimisation (R4-4b): built in #385 with S5 and sweep version 2. Its G-9 checklist is ticked in 6.5.2; C3 is
-    still #311's audit, and the issue stays open until it is closed on GitHub.
-  - [#304](https://github.com/grierj/fold/issues/304) the owner's disposition for audit IP
-    residue no retained key reaches (G-9, Q3): recorded in owner decisions 9 to 12 and DEC-148,
-    carried by #385 with the C3 table, whose G-9 checklist is ticked in 6.5.2. The issue stays open until it
-    is closed on GitHub.
-  - Merged on master, issues closed: [#306](https://github.com/grierj/fold/issues/306) (#404,
-    suppressions hash-only), [#307](https://github.com/grierj/fold/issues/307) (#405, the saved
-    list of accounts to delete again, owner decision 13) and
-    [#308](https://github.com/grierj/fold/issues/308) (#406, delete-dialog disclosure and restore
-    docs).
-  - [#309](https://github.com/grierj/fold/issues/309) an end-to-end sentinel proof that erasure
-    leaves only the named residue: built in PR #407, not merged.
-  - [#310](https://github.com/grierj/fold/issues/310) exact-head recovery drills and real-droplet
-    checks: the full drill passed on a disposable runner (inventory 15.17, PR #409, not merged);
-    the real-droplet hand checks stay in `docs/FIRST-CHURCH-CHECKS.md`. No release at
-    `recoveryPolicy >= 1` is published before they pass.
-  - [#311](https://github.com/grierj/fold/issues/311) milestone sign-off against C1–C5: audited
-    Nov 15, 2026 (inventory 15.18), C5 not met, stays open.
-  - Follow-ups: [#312](https://github.com/grierj/fold/issues/312) (deletion e2e helper),
-    [#313](https://github.com/grierj/fold/issues/313) (recovery level docs), and the
-    reason-review test follow-ups [#293](https://github.com/grierj/fold/issues/293)–[#298](https://github.com/grierj/fold/issues/298).
+- **Done.** Conditions C1–C5 hold on master ([#311](https://github.com/grierj/fold/issues/311)).
+  The audit was rerun on master `f8befce0` on Nov 16, 2026 and is recorded in inventory 15.19; the
+  first run, on `33df6535` (15.18), found C5 open because #407 and #409 were not merged. C1: R4-SC
+  (#404) with `00002` in the published `v0.1.0` (Grier's Q2 answer, Nov 14, 2026). C2: R4-2d2 in #299,
+  owner decision 8 (Nov 5, 2026). C3: #385 (arm (b), DG-9 items 1 to 3), owner decisions 5 and 9 to 12
+  and DEC-148, with every IR item and retained-IP action mapped to one arm in 15.18 and 6.5.2. C4:
+  #282, #299 and #383. C5: every slice is merged, the residue table (#308) matches what the sentinel
+  proof (#309, #407) shows is left, the proof enables only dispositioned rules, and the exact-head full
+  restore drill passed (#310, #409; inventory 15.17), and Grier confirmed that it closes #310 and
+  acknowledged the deploy-script prune (Nov 15, 2026). The inventory's OPEN register rows O-1, O-19 and
+  O-20 are closed in the same commit.
+- Decided by Grier on Nov 15, 2026 (inventory 15.19): O-8, the subject and body of a message a person
+  wrote stay for audit, and O-16, names in the title and body of a notice another person received may
+  stay. The sentinel proof enables both rules and checks them. QC-1 (a reason-review delete that cannot
+  finish in the interactive budget) is accepted as a known gap, dated Nov 15, 2026, with no code fix,
+  to revisit with production data.
+- Disclosed limits that stay, not open work: the retained message text (O-8), the names in other
+  people's notices (O-16), QC-1 and the activity-log addresses DEC-148 lets stay.
+- Recorded closed: [#301](https://github.com/grierj/fold/issues/301) and
+  [#302](https://github.com/grierj/fold/issues/302), the one-time review list for reasons of accounts
+  deleted before the review step existed (owner decision 7), built in #383 (`d93d0825`), recorded in
+  inventory 15.12; [#292](https://github.com/grierj/fold/issues/292), on the pilot QC4/5 record in
+  inventory 12.3 (a local cgroup approximation, not a real droplet, and not release evidence);
+  [#293](https://github.com/grierj/fold/issues/293) and [#294](https://github.com/grierj/fold/issues/294),
+  on a named `PILOT` scale matrix (#403), which is not full-scale evidence;
+  [#295](https://github.com/grierj/fold/issues/295) (#400) and
+  [#298](https://github.com/grierj/fold/issues/298) (#399; Grier's closing criterion met, 12.3);
+  [#303](https://github.com/grierj/fold/issues/303), [#304](https://github.com/grierj/fold/issues/304)
+  and [#305](https://github.com/grierj/fold/issues/305), conversion-IP minimisation (R4-4b) and the
+  owner's disposition of the audit IP residue (G-9, owner decisions 9 to 12, DEC-148), built in #385;
+  [#306](https://github.com/grierj/fold/issues/306) (#404, suppressions hash-only),
+  [#307](https://github.com/grierj/fold/issues/307) (#405, the saved list of accounts to delete again,
+  owner decision 13), [#308](https://github.com/grierj/fold/issues/308) (#406, delete-dialog disclosure
+  and restore docs), [#309](https://github.com/grierj/fold/issues/309) (#407, the sentinel proof that a
+  delete leaves only the named residue) and [#310](https://github.com/grierj/fold/issues/310) (#409,
+  the exact-head full restore drill, 15.17); and the follow-ups
+  [#312](https://github.com/grierj/fold/issues/312) (deletion e2e helper) and
+  [#313](https://github.com/grierj/fold/issues/313) (recovery level docs).
+- Still by hand, not blocking (DEC-128): the real-phone, real-restore, real-domain TLS and mail-provider
+  checks in `docs/FIRST-CHURCH-CHECKS.md`, now including the on-box build upgrade row. No release at
+  `recoveryPolicy >= 1` is published before they pass.
 - Brief: [`R2-R3-R4-people.md`](../briefs/audit-2026-11/R2-R3-R4-people.md) (R4).
 
 **M7.5 Notification delivery outbox (R6)**

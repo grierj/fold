@@ -586,6 +586,15 @@ func (w *residueWorld) subject(scenario string) *models.User {
 	w.create(&models.MessageRecipient{MessageID: msg.ID, UserID: u.ID, Channel: "email", Address: r.text(residueU, scenario, "recipientaddr", "") + "@example.test", Status: "failed", Error: "bounced " + r.text(residueU, scenario, "recipienterror", "")})
 	img := fmt.Sprintf("messages/%d/%032d.png", msg.ID, 3)
 	residuePut(w.t, w.s.app.Uploads, img, "picture "+r.text(residueC, scenario, "msgimage", "C-message-image"))
+	// A draft the person never sent: its words are theirs, and the church keeps
+	// them with the message for audit (O-8). The subject and body are the
+	// person's own text, so each is a U sentinel bound to its rule.
+	w.create(&models.Message{AuthorID: &u.ID, Status: models.MessageDraft, Subject: r.text(residueU, scenario, "draftsubject", "O-8-subject"),
+		BodyText: r.text(residueU, scenario, "draftbody", "O-8-body-text"), BodyHTML: "<p>" + r.text(residueU, scenario, "drafthtml", "O-8-body-html") + "</p>"})
+	// A notice another person received that names the erased person: it was
+	// rendered once, with no variables kept, and stays with its reader (O-16).
+	w.create(&models.Notification{UserID: w.l.ID, Kind: "residue.test", Category: "groups", Title: "Update about " + r.text(residueU, scenario, "othernoticetitle", "O-16-title"),
+		Body: r.text(residueU, scenario, "othernoticebody", "O-16"), Link: "/"})
 	return u
 }
 
@@ -867,7 +876,6 @@ func (w *residueWorld) seedTombstone() {
 // residueNoSentinel are the rules no scan can bind a sentinel to, and why.
 var residueNoSentinel = map[string]string{
 	"O-12":                    "outside Fold: no row or file of ours holds it",
-	"O-16":                    "no PLAN disposition (Proposed): the proof refuses it, see TestErasureResidueRefusesWhatThePlanDoesNotName",
 	"RETAIN_ESSENTIAL":        "no action uses it (C3 table): the proof refuses it",
 	"RETAIN-OPTOUT-HASH":      "hash only: checked by row in the opt-out stage",
 	"RETAIN-SUPPRESSION-HASH": "hash only: checked by row in the suppression stage",
@@ -1133,9 +1141,10 @@ func residueRunMutations(t *testing.T, check residueCheck, pre, post []residueHi
 	}
 }
 
-// The rules are only as good as the PLAN under them. These are the two with
-// no authorized disposition (S1: remaining residue has none), and the proof
-// refuses a sentinel either one would excuse.
+// The rules are only as good as the PLAN under them. This is the one with no
+// authorized disposition (S1: remaining residue has none), and the proof
+// refuses a sentinel it would excuse. A U sentinel in a place no enabled rule
+// names, a message's text or a past address, is refused the same way.
 func TestErasureResidueRefusesWhatThePlanDoesNotName(t *testing.T) {
 	reg := newResidueRegistry()
 	rules := residueRules(t, testdb.Shared(t))
@@ -1147,13 +1156,12 @@ func TestErasureResidueRefusesWhatThePlanDoesNotName(t *testing.T) {
 		}
 	}
 	sort.Strings(off)
-	if want := []string{"O-16", "RETAIN_ESSENTIAL"}; !slices.Equal(off, want) {
+	if want := []string{"RETAIN_ESSENTIAL"}; !slices.Equal(off, want) {
 		t.Fatalf("rules without a PLAN disposition = %v, want %v. A rule is enabled by a PLAN change, never by editing this list", off, want)
 	}
 	hit := func(table, column, key, tok string, row map[string]any) residueHit {
 		return residueHit{Table: table, Column: column, JSONKey: key, RowID: "1", Token: tok, Value: tok, Row: row}
 	}
-	notice := reg.text(residueU, "x", "notice", "O-16")
 	essential := reg.text(residueU, "x", "essential", "RETAIN_ESSENTIAL")
 	messageText := reg.text(residueU, "x", "message", "")
 	moved := reg.text(residueU, "x", "moved", "O-17-invitation")
@@ -1162,14 +1170,14 @@ func TestErasureResidueRefusesWhatThePlanDoesNotName(t *testing.T) {
 	onOther := reg.text(residueU, "x", "onother", "O-17-invitation")
 	lStray := reg.text(residueL, "x", "lstray", "L-user")
 	pre := []residueHit{
-		hit("notifications", "body", "", notice, nil), hit("audit_logs", "ip", "", essential, map[string]any{"action": "none"}),
+		hit("audit_logs", "ip", "", essential, map[string]any{"action": "none"}),
 		hit("messages", "body_text", "", messageText, nil), hit("invitations", "email", "", moved, nil), hit("users", "phone", "", misowned, nil),
 		hit("login_throttles", "key", "", stray, nil), hit("users", "phone", "", lStray, nil),
 		hit("invitations", "email", "", onOther, nil),
 	}
 	post := slices.Clone(pre)
 	// The invitation address turned up in a column no rule names.
-	post[3] = hit("invitations", "name", "", moved, nil)
+	post[2] = hit("invitations", "name", "", moved, nil)
 	// An address a rule excuses, on another row of its column than the one seeded.
 	post[len(pre)-1].RowID = "2"
 	post = append(post, hit("somewhere", "else", "", "snt-u-nowhere-nothing", nil))
@@ -1178,7 +1186,6 @@ func TestErasureResidueRefusesWhatThePlanDoesNotName(t *testing.T) {
 		"misplaced O-17-invitation invitations.name",
 		"misplaced L-user users.phone",
 		"moved O-17-invitation invitations.email",
-		"undispositioned O-16 notifications.body",
 		"undispositioned RETAIN_ESSENTIAL audit_logs.ip",
 		"unaccepted messages.body_text",
 		"unregistered somewhere.else",

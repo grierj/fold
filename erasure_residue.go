@@ -154,13 +154,28 @@ var erasureResidueRules = []erasureResidueRule{
 		Plan: []residueAnchor{{residueInventory, `(?m)^\| O-13 \|[^|]*\|\s*\*\*Settled as a documented limitation\*\*`}},
 		Why:  "the church's address, typed by an admin"},
 
-	// Names inside other people's notices (O-16): proposed, never authorized,
-	// so this rule is disabled until the PLAN settles it.
+	// Names inside other people's notices (O-16, RS-5): a notice is rendered
+	// once with no variables kept, so there is nothing to re-render, and finding
+	// a name in free text is forbidden (3, rule 1). The text may stay in the row
+	// it was written in.
 	{RuleID: "O-16", Table: "Notification", Column: "body", Owner: residueU, Fate: residueMay,
-		Plan: []residueAnchor{{residueInventory, `(?m)^\| O-16 \|[^|]*\|\s*\*\*(Settled|Confirmed)`}},
-		Why:  "a name in a notice another person already received (RS-5)"},
-	// Messages the person wrote (O-8) have no rule here either: RS-11 is
-	// Proposed. The church's own announcement text is C-owned below.
+		Plan: []residueAnchor{{residueInventory, `(?m)^\| O-16 \|[^|]*\|\s*\*\*Confirmed`}},
+		Why:  "a name in the body of a notice another person already received (RS-5)"},
+	{RuleID: "O-16-title", Table: "Notification", Column: "title", Owner: residueU, Fate: residueMay,
+		Plan: []residueAnchor{{residueInventory, `(?m)^\| O-16 \|[^|]*\|\s*\*\*Confirmed`}},
+		Why:  "a name in the title of a notice another person already received (RS-5)"},
+
+	// Messages the person wrote (O-8, RS-11): the subject and body stay as the
+	// church's record of what was written and what was (or was never) sent.
+	{RuleID: "O-8-subject", Table: "Message", Column: "subject", Owner: residueU, Fate: residueMust,
+		Plan: []residueAnchor{{residueInventory, `(?m)^\| O-8 \|[^|]*\|\s*\*\*Confirmed`}},
+		Why:  "the subject of a message the erased person wrote, kept for audit"},
+	{RuleID: "O-8-body-text", Table: "Message", Column: "body_text", Owner: residueU, Fate: residueMust,
+		Plan: []residueAnchor{{residueInventory, `(?m)^\| O-8 \|[^|]*\|\s*\*\*Confirmed`}},
+		Why:  "the text of a message the erased person wrote, kept for audit"},
+	{RuleID: "O-8-body-html", Table: "Message", Column: "body_html", Owner: residueU, Fate: residueMust,
+		Plan: []residueAnchor{{residueInventory, `(?m)^\| O-8 \|[^|]*\|\s*\*\*Confirmed`}},
+		Why:  "the formatted body of a message the erased person wrote, kept for audit"},
 
 	// Rows tied only to an address the person no longer held (O-17, O-21).
 	{RuleID: "O-17-invitation", Table: "Invitation", Column: "email", Owner: residueU, Fate: residueMay,
