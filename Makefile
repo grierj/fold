@@ -1,4 +1,4 @@
-# Development tasks (11.9). No Python: shell and Go only.
+# Development tasks (11.9).
 
 DEV_COMPOSE := docker compose -f deploy/docker-compose.dev.yml
 DEV_DATABASE_URL := postgres://fold:fold@localhost:5432/fold?sslmode=disable

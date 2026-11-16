@@ -582,6 +582,66 @@ bash deploy/digitalocean/provision.sh \
   --source-dir /src \
   --deploy-dir "$build_dir" >/tmp/fold-build-2.out 2>&1
 [[ "$build_env_sum" == "$(sha256sum "$build_dir/.env")" ]]
+# An on-box build upgrade must compile exactly the new source: a file the new
+# release deleted is removed from the deploy dir, and the runtime state the
+# source never has survives. Source A has extra.go and sub/old.go; source B
+# (the next release) does not.
+prune_a=/tmp/fold-prune-src-a
+prune_b=/tmp/fold-prune-src-b
+prune_dir=/tmp/fold-prune
+rm -rf "$prune_a" "$prune_b" "$prune_dir"
+mkdir -p "$prune_a" "$prune_b"
+tar -C /src --exclude .git --exclude node_modules --exclude web --exclude docs --exclude internal --exclude migrations -cf - . | tar --no-same-owner -C "$prune_b" -xf -
+tar -C "$prune_b" -cf - . | tar --no-same-owner -C "$prune_a" -xf -
+printf 'package main\n' >"$prune_a/extra.go"
+mkdir -p "$prune_a/sub"
+printf 'package sub\n' >"$prune_a/sub/old.go"
+printf 'package main\n' >"$prune_a/keep.go"
+printf 'package main\n// new\n' >"$prune_b/keep.go"
+# provision.sh reads the recovery level from the source's HEAD, so each is a checkout.
+for prune_src in "$prune_a" "$prune_b"; do
+  git -C "$prune_src" init -q
+  git -C "$prune_src" add -A
+  git -C "$prune_src" -c user.name=test -c user.email=test@example.org commit -q -m fixture
+done
+bash deploy/digitalocean/provision.sh \
+  --domain groups.example.org \
+  --admin-user deploy \
+  --ssh-pubkey-file "$pub" \
+  --allow-onbox-build \
+  --source-dir "$prune_a" \
+  --deploy-dir "$prune_dir" >/tmp/fold-prune-1.out 2>&1
+[[ -f "$prune_dir/extra.go" && -f "$prune_dir/sub/old.go" ]]
+# Runtime state a deploy and its upgrades leave next to the source copy.
+printf 'SECRET=live\n' >>"$prune_dir/.env"
+prune_env_sum="$(sha256sum "$prune_dir/.env")"
+mkdir -p "$prune_dir/data/pg" "$prune_dir/deploy-tools" "$prune_dir/recovery-tools" "$prune_dir/.deploy-tools.abc" "$prune_dir/.deploy-drill" "$prune_dir/dumps"
+printf 'row\n' >"$prune_dir/data/pg/file"
+printf 'tool\n' >"$prune_dir/deploy-tools/t"
+printf 'mode=image\n' >"$prune_dir/release.prev"
+printf 'x\n' >"$prune_dir/.recovery-tools.xyz"
+printf 'dump\n' >"$prune_dir/dumps/a"
+prune_lock_ino="$(stat -c %i "$prune_dir/backup.lock" "$prune_dir/ops.lock" 2>/dev/null || true)"
+[[ -e "$prune_dir/recovery-policy-floor" ]] && prune_floor_sum="$(sha256sum "$prune_dir/recovery-policy-floor")" || prune_floor_sum=none
+prune_sums="$(cd "$prune_dir" && sha256sum backup.env.example upgrade.sh docker-compose.yml Caddyfile data/pg/file deploy-tools/t release.prev dumps/a)"
+bash deploy/digitalocean/provision.sh \
+  --domain groups.example.org \
+  --admin-user deploy \
+  --ssh-pubkey-file "$pub" \
+  --allow-onbox-build \
+  --source-dir "$prune_b" \
+  --deploy-dir "$prune_dir" >/tmp/fold-prune-2.out 2>&1
+if [[ -e "$prune_dir/extra.go" || -e "$prune_dir/sub/old.go" || -e "$prune_dir/sub" ]]; then
+  echo "idempotency: a file the new source dropped survived an on-box build copy" >&2
+  exit 1
+fi
+cmp "$prune_b/keep.go" "$prune_dir/keep.go"
+cmp "$prune_b/Dockerfile" "$prune_dir/Dockerfile"
+[[ "$prune_env_sum" == "$(sha256sum "$prune_dir/.env")" ]]
+[[ "$prune_floor_sum" == none || "$prune_floor_sum" == "$(sha256sum "$prune_dir/recovery-policy-floor")" ]]
+[[ -d "$prune_dir/recovery-tools" && -d "$prune_dir/.deploy-tools.abc" && -d "$prune_dir/.deploy-drill" && -f "$prune_dir/.recovery-tools.xyz" ]]
+[[ "$prune_lock_ino" == "$(stat -c %i "$prune_dir/backup.lock" "$prune_dir/ops.lock" 2>/dev/null || true)" ]]
+[[ "$prune_sums" == "$(cd "$prune_dir" && sha256sum backup.env.example upgrade.sh docker-compose.yml Caddyfile data/pg/file deploy-tools/t release.prev dumps/a)" ]]
 # A build whose image reports another level than its source declares is refused,
 # lower or higher, and nothing is started. (The stub models the mismatch; the
 # check under test is provision.sh's, unchanged.)

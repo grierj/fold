@@ -6,7 +6,7 @@ const path = require('node:path');
 process.umask(0o077);
 // Wording the panel (web/src/components/DeleteUserPanel.tsx) shows. A copy
 // change must update these deliberately; the drill never matches on loose text.
-const REACH_LEAD = 'Some traces can remain after a delete, so you know what to expect:';
+const REACH_LEAD = "A delete doesn't reach everything. Here is what can remain, so you know what to expect:";
 const APPLIED = 'The account was deleted.';
 const ERASURE_KEYS = ['householdsKept', 'householdsScrubbed', 'peopleAnonymized', 'guardianLinksRevoked', 'activityEntriesKept'];
 
@@ -73,7 +73,7 @@ async function runPrivateBrowser(options) {
     // The panel states what a delete does not reach before the press, and the
     // 390px screenshot is taken with that text on screen.
     await row.getByText(REACH_LEAD, { exact: true }).waitFor({ state: 'visible' });
-    for (const label of ['Backups.', 'Email and notifications.', 'Activity log.']) await row.getByText(label, { exact: true }).waitFor({ state: 'visible' });
+    for (const label of ['Backups.', 'Email, notifications and logs.', 'Activity log.']) await row.getByText(label, { exact: true }).waitFor({ state: 'visible' });
     await page.screenshot({ path: screenshot, fullPage: true });
     stage = 'delete';
     // One real press: the panel mints an attempt id, then sends the DELETE with

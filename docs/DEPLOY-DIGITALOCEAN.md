@@ -384,7 +384,7 @@ These notes are interim and the steps are recommended, not a promise. They
 describe `/opt/fold/restore.sh` as written in this tree. Local drills on a
 disposable Compose stack have exercised it; the checks on a real droplet in
 [FIRST-CHURCH-CHECKS.md](FIRST-CHURCH-CHECKS.md#live-install-m51-m53) have not
-been done (#310). No release that reports `recoveryPolicy` 1 or higher may be
+been done (#310; the exact-head full drill has not passed yet, inventory 15.16). No release that reports `recoveryPolicy` 1 or higher may be
 published until they are. Account erasure still has open work (see `STATUS.md`,
 M7.4); nothing here says a restore brings back or removes every trace of anyone.
 

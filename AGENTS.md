@@ -258,7 +258,8 @@ One-off pages outside the standard presentation layer, such as the server-render
 (`templates/setup.html`), don't have to match the React components.
 
 Docs say "recommended", never "supported" (a line that must quote the word ends with
-`wording-ok:`). No Python: tooling is shell or Go.
+`wording-ok:`). No Python in the serving stack (DEC-151): the Dockerfile, compose files, `deploy/`,
+the binary and the frontend never run or ship it. Developer tooling (scripts, verify, CI) may use it.
 
 ## Development
 
@@ -367,12 +368,13 @@ tests in that area's `docs/agents/` file.
 | The entry JS chunk stays under its gzip budget; rarely needed libraries load with `import()` | `npm run bundle-size` (in CI) |
 | Seat counts never overrun under concurrent registration | `TestConcurrentGoingRespectsCapacity` |
 | Secrets in URLs never reach the access log | `TestAccessLogKeepsSecretsOut` |
+| A deletion leaves only the residue the PLAN names: every sentinel of the erased person in any text, JSON or byte column or blob must match an enabled rule in `erasure_residue.go` (a rule with no PLAN disposition accepts nothing); another person's and the church's values stay byte for byte; opt-out and suppression hashes are checked apart | `TestErasureLeavesOnlyTheNamedResidue` (its mutation map), `TestErasureResidueRefusesWhatThePlanDoesNotName`, `TestErasureResidueRulesNameRealPlaces` |
 | Tests sit next to their code | `TestTestFilesSitNextToTheirSource` |
 | Source guards read the whole production tree, not a directory glob | `internal/guardkit` tests, `TestContactRequestTextGuardReadsTheRealTree` |
 | Schema changes are new goose files; models match them | `migrations/migrations_test.go`, `TestBaselineFileShape` (see `docs/agents/migrations.md`) |
 | Work reaches master only through a PR with `test`, `web` and `provision` green on a head containing master's tip | GitHub ruleset on `master` (no bypass actors); `scripts/merge-rules-check.sh` in CI (`TestCIRunsTheMergeRulesCheck`, `TestMergeRulesCheckScript`) |
 | `go vet`, `gofmt` and staticcheck are clean | `make lint` in CI |
-| No Python | `TestNoPython` |
+| No Python in the serving stack (DEC-151) | `TestNoPythonInServingStack`, `TestPythonGuardScopesToServingStack` |
 | Docs say "recommended", never "supported" | `TestDocsSayRecommendedNotSupported` |
 | One Node version: `.nvmrc` | `TestNodeVersionComesFromNvmrc` |
 | A build never deletes `web/dist/README.txt` | `keep-dist-readme` plugin in `web/vite.config.ts` |

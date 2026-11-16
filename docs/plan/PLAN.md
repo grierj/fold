@@ -93,7 +93,7 @@ what is built, and what comes next. Repo: https://github.com/grierj/fold.
 - Multi-tenant SaaS (one database for many churches).
 - Giving, donations, pledges, fund accounting, contribution statements. See 13.3 for the reasons.
 - SQLite or any database other than PostgreSQL (DEC-1, DEC-24).
-- Python, anywhere in the repo or its tooling (DEC-22).
+- Python in the serving stack: the image, compose files, `deploy/`, the binary and the frontend (DEC-22, amended by DEC-151).
 - Accounts for anyone under 13. Younger children exist only as household people with no login
   (DEC-8).
 - Teens as group leaders or event hosts (DEC-18).
