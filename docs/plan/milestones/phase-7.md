@@ -98,11 +98,16 @@ milestones until a first church is live (DEC-145).
   and DEC-148, with every IR item and retained-IP action mapped to one arm in 15.18 and 6.5.2. C4:
   #282, #299 and #383. C5: every slice is merged, the residue table (#308) matches what the sentinel
   proof (#309, #407) shows is left, the proof enables only dispositioned rules, and the exact-head full
-  restore drill passed (#310, #409; inventory 15.17). The inventory's OPEN register rows O-1, O-19 and
+  restore drill passed (#310, #409; inventory 15.17), and Grier confirmed that it closes #310 and
+  acknowledged the deploy-script prune (Nov 15, 2026). The inventory's OPEN register rows O-1, O-19 and
   O-20 are closed in the same commit.
-- Disclosed limits that stay, not open work: O-8 (messages a person wrote, kept), O-16 (names in other
-  people's notices), QC-1 (a reason-review delete that cannot finish in the interactive budget) and
-  the activity-log addresses DEC-148 lets stay.
+- Decided by Grier on Nov 15, 2026 (inventory 15.19): O-8, the subject and body of a message a person
+  wrote stay for audit, and O-16, names in the title and body of a notice another person received may
+  stay. The sentinel proof enables both rules and checks them. QC-1 (a reason-review delete that cannot
+  finish in the interactive budget) is accepted as a known gap, dated Nov 15, 2026, with no code fix,
+  to revisit with production data.
+- Disclosed limits that stay, not open work: the retained message text (O-8), the names in other
+  people's notices (O-16), QC-1 and the activity-log addresses DEC-148 lets stay.
 - Recorded closed: [#301](https://github.com/grierj/fold/issues/301) and
   [#302](https://github.com/grierj/fold/issues/302), the one-time review list for reasons of accounts
   deleted before the review step existed (owner decision 7), built in #383 (`d93d0825`), recorded in
