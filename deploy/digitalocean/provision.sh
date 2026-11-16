@@ -596,9 +596,11 @@ prune_stale_tree() {
   local stage="$1" dest="$2" keep name rel
   local -a keep_names=(
     .env '.env.*' backup.env data backup.lock ops.lock ops.owner '.ops.owner.*'
-    recovery.lock recovery-policy-floor 'recovery-policy-floor.*' '.recovery-policy-floor.*'
+    recovery.lock '.recovery.lock.*' recovery-deleted.txt '.recovery-deleted.*'
+    .recovery-app-pin.yml '.recovery-app-pin.*' recovery-policy-floor
+    'recovery-policy-floor.*' '.recovery-policy-floor.*'
     deploy-tools recovery-tools '.deploy-tools.*' '.old-deploy-tools.*'
-    '.recovery-tools.*' '.old-recovery-tools.*' .deploy-drill 'drill.*' dumps
+    '.recovery-tools.*' '.old-recovery-tools.*' .deploy-drill '.drill-*' 'drill.*' 'drill-*' dumps
     'release.prev*' '.tmp.*' '.pin-save.*'
     docker-compose.yml Caddyfile .env.example
   )

@@ -621,6 +621,16 @@ printf 'tool\n' >"$prune_dir/deploy-tools/t"
 printf 'mode=image\n' >"$prune_dir/release.prev"
 printf 'x\n' >"$prune_dir/.recovery-tools.xyz"
 printf 'dump\n' >"$prune_dir/dumps/a"
+# Files restore.sh and the drills write there: losing one breaks the recovery proof.
+mkdir -p "$prune_dir/drill-push-tls"
+printf 'ca\n' >"$prune_dir/drill-push-tls/ca.crt"
+printf 'deleted\n' >"$prune_dir/recovery-deleted.txt"
+printf 'pin\n' >"$prune_dir/.recovery-app-pin.yml"
+printf 'conf\n' >"$prune_dir/drill-push.conf"
+printf 'a\n' >"$prune_dir/.drill-archive.yml"
+printf 't\n' >"$prune_dir/.recovery.lock.abc"
+printf 't\n' >"$prune_dir/.recovery-deleted.abc"
+printf 't\n' >"$prune_dir/.recovery-app-pin.abc"
 prune_lock_ino="$(stat -c %i "$prune_dir/backup.lock" "$prune_dir/ops.lock" 2>/dev/null || true)"
 [[ -e "$prune_dir/recovery-policy-floor" ]] && prune_floor_sum="$(sha256sum "$prune_dir/recovery-policy-floor")" || prune_floor_sum=none
 prune_sums="$(cd "$prune_dir" && sha256sum backup.env.example upgrade.sh docker-compose.yml Caddyfile data/pg/file deploy-tools/t release.prev dumps/a)"
@@ -640,6 +650,7 @@ cmp "$prune_b/Dockerfile" "$prune_dir/Dockerfile"
 [[ "$prune_env_sum" == "$(sha256sum "$prune_dir/.env")" ]]
 [[ "$prune_floor_sum" == none || "$prune_floor_sum" == "$(sha256sum "$prune_dir/recovery-policy-floor")" ]]
 [[ -d "$prune_dir/recovery-tools" && -d "$prune_dir/.deploy-tools.abc" && -d "$prune_dir/.deploy-drill" && -f "$prune_dir/.recovery-tools.xyz" ]]
+[[ -f "$prune_dir/drill-push-tls/ca.crt" && -f "$prune_dir/recovery-deleted.txt" && -f "$prune_dir/.recovery-app-pin.yml" && -f "$prune_dir/drill-push.conf" && -f "$prune_dir/.drill-archive.yml" && -f "$prune_dir/.recovery.lock.abc" && -f "$prune_dir/.recovery-deleted.abc" && -f "$prune_dir/.recovery-app-pin.abc" ]]
 [[ "$prune_lock_ino" == "$(stat -c %i "$prune_dir/backup.lock" "$prune_dir/ops.lock" 2>/dev/null || true)" ]]
 [[ "$prune_sums" == "$(cd "$prune_dir" && sha256sum backup.env.example upgrade.sh docker-compose.yml Caddyfile data/pg/file deploy-tools/t release.prev dumps/a)" ]]
 # A build whose image reports another level than its source declares is refused,

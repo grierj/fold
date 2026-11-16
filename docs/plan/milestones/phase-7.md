@@ -92,10 +92,16 @@ milestones until a first church is live (DEC-145).
   - A CI gate refuses a contract migration whose expand step is not in an earlier tagged release
     (`scripts/contract-gate.sh`).
 - Done means conditions C1–C5 hold on master ([#311](https://github.com/grierj/fold/issues/311)).
-  The personal-IP gate (G-9) and the owner's Nov 3 answer on conversion IPs are recorded in
-  inventory section 6.5.2 and owner decision 5; #385 added owner decisions 9 to 12 and DEC-148.
-  G-9 is closed: the checklist at the end of 6.5.2 is ticked against #385's merge. C3 is not,
-  because #311 audits it on master, and nothing here claims C3 or M7.4.
+  #311's audit ran on master `33df6535` on Nov 15, 2026 and is recorded in inventory 15.18: **C1 to C4
+  hold; C5 does not, so M7.4 is not Done and #311 stays open.** C1: R4-SC (#404) with `00002` in the
+  published `v0.1.0` (Grier's Q2 answer, Nov 14, 2026). C2: R4-2d2 in #299, owner decision 8 (Nov 5,
+  2026). C3: #385 (arm (b), DG-9 items 1 to 3), owner decisions 5 and 9 to 12 and DEC-148, with every IR
+  item and retained-IP action mapped to one arm in 15.18 and 6.5.2. C4: #282, #299 and #383.
+  C5 is open because the sentinel proof (#309, PR #407) and the recovery drill record (#310, PR #409) are
+  not merged, and the inventory's OPEN register still reads O-1, O-19 and O-20 as open. Grier's Q6
+  answer (Nov 14, 2026) lets this run merge the M7.4 slices; it does not make an open pull request
+  merged. M7.4 is marked Done only in a later reviewed docs commit, after those merge and #311's audit
+  is rerun.
 - Open work:
   - Recorded closed, no longer open work: [#301](https://github.com/grierj/fold/issues/301) and
     [#302](https://github.com/grierj/fold/issues/302), the one-time review list for reasons of
@@ -115,16 +121,19 @@ milestones until a first church is live (DEC-145).
     residue no retained key reaches (G-9, Q3): recorded in owner decisions 9 to 12 and DEC-148,
     carried by #385 with the C3 table, whose G-9 checklist is ticked in 6.5.2. The issue stays open until it
     is closed on GitHub.
-  - [#306](https://github.com/grierj/fold/issues/306) contract suppressions to hash-only, after a
-    tagged release that holds `00002` (R4-SC).
-  - [#307](https://github.com/grierj/fold/issues/307) and
-    [#308](https://github.com/grierj/fold/issues/308) the final restore procedure (owner question
-    Q5), delete-dialog disclosure and restore docs.
+  - Merged on master, issues closed: [#306](https://github.com/grierj/fold/issues/306) (#404,
+    suppressions hash-only), [#307](https://github.com/grierj/fold/issues/307) (#405, the saved
+    list of accounts to delete again, owner decision 13) and
+    [#308](https://github.com/grierj/fold/issues/308) (#406, delete-dialog disclosure and restore
+    docs).
   - [#309](https://github.com/grierj/fold/issues/309) an end-to-end sentinel proof that erasure
-    leaves only the named residue.
+    leaves only the named residue: built in PR #407, not merged.
   - [#310](https://github.com/grierj/fold/issues/310) exact-head recovery drills and real-droplet
-    checks. No release at `recoveryPolicy >= 1` is published before they pass.
-  - [#311](https://github.com/grierj/fold/issues/311) milestone sign-off against C1–C5.
+    checks: the full drill passed on a disposable runner (inventory 15.17, PR #409, not merged);
+    the real-droplet hand checks stay in `docs/FIRST-CHURCH-CHECKS.md`. No release at
+    `recoveryPolicy >= 1` is published before they pass.
+  - [#311](https://github.com/grierj/fold/issues/311) milestone sign-off against C1–C5: audited
+    Nov 15, 2026 (inventory 15.18), C5 not met, stays open.
   - Follow-ups: [#312](https://github.com/grierj/fold/issues/312) (deletion e2e helper),
     [#313](https://github.com/grierj/fold/issues/313) (recovery level docs), and the
     reason-review test follow-ups [#293](https://github.com/grierj/fold/issues/293)–[#298](https://github.com/grierj/fold/issues/298).
