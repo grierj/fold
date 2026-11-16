@@ -66,6 +66,12 @@ func TestVersionJSONReportsRecoveryPolicy(t *testing.T) {
 	if _, ok := got["version"].(string); !ok {
 		t.Fatalf("version --json lost its version field: %v", got)
 	}
+	// restoreUploads tells the restore tooling this binary has
+	// `restore settle-uploads`; deploy/restore-uploads holds the same integer.
+	uploads, ok := got["restoreUploads"].(float64)
+	if !ok || uploads != 1 || int(uploads) != restoreUploadsLevel {
+		t.Fatalf("restoreUploads = %v, want the integer 1", got["restoreUploads"])
+	}
 }
 
 func TestMigrateStatusNeedsOnlyDatabaseURL(t *testing.T) {

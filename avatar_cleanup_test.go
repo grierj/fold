@@ -649,6 +649,7 @@ func TestMapAvatarCleanupError(t *testing.T) {
 		"unexpected":         {live, storage.ErrUnexpectedEntry, errAvatarFolderNested},
 		"incomplete":         {live, storage.ErrCleanupIncomplete, errAvatarCleanupPartial},
 		"foreign key":        {live, errAvatarKeyForeign, errAvatarKeyForeign},
+		"payload":            {live, errAvatarCleanupPayload, errAvatarCleanupPayload},
 		"lock timeout":       {live, &pgconn.PgError{Code: "55P03", Message: "canceling statement due to lock timeout"}, errAvatarLockTimeout},
 		"deadline":           {live, context.DeadlineExceeded, errAvatarOutOfTime},
 		"canceled":           {live, context.Canceled, errAvatarOutOfTime},

@@ -1666,6 +1666,14 @@ Admins only (401 signed out, 403 otherwise; `policy.CanSeeBackupStatus`). The an
 
 The same answer is `fold backup status [--json]`. It needs only `FOLD_BACKUP_DIR` (no `DATABASE_URL`, no `SESSION_SECRET`) and exits 0 for `ok`, 1 for `stale`, `missing` or `unreadable`, and 2 for bad usage, an unset `FOLD_BACKUP_DIR` or a relative one. `--json` prints the object above on one line; without it, a few plain lines. Neither prints a path.
 
+### Restore: settle the photos (M5.2)
+
+`fold restore settle-uploads [--json]` is a command-line step of the fenced restore (`deploy/digitalocean/restore.sh`), not an API route. A restore that brings the uploads folder back can bring back the profile photo of someone erased after the backup. The step runs with the site closed, after the app has stopped and before it reopens, and empties every avatar folder that belongs to a soft-deleted account or to no account. It needs only `DATABASE_URL` and `UPLOAD_DIR`; it runs no migrations, boots no restore barrier, starts no workers and changes no job row. An active account's folder is never touched, replaced old photos included (the app's own `avatar.cleanup` job decides those). Folders larger than one cleanup batch finish in the same run, up to a fixed time limit; a later run picks up where a run that hit the limit stopped, and needs no archive.
+
+Exit 0 means no erased or unowned folder remains and the avatar folder holds nothing but account folders. Exit 1 means one does (an unsafe or nested folder, or the time limit), the avatar folder holds an entry whose name is not an account id (left untouched for the operator to reconcile), or the work could not finish. Exit 2 means bad usage, or the database's migration version is not this binary's newest, in which case nothing is touched. The output is counts only, never an id, key, name or path: `--json` prints `{ownersScanned, erasedCleared, unownedCleared, remaining, unexpected}` on one line; without it, one plain line.
+
+`fold version --json` also reports `restoreUploads`, an integer (1 here; an older binary has no such field, which reads as 0). The restore tooling refuses to restore uploads into a target that reports less. `deploy/restore-uploads` holds the same integer.
+
 ### Messages: the composer (M3.4a)
 
 ```

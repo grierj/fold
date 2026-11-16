@@ -34,6 +34,10 @@ commands:
                                --force rotates with a SESSION_SECRET that can't
                                open the current key)
   push check                   connect to each push service on port 443
+  restore settle-uploads       after a restore that brought uploads back, empty the profile photo
+                               folders of erased and unknown accounts (needs DATABASE_URL and
+                               UPLOAD_DIR; exits 1 if any remain, 2 if the database schema is not
+                               this release's; for the restore procedure, with the site closed)
   backup status                say whether the nightly backup is current; exits 0 when it
                                is, 1 when it is overdue, missing or unreadable
                                (needs only FOLD_BACKUP_DIR, an absolute path)
@@ -61,11 +65,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runPush(args, asJSON, stdout, stderr)
 	case "backup":
 		return runBackup(args, asJSON, stdout, stderr)
+	case "restore":
+		return runRestore(args, asJSON, stdout, stderr)
 	case "version":
 		if asJSON {
 			// recoveryPolicy is the restore tooling's compatibility level
-			// (R4-RP); an older binary has no such field, which reads as 0.
-			_ = json.NewEncoder(stdout).Encode(map[string]any{"version": version, "recoveryPolicy": recoveryPolicyLevel})
+			// (R4-RP) and restoreUploads says this binary has
+			// `restore settle-uploads`; an older binary has neither field,
+			// which reads as 0.
+			_ = json.NewEncoder(stdout).Encode(map[string]any{"version": version, "recoveryPolicy": recoveryPolicyLevel, "restoreUploads": restoreUploadsLevel})
 		} else {
 			fmt.Fprintln(stdout, "fold", version)
 		}
