@@ -277,7 +277,6 @@ function DateRow({
   const navigate = useNavigate();
   const { canCompose } = useAuth();
   const [editingDate, setEditingDate] = useState(false);
-  // Manage sign-ups opens from the date's More menu.
   const [managing, setManaging] = useState(manageRequested);
   const manageRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
