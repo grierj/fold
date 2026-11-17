@@ -33,8 +33,7 @@ const (
 	// pixels of all frame rectangles (pixels x frames).
 	MaxGIFFrames = 200
 	maxGIFPixels = 100_000_000
-	// jpegQuality is the quality of re-encoded JPEGs.
-	jpegQuality = 85
+	jpegQuality  = 85
 	// maxWorkingBytes is the most one Normalize call may allocate for a picture,
 	// worked out from the header before any pixel is decoded: the encoded input
 	// (bufferBytes), what the standard decoder allocates for the picture, the

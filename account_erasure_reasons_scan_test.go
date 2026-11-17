@@ -41,7 +41,6 @@ func setScanBounds(t *testing.T, unit, first, pageRequests int) {
 	})
 }
 
-// scannerStatements are the recorded statements that are scanner batches.
 func scannerStatements(all []reasonStatement) []reasonStatement {
 	var out []reasonStatement
 	for _, st := range all {

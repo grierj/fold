@@ -805,8 +805,6 @@ func TestDroppedOnReenableCanBeAddedOverCapacity(t *testing.T) {
 	}
 }
 
-// --- Remote attendance (M1.8 slice 2) ---
-
 // seedRemoteEvent creates a group event with remote attendance on, the
 // given per-pool caps (nil is unlimited), and the waitlist flag.
 func seedRemoteEvent(t *testing.T, app *App, admin *apiClient, gid string, capacity, remoteCapacity *int, waitlist bool) (uint, string) {
@@ -838,7 +836,6 @@ func seedRemoteEvent(t *testing.T, app *App, admin *apiClient, gid string, capac
 	return created.Event.ID, start.Format("2006-01-02")
 }
 
-// registerModeAs PUTs a registration in one attendance mode.
 func registerModeAs(c *apiClient, eventID uint, date, status, mode string) (int, string) {
 	body := map[string]any{"date": date, "status": status, "attendanceMode": mode}
 	w := c.do("PUT", fmt.Sprintf("/api/v1/events/%d/registrations", eventID), body, true)
@@ -2558,7 +2555,6 @@ func TestFanOutNoticesSerializeWithRecipientErasure(t *testing.T) {
 	}
 }
 
-// countRecipientLocks counts the recipient lock statements run on db.
 func countRecipientLocks(t *testing.T, db *gorm.DB) *atomic.Int64 {
 	t.Helper()
 	var n atomic.Int64

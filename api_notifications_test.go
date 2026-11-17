@@ -48,7 +48,6 @@ func TestNotifications(t *testing.T) {
 		t.Fatalf("member has items (upcoming events left the bell): %+v", ns)
 	}
 
-	// Unauthenticated → 401.
 	anon := newAPIClient(t, app)
 	w := anon.do("GET", "/api/v1/notifications", nil, false)
 	if w.Code != http.StatusUnauthorized {
@@ -174,7 +173,6 @@ func TestDeletionRequestTask(t *testing.T) {
 	}
 }
 
-// A deleted person's notifications go with them.
 func TestDeletedUserLosesNotifications(t *testing.T) {
 	app := testApp(t)
 	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)

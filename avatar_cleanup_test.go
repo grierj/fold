@@ -317,7 +317,6 @@ func waitForRowLockWaiter(t *testing.T, app *App) int {
 	return waitForLockedUsersQuery(t, app, "%users%FOR UPDATE%")
 }
 
-// advisoryLocksHeldBy counts the advisory locks a backend holds.
 func advisoryLocksHeldBy(t *testing.T, app *App, pid int) int {
 	t.Helper()
 	var n int

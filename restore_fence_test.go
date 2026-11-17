@@ -35,7 +35,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// restoreFenceFloor is the floor, for tests.
 func (a *App) restoreFenceFloor() int64 { return a.fence.floor.Load() }
 
 // fenceTurnWaiters is how many callers wait for the fence turn: a test seam.

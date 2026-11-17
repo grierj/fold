@@ -656,7 +656,6 @@ func (f *ctgFile) singleAssigned(decl ast.Node) {
 	}
 }
 
-// ctgIdent returns e as an identifier, or nil.
 func ctgIdent(e ast.Expr) *ast.Ident {
 	id, _ := e.(*ast.Ident)
 	return id

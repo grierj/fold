@@ -6,7 +6,6 @@ RUN npm ci --no-audit --no-fund
 COPY web/ ./
 RUN npm run build
 
-# Backend build stage
 FROM golang:1.27-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -23,7 +22,6 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=${FOLD_VERSION}" 
 # is writable by the backup service (also 65532) whichever starts first.
 RUN mkdir -p /data/uploads /backup-status
 
-# Run stage
 FROM gcr.io/distroless/static-debian12:nonroot
 # Pin the working directory: distroless nonroot defaults to /home/nonroot,
 # so a relative UPLOAD_DIR would land off the /data volume.
