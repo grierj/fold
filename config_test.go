@@ -277,6 +277,10 @@ type composeService struct {
 	Environment map[string]*string `json:"environment"`
 	Ports       []json.RawMessage  `json:"ports"`
 	Volumes     []composeMount     `json:"volumes"`
+	User        string             `json:"user"`
+	CapDrop     []string           `json:"cap_drop"`
+	CapAdd      []string           `json:"cap_add"`
+	Privileged  bool               `json:"privileged"`
 	Healthcheck struct {
 		Test []string `json:"test"`
 	} `json:"healthcheck"`
@@ -556,6 +560,15 @@ func TestComposeBackupCoordination(t *testing.T) {
 
 func TestComposeBackupServiceRuns(t *testing.T) {
 	backup := resolveCompose(t, composeFixtureEnv()).Services["backup"]
+	// The host keeps its own copies of older archives in a root-only folder of
+	// the backups volume; the service must be an explicit unprivileged identity
+	// with every capability dropped (provision.sh refuses a resolved override).
+	if backup.User != "65532:65532" {
+		t.Errorf("the backup service runs as 65532:65532, got %q", backup.User)
+	}
+	if len(backup.CapDrop) != 1 || backup.CapDrop[0] != "ALL" || len(backup.CapAdd) != 0 || backup.Privileged {
+		t.Errorf("the backup service drops every capability and adds none: drop %v add %v privileged %v", backup.CapDrop, backup.CapAdd, backup.Privileged)
+	}
 	if got := strings.Join(backup.Healthcheck.Test, " "); !strings.Contains(got, "/usr/local/bin/backup.sh health") {
 		t.Errorf("backup healthcheck must run backup.sh health: %q", got)
 	}
@@ -618,6 +631,8 @@ func TestComposeBackupSourceContracts(t *testing.T) {
 	for _, want := range []string{
 		"image: ghcr.io/grierj/fold-backup:${FOLD_BACKUP_VERSION:-${FOLD_VERSION}}",
 		"restart: unless-stopped",
+		`user: "65532:65532"`,
+		"cap_drop:\n      - ALL",
 		"FOLD_RECOVERY_DIR: ${FOLD_BACKUP_COORD:+/coord}",
 		"${FOLD_BACKUP_COORD:-backup-coord}:/coord:ro",
 	} {
@@ -630,6 +645,18 @@ func TestComposeBackupSourceContracts(t *testing.T) {
 	}
 	if !strings.Contains(read("docker-compose.build.yml"), "\n  backup:\n    build:\n      context: deploy/backup\n") {
 		t.Error("docker-compose.build.yml must build the backup image from deploy/backup")
+	}
+
+	// The archives volume root is root:65532 mode 1770, so the nonroot service
+	// writes its own files and cannot touch what the host keeps there.
+	backupImage := read("deploy/backup/Dockerfile")
+	for _, want := range []string{"chown 0:65532 /backups", "chmod 1770 /backups"} {
+		if !strings.Contains(backupImage, want) {
+			t.Errorf("the backup image lacks %q", want)
+		}
+	}
+	if strings.Contains(backupImage, "chmod 700 /backups") || strings.Contains(backupImage, "chown 65532:65532 /backups") {
+		t.Error("/backups must not be a service-owned folder")
 	}
 
 	// A fresh named volume copies its first mount's image folder, so both
@@ -753,6 +780,18 @@ func TestFreshVolumesAreWritableByTheAppUser(t *testing.T) {
 				backupImage, "-c", "id -u; stat -c '%u:%g' /data/uploads /backup-status; touch /data/uploads/probe /backup-status/probe && echo writable")
 			if want := "65532\n65532:65532\n65532:65532\nwritable"; out != want {
 				t.Errorf("fresh volume ownership or writability wrong:\n%s", out)
+			}
+			// The archives volume root is root:65532 mode 1770 whichever image first mounts it.
+			backups := freshVolumeName(t, "backups")
+			if err := exec.Command("docker", "volume", "inspect", backups).Run(); err == nil {
+				t.Fatalf("volume %s already exists; refusing to touch it", backups)
+			}
+			docker("volume", "create", backups)
+			t.Cleanup(func() { _ = exec.Command("docker", "volume", "rm", "-f", backups).Run() })
+			got := docker("run", "--rm", "-v", backups+":/backups", "--entrypoint", "/bin/sh", backupImage, "-c",
+				"stat -c '%u:%g:%a' /backups; touch /backups/probe && rm /backups/probe && echo writable")
+			if want := "0:65532:1770\nwritable"; got != want {
+				t.Errorf("the archives volume root is wrong:\n%s", got)
 			}
 		})
 	}

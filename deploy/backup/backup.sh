@@ -2,9 +2,11 @@
 # fold-backup: portable backups of Fold's database and uploads, run inside the
 # fold-backup image (see deploy/backup/README.md for the full contract).
 #
-# Subcommands: loop, now, restore-test, list, health, adopt, uploads-validate,
+# Subcommands: loop, now, restore-test, list, health, uploads-validate,
 # uploads-stage, uploads-observe, uploads-exchange, uploads-drop, --self-test,
-# --help. Maintenance subcommands never start a backup.
+# --help. Maintenance subcommands never start a backup. Everything here works on
+# top-level files of /backups only; the host copies of older archives live in a
+# root-only folder this service cannot open and is never told about.
 #
 # Secrets (PGPASSWORD, the S3 keys) are read from the environment and never
 # appear in argv, logs or status files. Status files name only fixed words.
@@ -20,7 +22,6 @@ APP_GID="${FOLD_BACKUP_APP_GID:-65532}"
 ARCHIVE_DIR="${FOLD_BACKUP_ARCHIVE_DIR:-/backups}"
 STATUS_DIR="${FOLD_BACKUP_STATUS_DIR:-/backup-status}"
 DATA_DIR="${FOLD_BACKUP_DATA_DIR:-/data}"
-LEGACY_DIR="${FOLD_BACKUP_LEGACY_DIR:-/legacy}"
 RESTORE_ARCHIVE="${FOLD_BACKUP_RESTORE_ARCHIVE:-/restore/archive.tgz}"
 HEARTBEAT="${FOLD_BACKUP_HEARTBEAT:-/tmp/fold-backup-heartbeat}"
 ZONEINFO="${FOLD_BACKUP_ZONEINFO:-/usr/share/zoneinfo}"
@@ -45,11 +46,15 @@ Q_KEYS="select avatar_key from users where avatar_key is not null and avatar_key
 Q_IDS="select id from users"
 
 TMPS=()
-CUR_PID=""
+RUN_TMP=""
+CUR_PID=""""
 CHILD=""
 SLEEP_PID=""
 SCRATCH_MADE=0
 STAMP=""
+RUN_ID=""
+REMOTE_PREFIX=""
+REMOTE_FIELD=""
 TZNAME="UTC"
 KEEP_DAYS=14
 OFFSITE=0
@@ -65,7 +70,6 @@ Usage: backup.sh COMMAND [OPTIONS]
   restore-test      restore the newest complete pair into a scratch database
   list              list the recognized archives
   health            exit 0 while the loop is alive
-  adopt             copy recognized archives from /legacy into /backups
   uploads-validate  --nonce N   check /restore/archive.tgz without creating anything
   uploads-stage     --nonce N   extract it into /data/.restore-N/uploads
   uploads-observe   --nonce N   print live and staged identities
@@ -133,6 +137,18 @@ own_app() {
   fi
 }
 
+# run_tmp: one private folder for this process's scratch files, removed by the
+# EXIT trap. Call it directly, never inside $(...), or the folder is not recorded.
+run_tmp() {
+  if [[ -z "$RUN_TMP" ]]; then
+    # Only SIGKILL leaves a scratch folder behind (the EXIT trap removes it
+    # otherwise), and one that old belongs to no live run.
+    find "${TMPDIR:-/tmp}" -maxdepth 1 -type d -name 'fold-backup.*' -user "$(id -u)" -mmin +60 -exec rm -rf -- {} + 2>/dev/null || true
+    RUN_TMP="$(mktemp -d "${TMPDIR:-/tmp}/fold-backup.XXXXXX")" || die "could not create a scratch folder" 1
+    TMPS+=("$RUN_TMP")
+  fi
+}
+
 # ---------------------------------------------------------------- names
 
 # recognize NAME: sets REC_KIND (dump|tgz), REC_STAMP, REC_DAY, REC_AGE (".age" or empty).
@@ -151,6 +167,16 @@ recognize() {
 }
 
 nonce_ok() { [[ "${1:-}" =~ ^[0-9a-f]{32}$ ]]; }
+
+# new_run_id: RUN_ID, 128 random bits as 32 lowercase hex characters. No pipeline,
+# so a failed od is seen. The host's backup.sh carries the same helper.
+new_run_id() {
+  local raw
+  raw="$(od -An -N16 -tx1 /dev/urandom 2>/dev/null)" || return 1
+  raw="${raw//[[:space:]]/}"
+  [[ "$raw" =~ ^[0-9a-f]{32}$ ]] || return 1
+  RUN_ID="$raw"
+}
 
 # ---------------------------------------------------------------- configuration
 
@@ -403,9 +429,10 @@ admit() {
 tar_inspect() {
   local f="$1" raw t s n p members=0 bytes=0
   local -a pieces
-  raw="$(mktemp "${TMPDIR:-/tmp}/backup-raw.XXXXXX")"
-  INSPECT_LIST="$(mktemp "${TMPDIR:-/tmp}/backup-list.XXXXXX")"
-  TMPS+=("$raw" "$INSPECT_LIST")
+  run_tmp
+  raw="$RUN_TMP/raw"
+  INSPECT_LIST="$RUN_TMP/list"
+  : >"$INSPECT_LIST"
   if ! ext tar --quoting-style=escape -tvzf "$f" >"$raw" 2>/dev/null; then
     log "the uploads archive is not a readable gzip tar"
     return 1
@@ -413,7 +440,6 @@ tar_inspect() {
   awk '{ t = substr($0, 1, 1); s = $3; r = $0
          for (i = 1; i <= 5; i++) { sub(/^[^ ]+ +/, "", r) }
          printf "%s\t%s\t%s\n", t, s, r }' "$raw" >"$raw.n"
-  TMPS+=("$raw.n")
   while IFS=$'\t' read -r t s n; do
     case "$t" in
       -|d) ;;
@@ -558,7 +584,9 @@ step_encrypt() {
   sync -- "$ARCHIVE_DIR" || fail_run encrypt
 }
 
-upload_cipher() {
+# rclone_s3 ARGS...: rclone against the configured bucket. The settings travel in
+# the environment only, never in argv.
+rclone_s3() {
   local -x RCLONE_S3_PROVIDER=Other
   local -x RCLONE_S3_ENDPOINT="$FOLD_BACKUP_S3_ENDPOINT"
   local -x RCLONE_S3_REGION="$FOLD_BACKUP_S3_REGION"
@@ -566,15 +594,35 @@ upload_cipher() {
   local -x RCLONE_S3_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY"
   local -x RCLONE_S3_ENV_AUTH=false
   local -x RCLONE_CONFIG=/dev/null
-  ext rclone copyto "$1" ":s3:${FOLD_BACKUP_S3_BUCKET}/fold/${1##*/}" \
-    --s3-no-check-bucket --retries 3 --low-level-retries 5 --contimeout 30s --timeout 5m \
+  ext rclone "$@"
+}
+
+# upload_cipher FILE: one PUT of one member under this run's folder. The key
+# needs permission to write objects and nothing else: no listing, no read, no
+# delete. --no-check-dest and --s3-no-head keep rclone from asking the bucket
+# about the destination before or after the upload.
+upload_cipher() {
+  rclone_s3 copyto "$1" ":s3:${FOLD_BACKUP_S3_BUCKET}/${REMOTE_PREFIX}${1##*/}" \
+    --no-check-dest --s3-no-head --s3-no-check-bucket --retries 3 --low-level-retries 5 --contimeout 30s --timeout 5m \
     >/dev/null 2>&1
 }
 
+# step_upload: both members go under fold/<stamp>-<run id>/, a folder no other run
+# names (128 random bits, not a provider guarantee). Nothing is read from the
+# bucket, so a failure leaves at most a half pair that nothing later completes.
 step_upload() {
   local c
+  if ! new_run_id; then
+    log "no random folder name could be made; nothing was uploaded"
+    fail_run upload
+  fi
+  REMOTE_PREFIX="fold/${STAMP}-${RUN_ID}/"
+  log "offsite: uploading to ${REMOTE_PREFIX}"
   for c in "${CIPHERS[@]}"; do
-    upload_cipher "$c" || fail_run upload # probe:upload-ciphertext
+    if ! upload_cipher "$c"; then # probe:upload-ciphertext
+      log "an upload failed; the key needs permission to write objects under fold/ (listing and reading are not needed)"
+      fail_run upload
+    fi
   done
 }
 
@@ -588,14 +636,16 @@ run_backup() {
   publish_pair
   expire_old || fail_run expire
   OFFSITE_WORD=off
+  REMOTE_FIELD=""
   if (( OFFSITE )); then
     step_encrypt
     step_upload
     OFFSITE_WORD=uploaded
+    REMOTE_FIELD=" remote=$REMOTE_PREFIX"
   fi
   record_success
-  printf 'published stamp=%s dump=%s uploads=%s offsite=%s\n' \
-    "$STAMP" "fold-$STAMP.dump" "uploads-$STAMP.tgz" "$OFFSITE_WORD"
+  printf 'published stamp=%s dump=%s uploads=%s offsite=%s%s\n' \
+    "$STAMP" "fold-$STAMP.dump" "uploads-$STAMP.tgz" "$OFFSITE_WORD" "$REMOTE_FIELD"
 }
 
 cmd_now() {
@@ -744,9 +794,8 @@ cmd_restore_test() {
     || die "the database archive did not restore" 1
   tables="$(scratch_query "$Q_TABLES")" || die "could not read the restored database" 1
   users="$(scratch_query "$Q_USERS")" || die "could not read the restored database" 1
-  keys="$(mktemp "${TMPDIR:-/tmp}/backup-keys.XXXXXX")"
-  ids="$(mktemp "${TMPDIR:-/tmp}/backup-ids.XXXXXX")"
-  TMPS+=("$keys" "$ids")
+  keys="$RUN_TMP/keys"
+  ids="$RUN_TMP/ids"
   scratch_query "$Q_KEYS" >"$keys" || die "could not read the restored database" 1
   scratch_query "$Q_IDS" >"$ids" || die "could not read the restored database" 1
   while IFS=$'\t' read -r t n; do
@@ -782,96 +831,6 @@ cmd_restore_test() {
     log "warning: $missing referenced photo file(s) are not in the uploads archive"
   fi
   log "restore test passed"
-}
-
-# ---------------------------------------------------------------- adopt
-
-same_content() {
-  local a b
-  [[ "$(stat -c %s "$1")" == "$(stat -c %s "$2")" ]] || return 1
-  a="$(sha256sum "$1" | cut -d' ' -f1)"
-  b="$(sha256sum "$2" | cut -d' ' -f1)"
-  [[ "$a" == "$b" ]]
-}
-
-# adopt_flush DEST: an adopted copy counts only once its contents, its final
-# metadata and its directory entry are on disk. The identical-file shortcut
-# calls this too, so a retry after a failed flush completes the flush.
-adopt_flush() {
-  sync -- "$1" && sync -- "$ARCHIVE_DIR"
-}
-
-adopt_one() {
-  local src="$1" dest="$2" name tmp
-  name="${src##*/}"
-  tmp="$ARCHIVE_DIR/.partial.adopt.$name.$$"
-  TMPS+=("$tmp")
-  if ! ext cp --no-preserve=mode,ownership -- "$src" "$tmp"; then log "copy failed: $name"; return 1; fi
-  if ! same_content "$src" "$tmp"; then
-    log "checksum mismatch after copy: $name"
-    rm -f -- "$tmp"
-    return 1
-  fi
-  touch -r "$src" -- "$tmp" || return 1
-  chmod 600 "$tmp" || return 1
-  chown "$APP_UID:$APP_GID" "$tmp" || return 1
-  sync -- "$tmp" || { log "could not flush: $name"; return 1; }
-  if ln -- "$tmp" "$dest" 2>/dev/null; then
-    rm -f -- "$tmp"
-    adopt_flush "$dest" || { log "could not flush: $name"; return 1; }
-    return 0
-  fi
-  rm -f -- "$tmp"
-  if [[ -f "$dest" && ! -L "$dest" ]] && same_content "$src" "$dest"; then
-    adopt_flush "$dest" || { log "could not flush: $name"; return 1; }
-    return 0
-  fi
-  log "differs: $name"
-  return 1
-}
-
-cmd_adopt() {
-  local src name dest copied=0 identical=0 skipped=0 differing=0 failed=0
-  [[ $# -eq 0 ]] || usage_error "adopt takes no options"
-  install_traps
-  [[ -d "$LEGACY_DIR" ]] || die "the legacy directory is not mounted" 1
-  admit nodb
-  clean_partials || die "could not clear earlier partial files" 1
-  for src in "$LEGACY_DIR"/*; do
-    [[ -e "$src" || -L "$src" ]] || continue
-    name="${src##*/}"
-    recognize "$name" || continue
-    if [[ -L "$src" || ! -f "$src" ]]; then
-      skipped=$((skipped + 1))
-      log "skipped, not a regular file: $name"
-      continue
-    fi
-    dest="$ARCHIVE_DIR/$name"
-    if [[ -e "$dest" || -L "$dest" ]]; then
-      if [[ -f "$dest" && ! -L "$dest" ]] && same_content "$src" "$dest"; then
-        if adopt_flush "$dest"; then
-          identical=$((identical + 1))
-        else
-          failed=$((failed + 1))
-          log "could not flush: $name"
-        fi
-      else
-        differing=$((differing + 1))
-        log "differs: $name"
-      fi
-      continue
-    fi
-    if adopt_one "$src" "$dest"; then
-      copied=$((copied + 1))
-    else
-      failed=$((failed + 1))
-    fi
-  done
-  printf 'adopt copied=%s identical=%s skipped=%s differing=%s failed=%s\n' \
-    "$copied" "$identical" "$skipped" "$differing" "$failed"
-  if (( differing > 0 || failed > 0 )); then
-    exit 1
-  fi
 }
 
 # ---------------------------------------------------------------- uploads helpers
@@ -1329,7 +1288,7 @@ cmd_uploads_drop() {
 
 cmd_self_test() {
   local t bad=0 tool
-  for tool in age rclone pg_dump pg_restore psql tar gzip flock sha256sum find stat sync df awk sed cp touch; do
+  for tool in age rclone pg_dump pg_restore psql tar gzip flock sha256sum find stat sync df awk sed od; do
     if ! command -v "$tool" >/dev/null 2>&1; then
       log "self-test: $tool is missing"
       bad=1
@@ -1372,7 +1331,6 @@ main() {
     restore-test) cmd_restore_test "$@" ;;
     list) cmd_list "$@" ;;
     health) cmd_health "$@" ;;
-    adopt) cmd_adopt "$@" ;;
     uploads-validate) cmd_uploads_validate "$@" ;;
     uploads-stage) cmd_uploads_stage "$@" ;;
     uploads-observe) cmd_uploads_observe "$@" ;;

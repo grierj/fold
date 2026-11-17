@@ -204,7 +204,7 @@ The script will:
 6. Turn on unattended security upgrades. The machine does not reboot itself. After a kernel update, `/var/run/reboot-required` appears; reboot in a quiet window.
 7. Install Docker Engine and the Compose plugin from Docker's Ubuntu repository when `docker compose version` is not already working.
 8. Copy the stack to `/opt/fold` (with `--image`: only `docker-compose.yml`, `Caddyfile` and `.env.example`; with `--allow-onbox-build`: the whole checkout, including `docker-compose.build.yml`, and any file the previous checkout had that this one lacks is removed, so the build compiles exactly the new source; `.env`, `backup.env`, `data`, the locks, the recovery files and the installed tools are never touched), pin `FOLD_VERSION` in `.env`, write `/opt/fold/.env` mode 600 with a new `SESSION_SECRET` and `DB_PASSWORD`, and refuse to continue if that file is not mode 600 or is committed in git.
-9. Install `/opt/fold/backup.sh` and a cron job at 02:30 in the droplet's timezone.
+9. Install `/opt/fold/backup.sh` and a cron job at 02:30 in the droplet's timezone. When the Compose file has the `fold-backup` service, the deploy ends by handing the nightly backup to it ("Backup cutover" in section 5); until that finishes, the host cron keeps making the backups.
 10. After Compose is up, run `smoke.sh`: wait until the db and app containers are healthy, request `https://$DOMAIN/healthz`, check the TLS certificate, and fail if 5432 or 8080 is reachable. It also runs `fold push check` and warns, without failing, if the app can't reach a browser push service on port 443. The same script runs from cron every five minutes (`logger -t fold-health` on failure).
 11. Read `sshd -T` and fail if root login or password login is still on. Fail if `ufw` is not active.
 
@@ -332,6 +332,10 @@ doctl compute droplet-action snapshot "$DROPLET_ID" \
 - `uploads-YYYYMMDD-HHMM.tgz` from the `fold_uploads` volume
 - `LAST_OK` after a successful run
 
+Fold's Compose stack always declares the uploads volume, so a run that cannot find it makes no backup and fails
+(exit 1, `LAST_OK` unchanged, nothing published or uploaded). The message says whether the volume does not exist or
+Docker could not be asked; a dump without its photos is never made quietly. Expiry still runs.
+
 Daily files are kept for 14 days. A dump whose name falls on the 1st of
 the month is kept for 180 days. Run one now:
 
@@ -348,8 +352,21 @@ dump and again after the first upgrade.
 **Offsite.** A disk in the same region is not a backup of the region.
 Backblaze B2 is the recommendation: it is the cheapest store in the plan
 for a small backup. Any S3-compatible bucket works the same way, including
-DigitalOcean Spaces. Create the bucket and a write-only key in the church's
+DigitalOcean Spaces. Create the bucket and a key for the server in the church's
 account (control panel). The script will not create them.
+
+**What the server's key needs.** Each backup uploads two files and never lists, reads or deletes anything in the
+bucket, so the key on the server needs only permission to write objects under `fold/`: on an S3-style policy
+`PutObject` (plus `AbortMultipartUpload` where the provider lists it separately); on Backblaze B2 a key limited to
+the bucket with only the `writeFiles` capability. Give it no list and no read permission, and no permission to
+delete object versions. Neither script issues a delete. Be plain with yourself about what that key still allows: it
+can write a new object over a name it knows, and on B2 `writeFiles` also lets a holder delete a file by name, which
+hides it behind a deletion marker without removing the earlier version (permanently deleting a version needs
+`deleteFiles`). What your provider really does with your key is a check for the first church
+(`docs/FIRST-CHURCH-CHECKS.md`). DigitalOcean Spaces has no write-only key: its per-bucket keys are Read or
+Read/Write/Delete, so the key on the server can also read the (encrypted) objects and delete offsite copies; use a
+key limited to that one bucket. Keep a separate read-only key on your own computer for restores, never on the
+server.
 
 On a laptop, not the server:
 
@@ -368,6 +385,139 @@ The next backup encrypts with that public key and uploads only the
 `.age` files, using the `amazon/aws-cli` image. Plaintext dumps stay on
 the droplet. If `age` is missing or the recipient is empty, nothing is
 uploaded.
+
+**Where the files go.** Every run that uploads makes a folder for itself from its minute and 128 random bits, and
+puts both files there under the names they have on the droplet:
+
+```text
+fold/20261115-0230-0123456789abcdef0123456789abcdef/fold-20261115-0230.dump.age
+fold/20261115-0230-0123456789abcdef0123456789abcdef/uploads-20261115-0230.tgz.age
+```
+
+A folder is one run's pair, and files from two folders are never one backup. The script never looks in the bucket,
+so it cannot see another run's folder and does not need to: two servers, or the host script and the backup service,
+that upload in the same minute each write their own folder. Ownership of a folder rests on chance, not on the
+provider: 128 random bits make a clash negligible but not impossible, and S3-compatible providers do not all offer
+"write only if absent". Anyone holding a key that can write can replace an object under a name they know. A failed
+upload leaves a half pair in its own folder that nothing completes, and a run whose second upload arrived but whose
+answer was lost leaves a complete folder though the run failed. Half pairs and unfinished multipart uploads stay until
+the bucket's lifecycle removes them, so add a lifecycle rule on the `fold/` prefix that expires old objects (it
+covers nested folders and, on a versioned bucket, old versions) and aborts incomplete multipart uploads after a few
+days. The scripts never delete offsite, and nothing here claims remote expiry.
+
+Each run that uploads logs its folder: the host script prints `offsite: s3://BUCKET/fold/STAMP-ID/ via ENDPOINT` and
+one `uploaded s3://...` line per file (the cron log, `/var/log/fold-backup.log`); the service's `backup now` prints
+`published ... offsite=uploaded remote=fold/STAMP-ID/`, and its log says `offsite: uploading to fold/STAMP-ID/` (a failed
+run logs the second without the first). Keep those lines: they are how you name a folder later.
+
+**Restoring from the bucket.** Pick one folder and use only that folder.
+
+1. Normally take the newest folder that holds both files. After any period when two servers or producers wrote to
+   the bucket, or after a clock change, use the folder named in the log of the producer you trust instead: a stamp is
+   local wall-clock time, not an order.
+2. With your read-only key, download that one folder into a new empty directory named for it. Never combine files
+   from two folders.
+3. On your computer run `age -d -i fold-backup.key -o fold-STAMP.dump fold-STAMP.dump.age`, and the same for
+   `uploads-STAMP.tgz.age`. The names are the ones `restore.sh` expects.
+4. Copy the two plain files to the droplet and run `restore.sh --dump ... --uploads ...` (section 5). Its checks
+   read names and file types; they cannot prove that two files came from one run, which is why the folder matters.
+
+While two servers share one bucket (a new server tried beside the old one), the newest folder may come from the old
+server. Once DNS moves, stop the old server's producer (`docker compose stop backup` and remove its cron, or delete
+the server) and restore from a folder made by the server you trust.
+
+Flat `fold/<name>.age` objects come from earlier releases. These scripts never read, rewrite or delete them. Two
+earlier-release runs in one minute could have replaced one member, so decrypting both and passing `restore.sh`'s
+checks cannot rule out a mixed pair: use recorded provenance, the local originals you kept, or the provider's object
+versions where it has them.
+
+### Backup cutover (host cron to the backup service)
+
+When `docker-compose.yml` defines the `backup` service, `provision.sh` (and so every `upgrade.sh`)
+finishes by handing the nightly backup to it. Every step repeats safely, and a failure before the last
+one leaves the host cron making the backups:
+
+1. The site starts without the backup service (`up -d` of every other service).
+2. `backup.env` is read as data. When `.env` has none of those settings yet, they are copied into
+   it (mode 600 from the first byte of every intermediate file, written durably, and a failed step leaves `.env`
+   exactly as it was); `backup.env` is never changed. An incomplete offsite set stops the
+   cutover and names only the missing key. If `.env` already has settings, a difference from `backup.env`
+   is a warning that names the key and never the value. The droplet's timezone is copied to
+   `FOLD_BACKUP_TZ` when `.env` has none, so the service's 02:30 is the host's.
+3. The resolved Compose service must be exactly `65532:65532` with `cap_drop: ALL`, no added capability and no
+   privilege, and must keep its paths: the `backups` volume at `/backups`, `backup-status` at `/backup-status`
+   and the uploads volume read-only at `/data`, with no `FOLD_BACKUP_ARCHIVE_DIR`, `FOLD_BACKUP_STATUS_DIR`,
+   `FOLD_BACKUP_DATA_DIR` or app uid override. An unset or different user, a missing `cap_drop`, `privileged`,
+   `cap_add`, host `pid` or host network, or a moved or substituted mount stops the cutover before the service
+   starts (the volume the host adopts into is then the one the service writes). A recovery (`restore.sh`) asks the
+   same question before it starts the service again, and also checks, without changing anything, that an existing
+   `backups` volume root is still `root:65532` mode `1770` and any `adopted/` is root-only; a Compose file that
+   predates these lines is refreshed by the current `provision.sh`.
+4. Only when the `backups` volume does not exist yet, the Compose resources are created with
+   `docker compose up --no-start --no-deps backup`; nothing starts. An existing volume is checked,
+   never recreated. The check asks Docker for the volume (bounded by `FOLD_BACKUP_DOCKER_WAIT`, default 60 seconds in
+   total), requires the local driver without options, Compose's project and volume labels and a mountpoint under
+   Docker's root through root-owned, unwritable folders.
+5. Under `backup.lock`, the volume root becomes `root:65532` mode `1770` and `adopted/` a `root:root` mode-`0700`
+   folder. An `adopted/` that is anything else (a link, a file, another owner or mode) is refused, never followed or repaired.
+6. The archives in `/var/backups/fold` are **copied** (never moved) into `adopted/`, grouped by stamp. A copy keeps the
+   original's bytes and exact mtime, is root-owned mode 600 and is published without replacing anything. A stamp is
+   refused whole, named and left as it was, when any existing member of it differs from its original, is not a
+   root-owned mode-600 file with one link (it is never repaired in place), or has no surviving original to be
+   compared with (an original that expired first); its originals keep their normal expiry and no sibling is filled
+   beside it. A copy with the right bytes and a wrong mtime is repaired after a check that the original is not changing.
+7. The service starts, whether or not an earlier cutover finished. The host cron changes to expiry only
+   (`backup.sh --expire-only`, 02:30 local) once the service reports a `LAST_OK` newer than this run.
+   `FOLD_CUTOVER_WAIT` (default 600 seconds) bounds all of this: every Docker observation, the volume lookup
+   included, is cut off at what is left of it (`FOLD_BACKUP_DOCKER_WAIT` bounds one observation within it).
+
+A failure in these steps leaves the site up (smoke passed, the recovery floor recorded) and nothing to undo, and
+`provision.sh` makes the host backup the one producer before it exits. It installs the full host cron (written to a
+staged file, flushed, renamed over the old one and the folder flushed, so it survives a power loss), then stops the
+container backup service and checks that none is running. Only the host or the service makes the backups, never both,
+so a night does not get two pairs: `backup.sh` refuses (exit 75, nothing written) while the service runs. The bucket
+does not keep them apart; every upload goes to a folder of its own. The two outcomes are told apart:
+
+- **Exit 77: the host backup is confirmed in charge.** The full cron is installed and flushed, and the service is
+  stopped. Fix what the message names and rerun `/opt/fold/provision.sh` with the same release and options.
+- **Exit 78: nothing is confirmed.** Either the full cron could not be installed and flushed (the service is left
+  as it was, because it may be the only producer), or the cron is in place but the service could not be confirmed
+  stopped (the host backup waits while it runs). The message says which. Check `/etc/cron.d/fold-backup` and
+  `docker compose ps backup`, run `/opt/fold/backup.sh` by hand if the service is not running, then rerun
+  `provision.sh`. `upgrade.sh` does not tell you the host cron makes the backups in this case.
+
+Do not roll back for either exit. A stamp refused because its copy differs is not a failure: it is named, its
+originals expire normally, and the cutover goes on. A `backup.sh` you start by hand right after the service stops, in
+the same minute as the service's last pair (stamps are minutes), uploads to a folder of its own and replaces nothing
+(by chance of 128 random bits, not by a check; see Offsite in section 5).
+
+`--pin-only` (a restore child) does none of it. A deployment whose Compose file has no backup service (an older
+release you rolled back to) keeps the host cron with full backups.
+
+The service cannot open `adopted/`. The host does the copying and the expiry there, on the original's date under
+`backup.env`'s `FOLD_BACKUP_KEEP_DAYS`, with the same rule as for the originals: a file older than that is removed, a
+file from the 1st of a month stays 180 days. The decision is written to `/opt/fold/backup-expiry-pending` before anything
+is deleted and removed once the originals and the copies are both finished, so a crash, a Docker failure or a later
+change of `KEEP_DAYS` cannot lose it. `backup.sh --expire-only` exits 4 when the originals are done but copies are
+still pending; run it again once Docker answers. It exits 75 during a recovery, like every backup. A full
+`backup.sh` run whose offsite settings are incomplete makes no backup and fails, but still expires what is past
+`KEEP_DAYS` (an unusable `KEEP_DAYS` expires nothing). The service's own
+top-level archives keep the service's `FOLD_BACKUP_KEEP_DAYS` from `.env`; if you roll back to a release with no
+backup service, the host expires them under that same `.env` setting.
+
+To restore from a copy, list the paths and pass them to `restore.sh` (it runs as root):
+
+```bash
+sudo /opt/fold/backup.sh --list-adopted
+sudo /opt/fold/restore.sh --dump /var/lib/docker/volumes/fold_backups/_data/adopted/fold-YYYYMMDD-HHMM.dump \
+  --uploads /var/lib/docker/volumes/fold_backups/_data/adopted/uploads-YYYYMMDD-HHMM.tgz
+```
+
+A stamp listed `incomplete` lacks one of the pair; `conflict` means its original differs. A backup name that
+already exists is never overwritten: a second `backup.sh` run in the same minute exits 75 and can be run a minute later.
+Offsite, `backup.sh` never looks in the bucket: each run uploads into a folder of its own (Offsite, above). If an
+upload fails the run exits 1, keeps the local pair and leaves `LAST_OK` as it was, and the next run takes a new
+folder. The key it uses needs permission to write under `fold/` and nothing else.
 
 Practice with `backup.sh --restore-test` before you need a real restore; it
 loads the newest dump into a throwaway database and never touches `fold`. It
@@ -694,9 +844,15 @@ sudo /opt/fold/upgrade.sh \
   --source-dir /root/fold
 ```
 
-The script runs `backup.sh`, writes the current tag or commit and the new
+The script takes a backup, writes the current tag or commit and the new
 dump path to `/opt/fold/release.prev` (mode 600), then runs `provision.sh`,
-which runs `smoke.sh`. `.env` is left in place.
+which runs `smoke.sh`. `.env` is left in place. While the host cron makes the
+backups, that is `backup.sh`. After the cutover the backup service makes it:
+`upgrade.sh` runs the service's `backup.sh now`, publishes the dump it reports
+under `/var/backups/fold` with the same name, bytes and mtime, and records that
+path. It never replaces a file there: a file of that name with other bytes stops
+the upgrade before the checkout or the pin changes. `FOLD_BACKUP_WAIT` (default 900
+seconds) bounds the wait for a busy service.
 
 When the previous release meets the host's recovery floor, roll back to that
 tag or commit and restore the dump it recorded:

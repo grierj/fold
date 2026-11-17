@@ -3,8 +3,8 @@
 The `fold-backup` image runs Fold's nightly and on-demand backups of the database and the
 uploads volume, keeps them for a while, optionally copies age-encrypted versions to an
 S3-compatible bucket, and publishes two small status files the app reads. It also carries the
-one-shot helpers `restore.sh` uses to put an uploads archive back and to adopt the archives of
-the older host cron backup.
+one-shot helpers `restore.sh` uses to put an uploads archive back. It has no command for the
+older host cron backup's archives: the host copies those itself (below).
 
 Everything is `backup.sh` (bash) in an Alpine image built on `postgres:16-alpine`, so `pg_dump`
 matches the database major. There is no Python and no Docker CLI in it.
@@ -15,9 +15,12 @@ matches the database major. There is no Python and no Docker CLI in it.
 version (Alpine 3.24, PostgreSQL 16.16): bash, coreutils (for `mv --exchange`), findutils, tar,
 gzip, util-linux and flock, tzdata, age and rclone. The build fails if a pinned version has left
 the repository or a promised tool is missing, and checks that no scripting-language interpreter
-beyond bash and no `docker` client is present (DEC-151). The service runs as `65532:65532`; `/backups`, `/backup-status` and `/data/uploads` are
-pre-created with that owner so fresh named volumes are writable. `ENTRYPOINT` is `backup.sh`,
-`CMD` is `loop`, so `docker run IMAGE --help` prints usage.
+beyond bash and no `docker` client is present (DEC-151). The service runs as `65532:65532` with
+every capability dropped (Compose sets both). `/backup-status` and `/data/uploads` are pre-created
+owned by 65532 so fresh named volumes are writable; `/backups` is pre-created `root:65532` mode
+`1770`: the service writes and removes its own top-level archives and cannot remove, rename or
+open what root keeps in that volume (the host's `adopted/` folder, below). `ENTRYPOINT` is
+`backup.sh`, `CMD` is `loop`, so `docker run IMAGE --help` prints usage.
 
 The base image declares `VOLUME /var/lib/postgresql/data`. Nothing writes there; a deployment may
 mount a `tmpfs` over it to avoid an anonymous volume.
@@ -40,11 +43,10 @@ mount a `tmpfs` over it to avoid an anonymous volume.
 | Command | What it does |
 |---|---|
 | `loop` | Default. Runs `now` when a backup is due; keeps a heartbeat for `health`. |
-| `now` | One backup. Success prints one line: `published stamp=S dump=fold-S.dump uploads=uploads-S.tgz offsite=off\|uploaded`. Exit 75 when another operation or a recovery holds it, 1 on failure. |
+| `now` | One backup. Success prints one line: `published stamp=S dump=fold-S.dump uploads=uploads-S.tgz offsite=off` or, with offsite, `... offsite=uploaded remote=fold/S-ID/` (ID is the run's 32-hex folder id). Exit 75 when another operation or a recovery holds it, 1 on failure. |
 | `restore-test` | Restores the newest complete pair into the scratch database `fold_backup_scratch`, validates the tar and prints `restore-test tables=.. users=.. uploadFiles=.. referencedFiles=.. referencedMissing=.. orphanAvatarOwners=..`. Drops the scratch database before reporting success; if the drop fails the command exits 1 with a value-free message and prints no result line (exit cleanup still retries the drop). |
-| `list` | Recognized archives: name, bytes, mtime, whether the pair is complete. |
+| `list` | Recognized top-level archives: name, bytes, mtime, whether the pair is complete. Never reads `adopted/`. |
 | `health` | Exit 0 while the loop is alive (heartbeat younger than 120 seconds, process present). |
-| `adopt` | Copies recognized archives from `/legacy` into `/backups` (below). |
 | `uploads-*` | Helpers `restore.sh` drives (below). |
 | `--self-test`, `--help` | Tool and rule checks; usage. |
 
@@ -73,12 +75,22 @@ in a deployment.
    Uploads first, dump second: ids are never hard-deleted, so every avatar folder in the tar belongs to a
    `users` row in the later dump; a photo uploaded between the two can be missing from the tar.
 3. The pair is published under one stamp, `fold-YYYYMMDD-HHMM.dump` and `uploads-YYYYMMDD-HHMM.tgz`, mode
-   600, by no-overwrite hard links. A minute collision moves the stamp on; nothing is overwritten.
+   600, by no-overwrite hard links. A minute collision with a local archive moves the stamp on; nothing is
+   overwritten. The stamp is picked from local files only; the bucket is never read.
 4. `expire`: local retention (below).
 5. With offsite configured, `encrypt` writes `<name>.age` for each archive with age (the header is checked)
-   and `upload` copies only those ciphertexts with `rclone copyto` to `fold/<name>.age`. A failure after the
-   first upload is not rolled back: the run fails, `LAST_OK` stays, and the one object that did arrive stays
-   in the bucket. Remote success is not atomic.
+   and `upload` makes a run id (`od` reads 16 random bytes: 32 lowercase hex characters; any other answer fails
+   the run at `upload` before anything is sent) and copies only those ciphertexts with `rclone copyto` to
+   `fold/<stamp>-<run id>/<name>.age`. The run logs `offsite: uploading to fold/<stamp>-<run id>/` (never the bucket
+   name). `rclone` runs with `--no-check-dest --s3-no-head --s3-no-check-bucket`, so the run never lists, reads,
+   heads or deletes: the key needs permission to write objects under `fold/` (S3 `PutObject` and, where separate,
+   `AbortMultipartUpload`; B2 `writeFiles`) and nothing else. A pair is the two files under one folder. A failure
+   after the first upload is not rolled back: the run fails, `LAST_OK` stays, and the one object that did arrive
+   stays in its folder, which nothing completes; the next run takes a new folder. A lost answer can leave a
+   complete folder from a failed run. Folder ownership is probabilistic (128 random bits, no provider-enforced
+   no-replace), an atomic appearance of a finished upload is assumed from the provider, and `age` authenticates each
+   file, not the pair. Which folder to restore after two producers shared a bucket is in
+   `docs/DEPLOY-DIGITALOCEAN.md` (Offsite).
 6. `status.json`, then `LAST_OK`, by temporary file and rename.
 
 ## Schedule
@@ -99,14 +111,15 @@ An admitted run that fails keeps `LAST_OK` and `lastOk` and records `lastFailure
 
 ## Local retention
 
-Unchanged from the host helper: daily files go after `FOLD_BACKUP_KEEP_DAYS` (age strictly greater), files
+The host script's rule, applied to the top level of `/backups` only: daily files go after `FOLD_BACKUP_KEEP_DAYS` (age strictly greater), files
 named for the 1st of a month after 180 days, by mtime, for recognized names only (`.dump`, `.tgz` and their
 `.age` siblings). Anything else, including partial files, symlinks and the lock, is never touched. These are
-local rules only. Bucket lifecycle is the operator's job; this image never claims remote expiry.
+local rules only. Bucket lifecycle is the operator's job (a rule on `fold/` that expires objects, old versions and
+incomplete multipart uploads also covers half pairs); this image never deletes offsite or claims remote expiry.
 
 ## Host coordination (`FOLD_RECOVERY_DIR`)
 
-With the variable set, every `now`, `restore-test` and `adopt` first opens `$FOLD_RECOVERY_DIR/backup.lock`
+With the variable set, every `now` and `restore-test` first opens `$FOLD_RECOVERY_DIR/backup.lock`
 **read-only** and takes an exclusive `flock` on that inode (the container needs only read access to the lock and
 directory traversal; never access to its contents or to host secrets), then refuses while
 `$FOLD_RECOVERY_DIR/recovery.lock` exists, then takes `/backups/.lock`. Order is always host lock, then archive
@@ -149,21 +162,22 @@ intent, and removes the receipt only on `--release`, which `restore.sh` calls af
 records completion. Before observing or changing a tree after any interruption `restore.sh` must remove every
 helper container carrying its nonce.
 
-## Adopt
+## The host's copies (`adopted/`)
 
-`adopt` (as uid 0, no network, `/legacy` read-only, `/backups`) takes host coordination, then the archive lock,
-and for each recognized regular non-symlink file in `/legacy` copies it to a temporary file, compares
-size and SHA-256, preserves mtime, sets owner 65532 and mode 600, fsyncs the file with that final metadata
-and publishes it with a no-overwrite link, then fsyncs the published file and `/backups`. A failed flush
-counts as a failure (exit 1). An identical existing file is success only after the same file and directory
-flush succeeds, so a retry completes what an interrupted run left; a differing same-name file is named and counted as a failure (exit 1).
-Nothing under `/legacy` is written, renamed or deleted. A partial copy is never published; the next run removes
-stale `.partial.*` files.
+The image does not copy the older host archives; `provision.sh` does, as root, during the cutover
+(`docs/DEPLOY-DIGITALOCEAN.md`, "Backup cutover"). It keeps the copies in `adopted/` at the root of the
+`backups` volume: a `root:root` mode-0700 folder of root-owned mode-0600 files, with the originals' bytes
+and exact mtimes. This service runs as 65532 with no capability, so it cannot list, read or change them,
+and the sticky bit on the volume root stops it removing or renaming the folder. The host expires the copies
+on the same dates as their originals (`backup.sh --expire-only`), and `backup.sh --list-adopted` prints
+their explicit paths for `restore.sh --dump` and `--uploads`. `list`, retention and `restore-test` here
+look at top-level files only and never at `adopted/`.
 
 ## Tests
 
 `make backup-test` runs `backup-test.sh` (stubs for `pg_dump`, `pg_restore`, `psql`, `age` and `rclone`; GNU
 `date` and `touch`; no Docker, no database) and then `backup-test.sh --probes`, which mutates `backup.sh` four
 ways (retention, plaintext upload, no recovery refusal, dump before tar) and requires each mutation to fail
-its named case. `make lint-sh` covers these scripts. `docker run --rm IMAGE --self-test` checks the tools in a
-built image.
+its named case. The host's copies, expiry and cutover have their own fixtures
+(`deploy/digitalocean/backup-archives-fixtures.sh`, run by `make provision-dry-run`). `make lint-sh` covers
+these scripts. `docker run --rm IMAGE --self-test` checks the tools in a built image.

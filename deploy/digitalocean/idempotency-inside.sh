@@ -377,6 +377,14 @@ if grep -qF "$secret" <<<"$out1"; then
   echo "idempotency: first run printed SESSION_SECRET" >&2
   exit 1
 fi
+# This Compose stub has no backup service, so there is no cutover: the host
+# backup stays in charge and its full cron is installed (a deployment that rolled
+# back to an older release looks the same).
+grep -q 'this Compose file has no backup service; the host backup stays in charge' <<<"$out1"
+if grep -q -- '--expire-only' /etc/cron.d/fold-backup; then
+  echo "idempotency: a deployment without the service got the expire-only cron" >&2
+  exit 1
+fi
 
 echo "idempotency: second provision"
 out2="$(run_real 2>&1)"

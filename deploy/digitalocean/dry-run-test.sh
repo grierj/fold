@@ -390,10 +390,10 @@ STUB
   expect_failure 'below host level 1' "$local_root/dir/upgrade.sh" "${upgrade_args[@]}" --image fixture:zero
   diff -r "$local_root/tools" "$local_root/dir/deploy-tools"
   [[ -z "$(find "$local_root/dir" -maxdepth 1 -name '.*deploy-tools.*' -print)" ]]
-  printf '6\n' >"$local_root/dir/deploy-tools/deploy-tools-version"
+  printf '7\n' >"$local_root/dir/deploy-tools/deploy-tools-version"
   before="$(snapshot)"; : >"$FIXTURE_LOG"
-  expect_failure 'older than installed version 6' "$local_root/tools/upgrade.sh" "${upgrade_args[@]}" --image fixture:one
-  expect_failure 'older than installed version 6' "${provision[@]}" --image fixture:one
+  expect_failure 'older than installed version 7' "$local_root/tools/upgrade.sh" "${upgrade_args[@]}" --image fixture:one
+  expect_failure 'older than installed version 7' "${provision[@]}" --image fixture:one
   [[ "$before" == "$(snapshot)" && ! -s "$FIXTURE_LOG" ]]
   cp "$local_root/tools/deploy-tools-version" "$local_root/dir/deploy-tools/"
   fixture_case='truthful dry runs'
@@ -624,6 +624,7 @@ if [[ "${1:-}" == --fixtures ]]; then
   run_fixture_script restore-drill-fixtures.sh
   run_fixture_script restore-crossings-fixtures.sh
   run_fixture_script restore-cli-fixtures.sh
+  run_fixture_script backup-archives-fixtures.sh
   run_fixture_script qc1-fixtures.sh
   run_fixture_script isolation-fixtures.sh
   run_fixture_script qc1-runtime-fixtures.sh

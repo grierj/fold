@@ -87,6 +87,12 @@ services:
     image: ghcr.io/grierj/fold-backup:${FOLD_BACKUP_VERSION:-${FOLD_VERSION}}
     # No host ports. The service only talks to the database.
     restart: unless-stopped
+    # An explicit identity: the host keeps its own copies of older archives in a
+    # root-only folder of the backups volume, which this user cannot open.
+    # provision.sh refuses a resolved configuration that changes either line.
+    user: "65532:65532"
+    cap_drop:
+      - ALL
     environment:
       PGPASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
       FOLD_BACKUP_TZ: ${FOLD_BACKUP_TZ:-}
@@ -131,7 +137,8 @@ networks:
 volumes:
   pgdata:
   uploads:
-  # Archives. Only the backup service mounts it.
+  # Archives (root:65532, mode 1770). Only the backup service mounts it; the
+  # host reads and keeps its own adopted/ copies in the same volume.
   backups:
   # LAST_OK and status.json: written by backup, read-only in the app.
   backup-status:

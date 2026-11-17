@@ -9,6 +9,11 @@
 #   backup-test.sh --probes        mutate backup.sh four ways and require each
 #                                  mutation to make its named case fail
 #
+# The fake bucket is deploy/digitalocean/bucket-model.sh, the same model the host
+# producer's fixtures use: PUTs are kept by their whole key in a ledger, and a call
+# that lists, reads or deletes writes the file "forbidden" that every run requires
+# to be absent.
+#
 # BACKUP_SH names the script under test (the probes point it at a mutant).
 # Cases run in subshells and set environment for the script under test, so the
 # subshell-modification notes (SC2030, SC2031) do not apply; the sed programs
@@ -19,6 +24,14 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 BACKUP_SH="${BACKUP_SH:-$HERE/backup.sh}"
 ORIG_PATH="$PATH"
+# shellcheck source=deploy/digitalocean/bucket-model.sh
+source "$HERE/../digitalocean/bucket-model.sh"
+BUCKET_MODEL="$HERE/../digitalocean/bucket-model.sh"
+REAL_OD="$(command -v od)"
+export BUCKET_MODEL REAL_OD
+ID1=00112233445566778899aabbccddeeff
+ID2=ffeeddccbbaa99887766554433221100
+FID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 N1=0123456789abcdef0123456789abcdef
 N2=fedcba9876543210fedcba9876543210
 
@@ -42,10 +55,9 @@ export MV_EMULATE
 REAL_TAR="$(command -v tar)"
 REAL_MV="$(command -v mv)"
 REAL_RM="$(command -v rm)"
-REAL_CP="$(command -v cp)"
 REAL_DF="$(command -v df)"
 REAL_SYNC="$(command -v sync)"
-export REAL_TAR REAL_MV REAL_RM REAL_CP REAL_DF REAL_SYNC
+export REAL_TAR REAL_MV REAL_RM REAL_DF REAL_SYNC
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/backup-test.XXXXXX")"
 trap '"$REAL_RM" -rf -- "$WORK"' EXIT
@@ -64,6 +76,7 @@ run_bk() {
   OUT="$(cat "$SB/out")"
   ERR="$(cat "$SB/err")"
   cat "$SB/out" "$SB/err" >>"$SB/all.log"
+  bucket_clean || fail "a run listed, read or deleted something in the bucket: $(cat "$BUCKET/forbidden")"
 }
 
 # hold_lock FILE: hold an exclusive flock on FILE until kill_holder.
@@ -93,16 +106,21 @@ wait_for() { # SECONDS COMMAND
 new_sandbox() {
   SB="$WORK/$1"
   "$REAL_RM" -rf -- "$SB"
-  mkdir -p "$SB"/{archives,status,data/uploads/avatars/1,legacy,restore,stubs,remote}
+  mkdir -p "$SB"/{archives,status,data/uploads/avatars/1,restore,stubs,tmp}
   echo uploadone >"$SB/data/uploads/avatars/1/a.jpg"
   export FOLD_BACKUP_ARCHIVE_DIR="$SB/archives" FOLD_BACKUP_STATUS_DIR="$SB/status"
-  export FOLD_BACKUP_DATA_DIR="$SB/data" FOLD_BACKUP_LEGACY_DIR="$SB/legacy"
+  export FOLD_BACKUP_DATA_DIR="$SB/data"
   export FOLD_BACKUP_RESTORE_ARCHIVE="$SB/restore/archive.tgz"
   export FOLD_BACKUP_HEARTBEAT="$SB/heartbeat"
+  # Scratch files go inside the sandbox, so a script killed by SIGKILL (the crash
+  # cases) leaves nothing behind in the real temporary folder.
+  export TMPDIR="$SB/tmp"
   FOLD_BACKUP_APP_UID="$(id -u)"
   FOLD_BACKUP_APP_GID="$(id -g)"
   export FOLD_BACKUP_APP_UID FOLD_BACKUP_APP_GID
-  export STUB_LOG="$SB/stub.log" STUB_DIR="$SB/stubs" STUB_REMOTE="$SB/remote"
+  export STUB_LOG="$SB/stub.log" STUB_DIR="$SB/stubs"
+  bucket_reset "$SB/bucket"
+  unset OD_ID OD_MODE BUCKET_TAG
   export PGPASSWORD=PGSENTINEL-4f81
   : >"$STUB_LOG"
   unset FOLD_RECOVERY_DIR FOLD_BACKUP_TZ FOLD_BACKUP_KEEP_DAYS FOLD_BACKUP_NOW_EPOCH
@@ -187,14 +205,15 @@ EOF
   stub rclone <<'EOF'
 #!/usr/bin/env bash
 echo "rclone $*" >>"$STUB_LOG"
-n=$(( $(cat "$STUB_DIR/rclone.n" 2>/dev/null || echo 0) + 1 ))
-echo "$n" >"$STUB_DIR/rclone.n"
-if [[ "${STUB_RCLONE_FAIL_NTH:-}" == "$n" ]]; then exit 1; fi
-[[ "${1:-}" == copyto ]] || exit 2
+echo "rclone $*" >>"$STUB_LOG.rclone"
+source "$BUCKET_MODEL"
+# The one call a write-only key allows: copyto of a local file to a key. Anything
+# else (lsf, ls, lsjson, cat, a copy from the remote) reads or lists the bucket.
+[[ "${1:-}" == copyto && "${2:-}" != :* && "${3:-}" == ":s3:test-bucket/"* ]] || bucket_forbidden_call "rclone $*"
 if [[ "${RCLONE_S3_SECRET_ACCESS_KEY:-}" == "${EXPECT_S3_SECRET:-unset}" ]]; then echo env-ok >>"$STUB_LOG.env"; fi
-mkdir -p "$STUB_REMOTE"
-cp "$2" "$STUB_REMOTE/${3##*/}"
+bucket_put "${BUCKET_TAG:-image}" "$2" "${3#:s3:test-bucket/}"
 EOF
+  bucket_od_stub "$SB/stubs/od"
   stub tar <<'EOF'
 #!/usr/bin/env bash
 case " $* " in
@@ -243,20 +262,7 @@ case "${STUB_SYNC_FAIL:-}:${*: -1}" in
   dump:*/.partial.fold-*.dump.[0-9]*) exit 1 ;;
   age:*/.partial.*.age.[0-9]*) exit 1 ;;
   dir:"$FOLD_BACKUP_ARCHIVE_DIR") exit 1 ;;
-  adoptpartial:*/.partial.adopt.*) exit 1 ;;
-  adoptdest:"$FOLD_BACKUP_ARCHIVE_DIR"/[fu]*-20*) exit 1 ;;
 esac
-# STUB_SYNC_LOG records every flush; a flush of an adoption partial also
-# records the mode and mtime it held at that moment, which must be the final ones.
-if [[ -n "${STUB_SYNC_LOG:-}" ]]; then
-  last="${*: -1}"
-  if [[ "$last" == */.partial.adopt.* && -f "$last" ]]; then
-    base="${last##*/.partial.adopt.}"
-    echo "partial ${base%.*} $(stat -c '%a %Y' -- "$last")" >>"$STUB_SYNC_LOG"
-  else
-    echo "sync ${last##*/}" >>"$STUB_SYNC_LOG"
-  fi
-fi
 # STUB_RECEIPT_KILL_N=N kills the caller at the Nth flush of a receipt being
 # written: before the receipt is published, so the old one (or none) stays.
 if [[ -n "${STUB_RECEIPT_KILL_N:-}" && "${*: -1}" == */.receipt.new ]]; then
@@ -281,15 +287,6 @@ if [[ "${STUB_RM_KILL:-}" == during && " $* " == *" --one-file-system "* ]]; the
   kill -9 "$PPID"; sleep 1; exit 137
 fi
 exec "$REAL_RM" "$@"
-EOF
-  stub cp <<'EOF'
-#!/usr/bin/env bash
-if [[ "${STUB_CP_KILL:-}" == 1 ]]; then
-  dest="${*: -1}"; src="${*: -2:1}"
-  head -c 5 "$src" >"$dest"
-  kill -9 "$PPID"; sleep 1; exit 137
-fi
-exec "$REAL_CP" "$@"
 EOF
   stub df <<'EOF'
 #!/usr/bin/env bash
@@ -324,6 +321,11 @@ case_help_and_self_test() {
   expect_rc 64
   run_bk frobnicate
   expect_rc 64
+  run_bk adopt
+  expect_rc 64
+  [[ "$ERR" == *"unknown command: adopt"* ]] || fail "the removed adopt command is still accepted"
+  run_bk --help
+  [[ "$OUT" != *adopt* ]] || fail "--help still names adopt"
   run_bk --self-test
   expect_rc 0
   [[ "$OUT" == "self-test ok" ]] || fail "self-test did not report ok"
@@ -545,7 +547,7 @@ case_failure_at_each_step() {
         dump) export STUB_FAIL=dump ;;
         expire) mk_expired; export STUB_RM_FAIL=1 ;;
         encrypt) export STUB_FAIL=encrypt ;;
-        upload) export STUB_RCLONE_FAIL_NTH=$(( $(cat "$STUB_DIR/rclone.n") + 2 )) ;;
+        upload) bucket_plan_next 2 fail-before ;;
       esac
       run_bk now
       expect_rc 1
@@ -570,29 +572,43 @@ case_failure_at_each_step() {
   [[ ! -e "$SB/status/LAST_OK" ]] || fail "a failed first run wrote LAST_OK"
 }
 
+# One offsite run: exactly two PUTs, both under one folder named for the stamp and the
+# run id, ciphertext only, with the settings in the environment and no read of the bucket.
 case_ciphertext_only_upload() {
   new_sandbox cipher
   use_offsite
-  run_bk now
+  FOLD_BACKUP_NOW_EPOCH="$(date +%s)" run_bk now
   expect_rc 0
-  local stamp f
-  stamp="$(sed -n 's/.*stamp=\([0-9-]*\) .*/\1/p' <<<"$OUT")"
-  [[ "$OUT" == *offsite=uploaded ]] || fail "offsite not reported: $OUT"
-  [[ "$(find "$STUB_REMOTE" -type f | wc -l)" == 2 ]] || fail "wrong number of remote objects"
+  local stamp f line
+  [[ "$OUT" =~ ^published\ stamp=([0-9]{8}-[0-9]{4})\ dump=fold-[0-9-]+\.dump\ uploads=uploads-[0-9-]+\.tgz\ offsite=uploaded\ remote=fold/([0-9-]+)-([0-9a-f]{32})/$ ]] \
+    || fail "machine line is wrong: $OUT"
+  stamp="${BASH_REMATCH[1]}"
+  [[ "${BASH_REMATCH[2]}" == "$stamp" && "${BASH_REMATCH[3]}" == "$ID1" ]] || fail "the remote folder is not the stamp and the run id: $OUT"
+  bucket_check "$stamp:$ID1" || fail "the committed keys are not exactly one pair under fold/$stamp-$ID1/: $(bucket_objects | tr '\n' ' ')"
+  [[ "$(bucket_attempts)" == 2 ]] || fail "a run made $(bucket_attempts) PUT invocations, not 2"
+  bucket_each_key_once || fail "a key was the target of two invocations"
+  [[ "$ERR" == *"offsite: uploading to fold/$stamp-$ID1/"* ]] || fail "the folder was not logged: $ERR"
+  [[ "$ERR" != *test-bucket* ]] || fail "the bucket name reached the log"
   for f in "fold-$stamp.dump.age" "uploads-$stamp.tgz.age"; do
-    [[ -f "$STUB_REMOTE/$f" ]] || fail "missing remote object $f"
-    [[ "$(head -c 21 "$STUB_REMOTE/$f")" == "age-encryption.org/v1" ]] || fail "$f is not age ciphertext"
+    [[ "$(head -c 21 "$BUCKET/objects/fold/$stamp-$ID1/$f")" == "age-encryption.org/v1" ]] || fail "$f is not age ciphertext"
     [[ "$(mode_of "$SB/archives/$f")" == 600 ]] || fail "local $f mode"
-    cmp -s "$STUB_REMOTE/$f" "$SB/archives/$f" || fail "remote $f differs from the local ciphertext"
+    cmp -s "$BUCKET/objects/fold/$stamp-$ID1/$f" "$SB/archives/$f" || fail "remote $f differs from the local ciphertext"
   done
-  if grep -rq PLAIN-DUMP-SENTINEL "$STUB_REMOTE"; then fail "plaintext reached the bucket"; fi
+  # The fakes encrypt by rotation, so this is routing, not proof: nothing plain was sent.
+  if grep -rq PLAIN-DUMP-SENTINEL "$BUCKET/objects"; then fail "plaintext reached the bucket"; fi
   grep -q env-ok "$STUB_LOG.env" || fail "the S3 secret did not travel in the environment"
-  grep -q '"offsite":"uploaded"' "$SB/status/status.json" || fail "status offsite"
+  [[ "$(cat "$SB/status/status.json")" =~ ^\{\"format\":1,\"lastOk\":\{\"finishedAt\":\"[0-9TZ:-]+\",\"dumpBytes\":[0-9]+,\"uploadsBytes\":[0-9]+,\"uploadsFiles\":[0-9]+,\"offsite\":\"uploaded\"\},\"lastFailure\":null\}$ ]] \
+    || fail "status.json changed shape: $(cat "$SB/status/status.json")"
+  # The client is told not to look at the destination, before or after, and never to compare.
+  while IFS= read -r line; do
+    [[ "$line" == "rclone copyto "* && "$line" == *" --no-check-dest "* && "$line" == *" --s3-no-head "* \
+      && "$line" == *" --s3-no-check-bucket "* && "$line" != *--immutable* ]] || fail "a client call is not write-only: $line"
+  done <"$STUB_LOG.rclone"
   # A bad header stops the run before anything is uploaded.
-  rm -rf "${STUB_REMOTE:?}"/* "$STUB_DIR/rclone.n"
+  bucket_reset "$BUCKET"
   STUB_AGE=nohdr run_bk now
   expect_rc 1
-  [[ -z "$(ls -A "$STUB_REMOTE")" ]] || fail "an object without an age header was uploaded"
+  [[ "$(bucket_attempts)" == 0 ]] || fail "an object without an age header was uploaded"
 }
 
 case_secret_sentinels() {
@@ -602,7 +618,8 @@ case_secret_sentinels() {
   expect_rc 0
   STUB_FAIL=dump run_bk now
   expect_rc 1
-  STUB_RCLONE_FAIL_NTH=$(( $(cat "$STUB_DIR/rclone.n") + 1 )) run_bk now
+  bucket_plan_next 1 fail-before
+  run_bk now
   expect_rc 1
   local s
   for s in PGSENTINEL-4f81 AKIASENTINEL1234 SECRETSENTINEL5678; do
@@ -637,9 +654,6 @@ case_recovery_refusal() {
   : >"$SB/coord/recovery.lock"
   refused "recovery.lock present"
   run_bk restore-test
-  expect_rc 75
-  : >"$STUB_LOG"
-  run_bk adopt
   expect_rc 75
   rm -f "$SB/coord/recovery.lock"
   ln -s /nonexistent "$SB/coord/recovery.lock"
@@ -1324,109 +1338,213 @@ case_uploads_drop_symlink_parent() {
   [[ -f "$moved/uploads/old.txt" && -f "$moved/receipt" ]] || fail "a release went through a symlinked parent"
 }
 
-case_adopt() {
-  new_sandbox adopt
-  use_coord
-  local f
-  printf 'dump-one\n' >"$SB/legacy/fold-20261101-0230.dump"
-  printf 'tgz-one\n' >"$SB/legacy/uploads-20261101-0230.tgz"
-  printf 'age-one\n' >"$SB/legacy/fold-20261101-0230.dump.age"
-  printf 'junk\n' >"$SB/legacy/notes.txt"
-  ln -s fold-20261101-0230.dump "$SB/legacy/fold-20261102-0230.dump"
-  touch -d '2026-11-01 02:30:11' "$SB/legacy/fold-20261101-0230.dump"
-  touch -d '2026-11-01 02:30:12' "$SB/legacy/uploads-20261101-0230.tgz"
-  touch -d '2026-10-01 02:30:13' "$SB/legacy/fold-20261101-0230.dump.age"
-  chmod 600 "$SB/legacy"/fold-20261101-0230.dump "$SB/legacy"/uploads-20261101-0230.tgz
-  chmod 400 "$SB/legacy"/fold-20261101-0230.dump.age
-  local legacy_before
-  legacy_before="$(cd "$SB/legacy" && for f in *; do printf '%s %s %s\n' "$f" "$(stat -c '%y %a %F' "$f")" "$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1)"; done)"
-  run_bk adopt
+case_scratch_cleanup() {
+  new_sandbox scratch
+  make_tgz "$FOLD_BACKUP_RESTORE_ARCHIVE"
+  # A normal run, a refused run and a failed run each remove their scratch
+  # folder; only SIGKILL can leave one, and it stays inside the sandbox.
+  run_bk uploads-validate --nonce "$N1"
   expect_rc 0
-  [[ "$OUT" == "adopt copied=3 identical=0 skipped=1 differing=0 failed=0" ]] || fail "adopt summary: $OUT"
-  for f in fold-20261101-0230.dump uploads-20261101-0230.tgz fold-20261101-0230.dump.age; do
-    cmp -s "$SB/legacy/$f" "$SB/archives/$f" || fail "$f differs after adoption"
-    [[ "$(stat -c %y "$SB/legacy/$f")" == "$(stat -c %y "$SB/archives/$f")" ]] || fail "$f lost its mtime"
-    [[ "$(mode_of "$SB/archives/$f")" == 600 ]] || fail "$f mode"
-  done
-  [[ ! -e "$SB/archives/notes.txt" && ! -e "$SB/archives/fold-20261102-0230.dump" ]] || fail "an unrecognized or link name was copied"
-  [[ "$(cd "$SB/legacy" && for f in *; do printf '%s %s %s\n' "$f" "$(stat -c '%y %a %F' "$f")" "$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1)"; done)" == "$legacy_before" ]] \
-    || fail "the legacy directory changed"
-  run_bk adopt
-  expect_rc 0
-  [[ "$OUT" == "adopt copied=0 identical=3 skipped=1 differing=0 failed=0" ]] || fail "second adopt: $OUT"
-  # A differing same-name destination is reported by name and refused.
-  echo different >>"$SB/archives/uploads-20261101-0230.tgz"
-  run_bk adopt
+  [[ -z "$(ls -A "$SB/tmp")" ]] || fail "uploads-validate left scratch files: $(ls "$SB/tmp")"
+  echo not-a-tgz >"$FOLD_BACKUP_RESTORE_ARCHIVE"
+  run_bk uploads-validate --nonce "$N1"
   expect_rc 1
-  [[ "$ERR" == *"differs: uploads-20261101-0230.tgz"* ]] || fail "the differing file is not named"
-  [[ "$OUT" == *"differing=1"* ]] || fail "differing not counted"
-  # A kill mid-copy publishes nothing.
-  rm -f "$SB"/archives/*.dump* "$SB"/archives/*.tgz
-  STUB_CP_KILL=1 run_bk adopt
-  [[ "$RC" == 137 ]] || fail "adopt was not killed ($RC)"
-  [[ -z "$(find "$SB/archives" -maxdepth 1 \( -name 'fold-*' -o -name 'uploads-*' \))" ]] || fail "a partial file was published"
-  [[ -n "$(find "$SB/archives" -maxdepth 1 -name '.partial.adopt.*')" ]] || fail "the kill left no partial to clean (test is not exercising it)"
-  run_bk adopt
+  [[ -z "$(ls -A "$SB/tmp")" ]] || fail "a failed validation left scratch files"
+  run_bk uploads-validate --nonce "$N1" --bogus
+  expect_rc 64
+  [[ -z "$(ls -A "$SB/tmp")" ]] || fail "a refused run left scratch files"
+  # A scratch folder an hour old is a killed run's: the next run removes it, and
+  # leaves a younger one (a live run's) alone.
+  mkdir "$SB/tmp/fold-backup.old" "$SB/tmp/fold-backup.live"
+  touch -d '2 hours ago' "$SB/tmp/fold-backup.old"
+  make_tgz "$FOLD_BACKUP_RESTORE_ARCHIVE"
+  run_bk uploads-validate --nonce "$N1"
   expect_rc 0
-  [[ "$OUT" == "adopt copied=3 identical=0 skipped=1 differing=0 failed=0" ]] || fail "adopt after a kill: $OUT"
-  [[ -z "$(find "$SB/archives" -maxdepth 1 -name '.partial.*')" ]] || fail "a stale partial survived"
+  [[ ! -e "$SB/tmp/fold-backup.old" && -d "$SB/tmp/fold-backup.live" ]] || fail "stale scratch handling: $(ls "$SB/tmp")"
+  rmdir "$SB/tmp/fold-backup.live"
+  STUB_TAR_KILL=extract run_bk uploads-stage --nonce "$N1"
+  [[ "$RC" == 137 ]] || fail "the staging was not killed ($RC)"
+  [[ "$(find "$SB/tmp" -type d -name 'fold-backup.*' | wc -l)" -le 1 ]] || fail "one run left more than one scratch folder"
 }
 
-case_adopt_flush() {
-  new_sandbox adoptflush
-  use_coord
-  local name=fold-20261101-0230.dump mtime log="$SB/sync.log"
-  printf 'dump-one\n' >"$SB/legacy/$name"
-  touch -d '2026-11-01 02:30:11' "$SB/legacy/$name"
-  chmod 640 "$SB/legacy/$name"
-  mtime="$(stat -c %Y "$SB/legacy/$name")"
-  # The copy is flushed only after its final mode and mtime are set.
-  STUB_SYNC_LOG="$log" run_bk adopt
+# A second deployment of the producer: its own archives, status, uploads and scratch
+# folders, the same stubs and the same bucket. run_second ID runs it; write_hook ID
+# makes the bucket's hook run it, from inside the first producer's PUT.
+second_env() {
+  local p2="$SB/p2"
+  mkdir -p "$p2"/{archives,status,data/uploads/avatars/1,tmp}
+  echo uploadtwo >"$p2/data/uploads/avatars/1/a.jpg"
+  SECOND_ENV=(FOLD_BACKUP_ARCHIVE_DIR="$p2/archives" FOLD_BACKUP_STATUS_DIR="$p2/status" FOLD_BACKUP_DATA_DIR="$p2/data"
+    FOLD_BACKUP_HEARTBEAT="$p2/heartbeat" TMPDIR="$p2/tmp" OD_ID="$1" BUCKET_TAG=image2)
+}
+
+run_second() {
+  second_env "$1"
+  RC2=0
+  env "${SECOND_ENV[@]}" bash "$BACKUP_SH" now >"$SB/p2/out" 2>"$SB/p2/err" || RC2=$?
+  OUT2="$(cat "$SB/p2/out")"
+  bucket_clean || fail "the second producer listed, read or deleted something in the bucket"
+}
+
+write_hook() {
+  second_env "$1"
+  {
+    printf 'env'
+    printf ' %q' "${SECOND_ENV[@]}"
+    printf ' bash %q now >%q 2>%q\necho $? >%q\n' "$BACKUP_SH" "$SB/p2/out" "$SB/p2/err" "$SB/p2/rc"
+  } >"$BUCKET/hook"
+}
+
+# Two deployments, one bucket, one minute. Neither reads the bucket, so the only way
+# they meet is the key: each writes its own folder, in either order and with the second
+# running between the first one's two PUTs, and no object of either is ever replaced.
+case_offsite_interleave() {
+  local now_e stamp snap f
+  now_e="$(date +%s)"
+  stamp="$(date -u -d "@$now_e" +%Y%m%d-%H%M)"
+  fresh() { new_sandbox "$1"; use_offsite; export FOLD_BACKUP_NOW_EPOCH="$now_e"; }
+  # A foreign complete folder of the same minute is never touched and does not move the stamp.
+  fresh interleave-foreign
+  bucket_seed_pair "$stamp" "$FID"
+  snap="$(bucket_snapshot)"
+  OD_ID=$ID1 run_bk now
   expect_rc 0
-  grep -qx "partial $name 600 $mtime" "$log" || fail "the partial was flushed before its final metadata: $(cat "$log")"
-  grep -qx "sync $name" "$log" || fail "the published copy was not flushed"
-  grep -qx "sync archives" "$log" || fail "the archive directory was not flushed"
-  # A failed flush of the copy publishes nothing and counts as failed.
-  "$REAL_RM" -f "$SB/archives/$name"
-  STUB_SYNC_FAIL=adoptpartial run_bk adopt
-  expect_rc 1
-  [[ "$OUT" == "adopt copied=0 identical=0 skipped=0 differing=0 failed=1" ]] || fail "partial flush failure: $OUT"
-  [[ ! -e "$SB/archives/$name" ]] || fail "an unflushed copy was published"
-  # A failed directory flush after publishing is a failure, never a success.
-  STUB_SYNC_FAIL=dir run_bk adopt
-  expect_rc 1
-  [[ "$OUT" == "adopt copied=0 identical=0 skipped=0 differing=0 failed=1" ]] || fail "directory flush failure: $OUT"
-  [[ -f "$SB/archives/$name" ]] || fail "the test did not reach the published name"
-  # The retry finds the identical file and may not count it until it is flushed.
-  STUB_SYNC_FAIL=dir run_bk adopt
-  expect_rc 1
-  [[ "$OUT" == "adopt copied=0 identical=0 skipped=0 differing=0 failed=1" ]] || fail "identical retry counted without a directory flush: $OUT"
-  STUB_SYNC_FAIL=adoptdest run_bk adopt
-  expect_rc 1
-  [[ "$OUT" == "adopt copied=0 identical=0 skipped=0 differing=0 failed=1" ]] || fail "identical retry counted without a file flush: $OUT"
-  : >"$log"
-  STUB_SYNC_LOG="$log" run_bk adopt
+  [[ "$OUT" == *"stamp=$stamp "* ]] || fail "a foreign folder moved the stamp: $OUT"
+  bucket_check "$stamp:$FID" "$stamp:$ID1" || fail "keys after the foreign folder: $(bucket_objects | tr '\n' ' ')"
+  [[ "$(bucket_snapshot | grep -- "-$FID/")" == "$snap" ]] || fail "the foreign folder changed"
+  # Sequential, both orders: the earlier deployment's objects are the same bytes after the later one ran.
+  fresh interleave-ab
+  OD_ID=$ID1 run_bk now
   expect_rc 0
-  [[ "$OUT" == "adopt copied=0 identical=1 skipped=0 differing=0 failed=0" ]] || fail "adopt after flushes work: $OUT"
-  grep -qx "sync $name" "$log" || fail "the identical retry did not flush the file"
-  grep -qx "sync archives" "$log" || fail "the identical retry did not flush the directory"
-  # A failed flush of the published name after the link is also reported.
-  "$REAL_RM" -f "$SB/archives/$name"
-  STUB_SYNC_FAIL=adoptdest run_bk adopt
-  expect_rc 1
-  [[ "$OUT" == "adopt copied=0 identical=0 skipped=0 differing=0 failed=1" ]] || fail "published-file flush failure: $OUT"
-  run_bk adopt
+  snap="$(bucket_snapshot)"
+  run_second $ID2
+  [[ "$RC2" == 0 && "$OUT2" == *"stamp=$stamp "* ]] || fail "the second deployment did not use the same minute: $RC2 $OUT2"
+  bucket_check "$stamp:$ID1" "$stamp:$ID2" || fail "keys, first then second: $(bucket_objects | tr '\n' ' ')"
+  [[ "$(bucket_snapshot | grep -- "-$ID1/")" == "$snap" ]] || fail "the first deployment's objects changed"
+  bucket_each_key_once || fail "a key was written twice, first then second"
+  fresh interleave-ba
+  run_second $ID2
+  [[ "$RC2" == 0 ]] || fail "the second deployment failed: $(cat "$SB/p2/err")"
+  snap="$(bucket_snapshot)"
+  OD_ID=$ID1 run_bk now
   expect_rc 0
-  [[ "$OUT" == "adopt copied=0 identical=1 skipped=0 differing=0 failed=0" ]] || fail "final retry: $OUT"
+  [[ "$OUT" == *"stamp=$stamp "* ]] || fail "the first deployment moved its stamp: $OUT"
+  bucket_check "$stamp:$ID1" "$stamp:$ID2" || fail "keys, second then first: $(bucket_objects | tr '\n' ' ')"
+  [[ "$(bucket_snapshot | grep -- "-$ID2/")" == "$snap" ]] || fail "the other deployment's objects changed"
+  bucket_each_key_once || fail "a key was written twice, second then first"
+  # The second deployment runs between the first one's two PUTs.
+  fresh interleave-hook
+  write_hook $ID2
+  echo "2 hook" >>"$BUCKET/plan"
+  OD_ID=$ID1 run_bk now
+  expect_rc 0
+  [[ "$(cat "$SB/p2/rc")" == 0 ]] || fail "the hooked deployment failed: $(cat "$SB/p2/err")"
+  bucket_check "$stamp:$ID1" "$stamp:$ID2" || fail "keys, with a run between the PUTs: $(bucket_objects | tr '\n' ' ')"
+  bucket_each_key_once || fail "a key was written twice, with a run between the PUTs"
+  [[ "$(bucket_attempts)" == 4 ]] || fail "$(bucket_attempts) PUT invocations, not 4"
+  for f in "fold-$stamp.dump.age" "uploads-$stamp.tgz.age"; do
+    cmp -s "$BUCKET/objects/fold/$stamp-$ID1/$f" "$SB/archives/$f" || fail "first deployment's $f is not its own bytes"
+    cmp -s "$BUCKET/objects/fold/$stamp-$ID2/$f" "$SB/p2/archives/$f" || fail "second deployment's $f is not its own bytes"
+  done
+}
+
+# An upload that fails leaves the local pair, LAST_OK and the earlier objects as they were.
+# A run that failed before its second member leaves one object in a folder nothing completes;
+# one whose response was lost leaves a complete folder. The next run, here or on another
+# deployment in the same minute, takes a folder of its own and never writes the old key.
+case_offsite_failures() {
+  new_sandbox offfail
+  use_offsite
+  local now_e e0 s0 stamp s2 ok half
+  now_e="$(date +%s)"
+  e0=$((now_e - 3600))
+  s0="$(date -u -d "@$e0" +%Y%m%d-%H%M)"
+  stamp="$(date -u -d "@$now_e" +%Y%m%d-%H%M)"
+  FOLD_BACKUP_NOW_EPOCH=$e0 OD_ID=$ID1 run_bk now
+  expect_rc 0
+  ok="$(cat "$SB/status/LAST_OK")"
+  # The second member never arrives.
+  export FOLD_BACKUP_NOW_EPOCH="$now_e"
+  bucket_plan_next 2 fail-before
+  OD_ID=$ID2 run_bk now
+  expect_rc 1
+  [[ "$(cat "$SB/status/LAST_OK")" == "$ok" ]] || fail "LAST_OK moved after a failed upload"
+  grep -q '"lastFailure":{"at":"[0-9TZ:-]*","step":"upload"}' "$SB/status/status.json" || fail "the failure step is not upload"
+  [[ -f "$SB/archives/fold-$stamp.dump" && -f "$SB/archives/uploads-$stamp.tgz" ]] || fail "the local pair was not kept"
+  [[ "$ERR" == *"offsite: uploading to fold/$stamp-$ID2/"* ]] || fail "the folder was not logged"
+  half="$(grep -- "-$ID2/" "$BUCKET/attempts" | head -n 1 | cut -d' ' -f3)"
+  [[ -n "$half" && "$half" == fold/$stamp-$ID2/* ]] || fail "no first member was attempted under the run's folder"
+  [[ "$(bucket_objects)" == "$(printf '%s\n%s\n' "$(bucket_expect "$s0:$ID1")" "$half" | LC_ALL=C sort)" ]] \
+    || fail "the bucket is not the first pair plus one member: $(bucket_objects | tr '\n' ' ')"
+  # The other deployment, the same minute: a complete folder of its own, the half left alone.
+  run_second $FID
+  [[ "$RC2" == 0 && "$OUT2" == *"stamp=$stamp "* ]] || fail "the other deployment: $RC2 $OUT2"
+  [[ "$(bucket_objects)" == "$(printf '%s\n%s\n' "$(bucket_expect "$s0:$ID1" "$stamp:$FID")" "$half" | LC_ALL=C sort)" ]] \
+    || fail "the bucket after the other deployment: $(bucket_objects | tr '\n' ' ')"
+  bucket_each_key_once || fail "the earlier key was written again"
+  # A response lost after the second member committed: a complete folder, a failed run.
+  new_sandbox offfail-lost
+  use_offsite
+  FOLD_BACKUP_NOW_EPOCH=$e0 OD_ID=$ID1 run_bk now
+  expect_rc 0
+  ok="$(cat "$SB/status/LAST_OK")"
+  export FOLD_BACKUP_NOW_EPOCH="$now_e"
+  bucket_plan_next 2 commit-then-fail
+  OD_ID=$ID2 run_bk now
+  expect_rc 1
+  [[ "$(cat "$SB/status/LAST_OK")" == "$ok" ]] || fail "LAST_OK moved after a lost response"
+  grep -q '"lastFailure":{"at":"[0-9TZ:-]*","step":"upload"}' "$SB/status/status.json" || fail "the lost response is not recorded as upload"
+  bucket_check "$s0:$ID1" "$stamp:$ID2" || fail "the committed folder: $(bucket_objects | tr '\n' ' ')"
+  [[ "$ERR" == *"offsite: uploading to fold/$stamp-$ID2/"* ]] || fail "the folder of the failed run was not logged"
+  OD_ID=$FID run_bk now
+  expect_rc 0
+  s2="$(sed -n 's/^published stamp=\([0-9-]*\) .*/\1/p' <<<"$OUT")"
+  [[ -n "$s2" && "$s2" != "$stamp" ]] || fail "the next run reused the stamp of the failed one: $OUT"
+  bucket_check "$s0:$ID1" "$stamp:$ID2" "$s2:$FID" || fail "keys after the next run: $(bucket_objects | tr '\n' ' ')"
+  bucket_each_key_once || fail "a key was written twice after a lost response"
+}
+
+# A run id that cannot be made well means no PUT at all: the local pair stays, the run fails
+# at the upload step, LAST_OK stays, and expiry still ran.
+case_run_id_refused() {
+  new_sandbox runid
+  use_offsite
+  local now_e ok mode n
+  now_e="$(date +%s)"
+  FOLD_BACKUP_NOW_EPOCH=$((now_e - 7200)) run_bk now
+  expect_rc 0
+  ok="$(cat "$SB/status/LAST_OK")"
+  export FOLD_BACKUP_NOW_EPOCH="$now_e"
+  for mode in fail short nonhex upper empty; do
+    : >"$SB/archives/fold-20200101-0230.dump"
+    touch -d '2020-01-02' "$SB/archives/fold-20200101-0230.dump"
+    n="$(bucket_attempts)"
+    OD_MODE=$mode run_bk now
+    expect_rc 1
+    [[ "$(bucket_attempts)" == "$n" ]] || fail "$mode: a PUT was attempted without a good run id"
+    [[ "$(cat "$SB/status/LAST_OK")" == "$ok" ]] || fail "$mode: LAST_OK moved"
+    grep -q '"lastFailure":{"at":"[0-9TZ:-]*","step":"upload"}' "$SB/status/status.json" || fail "$mode: failure step"
+    [[ "$ERR" == *"no random folder name could be made"* ]] || fail "$mode: the message is missing: $ERR"
+    [[ ! -e "$SB/archives/fold-20200101-0230.dump" ]] || fail "$mode: expiry did not run"
+  done
+  [[ "$(find "$SB/archives" -maxdepth 1 -name 'fold-*.dump' | wc -l)" == 6 ]] || fail "the local pairs were not kept"
+}
+
+# Neither the nightly run nor a recovery needs anything but PUT permission, and the source says so.
+case_offsite_source_guard() {
+  bucket_selftest || fail "the bucket model's own checks failed"
+  bucket_source_guard "$BACKUP_SH" 'fold/${STAMP}-${RUN_ID}/' \
+    || fail "the producer lists, reads or heads the bucket, writes a flat key, or has no run folder"
 }
 
 # ------------------------------------------------------------------ runner
 
 ALL_CASES=(help_and_self_test retention_boundaries schedule_boundaries partial_config tar_before_dump
-  pair_completion_and_modes status_format failure_at_each_step ciphertext_only_upload secret_sentinels
+  pair_completion_and_modes status_format failure_at_each_step ciphertext_only_upload offsite_interleave offsite_failures
+  run_id_refused offsite_source_guard secret_sentinels
   recovery_refusal contention restore_test long_running_health health_states loop_resumes_after_recovery
   uploads_validate uploads_lifecycle uploads_interruptions uploads_refusals uploads_release_needs_drop uploads_receipt_window uploads_drop_ownership
-  uploads_drop_symlink_parent sync_failures adopt adopt_flush)
+  uploads_drop_symlink_parent sync_failures scratch_cleanup)
 
 run_case() {
   local name="$1" rc=0
@@ -1469,6 +1587,11 @@ run_probes() {
   fi
   if mutate encrypted-only-upload 's/for c in "${CIPHERS\[@\]}"; do/for c in "$PUB_TGZ" "$PUB_DUMP"; do/'; then
     probe encrypted-only-upload ciphertext_only_upload || bad=1
+  else
+    bad=1
+  fi
+  if mutate flat-key 's|${REMOTE_PREFIX}${1##\*/}|fold/${1##*/}|'; then
+    probe flat-key ciphertext_only_upload || bad=1
   else
     bad=1
   fi

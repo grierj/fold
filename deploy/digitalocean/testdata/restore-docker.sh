@@ -146,6 +146,13 @@ case "$1" in
     [[ "${RESTORE_FIXTURE_INSPECT_FAIL:-0}" == 0 ]] || exit 1; image_id "${*: -1}"; exit 0 ;;
   run)
     if [[ "$*" == *'fold.uploads.role='* ]]; then helper_run "$@"; fi
+    # backup.sh's uploads archive (alpine tar czf /backup/NAME): the file appears in the backup folder.
+    if [[ "$*" == *' alpine tar czf '* ]]; then
+      host=""
+      for a in "$@"; do case "$a" in *:/backup) host="${a%:/backup}" ;; esac; done
+      for a in "$@"; do case "$a" in /backup/*) printf 'UPLOADS' >"$host/${a#/backup/}" ;; esac; done
+      exit 0
+    fi
     image="${args[${#args[@]}-3]}"
     case "$image" in
       *bad*|"$(printf 'sha256:%064d' 4)") echo '{"recoveryPolicy":"bad"}' ;;
@@ -154,7 +161,11 @@ case "$1" in
     esac
     exit 0 ;;
   volume)
-    # Only the uploads volume exists, and only when the model says so.
+    # Only the uploads volume exists, and only when the model says so. A listing
+    # succeeds and finds nothing: the backups volume is absent here, which
+    # backup.sh's expiry reads as "no copies owed". A failing listing would be a
+    # failed observation, and the shipped code rightly keeps that work pending.
+    if [[ "$2" == ls ]]; then exit 0; fi
     if [[ "$2" == inspect && "$(read_model '.volume.exists // false')" == true && "${*: -1}" == "$(read_model '.volume.name')" ]]; then read_model '.volume.createdAt'; exit 0; fi
     exit 1 ;;
   ps)
@@ -209,14 +220,23 @@ case "$1" in
     ref="$(sed -n 's/.*image: \(.*\) # fold-app-image$/\1/p' "$dir/docker-compose.yml")"
     [[ -n "$ref" ]] || ref="fixture:$(sed -n 's/^FOLD_VERSION=//p' "$dir/.env")"
     # The backup service appears only when the model defines it; .backup.coord
-    # says how its coordination is wired (ok, unset, rw, other, other-dir).
+    # says how its coordination is wired (ok, unset, rw, other, other-dir). It
+    # resolves with the shipped identity (user 65532:65532, cap_drop ALL) unless
+    # the model overrides it: .backup.user and .backup.capDrop ("unset" omits the
+    # key) and .backup.privileged. Its archive, status and uploads mounts are the
+    # shipped ones.
     jq -n --arg ref "$ref" --arg dir "$dir" --argjson backup "$(read_model '.backup // null')" --arg vol "$(read_model '.volume.name // "restore-fixture_uploads"')" '
       {name:"restore-fixture",
        services:({app:{image:$ref,volumes:[{type:"volume",source:"uploads",target:"/data"}]},caddy:{ports:[{published:"45000"}]}}
-         + (if ($backup!=null and $backup.defined==true) then {backup:{image:($backup.image // "fixture:backup"),
+         + (if ($backup!=null and $backup.defined==true) then {backup:({image:($backup.image // "fixture:backup"),
               environment:(if $backup.coord=="unset" then {} else {FOLD_RECOVERY_DIR:(if $backup.coord=="other" then "/elsewhere" else "/coord" end)} end),
-              volumes:[{type:"bind",source:(if $backup.coord=="other-dir" then "/elsewhere" else $dir end),target:"/coord",read_only:($backup.coord!="rw")}]}} else {} end)),
-       volumes:{uploads:{name:$vol}}}'
+              volumes:[{type:"bind",source:(if $backup.coord=="other-dir" then "/elsewhere" else $dir end),target:"/coord",read_only:($backup.coord!="rw")},
+                {type:"volume",source:"backups",target:"/backups"},{type:"volume",source:"backup-status",target:"/backup-status"},
+                {type:"volume",source:"uploads",target:"/data",read_only:true}]}
+              + (if $backup.user=="unset" then {} else {user:($backup.user // "65532:65532")} end)
+              + (if $backup.capDrop=="unset" then {} else {cap_drop:($backup.capDrop // ["ALL"])} end)
+              + (if $backup.privileged==true then {privileged:true} else {} end))} else {} end)),
+       volumes:{uploads:{name:$vol},backups:{name:"restore-fixture_backups"},"backup-status":{name:"restore-fixture_backup-status"}}}'
     exit 0 ;;
   ps)
     if [[ "$*" == *'-q'* ]]; then

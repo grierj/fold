@@ -71,7 +71,8 @@ lint-sh:
 	@command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck is required (apt-get install shellcheck)"; exit 1; }
 	shellcheck -x deploy/digitalocean/*.sh deploy/backup/*.sh scripts/*.sh web/e2e/*.sh
 
-# provision.sh --dry-run inside a fresh Ubuntu container. Needs Docker.
+# provision.sh --dry-run inside a fresh Ubuntu container, then the deploy fixtures
+# (recovery, the host's archive copies and expiry, the drills' pure checks). Needs Docker.
 provision-dry-run:
 	bash deploy/digitalocean/dry-run-test.sh
 

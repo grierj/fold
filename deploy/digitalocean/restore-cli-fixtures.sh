@@ -610,7 +610,9 @@ change_model '.app.running=true | .caddy.running=true'
 run_restore --dump "$ARCHIVE" >"$WORK/out" 2>&1; phase_is recovering
 # Forward upgrades already hold ops.lock while calling backup. A real backup
 # must still complete under that descriptor and hold only its own second lock.
+# The uploads volume exists, as it does in every Fold deployment: a backup without it fails.
 seed quiesce Q; rm "$DIR/recovery.lock"
+change_model '.volume={exists:true,name:"restore-fixture_uploads",createdAt:"2026-11-15T00:00:00Z"}'
 (
   ops_lock_acquire "$DIR" fixture-upgrade
   "$DIR/recovery-tools/backup.sh" --deploy-dir "$DIR" --backup-dir "$DIR/dumps" >"$WORK/out" 2>&1
@@ -1044,8 +1046,10 @@ wait_no_restore_processes
 fresh_up
 RESTORE_FIXTURE_HELPER_HOLD=observe "$DIR/recovery-tools/restore.sh" --deploy-dir "$DIR" --drill --dump "$DARCHIVE" --uploads "$UARCHIVE" >"$WORK/out" 2>&1 &
 caller=$!
-for ((i=0;i<150;i++)); do [[ "$(jq -r '.helpers|length' "$WORK/model.json")" == 0 ]] || break; sleep 0.1; done
-[[ "$(jq -r '.helpers[0].role' "$WORK/model.json")" == observe ]]
+# The preflight runs the short-lived validate and probe helpers first, so wait for
+# the held observe helper by role, not for the first helper of any kind.
+for ((i=0;i<150;i++)); do [[ "$(jq -r '[.helpers[]|select(.role=="observe")]|length' "$WORK/model.json")" == 0 ]] || break; sleep 0.1; done
+[[ "$(jq -r '.helpers|map(.role)|join(",")' "$WORK/model.json")" == observe ]]
 kill -KILL "$caller"
 rc=0; wait "$caller" || rc=$?
 [[ "$rc" == 137 && ! -e "$DIR/recovery.lock" ]]
@@ -1281,6 +1285,26 @@ if grep -q 'start-backup' "$WORK/events"; then exit 1; fi
 change_model '.backup.coord="ok"'
 run_restore --resume >"$WORK/out" 2>&1
 [[ ! -e "$DIR/recovery.lock" && "$(jq -r .backup.running "$WORK/model.json")" == true ]]
+# A pinned backup service whose resolved identity is not exactly the shipped one
+# is never started either: the site stays open, the lock stays and the phase says
+# the scheduler failed. The shipped identity then resumes. One case each for an
+# unset field, a wrong value and an added privilege; the whole rule is tabled in
+# backup-archives-fixtures.sh (case_identity).
+for override in user-unset capdrop-partial privileged; do
+  seed recovering A none; up_model
+  case "$override" in
+    user-unset) change_model '.backup.user="unset"' ;;
+    capdrop-partial) change_model '.backup.capDrop=["NET_RAW"]' ;;
+    privileged) change_model '.backup.privileged=true' ;;
+  esac
+  rejected 'cleanup-failed at scheduler' run_restore --reopen --checked-church-records
+  phase_is cleanup-failed; [[ "$(jq -er .at "$DIR/recovery.lock")" == scheduler ]]
+  [[ "$(jq -r '[.backup.running,.app.running,.caddy.running]|map(tostring)|join(",")' "$WORK/model.json")" == false,true,true ]]
+  if grep -q 'start-backup' "$WORK/events"; then exit 1; fi
+  change_model 'del(.backup.user, .backup.capDrop, .backup.privileged)'
+  run_restore --resume >"$WORK/out" 2>&1
+  [[ ! -e "$DIR/recovery.lock" && "$(jq -r .backup.running "$WORK/model.json")" == true ]]
+done
 # An abort arms the scheduler the same way.
 seed collected B; up_model
 run_restore --abort >"$WORK/out" 2>&1
