@@ -52,8 +52,7 @@ test("desktop keeps a top bar and no tab bar", async ({ page }) => {
   await signOut(page);
 });
 
-// PR #65 review F2/F3: phone header words, Admin on the Me page, and no
-// Disable or Delete on your own row (the server refuses both anyway).
+// No Disable or Delete on your own row: the server refuses both anyway.
 test("an admin on a phone reaches Admin from Me and can't disable or delete themselves", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 800 });
   await signIn(page, "grier");

@@ -82,11 +82,13 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
 
 Each line names the one place a rule is decided. Use it; never write a second copy.
 
-**Comments** say why: the constraint, the decision behind it (`DEC-n`, a PLAN section), the hazard
-a reader would miss, or what a guard cannot see. Never write a comment that restates what the code
-plainly does, narrates history ("was X, now Y", PR numbers, slice ids as status), or records a
-status that goes stale. When you touch code with such a comment, delete or fix it. A comment that
-cites the plan names a real section or decision; check it still exists.
+**Comments** are only for necessary communication that can't be found elsewhere: the constraint,
+the decision behind it (`DEC-n`, a PLAN section), the hazard a reader would miss, or what a guard
+cannot see. Remove a comment that merely describes the code immediately below, restates a name,
+narrates history ("was X, now Y", PR numbers, slice ids as status) or records a status that goes
+stale, in code you touch too. Directives and guard markers (`//go:embed`, `// group-ok:`,
+`owned:`/`shared:`, `shellcheck`, `@public`) stay. A comment that cites the plan names a real
+section or decision; check it still exists.
 
 **API and errors**
 - API: `/api/v1/...`, camelCase JSON. Authenticated endpoints return 401 JSON, never a redirect

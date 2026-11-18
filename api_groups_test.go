@@ -101,7 +101,6 @@ func TestJoinLeaveAndRSVP(t *testing.T) {
 
 	sam := loginAPI(t, app, "sam", "pw")
 
-	// Join (idempotent).
 	for i := 0; i < 2; i++ {
 		w = sam.do("POST", "/api/v1/groups/"+gid+"/join", map[string]any{}, true)
 		if w.Code != http.StatusOK {
@@ -139,7 +138,6 @@ func TestJoinLeaveAndRSVP(t *testing.T) {
 	}
 	first := mlist.Events[0]
 
-	// Sam registers going.
 	w = sam.do("PUT", "/api/v1/events/"+mid+"/registrations", map[string]any{
 		"status": "going", "date": first.Date,
 	}, true)
@@ -176,7 +174,6 @@ func TestJoinLeaveAndRSVP(t *testing.T) {
 		t.Fatalf("non-leader create event: %d", w.Code)
 	}
 
-	// Leave.
 	w = confirmDeparture(t, sam, "POST", "/api/v1/groups/"+gid+"/leave", "/api/v1/groups/"+gid+"/departure-preview", "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("leave: %d", w.Code)

@@ -77,7 +77,7 @@ export function Textarea({ layout, ...props }: Omit<TextareaHTMLAttributes<HTMLT
 }
 
 // With options, Select's title is the chosen label, a hover supplement for a
-// long one cut off at 390px (PR #51); a caller's title wins. Title is not the
+// long one cut off at 390px; a caller's title wins. Title is not the
 // screen-reader path: for a label that is shortened, point aria-describedby
 // at a line that holds the full text (it joins the hint and error ids).
 // Use it for five or more choices; two to four use radio rows (Choices) or a

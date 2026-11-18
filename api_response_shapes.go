@@ -1,6 +1,10 @@
 package main
 
-import "fold/models"
+import (
+	"time"
+
+	"fold/models"
+)
 
 // Named shapes for JSON answers that were ad-hoc gin.H maps. Each is exactly
 // the keys its handler always sent; web/src/types.ts names the same fields
@@ -79,6 +83,19 @@ type adminJobsJSON struct {
 	Jobs       []adminJobJSON           `json:"jobs"`
 	More       bool                     `json:"more"`
 	Deliveries adminDeliverySummaryJSON `json:"deliveries"`
+}
+
+// backupStatusJSON is GET /admin/backup and `fold backup status --json`
+// (backup_status.go). State is unwatched, missing, unreadable, stale or ok; a
+// field the state or the files cannot vouch for is null, never zero.
+type backupStatusJSON struct {
+	State          string     `json:"state"`
+	LastOkAt       *time.Time `json:"lastOkAt"`
+	DumpBytes      *int64     `json:"dumpBytes"`
+	UploadsBytes   *int64     `json:"uploadsBytes"`
+	Offsite        *string    `json:"offsite"` // "off" or "uploaded"
+	LastFailedAt   *time.Time `json:"lastFailedAt"`
+	LastFailedStep *string    `json:"lastFailedStep"` // a step the server knows, else null
 }
 
 // adminRoomsJSON is GET /admin/rooms.

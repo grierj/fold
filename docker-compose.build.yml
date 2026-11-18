@@ -4,8 +4,11 @@
 #   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 #
 # FOLD_VERSION still has to be set in .env; any label works here (for example
-# dev). It only names the local image. The build needs about 2 GB of memory;
+# dev). It only names the local images (app and backup). The build needs about 2 GB of memory;
 # a 1 GB machine can run out. Pull the published image there instead.
 services:
   app:
     build: .
+  backup:
+    build:
+      context: deploy/backup

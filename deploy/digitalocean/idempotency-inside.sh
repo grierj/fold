@@ -367,9 +367,22 @@ out1="$(run_real 2>&1)"
 printf '%s\n' "$out1"
 snapshot /tmp/fold-snap-1
 secret="$(env_value /opt/fold/.env SESSION_SECRET)"
+# The backup service shares this directory's locks: the path is in .env (and so is
+# byte-stable on the second run, which the snapshot compares) and backup.lock is
+# root-owned, group 65532, mode 640.
+[[ "$(env_value /opt/fold/.env FOLD_BACKUP_COORD)" == /opt/fold ]]
+[[ "$(stat -c '%u:%g:%a' /opt/fold/backup.lock)" == 0:65532:640 ]]
 [[ -n "$secret" ]]
 if grep -qF "$secret" <<<"$out1"; then
   echo "idempotency: first run printed SESSION_SECRET" >&2
+  exit 1
+fi
+# This Compose stub has no backup service, so there is no cutover: the host
+# backup stays in charge and its full cron is installed (a deployment that rolled
+# back to an older release looks the same).
+grep -q 'this Compose file has no backup service; the host backup stays in charge' <<<"$out1"
+if grep -q -- '--expire-only' /etc/cron.d/fold-backup; then
+  echo "idempotency: a deployment without the service got the expire-only cron" >&2
   exit 1
 fi
 

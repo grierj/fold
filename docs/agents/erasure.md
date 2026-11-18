@@ -190,6 +190,10 @@ file in the blob store.
 
 ## Restore barrier
 
+An uploads restore runs `fold restore settle-uploads` before reopening to empty
+erased and unowned avatar folders. The fenced procedure and recovery from an
+incomplete settlement are in `docs/agents/deploy.md` and `docs/API.md`.
+
 The barrier and the recovery level ship together. The binary's `recoveryPolicyLevel`
 (`restore_fence.go`) equals `deploy/recovery-policy` (`TestRecoveryPolicyFileMatchesConstant`)
 and `fold version --json` reports it. **Never publish a release at `recoveryPolicy >= 1` before

@@ -30,7 +30,6 @@ func newMessageEvent(ev models.Event, au audienceJSON, titleOverride *string) me
 	return f
 }
 
-// eventPath is the event's page.
 func (f messageEvent) eventPath() string { return "/events/" + idString(f.ID) }
 
 // timeText is a date's start on the event's clock, as a merge field and a

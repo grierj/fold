@@ -62,6 +62,20 @@ drill_compose_config() {
   | .services.app.image = "ghcr.io/grierj/fold:${FOLD_VERSION}"
   | del(.networks.default.ipam) | .networks.default.name = ($project + "_default")
   | .name = $project
+  | if .services.backup then
+      # The backup service is the shipped one, made quiet and local: it shares
+      # this directory'"'"'s locks through the same read-only bind provision sets
+      # up, uses the database password from .env, never pulls, and idles (a
+      # real backup runs only when a case execs backup.sh now), so no catch-up
+      # dump races a restore case.
+      .services.backup.environment.PGPASSWORD = "${DB_PASSWORD}"
+      | .services.backup.environment.FOLD_RECOVERY_DIR = "/coord"
+      | .services.backup.volumes = [(.services.backup.volumes[] | select(.target != "/coord")), {type:"bind",source:$dir,target:"/coord",read_only:true}]
+      | .services.backup.image = "ghcr.io/grierj/fold-backup:drill"
+      | .services.backup.pull_policy = "never"
+      | .services.backup.entrypoint = ["sleep","infinity"]
+      | .services.backup.healthcheck = {disable:true}
+    else . end
   | .volumes |= with_entries(.value = {name:($project + "_" + .key)})' "$4"
 }
 assert_drill_compose_isolation() {
@@ -86,6 +100,12 @@ assert_drill_compose_isolation() {
     and all(["registry","smtp","caddy"][]; . as $svc |
       ($config.services[$svc].ports | length)==1
       and all($config.services[$svc].ports[]; .host_ip=="127.0.0.1" and .protocol=="tcp"))
+    and (($config.services.backup // null)==null or (
+      ($config.services.backup.ports // [] | length)==0
+      and $config.services.backup.pull_policy=="never"
+      and $config.services.backup.environment.FOLD_RECOVERY_DIR=="/coord"
+      and any($config.services.backup.volumes[]; .target=="/coord" and .type=="bind" and .read_only==true)
+      and all($config.services.backup.volumes[]; .target!="/data" or .read_only==true)))
   ' "$1" >/dev/null || {
     echo 'drill Compose isolation check failed; no service may start with this config' >&2; return 1;
   }
@@ -226,7 +246,8 @@ cleanup() {
   trap - EXIT
   [[ -z "$holder" ]] || kill -KILL "$holder" 2>/dev/null || true
   [[ -z "$descendant" ]] || kill -KILL "$descendant" 2>/dev/null || true
-  if (( ! KEEP && started )); then
+  # A prepare-only run keeps its stack only when it hands it over by exiting 0.
+  if (( started && ( ! KEEP || ( PREPARE_ONLY && rc != 0 ) ) )); then
     compose_in "$DIR" -f "$SOURCE/docker-compose.yml" down -v --remove-orphans || rc=1
   fi
   echo "drill result=$rc artifacts=$WORK retained_stack=$KEEP"
@@ -339,15 +360,20 @@ if [[ -z "$BASE_IMAGE" ]]; then
 else
   docker image inspect "$BASE_IMAGE" >/dev/null
 fi
+# The real backup image, built from this checkout, under the tag the drill's
+# Compose names. It is local only: the service never pulls.
+docker build -t "fold-deploy-drill-backup:$PROJECT" "$DRILL_ROOT/deploy/backup"
+docker tag "fold-deploy-drill-backup:$PROJECT" ghcr.io/grierj/fold-backup:drill
 # Fixture images report levels without changing the real Fold server. A real
 # level-1 candidate can be supplied as BASE_IMAGE by T07B-1-V as well.
 cat >"$WORK/policy.go" <<'GO'
 package main
 import("fmt";"os";"syscall")
 var level string
+var uploads string
 func main(){
  if len(os.Args)>1 && os.Args[1]=="version" {
-  if level=="absent" {fmt.Println(`{"version":"drill"}`)} else {fmt.Printf("{\"version\":\"drill\",\"recoveryPolicy\":%s}\n",level)}
+  if level=="absent" {fmt.Println(`{"version":"drill"}`)} else if uploads=="" {fmt.Printf("{\"version\":\"drill\",\"recoveryPolicy\":%s}\n",level)} else {fmt.Printf("{\"version\":\"drill\",\"recoveryPolicy\":%s,\"restoreUploads\":%s}\n",level,uploads)}
   return
  }
  if err:=syscall.Exec("/fold-real",os.Args,os.Environ());err!=nil {panic(err)}
@@ -360,7 +386,9 @@ COPY --from=base /fold /fold-real
 COPY policy /fold
 EOF_DOCKER
 for level in absent 1; do
-  CGO_ENABLED=0 GOOS=linux go build -ldflags "-X main.level=$level" -o "$WORK/policy" "$WORK/policy.go"
+  # The level-1 fixture is this checkout's release, which can settle restored uploads.
+  uploads_level=""; [[ "$level" != 1 ]] || uploads_level=1
+  CGO_ENABLED=0 GOOS=linux go build -ldflags "-X main.level=$level -X main.uploads=$uploads_level" -o "$WORK/policy" "$WORK/policy.go"
   docker build -t "$REGISTRY/fold:$level" "$WORK"
   docker push "$REGISTRY/fold:$level"
 done
@@ -402,7 +430,8 @@ curl -fsS --max-time 2 "http://$REGISTRY/v2/" >/dev/null || { echo 'recreated dr
 cat >"$SOURCE/Dockerfile" <<EOF_DOCKER
 FROM $REGISTRY/fold:1
 EOF_DOCKER
-printf 'services:\n  app:\n    build: .\n' >"$SOURCE/docker-compose.build.yml"
+printf 'FROM fold-deploy-drill-backup:%s\n' "$PROJECT" >"$SOURCE/Dockerfile.backup"
+printf 'services:\n  app:\n    build: .\n  backup:\n    build:\n      context: .\n      dockerfile: Dockerfile.backup\n' >"$SOURCE/docker-compose.build.yml"
 git -C "$SOURCE" init -q
 git -C "$SOURCE" config user.name drill
 git -C "$SOURCE" config user.email drill@example.invalid

@@ -960,7 +960,7 @@ QC1_NOT_MEASURED_JSON="$(cat <<'JSON'
  "isolated server-side parse and encode time: only whole request times, and the page's own text() read and JSON.parse, are measured; the server's share of a request is not separated",
  "multi-byte reasons: this run's reasons are ASCII; a run with --charset multibyte measures 1,000-rune reasons of mixed 1- to 4-byte runes (and says what it still does not)",
  "cluster attribution: WAL, commit, audit and memory figures are cluster-wide counters read around an operation (and around each browser phase), not attributed to one statement",
- "a real droplet: the figures come from a nested or local Docker approximation unless the environment record says otherwise",
+ "a real droplet: the figures come from container limits on whatever Docker host ran this, an approximation of the droplet unless the environment record says otherwise",
  "an exact table size: each operation records the rows contact_requests held just before and after it (background plus the scenario rows, n + k); the background target is not the total"]
 JSON
 )"

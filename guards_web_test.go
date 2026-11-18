@@ -146,6 +146,7 @@ var tsContracts = []struct {
 	{teenConsentsJSON{}, "TeenConsentsResponse"},
 	{guardianLinksResponseJSON{}, "GuardianLinksResponse"},
 	{adminJobsJSON{}, "AdminJobsResponse"},
+	{backupStatusJSON{}, "AdminBackupStatus"},
 	{adminRoomsJSON{}, "AdminRoomsResponse"},
 	{matchLocationJSON{}, "MatchLocationResponse"},
 	{roomRequestConfirmationJSON{}, "RoomRequestConfirmation"},

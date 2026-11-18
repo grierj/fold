@@ -13,16 +13,16 @@
 - Tests: CI smoke test starts the stack and hits `/healthz` (built: `scripts/compose-smoke.sh`).
 
 **M5.2 Backups**
-- Partly done, as host scripts rather than the container this milestone asks for: `deploy/digitalocean/backup.sh` (a nightly host cron job) dumps Postgres and the uploads volume, keeps daily dumps for `FOLD_BACKUP_KEEP_DAYS` (default 14) and first-of-month dumps for 180 days, and can upload `age`-encrypted copies to any S3-compatible bucket. `restore.sh` restores a dump (`docs/agents/deploy.md`). There is no `fold-backup` image, `LAST_OK` file or backup warning on the System page.
+- In progress: the `fold-backup` image (`deploy/backup/`) with nightly runs and `backup.sh now`; the `backup` Compose service and its `backup-status` volume; `LAST_OK` and `status.json`; a System page warning at 36 hours; retention; host-owned archives adopted into the `backups` volume at cutover; `restore.sh` restoring the dump and the uploads together inside the recovery fence. The host cron (`deploy/digitalocean/backup.sh`) stays for older deployments. Real DigitalOcean checks on Nov 17, 2026 covered provision, a backup-service run, `restore.sh --dump --uploads`, a second-server restore, and `upgrade.sh` and `--rollback` between two revisions with the same application tree. They did not assert erased-photo settlement or cover a schema-changing upgrade. `docs/FIRST-CHURCH-CHECKS.md` keeps checks for a real church's domain, bucket and devices.
 - Depends on: M5.1
-- Scope: 11.8 for Compose: a small `ghcr.io/grierj/fold-backup` image (postgres:16-alpine plus `age` and `rclone`) with `backup.sh` (nightly loop and `now`) and `restore.sh`, `LAST_OK`, retention, `age`-encrypted offsite upload to any S3-compatible bucket.
+- Scope: 11.8 for Compose: a small `ghcr.io/grierj/fold-backup` image (postgres:16-alpine plus `age` and `rclone`) with `backup.sh` (nightly loop and `now`) and `restore.sh`, `LAST_OK`, retention.
 - Acceptance:
   - [ ] Nightly dump and uploads tar appear with the retention rule applied
   - [ ] `docker compose exec backup backup.sh now` makes a backup on demand
-  - [ ] `restore.sh` brings back a working site (CI restore test)
-  - [ ] Offsite copies are `age`-encrypted, and the server holds only the public key
+  - [ ] `restore.sh` brings back a working site on the standard real deployment
   - [ ] The System page warns when the last backup is older than 36 hours
-- Tests: CI restore test; retention unit test.
+- Tests: real deployment restore; retention unit test. A release CI restore test remains outstanding.
+- Not an acceptance requirement (deferred, no milestone): encrypted offsite uploads. See the "Desired, no milestone" row in section 14.2 of the plan and DEC-152. The code that can upload `age`-encrypted pairs stays in `backup.sh` and the image and was exercised once against a disposable S3-compatible server; its completion (a real producer-only bucket policy, real `age` decryption on a workstation, B2 and Spaces behaviour) is not part of this milestone.
 
 **M5.3 Upgrades**
 - Partly done: `deploy/digitalocean/upgrade.sh` dumps the database before a forward upgrade and can roll back (`--rollback`). Not built: the app's own backup check before migrating, `docs/UPGRADING.md`, and the release-to-release CI test.

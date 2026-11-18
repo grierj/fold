@@ -6,6 +6,32 @@ set -euo pipefail
 : "${RESTORE_DRILL_WORK:?disposable drill only}"
 [[ "$RESTORE_DRILL_SITE" == "$RESTORE_DRILL_WORK/site" && -f "$RESTORE_DRILL_SITE/.deploy-drill" ]] || exit 99
 args=("$@")
+# A held uploads helper (the file names its role): the same container, slowed by
+# an entrypoint that sleeps first, so a case can kill the caller while the helper
+# is still running. Helper runs carry no --project-directory; they are
+# recognised by their labels and only while the harness holds the file.
+if [[ "${1:-}" == run && -f "$RESTORE_DRILL_WORK/helper-hold" && "$*" == *'--label fold.uploads.role='* ]]; then
+  hold_role="$(cat "$RESTORE_DRILL_WORK/helper-hold")"
+  if [[ "$hold_role" =~ ^(stage|drop|exchange)$ && "$*" == *"--label fold.uploads.role=$hold_role "* ]]; then
+    image_index=-1
+    for ((i=1;i<${#args[@]};i++)); do
+      if [[ "${args[$i]}" == uploads-* ]]; then image_index=$((i-1)); break; fi
+    done
+    (( image_index >= 1 )) || exit 99
+    exec "$RESTORE_DRILL_REAL_DOCKER" "${args[@]:0:$image_index}" --entrypoint /bin/bash "${args[$image_index]}" \
+      -c 'sleep 120; exec /usr/local/bin/backup.sh "$@"' backup "${args[@]:$((image_index+1))}"
+  fi
+fi
+# A stage helper that dies at the Nth write of its receipt (the file holds 1 or
+# 2): the real image and the real helper, plus a mounted BASH_ENV file that
+# defines one `sync` function the script finds before the binary. The case
+# writes helper-shim.sh; nothing in the image changes.
+if [[ "${1:-}" == run && -f "$RESTORE_DRILL_WORK/helper-die" && -f "$RESTORE_DRILL_WORK/helper-shim.sh" && "$*" == *'--label fold.uploads.role=stage '* ]]; then
+  die_at="$(cat "$RESTORE_DRILL_WORK/helper-die")"
+  [[ "$die_at" =~ ^[12]$ ]] || exit 99
+  exec "$RESTORE_DRILL_REAL_DOCKER" run -v "$RESTORE_DRILL_WORK/helper-shim.sh:/shim.sh:ro" -e BASH_ENV=/shim.sh \
+    -e "FOLD_DRILL_DIE_RECEIPT=$die_at" "${args[@]:1}"
+fi
 # Refuse to fault another project's invocation, even if PATH leaks.
 if [[ "$*" != *"--project-directory $RESTORE_DRILL_SITE "* ]]; then exec "$RESTORE_DRILL_REAL_DOCKER" "$@"; fi
 # Hold the existing backup restore-test while it owns backup.lock. Recovery

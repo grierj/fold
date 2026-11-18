@@ -17,7 +17,7 @@ PROJECT="fold-deploy-drill-config-fixture"
 # Test that both real generation stages remove/avoid it, while the three
 # host-facing auxiliaries keep their loopback ports across recreation.
 cat >"$WORK/input.json" <<'JSON'
-{"services":{"app":{"healthcheck":{"test":["CMD","/fold","healthcheck"],"interval":"1s","start_interval":"1s","timeout":"3s","retries":5,"start_period":"15s"},"networks":{"default":{}},"volumes":[{"type":"volume","source":"uploads","target":"/data"}]},"db":{},"registry":{},"smtp":{},"caddy":{"ports":[{"target":80},{"target":443}]},"push-sink":{"ports":[{"target":443,"host_ip":"127.0.0.1"}],"networks":{"push":{"aliases":["push.restore-drill.invalid"]}}}},"networks":{"default":{"ipam":{"config":[{"subnet":"172.30.0.0/24"}]}},"push":{"internal":true}},"volumes":{"uploads":{},"pgdata":{},"registrydata":{}}}
+{"services":{"app":{"healthcheck":{"test":["CMD","/fold","healthcheck"],"interval":"1s","start_interval":"1s","timeout":"3s","retries":5,"start_period":"15s"},"networks":{"default":{}},"volumes":[{"type":"volume","source":"uploads","target":"/data"}]},"db":{},"registry":{},"smtp":{},"caddy":{"ports":[{"target":80},{"target":443}]},"push-sink":{"ports":[{"target":443,"host_ip":"127.0.0.1"}],"networks":{"push":{"aliases":["push.restore-drill.invalid"]}}},"backup":{"image":"ghcr.io/grierj/fold-backup:drill","environment":{"PGPASSWORD":"drill","FOLD_RECOVERY_DIR":""},"volumes":[{"type":"volume","source":"uploads","target":"/data","read_only":true},{"type":"volume","source":"backups","target":"/backups"},{"type":"volume","source":"backup-coord","target":"/coord","read_only":true}],"healthcheck":{"test":["CMD","backup.sh","health"]}}},"networks":{"default":{"ipam":{"config":[{"subnet":"172.30.0.0/24"}]}},"push":{"internal":true}},"volumes":{"uploads":{},"pgdata":{},"registrydata":{}}}
 JSON
 drill_compose_config "$WORK/site" "$PROJECT" 11.254.17.0/24 "$WORK/input.json" >"$WORK/initial.json"
 assert_drill_compose_isolation "$WORK/initial.json"
@@ -29,6 +29,12 @@ jq -e --arg dir "$WORK/site" --arg project "$PROJECT" '
   and .services.app.environment.FOLD_SMTP_URL=="smtp://smtp:1025"
   and .services.app.environment.FOLD_SMTP_ALLOW_INSECURE=="true"
   and any(.services.app.volumes[]; .source==($dir+"/drill-push-tls/ca.crt") and .read_only==true)
+  and .services.backup.environment.PGPASSWORD=="${DB_PASSWORD}"
+  and .services.backup.environment.FOLD_RECOVERY_DIR=="/coord"
+  and .services.backup.image=="ghcr.io/grierj/fold-backup:drill" and .services.backup.pull_policy=="never"
+  and .services.backup.entrypoint==["sleep","infinity"] and .services.backup.healthcheck=={disable:true}
+  and ([.services.backup.volumes[] | select(.target=="/coord")] == [{type:"bind",source:$dir,target:"/coord",read_only:true}])
+  and any(.services.backup.volumes[]; .target=="/data" and .read_only==true)
 ' "$WORK/initial.json" >/dev/null
 drill_pin_aux_ports 127.0.0.1:31001 127.0.0.1:31002 127.0.0.1:31003 <"$WORK/initial.json" >"$WORK/pinned.json"
 assert_drill_compose_isolation "$WORK/pinned.json"
@@ -41,7 +47,9 @@ jq -e '
 for address in 0.0.0.0:31001 192.0.2.1:31001 127.0.0.1:0 127.0.0.1:65536; do
   if drill_pin_aux_ports "$address" 127.0.0.1:31002 127.0.0.1:31003 <"$WORK/initial.json" >"$WORK/out" 2>&1; then exit 1; fi
 done
-for mutation in '.networks.push.internal=false' '.services["push-sink"].networks.default={}' '.services["push-sink"].ports=[{target:443,host_ip:"127.0.0.1"}]' '.services.app.ports=[{target:8080,host_ip:"127.0.0.1"}]' '.services.db.ports=[{target:5432,host_ip:"0.0.0.0"}]' '.services.registry.ports[0].host_ip="0.0.0.0"' '.services.app.volumes[-1].read_only=false' 'del(.services.app.networks.default)'; do
+for mutation in '.networks.push.internal=false' '.services["push-sink"].networks.default={}' '.services["push-sink"].ports=[{target:443,host_ip:"127.0.0.1"}]' '.services.app.ports=[{target:8080,host_ip:"127.0.0.1"}]' '.services.db.ports=[{target:5432,host_ip:"0.0.0.0"}]' '.services.registry.ports[0].host_ip="0.0.0.0"' '.services.app.volumes[-1].read_only=false' 'del(.services.app.networks.default)' \
+  '.services.backup.ports=[{target:9,host_ip:"127.0.0.1"}]' '.services.backup.pull_policy="missing"' '.services.backup.environment.FOLD_RECOVERY_DIR=""' \
+  '(.services.backup.volumes[] | select(.target=="/coord")).read_only=false' '(.services.backup.volumes[] | select(.target=="/data")).read_only=false'; do
   jq "$mutation" "$WORK/initial.json" >"$WORK/bad.json"
   if assert_drill_compose_isolation "$WORK/bad.json" >"$WORK/out" 2>&1; then exit 1; fi
 done

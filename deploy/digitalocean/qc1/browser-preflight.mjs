@@ -10,8 +10,8 @@
 //            { headless: true } otherwise).
 //   firefox  the restore drill's Firefox proof (the same restore-browser.cjs, engine
 //            firefox from the `playwright` package, launched { headless: true }). It runs
-//            in the glibc container built by firefox-runtime.sh: Playwright's Firefox is
-//            a glibc build that cannot start on the Alpine runner (no ELF loader).
+//            in the Debian container built by firefox-runtime.sh, so it does not
+//            depend on this host's libraries.
 // QC1_PREFLIGHT_FOR is a comma list of them (default: qc1,restore; firefox only when asked).
 //
 // For each: Playwright resolves from web/node_modules, the locked packages agree,
@@ -26,8 +26,8 @@
 // bundles (a judgement, not a guarantee; the smoke checks are the proof);
 // QC1_REQUIRE_NVMRC_NODE=1 makes a node major different from .nvmrc fatal (the
 // default records it: Playwright asks only for node >= its engines range, and
-// the Alpine runner's nodejs may be older than the repository's Node 24; no
-// application build or test runs under it).
+// the host's node may differ from the repository's; no application build or test
+// runs under it).
 // Prints one JSON object on stdout. Exit 0 ok; 2 usage; 3 tooling absent; 6 a
 // smoke check failed; 7 Chromium major further from the bundled one than the
 // tolerance; 8 node major differs from .nvmrc under QC1_REQUIRE_NVMRC_NODE=1.

@@ -128,7 +128,7 @@ async function runPrivateBrowser(options) {
 module.exports = { runPrivateBrowser };
 if (require.main === module) {
   const pw = createRequire(process.env.RESTORE_WEB_PACKAGE)('playwright');
-  // A disposable runner names its own Chromium (QC1_CHROMIUM) and sets the sandbox switches it needs; the launch rules live in qc1/browser-launch.cjs, which
+  // A prepared disposable host names its Chromium (QC1_CHROMIUM) and sets the sandbox switches it needs; the launch rules live in qc1/browser-launch.cjs, which
   // restore-drill.sh points RESTORE_BROWSER_LAUNCH at (this file is copied out of the repository). Without them the launch is exactly { headless: true }.
   const launchOptions = process.env.RESTORE_BROWSER_LAUNCH && process.env.QC1_CHROMIUM && process.env.RESTORE_BROWSER !== 'firefox' ? require(process.env.RESTORE_BROWSER_LAUNCH).restoreLaunchOptions(process.env) : { headless: true };
   runPrivateBrowser({ engine: process.env.RESTORE_BROWSER === 'firefox' ? pw.firefox : pw.chromium, targetId: Number(process.env.RESTORE_TARGET_ID), artifacts: process.env.RESTORE_BROWSER_ARTIFACTS, screenshot: process.env.RESTORE_SCREENSHOT, cookieProof: process.env.RESTORE_BROWSER_PROOF, launchOptions }).catch(error => { console.error(error); process.exitCode = 1; });

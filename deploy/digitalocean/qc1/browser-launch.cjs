@@ -4,10 +4,10 @@
 // path restore-drill.sh gives it (RESTORE_BROWSER_LAUNCH), because that helper is
 // copied out of the repository before it runs.
 //
-// A disposable runner (restore-drill-nested.sh) has Alpine's Chromium, named by
-// QC1_CHROMIUM, and Playwright's own download does not run there (glibc). On a
-// host with Playwright's browsers installed QC1_CHROMIUM is unset and the
-// restore proof launches exactly as it always has: { headless: true }.
+// A disposable host prepared by browser-prepare.sh names the locked Playwright's
+// Chromium in QC1_CHROMIUM. Where it is unset (a workstation with Playwright's
+// browsers installed) the restore proof launches exactly as it always has:
+// { headless: true }.
 "use strict";
 
 function majorOf(version) {
@@ -34,9 +34,9 @@ function chromiumMajorDelta(systemVersion, bundledVersion) {
 }
 
 // The measurement's launch options. --no-sandbox and --disable-dev-shm-usage are
-// needed to run as root in a container with a small /dev/shm; they are added only
-// when the disposable-runner flag set by restore-drill-nested.sh is present
-// together with QC1_NO_SANDBOX=1, never for a browser on a person's own machine.
+// needed to run as root with a small /dev/shm; they are added only when the
+// operator's FOLD_DRILL_ISOLATED_DAEMON=1 (a disposable host) is present together
+// with QC1_NO_SANDBOX=1, never for a browser on a person's own machine.
 function launchOptions(env) {
   const args = ["--enable-precise-memory-info"];
   const options = { headless: true, args };

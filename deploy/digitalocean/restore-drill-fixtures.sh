@@ -787,4 +787,34 @@ env RESTORE_DRILL_OPERATION=1 RESTORE_DRILL_CASE=review_cleanup_retry_cases REST
   RESTORE_DRILL_REAL_DOCKER="$WORK/bin/history-docker" RESTORE_DRILL_SITE="$WORK/history/site" RESTORE_DRILL_WORK="$WORK/history" \
   "$ROOT/deploy/digitalocean/testdata/restore-drill-docker.sh" compose --project-directory "$WORK/history/site" exec -T db psql -c 'SELECT 1' </dev/null
 jq -s -e 'length==1 and .[0].case=="review_cleanup_retry_cases" and .[0].step=="before-drop/after-app-start" and .[0].phase=="created" and (.[0].at|test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T")) and (.[0].command|contains("SELECT 1"))' "$WORK/history/restore-command-history.jsonl" >/dev/null
+# The three uploads families stay in the runner's plan and run list, in the order
+# the progress plan names them.
+for family in uploads_erasure_cases uploads_interruption_cases backup_exclusion_cases; do
+  [[ "$(grep -c "$family" "$ROOT/deploy/digitalocean/restore-drill.sh")" == 2 ]]
+  grep -q "^$family() {" "$ROOT/deploy/digitalocean/restore-drill-cases.sh"
+done
+# A held uploads helper runs behind a sleep, with every other argument kept; a
+# helper of another role, or any run when no hold is recorded, passes through.
+mkdir -p "$WORK/hold/site"
+touch "$WORK/hold/site/.deploy-drill"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$HOLD_CALLS"\n' >"$WORK/bin/hold-docker"; chmod 755 "$WORK/bin/hold-docker"
+helper_args=(run --rm --user 0 --network none --restart no --pull never --label fold.project=p --label fold.recovery.nonce=0123456789abcdef0123456789abcdef --label fold.uploads.role=stage
+  -v v:/data -v /a:/restore/archive.tgz:ro sha256:img uploads-stage --nonce 0123456789abcdef0123456789abcdef)
+hold_wrapper() {
+  env HOLD_CALLS="$WORK/hold/calls" RESTORE_DRILL_REAL_DOCKER="$WORK/bin/hold-docker" RESTORE_DRILL_SITE="$WORK/hold/site" RESTORE_DRILL_WORK="$WORK/hold" \
+    "$ROOT/deploy/digitalocean/testdata/restore-drill-docker.sh" "$@"
+}
+: >"$WORK/hold/calls"
+hold_wrapper "${helper_args[@]}"
+[[ "$(cat "$WORK/hold/calls")" == "${helper_args[*]}" ]]
+printf 'drop\n' >"$WORK/hold/helper-hold"
+: >"$WORK/hold/calls"
+hold_wrapper "${helper_args[@]}"
+[[ "$(cat "$WORK/hold/calls")" == "${helper_args[*]}" ]]
+printf 'stage\n' >"$WORK/hold/helper-hold"
+: >"$WORK/hold/calls"
+hold_wrapper "${helper_args[@]}"
+grep -qF -- '--entrypoint /bin/bash sha256:img -c sleep 120; exec /usr/local/bin/backup.sh "$@" backup uploads-stage --nonce 0123456789abcdef0123456789abcdef' "$WORK/hold/calls"
+grep -qF -- '--label fold.uploads.role=stage -v v:/data -v /a:/restore/archive.tgz:ro --entrypoint' "$WORK/hold/calls"
+echo 'restore drill uploads hold fixtures: ok'
 echo 'restore drill progress fixtures: ok'
