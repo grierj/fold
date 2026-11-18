@@ -86,7 +86,7 @@ shipped stack. Full evidence: `R1-deployment.md` Part 1.
 | DEC-138 | R9 | One generated baseline pre-live; additive-first after |
 | DEC-139 | R13 | Big bets stand; fleet tooling at ~5 hosted churches |
 | DEC-140 | R17 | One adapter per kind until demanded; speculative cuts |
-| DEC-141 | R19 | Room suggestions + contact machinery frozen; *amended Nov 3, 2026:* one narrow erasure-only exception lets account erasure (R4) scrub an erased person's identifying text in `contact_requests` while decisions and provenance stay (owner decision; design unreviewed, M7.4 R4-2a) |
+| DEC-141 | R19 | Room suggestions + contact machinery frozen; *amended Nov 3, 2026:* one narrow erasure-only exception lets account erasure (R4) scrub an erased person's identifying text in `contact_requests` while decisions and provenance stay (owner decision; design unreviewed, M7.4 R4-2a); *freeze lifted by DEC-153, Nov 18, 2026* |
 | DEC-142 | R1 | VPS + Compose recommended; Cloudflare supports only |
 | DEC-143 | R2 | Generic CSV import first (reverses DEC-15's gate) |
 | DEC-144 | R4 | Deleting an account erases the person |

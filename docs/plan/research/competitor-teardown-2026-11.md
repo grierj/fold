@@ -273,3 +273,9 @@ directory ordering by participation and icebreaker prompts stay out,
 with reasons recorded in phase-8.md's "Not promoted" table. The
 Fold-side analysis in §§1–10 stands; competitor facts are still
 November 2026 and must be re-verified before any brief cites them.
+
+DEC-153 (Nov 18, 2026) also lifts DEC-141's freeze, which §§5–6 above
+describe as in force: room-suggestion and direct-contact expansion are
+permitted again, through a milestone and a brief. No Phase 8 milestone
+expands them — M8.8 only explains the existing suggestion — so that
+permission currently changes nothing in the build order.
