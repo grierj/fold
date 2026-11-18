@@ -581,8 +581,14 @@ noted):
 **Run it:**
 
 ```bash
-sudo /opt/fold/restore.sh --dump /var/backups/fold/fold-YYYYMMDD-HHMM.dump
+sudo /opt/fold/restore.sh \
+  --dump /var/backups/fold/fold-YYYYMMDD-HHMM.dump \
+  --uploads /var/backups/fold/uploads-YYYYMMDD-HHMM.tgz
 ```
+
+Use the uploads archive from the same backup as the dump. Omit `--uploads` only
+when keeping the current uploads. Do not extract an uploads archive by hand:
+that bypasses the erased-photo cleanup before reopening.
 
 In order, `restore.sh`:
 
@@ -614,6 +620,14 @@ In order, `restore.sh`:
 7. Starts a private recovery instance: the pinned image, background work off
    (queued mail, push and scheduled jobs do not run), restart policy `no`, reachable only at
    `127.0.0.1:18080` on the droplet. Caddy and the app stay stopped.
+
+When `--uploads` is supplied, the tool stages and swaps the archive within the
+recovery fence. Before reopening, `fold restore settle-uploads` empties avatar
+folders belonging to erased or missing accounts. It leaves active accounts'
+folders alone. The restore refuses an older target without the required
+`restoreUploads` capability. A settlement exit 1 means cleanup is incomplete
+or an unexpected or unsafe entry needs attention; keep the site closed, inspect
+`--status`, resolve the issue and resume recovery. See [the command contract](API.md#restore-settle-the-photos-m52).
 
 Exit codes: 0 means the step finished (a plain `--dump` that exits 0 leaves the
 site **closed**, in private recovery); 1 a refusal or failure. Check `--status`: `cleanup-failed` after a successful smoke check can leave the site open with backups suspended; run `--resume`. If closure failed, closure was not verified: inspect `--status` and resolve the stop or exclusion failure before relying on private recovery;
@@ -805,9 +819,8 @@ addresses.
 
 **Gaps in this tooling, stated plainly.**
 
-- `restore.sh` restores the database only. It does not touch the uploads volume
-  or `uploads-*.tgz`; restore uploads yourself if files are missing, and the
-  procedure for that is not covered or drilled here.
+- If `--uploads` is omitted, the current uploads remain in place. Restore a
+  matching archive through the fenced procedure above, never by hand.
 - After the swap there is no way back through this tool: `--abort` is refused.
   The old database exists only until `--reopen` removes it.
 - Safari, and any browser that drops the secure cookie on `localhost`, is not

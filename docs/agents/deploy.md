@@ -178,14 +178,20 @@ section at the end of `checks.sh`.
   `cutover_deadline`) cut `cutover_fail`, `cutover_wait_lastok` and `backup_cutover` out of `provision.sh` by name
   and run them unchanged in a strict shell: an initial and a repeat cutover to the cron switch, a failed
   replacement, a service that never succeeds, refused identities and paths, and stalled Docker reads (only the
-  cron file's directory is redirected). `backup-test.sh` covers the image. Live behavior (real
-  signals, the immutable-attribute fault, a real Docker root) is the later production drill's.
+  cron file's directory is redirected). `backup-test.sh` covers the image. The November 17
+  real-droplet checks covered backup, restore and archive expiry; remaining live checks are in
+  `docs/FIRST-CHURCH-CHECKS.md`.
 
 ## Restore (`restore.sh`)
 
 - `restore.sh --dump` restores into a fresh database swapped in whole and keeps the public site
   closed and background deliveries paused in a worker-free private recovery instance until
   `--reopen`. It never restores into the live `fold` database.
+- `--uploads` restores the matching uploads archive inside the fence. Before reopen,
+  `fold restore settle-uploads` empties erased and unowned avatar folders; active accounts'
+  folders remain. A target without the required `restoreUploads` capability is refused.
+  Settlement exit 1 means cleanup is incomplete or unsafe entries need attention: keep the
+  site closed and resume after resolving them. Do not extract uploads by hand.
 - A plain `--dump` exits 0 with the site closed; `--reopen-if-none` (used by
   `upgrade.sh --rollback`) exits 3 unless the count is exactly zero. `--abort` works only before
   the swap; only `--abort` finishes an interrupted abort; `--resume` after an interrupted reopen

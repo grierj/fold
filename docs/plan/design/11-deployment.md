@@ -276,7 +276,7 @@ database. To restore, follow the
 [interim recovery procedure](../../DEPLOY-DIGITALOCEAN.md#restoring-a-nightly-dump-interim-notes)
 (`restore.sh`, rules in [`docs/agents/deploy.md`](../../agents/deploy.md)).
 
-**M5.2 (in progress, unmerged):** a portable Compose design.
+**M5.2 (in progress):** a portable Compose design.
 
 - A `backup` service with the same nightly dump, uploads tar (skipped if storage is ever S3) and
   retention, writing `/backups/LAST_OK` to the `backups` volume.
