@@ -653,7 +653,7 @@ func TestOptionalEmailLinksBindTheActualDestination(t *testing.T) {
 		}
 		check(rendered.ListUnsubscribe, row.Address, "category:messages")
 	}
-	preview, err := app.renderMessage(&msg, u, map[string]string{})
+	preview, err := app.renderMessage(&msg, u, map[string]string{}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

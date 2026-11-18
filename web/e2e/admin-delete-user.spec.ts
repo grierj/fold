@@ -36,11 +36,22 @@ const RESTORE = "Fold noticed its database was restored while it was running, so
 const BUSY =
   "Someone was changing this person's household at the same moment, so nothing was deleted. Try again in a moment.";
 const NOT_DELETED = /nothing was deleted|not deleted|wasn't deleted|was not deleted/i;
-// R4-6c: what a delete does not reach, and what the two counts mean. Landed code
-// still retains network addresses in the activity log (inventory IR-1 to IR-4).
-const BACKUPS_NOTE = /Deleting reaches Fold's backups only as they expire/;
-const OUTSIDE_NOTE = /Copies already sent to mailboxes, mail providers and push services are outside Fold/;
-const IP_NOTE = /Some network \(IP\) addresses can remain in the activity log/;
+// R4-6c, R4-6e: what a delete does not reach, and what the two counts mean. Landed
+// code still retains network addresses in the activity log (inventory 6.5.2). Each
+// row is one sentence of the copy map in inventory 11.1 (RS-n is its row).
+const RESIDUE: Array<[row: string, words: RegExp]> = [
+  ["RS-1", /Backups made before now still hold their details until those backups expire/],
+  ["RS-2", /Emails and notifications already sent, and your server's own logs, are outside Fold/],
+  ["RS-3", /Some network \(IP\) addresses can remain in the activity log/],
+  ["RS-4", /A household other people still share stays as it was/],
+  ["RS-5", /Notices other people already received can still mention them until those expire/],
+  ["RS-6", /Notes an admin typed when checking a guardian, and a teen's consent records, stay/],
+  ["RS-7", /A contact-request reason you choose to keep stays as written/],
+  ["RS-8", /Fold keeps a code made from that address, not the address/],
+  ["RS-9", /can't be tied back to them, so Fold leaves it alone/],
+  ["RS-11", /Messages they wrote, including drafts and ones that never went out/],
+];
+const IP_NOTE = RESIDUE[2][1];
 const KEPT_HOUSEHOLDS_NOTE = /Fold left these households as they were/;
 const KEPT_ACTIVITY_NOTE = /Fold counts entries, not addresses/;
 // T07B-2c: the reason review shown before a reasoned account is deleted.
@@ -325,9 +336,7 @@ test.describe("what the delete panel says when an answer is lost, too old or bus
     await signInTo(page, adminName, "/admin?tab=users");
     const row = await openDelete(page, target);
 
-    await expect(row.getByText(BACKUPS_NOTE)).toBeVisible();
-    await expect(row.getByText(OUTSIDE_NOTE)).toBeVisible();
-    await expect(row.getByText(IP_NOTE)).toBeVisible();
+    for (const [residue, words] of RESIDUE) await expect(row.locator(`li[data-residue="${residue}"]`).filter({ hasText: words })).toBeVisible();
     await expect(row.getByRole("button", { name: "Delete account" })).toBeEnabled();
     await expect(row.getByText("Households kept", { exact: true })).toHaveCount(0);
     await evidence(page, "reach-before-delete");
@@ -336,8 +345,7 @@ test.describe("what the delete panel says when an answer is lost, too old or bus
     await expect(row.getByText(DELETED)).toBeVisible();
     await expect(row.getByText(KEPT_HOUSEHOLDS_NOTE)).toBeVisible();
     await expect(row.getByText(KEPT_ACTIVITY_NOTE)).toBeVisible();
-    await expect(row.getByText(BACKUPS_NOTE)).toBeVisible();
-    await expect(row.getByText(IP_NOTE)).toBeVisible();
+    for (const [residue, words] of RESIDUE) await expect(row.locator(`ul[aria-labelledby] li[data-residue="${residue}"]`).filter({ hasText: words })).toBeVisible();
     await expect(row.getByText(NOT_DELETED)).toHaveCount(0);
     await evidence(page, "reach-after-delete");
     await row.getByRole("button", { name: "Done" }).click();
@@ -784,10 +792,10 @@ test.describe("reviewing contact-request reasons before a delete (T07B-2c)", () 
     await expect(row.getByText("Reasons 101 to 120 of 120", { exact: true })).toBeVisible();
     await expect(page.locator('[data-reason-heading="100"]')).toBeFocused();
     await row.getByLabel("Go to reason number").fill("1");
-    await row.getByRole("button", { name: "Go" }).click();
+    await row.getByRole("button", { name: "Go", exact: true }).click();
     await expect(page.locator('[data-reason-heading="0"]')).toBeFocused();
     await row.getByLabel("Go to reason number").fill("120");
-    await row.getByRole("button", { name: "Go" }).click();
+    await row.getByRole("button", { name: "Go", exact: true }).click();
     await expect(shown).toHaveCount(20);
     await expect(page.locator('[data-reason-heading="119"]')).toBeFocused();
     for (let i = 100; i < 119; i++) await choose(i);

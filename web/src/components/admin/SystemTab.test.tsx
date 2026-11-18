@@ -2,13 +2,13 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
-import { AdminJobs } from "../../api/admin";
+import { AdminBackup, AdminJobs } from "../../api/admin";
 import { ApiError } from "../../api/core";
 import { ERROR_COPY } from "../../lib/errors";
 import type { AdminDeliverySummary, AdminJob } from "../../types";
 import { SystemTab } from "./SystemTab";
 
-vi.mock("../../api/admin", async (actual) => ({ ...(await actual<typeof import("../../api/admin")>()), AdminJobs: { list: vi.fn(), retry: vi.fn(), dismiss: vi.fn() } }));
+vi.mock("../../api/admin", async (actual) => ({ ...(await actual<typeof import("../../api/admin")>()), AdminJobs: { list: vi.fn(), retry: vi.fn(), dismiss: vi.fn() }, AdminBackup: { status: vi.fn() } }));
 
 const job = (id: number, extra: Partial<AdminJob> = {}): AdminJob => ({
   id, kind: "occurrences.extend", label: "Adding upcoming event dates", runsDaily: true, attempts: 5,
@@ -21,7 +21,10 @@ function Harness({ initial, more = false, error = null, reload = () => {} }: { i
   return <SystemTab jobs={jobs} more={more} error={error} reload={reload} onRemoved={(id) => setJobs((p) => p && p.filter((j) => j.id !== id))} />;
 }
 
+const backupOk = { state: "ok", lastOkAt: "2026-11-12T10:31:00Z", dumpBytes: 1024, uploadsBytes: 2048, offsite: "off", lastFailedAt: null, lastFailedStep: null } as const;
+
 beforeEach(() => {
+  vi.mocked(AdminBackup.status).mockReset().mockResolvedValue({ ...backupOk });
   vi.mocked(AdminJobs.retry).mockReset().mockResolvedValue({ status: "queued" });
   vi.mocked(AdminJobs.dismiss).mockReset().mockResolvedValue({ status: "dismissed" });
 });
@@ -173,4 +176,27 @@ it("announces changed email counts politely in the same element", () => {
   expect(line).toHaveAttribute("aria-live", "polite");
   rerender(<SystemTab jobs={[]} more={false} error={null} reload={() => {}} onRemoved={() => {}} deliveries={summary({ queued: 1 })} />);
   expect(line).toHaveTextContent("1 email is waiting to send. Fold sends it on its own.");
+});
+
+it("shows the backups before the background tasks", async () => {
+  render(<Harness initial={[]} />);
+  const backups = await screen.findByRole("heading", { name: "Backups", level: 2 });
+  const tasks = screen.getByRole("heading", { name: "Background tasks", level: 2 });
+  expect(backups.compareDocumentPosition(tasks) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(await screen.findByText(/^Last backup finished/)).toBeInTheDocument();
+});
+
+it("keeps the tasks and email counts when the backup status can't be read", async () => {
+  vi.mocked(AdminBackup.status).mockRejectedValue(new ApiError(500, "x", { code: "server_error" }));
+  render(<Harness initial={[job(1)]} />);
+  expect(await screen.findByText("We couldn't load the backup status. Please try again in a minute.")).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Adding upcoming event dates" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Retry now Adding upcoming event dates" })).toBeEnabled();
+});
+
+it("reports an overdue backup without changing the tasks' all-clear", async () => {
+  vi.mocked(AdminBackup.status).mockResolvedValue({ ...backupOk, state: "stale", lastOkAt: "2026-11-10T02:30:00Z" });
+  render(<Harness initial={[]} />);
+  expect(await screen.findByText("Backups are overdue")).toBeInTheDocument();
+  expect(screen.getByText("Nothing needs attention.")).toBeInTheDocument();
 });

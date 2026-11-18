@@ -27,7 +27,7 @@ The full as-delivered text of the done milestones (slices, acceptance, tests) is
 - Done for email (PR #208 to #211). The SMS parts are not built (last bullet).
 - Messages (`/messages`) and the composer (`/messages/new`, `/messages/:id`): TipTap (lazy-loaded) with a button block and merge fields, bluemonday sanitizing, an HTML email template with a plain-text part, preview, "Send a test to me", and scheduling in the church's zone.
 - The audience picker offers only what `policy.CanMessageAudience` allows, with live counts, skipped reasons and Teen badges (7.2, DEC-20).
-- Images in email come later (DEC-118).
+- Images in email (DEC-118; #365, built): `Add image` in the editor, `POST /messages/:id/images`, sanitizer allow-list, absolute `SITE_URL` links in email and guardian copies, `[Image: alt]` in the plain text. No per-message budget and guardian copies carry the pictures as sent (Grier, Nov 14, 2026). Design: `docs/plan/design/07-messaging.md` section 7.3.
 - Not built: the SMS segment counter, automatic prefix and footer, donation-ask warning and SMS tab. M3.4b built them hidden; they were later removed, unused, with the rest of the never-enabled SMS code. They are planned with the SMS tab in M3.7, with their two acceptance items (DEC-117, DEC-120).
 
 **M3.5 Send pipeline**

@@ -6,9 +6,9 @@ import { open, partSelected, UI_PARTS, uiPages, uiPart } from "./ui-pages";
 import { measure } from "./ui-measure.mjs";
 
 // Layout and target size at 390, 768 and 1280.
-// Hard gates (PR 5 cleared the last ones): no page scrolls sideways, no
+// Hard gates: no page scrolls sideways, no
 // control is cut off by an overflow box or the screen edge, no
-// select's chosen label is cut off (PR #51, the event visibility select),
+// select's chosen label is cut off,
 // and no control is under 24x24 (WCAG 2.5.8; a wrapping or `for` label
 // counts), no radio or checkbox row is under 44px tall (DEC-65), and at 390 the page's last content clears the tab bar. Controls under 44px tall at 390 are the design goal: their kinds
 // per page may only fall (ui-baseline.json; UPDATE_UI_BASELINE=1 rewrites it
@@ -49,7 +49,7 @@ for (let part = 0; part < UI_PARTS; part++) {
         expect.soft(m.under24.map((t) => `${t.el} "${t.name}" ${t.w}x${t.h}`), `${at}: targets under 24x24; use components/ui Button sizes, min-h-11 on text actions, or wrap the radio in its label`).toEqual([]);
         // The sticky header sits flush at the top once scrolled, and
         // scroll-padding-top covers it (a focused field never lands under it)
-        // without leaving a big gap (PR #66 review F3).
+        // without leaving a big gap.
         const head = await page.evaluate(() => {
           const h = document.querySelector("body header") as HTMLElement | null;
           if (!h) return null;
@@ -67,7 +67,7 @@ for (let part = 0; part < UI_PARTS; part++) {
         if (width === 390) {
           under44[ui.id] = kinds(m.under44);
           // The last content clears the fixed tab bar once scrolled to the
-          // bottom, on every page (PR #65 review N4).
+          // bottom, on every page.
           const covered = await page.evaluate(() => {
             const bar = document.querySelector('nav[aria-label="Tabs"]');
             if (!bar || bar.getBoundingClientRect().height === 0) return 0;

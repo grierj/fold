@@ -12,7 +12,8 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { Skeleton } from "../components/ui/Skeleton";
 
 // The editor's read-only view draws the body through its own schema, so
-// only the composer's formatting can appear (the server sanitized it too).
+// only the composer's formatting and its own pictures can appear (the server
+// sanitized it too, and the page's CSP loads images from this site only).
 const RichTextView = lazy(() => import("../components/messages/RichTextEditor").then((m) => ({ default: m.RichTextView })));
 
 // /messages/:id/read (M3.13d2): an announcement as its reader got it, the

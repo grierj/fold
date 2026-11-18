@@ -12,12 +12,16 @@ import (
 	"strings"
 	"time"
 
+	"fold/internal/content"
 	"fold/internal/images"
 	"fold/internal/jobs"
 	"fold/internal/policy"
+	"fold/models"
 	"fold/storage"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func clampFocal(v float64) float64 {
@@ -246,6 +250,107 @@ func (a *App) apiDeleteGroupCover(c *gin.Context) {
 func (a *App) deleteCoverBlob(ctx context.Context, key string) {
 	if err := a.Uploads.Delete(ctx, key); err != nil {
 		log.Printf("group cover: old file not removed: %s", jobs.CleanError(err))
+	}
+}
+
+// apiUploadMessageImage stores one picture for a message's body (DEC-118): a
+// draft, or a scheduled message, its author or an admin may still edit
+// (loadOwnMessage, editable). The picture is read and re-encoded like an avatar
+// or cover (readImageUpload: sniffed, EXIF dropped, 5MB), and nothing limits
+// how many a message may have (Grier, Nov 14 2026). The answer is the address
+// to put in the body; the body itself is saved, and checked, by the message's
+// own save (applyMessageBody). A picture the saved body never shows is removed
+// when the message is sent or the draft is discarded (pruneMessageImages).
+func (a *App) apiUploadMessageImage(c *gin.Context) {
+	m, ok := a.loadOwnMessage(c)
+	if !ok || !editable(c, m) {
+		return
+	}
+	tmp, ext, mime, err := readImageUpload(c, "image")
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	defer tmp.Close()
+	defer os.Remove(tmp.Name())
+
+	rid, err := randomHex(16)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "server error")
+		return
+	}
+	key := storage.NewKey(storage.KindMessages, strconv.FormatUint(uint64(m.ID), 10), rid, strings.TrimPrefix(ext, "."))
+	st, err := tmp.Stat()
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "server error")
+		return
+	}
+	// The message row is held FOR SHARE across the write, so a send's claim or a
+	// discard (both UPDATE it) waits until the file is stored, and their prune
+	// then sees it. Without the lock a prune could run first and leave this file
+	// with nothing to remove it. The actor is read plain, as the other message
+	// writers lock the user before the message and this takes no user lock.
+	errPutFailed := errors.New("store failed")
+	err = a.DB.Transaction(func(tx *gorm.DB) error {
+		if _, err := lockActorIn(tx, apiUser(c), actorRead); err != nil {
+			return err
+		}
+		var cur models.Message
+		if err := tx.Clauses(clause.Locking{Strength: "SHARE"}).Select("id, status").First(&cur, m.ID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errMessageLocked
+			}
+			return err
+		}
+		if cur.Status != models.MessageDraft && cur.Status != models.MessageScheduled {
+			return errMessageLocked
+		}
+		if err := a.Uploads.Put(c.Request.Context(), key, tmp, st.Size(), mime); err != nil {
+			return errPutFailed
+		}
+		return nil
+	})
+	if answerStaleSession(c, err) {
+		return
+	}
+	if errors.Is(err, errPutFailed) {
+		jsonError(c, http.StatusInternalServerError, "could not store the picture")
+		return
+	}
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, messageImageResponseJSON{Key: key, URL: a.Uploads.URL(key)})
+}
+
+// pruneMessageImages removes the pictures in message id's folder that body no
+// longer shows; an empty body removes them all. It runs only once the body can
+// no longer change (the send's claim, a discarded draft), because a picture is
+// uploaded before the body that shows it is saved. Like deleteCoverBlob it is
+// best effort: the rows are right already, so a failure leaves unreferenced
+// files, logged (the store's errors carry no key) and not retried.
+func (a *App) pruneMessageImages(ctx context.Context, id uint, body string) {
+	if a.Uploads == nil {
+		return
+	}
+	owner, err := storage.MessageOwner(id)
+	if err != nil {
+		return
+	}
+	keep := map[string]bool{}
+	for _, src := range content.ImageSources(body) {
+		if key, ok := uploadKeyFromURL(src); ok {
+			keep[key] = true
+		}
+	}
+	for range 4 {
+		if err = a.Uploads.PruneOwner(ctx, owner, keep); !errors.Is(err, storage.ErrMoreRemain) {
+			break
+		}
+	}
+	if err != nil {
+		log.Printf("message pictures: unused files not removed: %s", jobs.CleanError(err))
 	}
 }
 

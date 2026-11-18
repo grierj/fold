@@ -7,7 +7,6 @@ import (
 	"testing"
 )
 
-// M1.2: /dev/outbox is unreachable outside dev.
 func TestDevOutboxUnreachableOutsideDev(t *testing.T) {
 	app := testApp(t)
 	newTestUser(t, app, "alice", "password1234", models.RoleMember)

@@ -4,6 +4,7 @@ import { errorText } from "../../lib/errors";
 import { formatWhen, lowerLead } from "../../lib/when";
 import type { AdminDeliverySummary, AdminJob } from "../../types";
 import { ErrorNotice } from "../ErrorNotice";
+import { BackupStatus } from "./BackupStatus";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { FormError } from "../ui/Field";
@@ -108,9 +109,10 @@ function JobRow({ job, onDone }: { job: AdminJob; onDone: (id: number, message: 
   );
 }
 
-// Admin → System (M3.1b, DEC-111): background tasks that ran out of
-// attempts. Admins aren't told about them elsewhere until message sending
-// brings failures they can fix (M3.5).
+// Admin → System: backups (M5.2, loaded on its own so a failed backup read
+// never hides the tasks) above the background tasks that ran out of attempts
+// (M3.1b, DEC-111). Admins aren't told about those elsewhere until message
+// sending brings failures they can fix (M3.5).
 export function SystemTab({ jobs, more, error, reload, onRemoved, deliveries = null, lineJobs }: {
   // The jobs from the same server response as `deliveries`. The email line reads
   // these, not `jobs`, so removing a row at once (before the reload returns)
@@ -136,7 +138,9 @@ export function SystemTab({ jobs, more, error, reload, onRemoved, deliveries = n
 
   const delivery = deliveryLine(deliveries, lineJobs === undefined ? jobs : lineJobs, more);
   return (
-    <section aria-labelledby="system-heading" className="space-y-3">
+    <>
+    <BackupStatus />
+    <section aria-labelledby="system-heading" className="fold-section mt-8 space-y-3">
       <h2 id="system-heading" className="text-xl font-bold">Background tasks</h2>
       <p className="text-text-muted">
         Fold does some work in the background, like adding upcoming event dates. A task that keeps failing shows here.
@@ -163,5 +167,6 @@ export function SystemTab({ jobs, more, error, reload, onRemoved, deliveries = n
       )}
       {!error && more && <p className="text-sm text-text-muted">More tasks failed than fit here. Retry or dismiss these to see the rest.</p>}
     </section>
+    </>
   );
 }

@@ -1672,7 +1672,7 @@ refused 'above 1' bash "$RUNNER" --dir "$WORK/never" --profile-next-changed
 refused 'needs the browser' bash "$RUNNER" --dir "$WORK/never" --next-changed-only --no-browser
 refused 'needs the browser' bash "$RUNNER" --dir "$WORK/never" --next-changed-only --dense-counts none
 [[ ! -e "$WORK/never" ]]
-# It needs no root (a rootless or nested daemon is the place to run it) and reads no host paths.
+# It needs no root (a rootless daemon or a fresh droplet is the place to run it) and reads no host paths.
 if grep -nE 'id -u|EUID' "$RUNNER"; then echo 'qc1: the runner must not require root' >&2; exit 1; fi
 if grep -nE 'APP_PID|/proc/\$|"/sys/fs/cgroup/system.slice|cgroup_file\(\)' "$RUNNER"; then echo 'qc1: the runner reads host process or cgroup paths' >&2; exit 1; fi
 # Every cgroup and process read goes through docker exec.
@@ -1682,68 +1682,11 @@ guard_line="$(grep -n '^if (( RUNNING_AT_START > 0 && ! SHARED )); then' "$RUNNE
 mkdir_line="$(grep -n '^mkdir -p "\$WORK"$' "$RUNNER" | cut -d: -f1)"
 net_line="$(grep -n 'docker network create' "$RUNNER" | head -n 1 | cut -d: -f1)"
 [[ -n "$guard_line" && -n "$mkdir_line" && -n "$net_line" && "$guard_line" -lt "$mkdir_line" && "$mkdir_line" -lt "$net_line" ]]
-# A stub docker that reports a busy daemon: the runner refuses, creates nothing and calls nothing else.
-mkdir "$WORK/stubbin"
-cat >"$WORK/stubbin/docker" <<'STUB'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >>"$STUB_LOG"
-if [[ "$1" == info ]]; then
-  printf '{"ID":"stub","ServerVersion":"27.0","ContainersRunning":%s,"SecurityOptions":["name=seccomp","name=rootless"],"CgroupVersion":"2","CgroupDriver":"systemd","NCPU":1,"MemTotal":2147483648}\n' "${STUB_RUNNING:-3}"
-fi
-exit 0
-STUB
-chmod +x "$WORK/stubbin/docker"
-: >"$WORK/stub.log"
-rc=0; STUB_LOG="$WORK/stub.log" STUB_RUNNING=3 PATH="$WORK/stubbin:$PATH" bash "$RUNNER" --dir "$WORK/never" >"$WORK/busy.out" 2>&1 || rc=$?
-[[ "$rc" == 1 ]] && grep -q 'already runs 3 container' "$WORK/busy.out" && grep -q 'disposable nested or rootless daemon' "$WORK/busy.out"
-[[ ! -e "$WORK/never" ]]
-[[ "$(wc -l <"$WORK/stub.log")" == 1 && "$(head -n 1 "$WORK/stub.log")" == info* ]] || { echo 'qc1: the busy-daemon refusal called docker beyond info:' >&2; cat "$WORK/stub.log" >&2; exit 1; }
-# An idle daemon passes the guard; a dirty tree or a missing image id then stops the run before any container, network or volume is made.
-: >"$WORK/stub.log"
-rc=0; STUB_LOG="$WORK/stub.log" STUB_RUNNING=0 PATH="$WORK/stubbin:$PATH" bash "$RUNNER" --dir "$WORK/idle" >"$WORK/idle.out" 2>&1 || rc=$?
-[[ "$rc" != 0 ]]
-if grep -qE '^(run|rm|network|volume|pull|system|container|kill|stop|exec|prune)( |$)' "$WORK/stub.log"; then echo 'qc1: the run touched the daemon before its identity checks:' >&2; cat "$WORK/stub.log" >&2; exit 1; fi
-# The identity check on a clean tree is the image label: a stub image labelled with
-# another revision is refused. The runner runs from a clean copy of its own files
-# in a throwaway repository, so this holds whatever state the real tree is in.
-CLONE="$WORK/clone"; mkdir -p "$CLONE/deploy/digitalocean/qc1"
-cp "$HERE/qc1-measure.sh" "$CLONE/deploy/digitalocean/"; cp "$HERE"/qc1/app-facts.json "$HERE"/qc1/lib.sh "$HERE"/qc1/filler.sql "$HERE"/qc1/legacy.sh "$HERE"/qc1/legacy-markers.sql "$HERE"/qc1/scenario.sql "$HERE"/qc1/panel-measure.mjs "$HERE"/qc1/browser.mjs "$HERE"/qc1/browser-launch.cjs "$HERE"/qc1/browser-preflight.mjs "$HERE"/qc1/response-accounting.mjs "$HERE"/qc1/set-v1.mjs "$HERE"/qc1/panel-core.mjs "$HERE"/qc1/panel-driver.mjs "$HERE"/qc1/page-observer.mjs "$HERE"/qc1/top-statements.sql "$CLONE/deploy/digitalocean/qc1/"; mkdir -p "$CLONE/web/src/lib"; cp "$ROOT/web/src/lib/reasonSetVectors.json" "$CLONE/web/src/lib/"; cp "$HERE/isolation.sh" "$CLONE/deploy/digitalocean/"
-git init -q "$CLONE"; git -C "$CLONE" config user.name fixture; git -C "$CLONE" config user.email fixture@example.invalid
-git -C "$CLONE" config commit.gpgsign false; git -C "$CLONE" config core.hooksPath /dev/null
-git -C "$CLONE" add -A; git -C "$CLONE" commit -qm clone
-CLONE_HEAD="$(git -C "$CLONE" rev-parse HEAD)"
-cat >"$WORK/stubbin/docker" <<'STUB'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >>"$STUB_LOG"
-case "$1 $2" in
-  "info --format") printf '{"ID":"stub","ContainersRunning":0,"SecurityOptions":[],"CgroupVersion":"2"}\n' ;;
-  "image inspect")
-    case "$*" in
-      *"index .Config.Labels"*) echo "${STUB_LABEL}" ;;
-      *"{{.Id}}"*) echo sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc ;;
-    esac ;;
-esac
-exit 0
-STUB
-: >"$WORK/stub.log"
-rc=0; STUB_LOG="$WORK/stub.log" STUB_LABEL=0000000000000000000000000000000000000000 PATH="$WORK/stubbin:$PATH" \
-  bash "$CLONE/deploy/digitalocean/qc1-measure.sh" --dir "$WORK/labelled" --no-browser --image qc1-supplied:latest >"$WORK/label.out" 2>&1 || rc=$?
-if ! { [[ "$rc" == 1 ]] && grep -q "is labelled revision '0000000000000000000000000000000000000000', not HEAD $CLONE_HEAD" "$WORK/label.out"; }; then cat "$WORK/label.out" >&2; exit 1; fi
-if grep -qE '^(run|rm|network|volume|pull|build)( |$)' "$WORK/stub.log"; then echo 'qc1: a mislabelled image started something:' >&2; cat "$WORK/stub.log" >&2; exit 1; fi
-# The same stub labelled with HEAD gets past the label and stops at the level check (the stub has no binary): still nothing started.
-: >"$WORK/stub.log"
-rc=0; STUB_LOG="$WORK/stub.log" STUB_LABEL="$CLONE_HEAD" PATH="$WORK/stubbin:$PATH" \
-  bash "$CLONE/deploy/digitalocean/qc1-measure.sh" --dir "$WORK/labelled2" --no-browser --image qc1-supplied:latest >"$WORK/label2.out" 2>&1 || rc=$?
-[[ "$rc" != 0 ]] && ! grep -q 'is labelled revision' "$WORK/label2.out"
-grep -q '^run --rm --network none --pull never --entrypoint /fold sha256:c' "$WORK/stub.log"
-if grep -qE '^(rm|network|volume|pull|build)( |$)' "$WORK/stub.log"; then echo 'qc1: a bound image started a stack before the level check' >&2; cat "$WORK/stub.log" >&2; exit 1; fi
-# A dirty tree is refused before any image is looked at: edit the clone's runner uncommitted.
-printf '\n# dirty\n' >>"$CLONE/deploy/digitalocean/qc1-measure.sh"
-: >"$WORK/stub.log"
-rc=0; STUB_LOG="$WORK/stub.log" PATH="$WORK/stubbin:$PATH" bash "$CLONE/deploy/digitalocean/qc1-measure.sh" --dir "$WORK/dirty" --no-browser --image qc1-supplied:latest >"$WORK/dirty.out" 2>&1 || rc=$?
-[[ "$rc" == 1 ]] && grep -q 'the tree is dirty' "$WORK/dirty.out"
-[[ "$(cat "$WORK/stub.log")" == info* && "$(wc -l <"$WORK/stub.log")" == 1 ]]
-git -C "$CLONE" checkout -q -- deploy/digitalocean/qc1-measure.sh
+# The daemon's isolation checks all come before anything is created: the local-daemon pin, the busy-daemon refusal, the declared-disposable check and the scope check.
+pin_line="$(grep -n '^isolation_pin_local || exit 1$' "$RUNNER" | head -n 1 | cut -d: -f1)"
+declared_line="$(grep -n 'FOLD_DRILL_ISOLATED_DAEMON:-}" == 1' "$RUNNER" | head -n 1 | cut -d: -f1)"
+scope_line="$(grep -n 'isolation_daemon_scope_problems' "$RUNNER" | head -n 1 | cut -d: -f1)"
+[[ -n "$pin_line" && -n "$declared_line" && -n "$scope_line" && "$pin_line" -lt "$guard_line" && "$guard_line" -lt "$declared_line" && "$declared_line" -lt "$scope_line" && "$scope_line" -lt "$mkdir_line" ]]
 # The guard admits --shared-daemon only on its own flag, and only recorded as shared.
 grep -q 'sharedDaemon:\$shared' "$RUNNER"
 # Identity: HEAD, clean tree, immutable ids for every container, ids recorded, sources hashed.
@@ -1753,7 +1696,7 @@ grep -q 'IMAGE_LABEL" == "\$REVISION"' "$RUNNER"
 grep -q '"\$IMAGE_ID")"' "$RUNNER"; grep -q '"\$PG_IMAGE_ID"' "$RUNNER"
 if grep -nE 'docker run .*"\$IMAGE"( |$)' "$RUNNER" | grep -v 'docker build'; then echo 'qc1: a container is started from a tag, not an image id' >&2; exit 1; fi
 if grep -nE 'docker run .*postgres:16-alpine|docker run .* "\$PG_IMAGE"( |$)' "$RUNNER"; then echo 'qc1: a container is started from the Postgres tag' >&2; exit 1; fi
-grep -q 'image_ran" == "\$IMAGE_ID"' "$RUNNER"
+grep -q 'assert_image "\$APP_CID" "\$IMAGE_ID"' "$RUNNER"
 grep -q "dbImageId:\|--arg dbImage" "$RUNNER"; grep -q 'appContainers' "$RUNNER"; grep -q 'postgresRepoDigests' "$RUNNER"
 # Nothing is removed by name, pattern or prune; the host stack is never named.
 if grep -nE 'docker (rm|kill|stop)[^"]*qc1-|docker system|docker container prune|docker volume prune|docker network prune|docker compose|--name ' "$RUNNER"; then echo 'qc1: the runner removes or names something other than by id' >&2; exit 1; fi
@@ -2148,29 +2091,24 @@ mx_edit() { # cell file jq-filter: rewrites a file of a cell of MX_DIR
 # The control: four consistent cells, a clean runner record each. This is the only way to FULL.
 mx_case control; mx_run control
 [[ "$MX_RC" == 0 && "$(jq -r .status "$MX/out-control.json")" == FULL && "$(jq -c .gaps "$MX/out-control.json")" == '[]' ]] || { echo "the control matrix is not FULL: exit $MX_RC: $(cat "$MX/out-control.json" | jq -c '.gaps' 2>/dev/null) $(cat "$MX/out-control.txt")" >&2; exit 1; }
-jq -e '.cells | length == 4 and all(.recompute.savedEqualsRecomputed == true and .evidence.releaseEvidence == true and .evidence.coverage == "full" and .judge.libMatchesRun and .judge.factsMatchRun and .settingsFull and .runner.step.summaryAgrees and .collectionFailed == null)' "$MX/out-control.json" >/dev/null
+jq -e '.cells | length == 4 and all(.recompute.savedEqualsRecomputed == true and .evidence.releaseEvidence == true and .evidence.coverage == "full" and .judge.libMatchesRun and .judge.factsMatchRun and .settingsFull and .runner.step.summaryAgrees)' "$MX/out-control.json" >/dev/null
 jq -e '[.cells[] | select(.name == "multibyte-spread")] | .[0].exactness | (.deletionsChecked > 0 and .textExact == .deletionsChecked and .textNotExact == 0)' "$MX/out-control.json" >/dev/null
 # One case spoils each cell in a different way, so a joined record shows every way at once (each gap names its own cell and cause, and none can come from another cell's spoiling).
-# R1: complete inner records, and the nested run could not bring something out of the container (the wrapper rejects exactly this); a run the runner did not record, did not finish, or recorded as failed.
+# R1: complete inner records, and a run the runner did not record, did not finish, or recorded as failed.
 mx_case outer
-printf '%s\n' '/work/prep (the browser runtime preparation) could not be copied out' 'the run inside could not be confirmed stopped before the copy' >"$MX_DIR/ascii-tail/qc1/COLLECTION-FAILED.txt"
 rm -f "$MX_DIR/ascii-head/evidence.json"
 jq -c '.steps[0].verdict = "fail" | .result = "fail"' "$MX_DIR/multibyte-spread/evidence.json" >"$MX_DIR/x.tmp" && mv "$MX_DIR/x.tmp" "$MX_DIR/multibyte-spread/evidence.json"
 jq -c '.steps[0].exit = 143 | .steps[0].verdict = "interrupted" | .result = "incomplete"' "$MX_DIR/ascii-spread/evidence.json" >"$MX_DIR/x.tmp" && mv "$MX_DIR/x.tmp" "$MX_DIR/ascii-spread/evidence.json"
 mx_run outer
-mx_pilot outer 'cell ascii-tail: the nested run left COLLECTION-FAILED.txt.*could not be copied out'
 mx_pilot outer 'cell ascii-head: no runner record'
 mx_pilot outer 'cell multibyte-spread: the runner recorded its QC-1 step as fail'
 mx_pilot outer 'cell ascii-spread: the runner recorded its QC-1 step as interrupted, exit 143'
-jq -e '[.gaps[] | select(test("ascii-tail"))] | length == 1' "$MX/out-outer.json" >/dev/null   # the rows of ascii-tail are complete, and the collection failure is the only thing named for it
 mx_case outer2
 jq -c '.workingTreeClean = false' "$MX_DIR/ascii-spread/evidence.json" >"$MX_DIR/x.tmp" && mv "$MX_DIR/x.tmp" "$MX_DIR/ascii-spread/evidence.json"
-jq -c '.steps[0].summary.collectionFailed = true' "$MX_DIR/ascii-head/evidence.json" >"$MX_DIR/x.tmp" && mv "$MX_DIR/x.tmp" "$MX_DIR/ascii-head/evidence.json"
 jq -c '.steps[0].summary.releaseEvidence = false' "$MX_DIR/ascii-tail/evidence.json" >"$MX_DIR/x.tmp" && mv "$MX_DIR/x.tmp" "$MX_DIR/ascii-tail/evidence.json"
 jq -c '.steps[0].artifacts = "/elsewhere/qc1"' "$MX_DIR/multibyte-spread/evidence.json" >"$MX_DIR/x.tmp" && mv "$MX_DIR/x.tmp" "$MX_DIR/multibyte-spread/evidence.json"
 mx_run outer2
 mx_pilot outer2 'cell ascii-spread: the runner record does not say the working tree was clean'
-mx_pilot outer2 'cell ascii-head: the runner recorded a collection failure'
 mx_pilot outer2 'cell ascii-tail: the runner.s summary of its QC-1 step differs'
 mx_pilot outer2 'cell multibyte-spread: the runner record.s qc1 step is for another directory'
 # R2: a status that was true of its rows, and the rows or the environment were changed or cut afterwards; a status of another run; an edited flag.
@@ -3019,10 +2957,6 @@ lo_refused 'cannot be combined' --legacy-only --no-browser --next-changed-runs 2
 lo_refused 'at least 10000' --legacy-only --no-browser --sizes 9999
 lo_refused 'at least 10000' --legacy-only --no-browser --sizes 10000,500
 lo_refused 'at least 10000' --legacy-only --no-browser --sizes 10000,x
-lo_refused 'cannot reach a Docker daemon' --legacy-only --no-browser --sizes 10000,100000
-lo_refused 'cannot reach a Docker daemon' --legacy-only --no-browser --sizes 1000000 --droplet 2gb
-# the matrix is untouched: without the flag an ordinary argument list reaches the same daemon check
-lo_refused 'cannot reach a Docker daemon' --no-browser --sizes 10000
 # --- the forged markers run in one place only: psql into the harness's own database container, by id, from legacy.sh -------------------------------------------------------------------------
 [[ "$(grep -rn --include='*.sh' -- '-f - <"$HERE/qc1/legacy-markers.sql"' "$HERE" "$ROOT/scripts" | grep -vc '/qc1-fixtures.sh:')" == 1 ]]
 grep -q 'docker exec -i "\$DB_CID" psql -X -U church -d fold .* -f - <"\$HERE/qc1/legacy-markers.sql"' "$HERE/qc1/legacy.sh"

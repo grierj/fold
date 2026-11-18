@@ -222,7 +222,8 @@ func (a *App) prepareMessageOnce(ctx context.Context, id uint) error {
 		return err
 	}
 	rows = append(rows, pushRows...)
-	return db.Transaction(func(tx *gorm.DB) error {
+	claimed := false
+	err = db.Transaction(func(tx *gorm.DB) error {
 		// Everyone the snapshot names is locked FOR KEY SHARE, in ascending
 		// id, before the claim: the rows below take that lock on their
 		// users through their foreign keys anyway, and an account erasure
@@ -244,6 +245,7 @@ func (a *App) prepareMessageOnce(ctx context.Context, id uint) error {
 		if res.RowsAffected == 0 {
 			return stillDue(tx, m.ID)
 		}
+		claimed = true
 		if len(rows) > 0 {
 			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(&rows, rowBatch).Error; err != nil {
 				return err
@@ -269,6 +271,12 @@ func (a *App) prepareMessageOnce(ctx context.Context, id uint) error {
 		}
 		return enqueueBatches(tx, m.ID, queued, "")
 	})
+	// The body can't change once the claim holds, so the pictures it doesn't
+	// show (uploaded, then taken out again) can go.
+	if err == nil && claimed && m.Category == models.MessageCategoryAnnouncement {
+		a.pruneMessageImages(ctx, m.ID, m.BodyHTML)
+	}
+	return err
 }
 
 // lockSnapshotUsers locks every user a snapshot names (each row's recipient
@@ -653,7 +661,7 @@ func (a *App) messageEmail(m *models.Message, row models.MessageRecipient, reade
 		msg.BodyHTML = "<p><em>" + html.EscapeString(note) + "</em></p>" + m.BodyHTML
 		msg.BodyText = note + "\n\n" + m.BodyText
 	}
-	r, err := a.renderMessageWith(&msg, reader, row.Address, vals, footer)
+	r, err := a.renderMessageWith(&msg, reader, row.Address, vals, footer, a.emailBaseURL())
 	if err != nil {
 		return mail.Message{}, err
 	}

@@ -45,10 +45,14 @@ services:
       FOLD_JOB_POLL: ${FOLD_JOB_POLL:-1s}
       # Only Caddy, on the fixed subnet below, may set X-Forwarded-For (C17).
       FOLD_TRUSTED_PROXIES: ${FOLD_TRUSTED_PROXIES:-172.30.0.0/24}
+      # Where the app reads the backup service's two status files (read-only).
+      FOLD_BACKUP_DIR: /backup-status
     volumes:
       # Avatars and cover photos. A named volume survives `up --build`;
       # the image's anonymous VOLUME /data does not.
       - uploads:/data
+      # LAST_OK and status.json only. The app never mounts the archives.
+      - backup-status:/backup-status:ro
     healthcheck:
       test: ["CMD", "/fold", "healthcheck"]
       interval: 10s
@@ -75,6 +79,54 @@ services:
     environment:
       DOMAIN: ${DOMAIN}
 
+  backup:
+    # Nightly and on-demand backups of the database and the uploads volume
+    # (deploy/backup/README.md). FOLD_BACKUP_VERSION lets a deployment keep a
+    # published backup image while the app is pinned to an older release that
+    # has none; it defaults to the app's version.
+    image: ghcr.io/grierj/fold-backup:${FOLD_BACKUP_VERSION:-${FOLD_VERSION}}
+    # No host ports. The service only talks to the database.
+    restart: unless-stopped
+    # An explicit identity: the host keeps its own copies of older archives in a
+    # root-only folder of the backups volume, which this user cannot open.
+    # provision.sh refuses a resolved configuration that changes either line.
+    user: "65532:65532"
+    cap_drop:
+      - ALL
+    environment:
+      PGPASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+      FOLD_BACKUP_TZ: ${FOLD_BACKUP_TZ:-}
+      FOLD_BACKUP_KEEP_DAYS: ${FOLD_BACKUP_KEEP_DAYS:-}
+      # Optional offsite copies: all six or none. Only the public age
+      # recipient is here; the private identity stays offline.
+      FOLD_BACKUP_S3_BUCKET: ${FOLD_BACKUP_S3_BUCKET:-}
+      FOLD_BACKUP_S3_ENDPOINT: ${FOLD_BACKUP_S3_ENDPOINT:-}
+      FOLD_BACKUP_S3_REGION: ${FOLD_BACKUP_S3_REGION:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      FOLD_BACKUP_AGE_RECIPIENT: ${FOLD_BACKUP_AGE_RECIPIENT:-}
+      # Set by deploy/digitalocean/provision.sh (FOLD_BACKUP_COORD=<deploy
+      # dir>) so a host restore and a backup never overlap. Unset, this is
+      # empty and the service runs uncoordinated.
+      FOLD_RECOVERY_DIR: ${FOLD_BACKUP_COORD:+/coord}
+    volumes:
+      # Read-only: a backup only reads the uploads.
+      - uploads:/data:ro
+      - backups:/backups
+      - backup-status:/backup-status
+      # The host's backup.lock and recovery.lock, read-only. With
+      # FOLD_BACKUP_COORD unset this is an empty named volume.
+      - ${FOLD_BACKUP_COORD:-backup-coord}:/coord:ro
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/backup.sh", "health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      db:
+        condition: service_healthy
+
 # One network with a fixed subnet, so the app can trust exactly its proxy.
 networks:
   default:
@@ -85,5 +137,12 @@ networks:
 volumes:
   pgdata:
   uploads:
+  # Archives (root:65532, mode 1770). Only the backup service mounts it; the
+  # host reads and keeps its own adopted/ copies in the same volume.
+  backups:
+  # LAST_OK and status.json: written by backup, read-only in the app.
+  backup-status:
+  # Placeholder for /coord when FOLD_BACKUP_COORD is unset.
+  backup-coord:
   caddydata:
   caddyconfig:

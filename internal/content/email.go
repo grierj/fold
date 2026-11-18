@@ -34,6 +34,10 @@ type EmailPage struct {
 	Footer      string
 	SettingsURL string
 	Address     []string
+	// BaseURL is the church's web address (SITE_URL): a picture's address in
+	// the body is made absolute with it, since an inbox has no site to be
+	// relative to. Pictures are linked, never attached.
+	BaseURL string
 }
 
 func RenderEmail(p EmailPage) (string, error) {
@@ -41,7 +45,7 @@ func RenderEmail(p EmailPage) (string, error) {
 	err := emailTemplate.Execute(&b, struct {
 		EmailPage
 		Body template.HTML
-	}{p, template.HTML(emailStyles(SanitizeHTML(p.Body)))})
+	}{p, template.HTML(emailStyles(SanitizeHTML(p.Body), p.BaseURL))})
 	return b.String(), err
 }
 
@@ -56,13 +60,14 @@ var elementStyles = map[atom.Atom]string{
 	atom.Blockquote: "margin:0 0 16px 0;padding-left:12px;border-left:3px solid #d4d4d8;color:#52525b;",
 	atom.Hr:         "border:0;border-top:1px solid #e4e4e7;margin:24px 0;",
 	atom.A:          "color:#1d4ed8;text-decoration:underline;",
+	atom.Img:        "max-width:100%;height:auto;display:block;border:0;margin:0 0 16px 0;",
 }
 
 const buttonStyle = "display:inline-block;padding:12px 20px;background-color:#1d4ed8;color:#ffffff;text-decoration:none;border-radius:6px;font-weight:bold;"
 
 // emailStyles adds the inline styles to sanitized HTML. It parses and
 // re-renders it, so whatever it returns is well-formed and escaped.
-func emailStyles(s string) string {
+func emailStyles(s, baseURL string) string {
 	ctx := &html.Node{Type: html.ElementNode, Data: "div", DataAtom: atom.Div}
 	nodes, err := html.ParseFragment(strings.NewReader(s), ctx)
 	if err != nil {
@@ -70,7 +75,7 @@ func emailStyles(s string) string {
 	}
 	var b strings.Builder
 	for _, n := range nodes {
-		styleTree(n)
+		styleTree(n, strings.TrimSuffix(baseURL, "/"))
 		if err := html.Render(&b, n); err != nil {
 			return template.HTMLEscapeString(PlainText(s))
 		}
@@ -78,8 +83,15 @@ func emailStyles(s string) string {
 	return b.String()
 }
 
-func styleTree(n *html.Node) {
+func styleTree(n *html.Node, baseURL string) {
 	if n.Type == html.ElementNode {
+		if n.DataAtom == atom.Img {
+			for i, a := range n.Attr {
+				if a.Key == "src" && strings.HasPrefix(a.Val, "/") {
+					n.Attr[i].Val = baseURL + a.Val
+				}
+			}
+		}
 		style := elementStyles[n.DataAtom]
 		if n.DataAtom == atom.A && hasClass(n, ButtonClass) {
 			style = buttonStyle
@@ -89,7 +101,7 @@ func styleTree(n *html.Node) {
 		}
 	}
 	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		styleTree(c)
+		styleTree(c, baseURL)
 	}
 }
 

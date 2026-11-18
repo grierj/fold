@@ -42,6 +42,7 @@ const FIELD_OF: Partial<Record<ErrorCode, keyof Errors>> = {
   message_body: "body",
   message_merge_unknown: "body",
   message_merge_event: "body",
+  message_image: "body",
   message_audience: "audience",
   message_audience_gone: "audience",
   message_not_yours: "audience",
@@ -231,6 +232,18 @@ export function MessageComposerPage() {
       resume();
     }
     return m;
+  }
+
+  // A picture is added to a saved message, so a new one is saved as a draft
+  // first (it needs its audience, like any draft). The editor shows the words.
+  async function saveForPicture(): Promise<{ id: number } | { error: string }> {
+    if (message) return { id: message.id };
+    if (!audience) return { error: "Choose who this message is for first. A picture is added to a saved draft." };
+    try {
+      return { id: (await save()).id };
+    } catch (e) {
+      return { error: errorText(e, "We couldn't save the draft first.") };
+    }
   }
 
   async function run(action: Action) {
@@ -469,7 +482,7 @@ export function MessageComposerPage() {
           ? "Insert field adds each person's first name, or the event's title, time and links."
           : "Insert field adds each person's first name."} error={errors.body}>
           <Suspense fallback={<Skeleton kind="lines" label="Loading the editor…" />}>
-            <RichTextEditor key={editorKey} value={body} onChange={setBody} onReady={onEditorReady} oneEvent={oneEvent} />
+            <RichTextEditor key={editorKey} value={body} onChange={setBody} onReady={onEditorReady} oneEvent={oneEvent} pictures={{ messageId: message?.id ?? null, save: saveForPicture }} />
           </Suspense>
         </Field>
         <div className="flex flex-wrap gap-2">

@@ -129,3 +129,34 @@ test.describe("on a phone", () => {
     await expect(page.getByRole("button", { name: "All", pressed: true })).toBeVisible();
   });
 });
+
+// DEC-150: a notice about a teen carries a Teen badge in words, in the bell
+// and on /notifications, and an adult's request carries none.
+test("an admin sees a Teen badge on a teen's account request, in the bell and on the page", async ({ page, request }) => {
+  const stamp = Date.now();
+  const teenName = `Badge Teen ${stamp}`;
+  const adultName = `Badge Adult ${stamp}`;
+  const csrf = async () => (await (await request.get("/api/v1/auth/csrf")).json()).csrfToken as string;
+  const birth = `${new Date().getUTCFullYear() - 15}-01-01`;
+  for (const body of [
+    { name: teenName, email: email(`badge-teen-${stamp}`), ageBand: "teen", birthDate: birth },
+    { name: adultName, email: email(`badge-adult-${stamp}`), ageBand: "adult" },
+  ]) {
+    const res = await request.post("/api/v1/account-requests", { headers: { "X-CSRF-Token": await csrf() }, data: body });
+    expect(res.ok(), await res.text()).toBe(true);
+  }
+
+  await signIn(page, "grier");
+  await page.getByRole("button", { name: /Alerts/ }).click();
+  const panel = page.locator("#notif-panel");
+  const teenRow = panel.getByRole("listitem").filter({ hasText: `${teenName} requested an account` });
+  const adultRow = panel.getByRole("listitem").filter({ hasText: `${adultName} requested an account` });
+  await expect(teenRow.getByText("Teen", { exact: true })).toBeVisible();
+  await expect(adultRow).toBeVisible();
+  await expect(adultRow.getByText("Teen", { exact: true })).toHaveCount(0);
+
+  await page.goto("/notifications");
+  const pageTeenRow = page.getByRole("listitem").filter({ hasText: `${teenName} requested an account` });
+  await expect(pageTeenRow.getByText("Teen", { exact: true })).toBeVisible();
+  await expect(page.getByRole("listitem").filter({ hasText: `${adultName} requested an account` }).getByText("Teen", { exact: true })).toHaveCount(0);
+});

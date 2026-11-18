@@ -925,6 +925,35 @@ func TestCleanOwnerBatches(t *testing.T) {
 	})
 }
 
+// An empty keep, the closed-restore command's call for a folder with no
+// account, drains an owner of any size through repeated calls and then removes
+// the folder.
+func TestCleanOwnerEmptyKeepDrainsAcrossCalls(t *testing.T) {
+	s := testStore(t)
+	fillOwner(t, s.Dir, 1, 2*CleanBatch+5)
+	fillOwner(t, s.Dir, 2, 3)
+	calls := 0
+	for {
+		calls++
+		err := s.CleanOwner(context.Background(), avatarOwner(t, 1), "")
+		if err == nil {
+			break
+		}
+		if err != ErrMoreRemain || calls > 5 {
+			t.Fatalf("call %d: %v", calls, err)
+		}
+	}
+	if calls != 3 {
+		t.Fatalf("%d calls, want 3 for %d files", calls, 2*CleanBatch+5)
+	}
+	if exists(s.Dir, "avatars/1") {
+		t.Fatal("folder survived")
+	}
+	if entries, _ := os.ReadDir(filepath.Join(s.Dir, "avatars/2")); len(entries) != 3 {
+		t.Fatalf("a neighbor folder changed: %d entries", len(entries))
+	}
+}
+
 func TestCleanOwnerContext(t *testing.T) {
 	s := testStore(t)
 	fillOwner(t, s.Dir, 1, 200)
@@ -1405,4 +1434,153 @@ func (s *LocalStore) Exists(_ context.Context, key string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+const (
+	msgA = "0123456789abcdef0123456789abcdef"
+	msgB = "fedcba9876543210fedcba9876543210"
+	msgC = "00112233445566778899aabbccddeeff"
+)
+
+func messageOwner(t *testing.T, id uint) Owner {
+	t.Helper()
+	o, err := MessageOwner(id)
+	if err != nil {
+		t.Fatalf("MessageOwner(%d): %v", id, err)
+	}
+	return o
+}
+
+// A message key is "messages/<id>/<32 hex>.<jpg|png|gif>" and nothing else.
+func TestParseKeyMessages(t *testing.T) {
+	for _, ext := range []string{"jpg", "png", "gif"} {
+		kind, owner, name, err := ParseKey("messages/12/" + msgA + "." + ext)
+		if err != nil || kind != KindMessages || owner != 12 || name != msgA+"."+ext {
+			t.Fatalf("%s: %q %d %q %v", ext, kind, owner, name, err)
+		}
+	}
+	for _, bad := range []string{
+		"messages/12/x.png", "messages/12/" + msgA, "messages/12/" + msgA + ".webp", "messages/12/" + msgA + ".jpeg",
+		"messages/12/" + strings.ToUpper(msgA) + ".png", "messages/12/" + msgA[:31] + ".png", "messages/12/" + msgA + "0.png",
+		"messages/0/" + msgA + ".png", "messages/012/" + msgA + ".png", "messages/12/a/" + msgA + ".png",
+		"messages/12/../" + msgA + ".png", "messages//" + msgA + ".png", "messages/12/.tmp-" + msgA + ".png",
+	} {
+		if _, _, _, err := ParseKey(bad); err != ErrInvalidKey {
+			t.Errorf("ParseKey(%q) = %v, want ErrInvalidKey", bad, err)
+		}
+	}
+	if _, err := MessageOwner(0); err != ErrInvalidOwner {
+		t.Fatalf("MessageOwner(0) = %v", err)
+	}
+	if k := NewKey(KindMessages, "12", msgA, "png"); k != "messages/12/"+msgA+".png" {
+		t.Fatalf("NewKey = %q", k)
+	}
+}
+
+// The Store contract for a message's pictures: put, open, URL, delete.
+func TestMessageKeysPutOpenDelete(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	key := NewKey(KindMessages, "5", msgA, "png")
+	if err := s.Put(ctx, key, strings.NewReader("png-bytes"), 9, "image/png"); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if got := s.URL(key); got != "/uploads/messages/5/"+msgA+".png" {
+		t.Fatalf("url = %q", got)
+	}
+	f, err := s.Open(key)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	b, _ := io.ReadAll(f)
+	f.Close()
+	if string(b) != "png-bytes" {
+		t.Fatalf("read %q", b)
+	}
+	if err := s.Put(ctx, "messages/5/not-a-picture.png", strings.NewReader("x"), 1, "image/png"); err != ErrInvalidKey {
+		t.Fatalf("put with a bad name = %v", err)
+	}
+	if err := s.Delete(ctx, key); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if err := s.Delete(ctx, key); err != nil {
+		t.Fatalf("delete again: %v", err)
+	}
+	if _, err := s.Open(key); err == nil {
+		t.Fatal("deleted key still opens")
+	}
+}
+
+func TestPruneOwnerKeepsReferencedRemovesRest(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	owner := messageOwner(t, 5)
+	if err := s.PruneOwner(ctx, owner, nil); err != nil {
+		t.Fatalf("no namespace: %v", err)
+	}
+	keepKey := "messages/5/" + msgA + ".png"
+	put(t, s.Dir, keepKey, "kept")
+	put(t, s.Dir, "messages/5/"+msgB+".jpg", "unreferenced")
+	put(t, s.Dir, "messages/5/.tmp-partial", "partial")
+	put(t, s.Dir, "messages/6/"+msgC+".gif", "other message")
+	put(t, s.Dir, "avatars/5/a.png", "other kind")
+	if err := s.PruneOwner(ctx, owner, map[string]bool{keepKey: true, "messages/6/" + msgC + ".gif": true}); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+	if !exists(s.Dir, keepKey) {
+		t.Fatal("kept picture removed")
+	}
+	for _, gone := range []string{"messages/5/" + msgB + ".jpg", "messages/5/.tmp-partial"} {
+		if exists(s.Dir, gone) {
+			t.Fatalf("%s survived", gone)
+		}
+	}
+	for _, left := range []string{"messages/6/" + msgC + ".gif", "avatars/5/a.png"} {
+		if !exists(s.Dir, left) {
+			t.Fatalf("%s was touched", left)
+		}
+	}
+	// Nothing referenced: every picture goes, then the folder.
+	if err := s.PruneOwner(ctx, owner, map[string]bool{}); err != nil {
+		t.Fatalf("prune all: %v", err)
+	}
+	if exists(s.Dir, "messages/5") {
+		t.Fatal("empty folder stayed")
+	}
+	if !exists(s.Dir, "messages/6/"+msgC+".gif") {
+		t.Fatal("another message's folder was touched")
+	}
+}
+
+func TestPruneOwnerRefusesOtherOwners(t *testing.T) {
+	s := testStore(t)
+	put(t, s.Dir, "avatars/1/a.png", "one")
+	put(t, s.Dir, "covers/1/a.png", "cover")
+	before := snapshot(t, s.Dir)
+	for name, o := range map[string]Owner{
+		"zero": {}, "avatars": {kind: KindAvatars, id: 1}, "covers": {kind: KindCovers, id: 1},
+		"id 0": {kind: KindMessages, id: 0}, "kind": {kind: "other", id: 1},
+	} {
+		if err := s.PruneOwner(context.Background(), o, nil); err != ErrInvalidOwner {
+			t.Fatalf("PruneOwner(%s) = %v", name, err)
+		}
+	}
+	// And CleanOwner is still for avatars only.
+	if err := s.CleanOwner(context.Background(), messageOwner(t, 1), ""); err != ErrInvalidOwner {
+		t.Fatalf("CleanOwner(messages) = %v", err)
+	}
+	sameTree(t, "store", before, snapshot(t, s.Dir))
+}
+
+func TestPruneOwnerStopsWhenContextEnds(t *testing.T) {
+	s := testStore(t)
+	put(t, s.Dir, "messages/5/"+msgA+".png", "a")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := s.PruneOwner(ctx, messageOwner(t, 5), nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("prune = %v", err)
+	}
+	if !exists(s.Dir, "messages/5/"+msgA+".png") {
+		t.Fatal("removed after the context ended")
+	}
 }

@@ -809,6 +809,10 @@ func CanManageGuestRegistration(p *Person, guest, active bool, ev EventView, g G
 // them (M3.1b, the System page).
 func CanManageJobs(p *Person) bool { return IsAdmin(p) }
 
+// CanSeeBackupStatus: only admins see whether the nightly backup is current
+// (M5.2, the System page). The answer holds no file content or path.
+func CanSeeBackupStatus(p *Person) bool { return IsAdmin(p) }
+
 // CanClearSuppression: only admins let Fold mail a suppressed address
 // again (M3.2c, DEC-113).
 func CanClearSuppression(p *Person) bool { return IsAdmin(p) }

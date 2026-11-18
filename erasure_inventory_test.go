@@ -540,7 +540,6 @@ var erasureColumns = []erasureColumn{
 	// T35 suppressions
 	{"suppressions", "id", "T35", "RET", []string{"T35", "7.4", "7.7"}},
 	{"suppressions", "channel", "T35", "RET", []string{"T35", "7.4", "7.7"}},
-	{"suppressions", "address", "T35", "RET", []string{"T35", "7.4", "7.7"}},
 	{"suppressions", "address_hash", "T35", "RET", []string{"T35", "7.4", "7.7"}},
 	{"suppressions", "reason", "T35", "RET", []string{"T35", "7.4", "7.7"}},
 	{"suppressions", "provider", "T35", "RET", []string{"T35", "7.4", "7.7"}},

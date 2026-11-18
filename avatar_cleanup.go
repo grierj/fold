@@ -27,6 +27,13 @@ import (
 // transaction. The job takes the same lock, reads the key as it is then, and
 // removes everything else in the account's folder. A daily sweep queues the
 // same job for folders a crash left behind. Both are safe to run twice.
+//
+// Two callers own the cleanup rule in cleanAvatarAccount: the job above, and
+// `fold restore settle-uploads` (restore_settle_uploads.go), which runs with
+// the site closed after a restore that brought uploads back. The job leaves a
+// folder with no users row alone, because a restore may have left the database
+// behind the uploads and a running app cannot tell that from an account it has
+// not seen yet. Only the closed-restore command empties such a folder.
 const (
 	kindAvatarCleanup = "avatar.cleanup"
 	kindAvatarSweep   = "avatar.sweep"
@@ -167,26 +174,40 @@ func checkAvatarSession(row avatarRow, snap *models.User) error {
 	return nil
 }
 
-// runAvatarCleanup removes every file in the account's folder except its
-// current avatar. The row lock is held for the whole run, so a concurrent
-// upload either commits first (and its key is kept) or waits.
+// runAvatarCleanup is the job's adapter over cleanAvatarAccount. A missing
+// account is success with nothing touched: no upload can target it, and a
+// restore may have left the database behind the uploads. Only the closed-
+// restore command (restore_settle_uploads.go) clears such folders.
 func (a *App) runAvatarCleanup(ctx context.Context, userID uint) error {
-	owner, err := storage.AvatarOwner(userID)
-	if err != nil {
-		return errAvatarCleanupPayload
-	}
 	cctx, cancel := context.WithTimeout(ctx, avatarCleanupTxTimeout)
 	defer cancel()
-	err = a.DB.WithContext(cctx).Transaction(func(tx *gorm.DB) error {
+	_, err := a.cleanAvatarAccount(cctx, userID)
+	return mapAvatarCleanupError(cctx, err)
+}
+
+// cleanAvatarAccount is the one cleanup rule for an account's avatar folder,
+// shared by the avatar.cleanup job and `fold restore settle-uploads`: under
+// the user's row lock it removes everything except the current avatar, and a
+// tombstone keeps nothing. The row lock is held for the whole call, so a
+// concurrent upload either commits first (and its key is kept) or waits.
+// found reports whether a users row exists; with none, nothing is touched.
+// ctx must carry the call's deadline (the transaction ends with it). Errors
+// come back raw (storage.ErrMoreRemain included) for each caller to map: the
+// job to a fixed text or jobs.Later, the command to its counts.
+func (a *App) cleanAvatarAccount(ctx context.Context, userID uint) (found bool, err error) {
+	owner, err := storage.AvatarOwner(userID)
+	if err != nil {
+		return false, errAvatarCleanupPayload
+	}
+	err = a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		row, err := lockAvatarRow(tx, userID)
 		if err != nil {
 			return err
 		}
 		if row.ID == 0 {
-			// No account: no upload can target it, and a restore may have left
-			// the database behind the uploads. Touch nothing.
 			return nil
 		}
+		found = true
 		keep := ""
 		// Only deleted_at decides: a disabled or invited person's photo is
 		// still their current photo. A tombstone keeps nothing.
@@ -197,9 +218,9 @@ func (a *App) runAvatarCleanup(ctx context.Context, userID uint) error {
 			}
 			keep = row.AvatarKey
 		}
-		return a.Uploads.CleanOwner(cctx, owner, keep)
+		return a.Uploads.CleanOwner(ctx, owner, keep)
 	})
-	return mapAvatarCleanupError(cctx, err)
+	return found, err
 }
 
 // mapAvatarCleanupError turns every outcome into fixed text, or a Later.
@@ -208,6 +229,8 @@ func mapAvatarCleanupError(cctx context.Context, err error) error {
 		return nil
 	}
 	switch {
+	case errors.Is(err, errAvatarCleanupPayload):
+		return errAvatarCleanupPayload
 	case errors.Is(err, storage.ErrMoreRemain):
 		return jobs.Later(time.Now())
 	case errors.Is(err, errAvatarKeyForeign):

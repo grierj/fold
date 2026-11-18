@@ -37,6 +37,16 @@ describe("MessageReadPage", () => {
     expect(screen.queryByText(/who got it/i)).toBeNull();
   });
 
+  it("shows the message's pictures with their description", async () => {
+    vi.mocked(Messages.read).mockResolvedValue({ message: {
+      id: 5, subject: "Picnic", from: "Lee Leader via Grace", sentAt: null,
+      bodyHtml: '<p>See you there.</p><img src="/uploads/messages/5/aa.png" alt="Our picnic table"><img src="https://x.test/p.gif" alt="No">',
+    } });
+    open();
+    expect(await screen.findByRole("img", { name: "Our picnic table" })).toHaveAttribute("src", "/uploads/messages/5/aa.png");
+    expect(document.querySelectorAll("img")).toHaveLength(1);
+  });
+
   it("says a message that isn't theirs isn't here", async () => {
     vi.mocked(Messages.read).mockRejectedValue(new ApiError(404, "message not found", { code: "not_found" }));
     open();

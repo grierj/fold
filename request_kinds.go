@@ -24,8 +24,7 @@ type requestKind struct {
 	subjectReview, adminReview, updated string
 	// action maps the lifecycle action the code names (always the contact
 	// spelling) to this kind's own audit action.
-	action func(contactAction string) string
-	// purposes are the stored purposes of this kind.
+	action   func(contactAction string) string
 	purposes []string
 	// canView is the rule for who may see a request in a list.
 	canView func(actor policy.ContactAccount, r models.ContactRequest) bool

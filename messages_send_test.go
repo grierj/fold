@@ -269,14 +269,14 @@ func TestMessagePipelineRecordsReports(t *testing.T) {
 	id := f.scheduleNow(t, f.leader, "Report", "<p>Hi</p>", map[string]any{"type": "group", "groupId": f.group.ID})
 	runMessageJobs(t, f.app)
 	row := recipientsOf(t, f.app, id)[f.teen.Email]
-	if err := f.app.applyEmailEvent(context.Background(), providers.Event{Kind: providers.EventDelivered, MessageID: row.ProviderMessageID, At: time.Now()}); err != nil {
+	if err := f.app.applyEmailEvent(context.Background(), newEmailEventJob(providers.Event{Kind: providers.EventDelivered, MessageID: row.ProviderMessageID, At: time.Now()})); err != nil {
 		t.Fatal(err)
 	}
 	if got := recipientsOf(t, f.app, id)[f.teen.Email]; got.Status != models.RecipientDelivered {
 		t.Fatalf("delivered: %+v", got)
 	}
-	if err := f.app.applyEmailEvent(context.Background(), providers.Event{Kind: providers.EventBounced, Permanent: true, MessageID: row.ProviderMessageID,
-		Address: f.teen.Email, At: time.Now()}); err != nil && !errors.Is(err, errDeliveryNotYet) {
+	if err := f.app.applyEmailEvent(context.Background(), newEmailEventJob(providers.Event{Kind: providers.EventBounced, Permanent: true, MessageID: row.ProviderMessageID,
+		Address: f.teen.Email, At: time.Now()})); err != nil && !errors.Is(err, errDeliveryNotYet) {
 		t.Fatal(err)
 	}
 	if got := recipientsOf(t, f.app, id)[f.teen.Email]; got.Status != models.RecipientBounced || got.Reason != "hard bounce" {
@@ -522,21 +522,21 @@ func TestMessageRetryReadsHashedAndLegacySuppressionsAtSendTime(t *testing.T) {
 // first gives the complaint label, hard bounce first the bounce one.
 func TestBatchSuppressionsReadsInChunks(t *testing.T) {
 	app := testApp(t)
-	suppressHashed(t, app, "hashed@example.com", models.SuppressHardBounce)
+	suppress(t, app, "hashed@example.com", models.SuppressHardBounce)
 	suppress(t, app, "legacy@example.com", models.SuppressComplaint)
-	suppressHashed(t, app, "complaintfirst@example.com", models.SuppressComplaint)
-	suppressHashed(t, app, "complaintfirst@example.com", models.SuppressHardBounce)
+	suppress(t, app, "complaintfirst@example.com", models.SuppressComplaint)
+	suppress(t, app, "complaintfirst@example.com", models.SuppressHardBounce)
 	suppress(t, app, "bouncefirst@example.com", models.SuppressHardBounce)
 	suppress(t, app, "bouncefirst@example.com", models.SuppressComplaint)
 	// Matches in every chunk (500, 500 and 201 distinct inputs), on both sides
 	// of the 500/501 and 1000/1001 boundaries, hashed and legacy: a lookup
 	// that discarded or repeated the results of any read fails the complete
 	// map below.
-	suppress(t, app, "first-legacy@example.com", models.SuppressManual)            // input 0, chunk 1
-	suppressHashed(t, app, "last1-hashed@example.com", models.SuppressManual)      // input 499, chunk 1
-	suppressHashed(t, app, "first2-hashed@example.com", models.SuppressHardBounce) // input 500, chunk 2
-	suppress(t, app, "last2-legacy@example.com", models.SuppressComplaint)         // input 999, chunk 2
-	suppress(t, app, "first3-legacy@example.com", models.SuppressHardBounce)       // input 1000, chunk 3
+	suppress(t, app, "first-legacy@example.com", models.SuppressManual)      // input 0, chunk 1
+	suppress(t, app, "last1-hashed@example.com", models.SuppressManual)      // input 499, chunk 1
+	suppress(t, app, "first2-hashed@example.com", models.SuppressHardBounce) // input 500, chunk 2
+	suppress(t, app, "last2-legacy@example.com", models.SuppressComplaint)   // input 999, chunk 2
+	suppress(t, app, "first3-legacy@example.com", models.SuppressHardBounce) // input 1000, chunk 3
 
 	placed := map[int]string{
 		0:    "First-Legacy@example.com",
@@ -1484,5 +1484,53 @@ func TestRetryDailyLimitCopyMatches(t *testing.T) {
 	if line == "" || !strings.Contains(line, "already sent "+n+" messages") || strings.Contains(line, "Schedule this one for tomorrow") ||
 		!strings.Contains(errMessageRetryDailyLimit.Message, n) {
 		t.Fatalf("the message_retry_daily_limit copy doesn't match dailyMessagesPerGroup: %q", line)
+	}
+}
+
+// pictureDraft makes a draft in the fixture's group that shows one picture
+// (described by alt), and returns its id and the picture's address.
+func (f messageImageFixture) pictureDraft(t *testing.T, alt string) (uint, string) {
+	t.Helper()
+	pic := f.upload(t, f.leader, f.draft, tinyPNG(t))
+	body := `<p>Hi {{first_name}}</p><img src="` + pic.URL + `" alt="` + alt + `"><p>See you.</p>`
+	if w := f.saveBody(t, f.leader, f.draft, f.group.ID, body); w.Code != http.StatusOK {
+		t.Fatalf("save: %d %s", w.Code, w.Body.String())
+	}
+	return f.draft, pic.URL
+}
+
+// A picture goes by its address on the church's site, not as an attachment:
+// the HTML part names it in full with its description and room to shrink, the
+// plain part says "[Image: ...]", and a guardian's copy is the same (DEC-118,
+// DEC-19).
+func TestMessagePipelineLinksPicturesByAddress(t *testing.T) {
+	f := newMessageImageFixture(t)
+	f.app.Config.SiteURL = "https://church.example/"
+	parent := newTestUser(t, f.app, "parent", "password1234", models.RoleMember)
+	f.app.DB.Create(&models.GuardianLink{GuardianUserID: parent.ID, TeenUserID: &f.teen.ID, Status: models.GuardianConfirmed})
+	f.app.DB.Create(&models.Setting{Key: settingGuardianCopies, Value: "true"})
+	id, url := f.pictureDraft(t, "Our picnic table")
+	if w := f.leader.do("POST", "/api/v1/messages/"+itoa(id)+"/schedule", map[string]any{}, true); w.Code != http.StatusOK {
+		t.Fatalf("schedule: %d %s", w.Code, w.Body.String())
+	}
+	runMessageJobs(t, f.app)
+	want := `<img src="https://church.example` + url + `" alt="Our picnic table" style="max-width:100%;height:auto;`
+	for name, to := range map[string]string{"reader": f.teen.Email, "guardian copy": parent.Email} {
+		got, err := devOutbox(t, f.app).LatestTo(to)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !strings.Contains(got.HTML, want) || strings.Count(got.HTML, "<img") != 1 {
+			t.Errorf("%s html:\n%s", name, got.HTML)
+		}
+		if !strings.Contains(got.Body, "[Image: Our picnic table]") {
+			t.Errorf("%s text:\n%s", name, got.Body)
+		}
+		if strings.Contains(got.HTML, `src="/uploads`) {
+			t.Errorf("%s: a relative picture address reached the inbox", name)
+		}
+	}
+	if got, _ := devOutbox(t, f.app).LatestTo(f.teen.Email); got.Subject == "" {
+		t.Fatal("no email for the reader")
 	}
 }

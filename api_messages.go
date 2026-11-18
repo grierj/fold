@@ -122,6 +122,9 @@ var (
 	errMessageWhen     = apiErr(http.StatusBadRequest, "message_when", "pick a time from now to a year ahead")
 	errMessageChannel  = apiErr(http.StatusBadRequest, "message_channel", "texting isn't set up yet; send this as an email")
 	errMessageNotYours = apiErr(http.StatusForbidden, "message_not_yours", "you can't send to those people")
+	// errMessageImage refuses a body whose picture is not one uploaded to this
+	// message (DEC-118): an upload belongs to the message it was made for.
+	errMessageImage = apiErr(http.StatusBadRequest, "message_image", "a picture in this message wasn't added to it here; add it again")
 	// errMessagePushOnly refuses an announcement asked to go by push
 	// alone (DEC-123): push is a companion to the email, never instead of it.
 	errMessagePushOnly = apiErr(http.StatusBadRequest, "message_push_only", "an announcement always goes by email")
@@ -535,6 +538,10 @@ func (a *App) applyMessageBody(c *gin.Context, me *models.User, m *models.Messag
 		fail(c, errMessageBody)
 		return false
 	}
+	if !ownPictures(clean, m.ID) {
+		fail(c, errMessageImage)
+		return false
+	}
 	if _, ok := a.checkAudience(c, me, &body.Audience); !ok {
 		return false
 	}
@@ -550,6 +557,19 @@ func (a *App) applyMessageBody(c *gin.Context, me *models.User, m *models.Messag
 		m.PushAlert = *body.PushAlert
 	case m.ID == 0:
 		m.PushAlert = true
+	}
+	return true
+}
+
+// ownPictures: every picture in sanitized HTML was uploaded to message id.
+// The sanitizer keeps only an upload's address; this keeps it to this message's
+// own, so a body can't show (or, later, keep alive) another message's picture.
+// A message not yet saved (id 0) has none.
+func ownPictures(clean string, id uint) bool {
+	for _, src := range content.ImageSources(clean) {
+		if n, ok := content.ImageMessageID(src); !ok || id == 0 || n != uint64(id) {
+			return false
+		}
 	}
 	return true
 }
@@ -989,6 +1009,11 @@ func (a *App) apiCancelMessage(c *gin.Context) {
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not cancel the message")
 		return
+	}
+	// A discarded draft's pictures go with it. A cancelled scheduled message
+	// keeps its own: the page still shows it as written.
+	if m.Status == models.MessageDraft {
+		a.pruneMessageImages(c.Request.Context(), m.ID, "")
 	}
 	a.respondMessage(c, http.StatusOK, m)
 }
