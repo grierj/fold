@@ -10,6 +10,7 @@ export const EMAIL_GOING = "Email people going";
 
 export function composePath(to: { group: number } | { event: number } | { occurrence: number }): string {
   const [key, id] = Object.entries(to)[0];
+
   return `/messages/new?${key}=${id}`;
 }
 
@@ -22,5 +23,6 @@ export function useCanEmailEvent(eventId: number | undefined): boolean {
   // A failed read means no link: the composer itself decides what the person may do.
   const load = useLoad(async () => (await Messages.options(eventId!)).events.some((e) => e.id === eventId), [canCompose, eventId], { enabled: canCompose && !!eventId });
   const can = load.data === true;
+
   return can;
 }

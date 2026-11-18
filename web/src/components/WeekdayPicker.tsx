@@ -6,6 +6,7 @@ import { Chip } from "./ui/Chip";
 // every create and edit form (DEC-65).
 export function WeekdayPicker({ days, onToggle }: { days: string[]; onToggle: (value: string) => void }) {
   const id = useId();
+
   return (
     <div role="group" aria-labelledby={id}>
       <p id={id} className="label">

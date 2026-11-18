@@ -1,8 +1,11 @@
+import { arrayAt } from "./legacy-reasons";
+import type { JsonObject, JsonValue } from "../src/lib/wireValues";
+import * as schema from "valibot";
+import { isNumber, isJsonObject, isString } from "../src/lib/wireValues";
 import AxeBuilder from "@axe-core/playwright";
 import { mkdirSync } from "node:fs";
 import { expect, test, type APIRequestContext, type Locator, type Page, type Request, type Route } from "@playwright/test";
 import { apiAs, deleteAccountKeepingReasons, email, fromMore, keepAllReview, nextFrames, PASSWORD, signInTo } from "./helpers";
-// @ts-expect-error plain JS module shared with verify-ui
 import { measure } from "./ui-measure.mjs";
 
 // The delete panel's outcomes (M7.4 T07B-1c). Each press of Delete mints an
@@ -33,9 +36,12 @@ const HISTORY = "Fold can't tell whether an earlier delete finished. Reload this
 const TOO_OLD = "This delete request was too old to run, so Fold didn't run it.";
 const CHECKING = "Checking what happened to this delete request…";
 const RESTORE = "Fold noticed its database was restored while it was running, so nothing was changed. It is restarting; try again in a minute.";
+
 const BUSY =
   "Someone was changing this person's household at the same moment, so nothing was deleted. Try again in a moment.";
+
 const NOT_DELETED = /nothing was deleted|not deleted|wasn't deleted|was not deleted/i;
+
 // R4-6c, R4-6e: what a delete does not reach, and what the two counts mean. Landed
 // code still retains network addresses in the activity log (inventory 6.5.2). Each
 // row is one sentence of the copy map in inventory 11.1 (RS-n is its row).
@@ -51,9 +57,11 @@ const RESIDUE: Array<[row: string, words: RegExp]> = [
   ["RS-9", /can't be tied back to them, so Fold leaves it alone/],
   ["RS-11", /Messages they wrote, including drafts and ones that never went out/],
 ];
+
 const IP_NOTE = RESIDUE[2][1];
 const KEPT_HOUSEHOLDS_NOTE = /Fold left these households as they were/;
 const KEPT_ACTIVITY_NOTE = /Fold counts entries, not addresses/;
+
 // T07B-2c: the reason review shown before a reasoned account is deleted.
 const REVIEW_INTRO = /Before you delete this account, choose for each contact-request reason below/;
 const REVIEW_LIMIT = /Fold lists only requests this person made or was asked about/;
@@ -64,29 +72,38 @@ const MARKED = "Changed since you looked: choose again";
 const CANT_RESTORE = "Blanked text can't be brought back in Fold. Backups made before now still contain it.";
 
 type Admin = Awaited<ReturnType<typeof apiAs>>;
+
 type Person = { id: number; email: string; name: string };
 
-function recordOf(value: unknown): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("expected a JSON object");
-  return Object.fromEntries(Object.entries(value));
+function recordOf(value: JsonValue | undefined): JsonObject {
+  if (!isJsonObject(value)) throw new Error("expected a JSON object");
+
+  return value;
 }
 
-function numberAt(value: unknown, ...path: string[]): number {
-  let at: unknown = value;
+function numberAt(value: JsonValue | undefined, ...path: string[]): number {
+  let at: JsonValue | undefined = value;
+
   for (const key of path) at = recordOf(at)[key];
-  if (typeof at !== "number") throw new Error(`expected a number at ${path.join(".")}`);
+
+  if (!isNumber(at)) throw new Error(`expected a number at ${path.join(".")}`);
+
   return at;
 }
 
 async function makePerson(admin: Admin, login: string, name: string): Promise<Person> {
   const made = await admin("POST", "/admin/users", { ageBand: "adult", name, email: email(login), password: PASSWORD, role: "member" });
+
   return { id: numberAt(made, "user", "id"), email: email(login), name };
 }
 
-function stringAt(value: unknown, ...path: string[]): string {
-  let at: unknown = value;
+function stringAt(value: JsonValue | undefined, ...path: string[]): string {
+  let at: JsonValue | undefined = value;
+
   for (const key of path) at = recordOf(at)[key];
-  if (typeof at !== "string") throw new Error(`expected a string at ${path.join(".")}`);
+
+  if (!isString(at)) throw new Error(`expected a string at ${path.join(".")}`);
+
   return at;
 }
 
@@ -101,20 +118,26 @@ async function makeReasoned(request: APIRequestContext, suffix: string, askers =
   const subject = await makePerson(admin, `rv-subject-${suffix}`, `Sue Subject ${suffix}`);
   const keeper = await makePerson(admin, `rv-keeper-${suffix}`, `Kit Keeper ${suffix}`);
   const people: Person[] = [];
+
   for (let i = 1; i <= askers; i++) people.push(await makePerson(admin, `rv-ask${i}-${suffix}`, `Lia ${i} Asker ${suffix}`));
   const { group } = await admin("POST", "/groups", { name: `Review study ${suffix}`, description: "Reason review proof", visibility: "public", tags: [] });
+
   for (const p of [keeper, ...people]) await admin("POST", `/admin/groups/${numberAt(group, "id")}/members`, { userId: p.id, role: "leader" });
   await admin("POST", `/admin/groups/${numberAt(group, "id")}/members`, { userId: subject.id, role: "member" });
   await (await apiAs(request, `rv-subject-${suffix}`))("PUT", "/me", { hideContactFromLeaders: true });
   const made: Asker[] = [];
+
   for (const [i, p] of people.entries()) {
     const login = `rv-ask${i + 1}-${suffix}`;
     const text = `Reason ${i + 1} ${suffix}: please share your email so I can organize rides`;
+
     const res = await (await apiAs(request, login))("POST", "/contact-requests", {
       subjectUserId: subject.id, contextType: "group", contextId: numberAt(group, "id"), fields: "email", reason: text,
     });
+
     made.push({ ...p, login, requestId: numberAt(res, "request", "id"), text });
   }
+
   return { subject, askers: made };
 }
 
@@ -126,33 +149,42 @@ async function makeManyReasoned(request: APIRequestContext, suffix: string, aske
   const admin = await apiAs(request, adminName);
   const subject = await makePerson(admin, `rv-many-subject-${suffix}`, `Mia Many ${suffix}`);
   const people: Person[] = [];
+
   for (let i = 1; i <= askers; i++) people.push(await makePerson(admin, `rv-many-ask${i}-${suffix}`, `Ash ${i} Many ${suffix}`));
   const groupIds: number[] = [];
+
   for (let g = 1; g <= groups; g++) {
     const { group } = await admin("POST", "/groups", { name: `Many study ${g} ${suffix}`, description: "Many reasons proof", visibility: "public", tags: [] });
     const id = numberAt(group, "id");
     groupIds.push(id);
+
     for (const p of people) await admin("POST", `/admin/groups/${id}/members`, { userId: p.id, role: "leader" });
     await admin("POST", `/admin/groups/${id}/members`, { userId: subject.id, role: "member" });
   }
+
   await (await apiAs(request, `rv-many-subject-${suffix}`))("PUT", "/me", { hideContactFromLeaders: true });
   const made: Asker[] = [];
+
   for (const [i, p] of people.entries()) {
     const login = `rv-many-ask${i + 1}-${suffix}`;
     const as = await apiAs(request, login);
+
     for (const [g, groupId] of groupIds.entries()) {
       const text = `Many ${i + 1}-${g + 1} ${suffix}: please share your email so I can organize rides`;
       const res = await as("POST", "/contact-requests", { subjectUserId: subject.id, contextType: "group", contextId: groupId, fields: "email", reason: text });
       made.push({ ...p, login, requestId: numberAt(res, "request", "id"), text });
     }
   }
+
   made.sort((a, b) => a.requestId - b.requestId);
+
   return { subject, reasons: made };
 }
 
 // The reason a contact request holds now, as the admin reads it.
 async function reasonOf(request: APIRequestContext, requestId: number): Promise<string> {
   const admin = await apiAs(request, adminName);
+
   return stringAt(await admin("GET", `/contact-requests/${requestId}`), "request", "reason");
 }
 
@@ -164,22 +196,32 @@ async function openDelete(page: Page, target: Person, expectReady = true): Promi
   await page.getByRole("searchbox", { name: "Search by name or email" }).fill(target.email);
   const row = page.getByRole("row").filter({ hasText: target.email });
   await fromMore(row, "Delete");
+
   if (expectReady) await expect(row.getByRole("button", { name: "Delete account" })).toBeEnabled();
+
   return row;
 }
 
 // The attempt ids of every mint, DELETE and settle the page sends, in order.
 // An id is a capability, so it is compared here and never printed.
 function watchIds(page: Page, targetId: number) {
-  const ids = { minted: 0, deleted: [] as string[], settled: [] as string[] };
+  const deleted: string[] = [];
+  const settled: string[] = [];
+  const ids = { minted: 0, deleted, settled };
+
   const onRequest = (r: Request) => {
     const path = new URL(r.url()).pathname;
+
     if (r.method() === "POST" && path === MINT) ids.minted++;
     const body = r.postData() ? recordOf(JSON.parse(r.postData() ?? "{}")) : {};
-    if (r.method() === "DELETE" && path === `/api/v1/admin/users/${targetId}` && typeof body.attemptId === "string") ids.deleted.push(body.attemptId);
-    if (r.method() === "POST" && path === SETTLE && typeof body.attemptId === "string") ids.settled.push(body.attemptId);
+
+    if (r.method() === "DELETE" && path === `/api/v1/admin/users/${targetId}` && isString(body.attemptId)) ids.deleted.push(body.attemptId);
+
+    if (r.method() === "POST" && path === SETTLE && isString(body.attemptId)) ids.settled.push(body.attemptId);
   };
+
   page.on("request", onRequest);
+
   return { ids, stop: () => page.off("request", onRequest) };
 }
 
@@ -193,6 +235,7 @@ async function answerFirstDelete(page: Page, target: Person, answer: { status: n
   await page.route(deletePath(target), async (route: Route) => {
     if (route.request().method() !== "DELETE" || !first) return route.fallback();
     first = false;
+
     if (run) await route.fetch();
     await route.fulfill({ status: answer.status, json: { error: "server text the page must not show", code: answer.code } });
   });
@@ -206,6 +249,7 @@ async function holdSettle(page: Page) {
     await gate;
     await route.fallback();
   });
+
   return release;
 }
 
@@ -252,11 +296,13 @@ async function evidence(page: Page, state: string) {
     expect(layout.overflow, `${state} at ${width}px: sideways overflow`).toBeLessThanOrEqual(0);
     expect(layout.clipped, `${state} at ${width}px: clipped select`).toEqual([]);
     expect(layout.under24, `${state} at ${width}px: targets under 24px`).toEqual([]);
+
     if (proof) {
       mkdirSync(proof, { recursive: true });
       await page.screenshot({ path: `${proof}/admin-delete-user-${state}-${width}.png`, fullPage: true, animations: "disabled" });
     }
   }
+
   await page.setViewportSize({ width: 1280, height: 900 });
 }
 
@@ -345,6 +391,7 @@ test.describe("what the delete panel says when an answer is lost, too old or bus
     await expect(row.getByText(DELETED)).toBeVisible();
     await expect(row.getByText(KEPT_HOUSEHOLDS_NOTE)).toBeVisible();
     await expect(row.getByText(KEPT_ACTIVITY_NOTE)).toBeVisible();
+
     for (const [residue, words] of RESIDUE) await expect(row.locator(`ul[aria-labelledby] li[data-residue="${residue}"]`).filter({ hasText: words })).toBeVisible();
     await expect(row.getByText(NOT_DELETED)).toHaveCount(0);
     await evidence(page, "reach-after-delete");
@@ -357,6 +404,7 @@ test.describe("what the delete panel says when an answer is lost, too old or bus
     const admin = await apiAs(request, adminName);
     await requireClock(admin);
     const target = await makePerson(admin, `expired-${suffix}`, `Ed Expired ${suffix}`);
+
     try {
       await signInTo(page, adminName, "/admin?tab=users");
       const watch = watchIds(page, target.id);
@@ -394,6 +442,7 @@ test.describe("what the delete panel says when an answer is lost, too old or bus
     const admin = await apiAs(request, adminName);
     await requireClock(admin);
     const target = await makePerson(admin, `history-${suffix}`, `Hilda Story ${suffix}`);
+
     try {
       await signInTo(page, adminName, "/admin?tab=users");
       const watch = watchIds(page, target.id);
@@ -431,6 +480,7 @@ test.describe("what the delete panel says when an answer is lost, too old or bus
     await requireClock(admin);
     const target = await makePerson(admin, `stay-off-${suffix}`, `Sasha Stay ${suffix}`);
     const bystander = await makePerson(admin, `bystander-${suffix}`, `Bo Bystander ${suffix}`);
+
     try {
       await signInTo(page, adminName, "/admin?tab=users");
       const watch = watchIds(page, target.id);
@@ -770,12 +820,15 @@ test.describe("reviewing contact-request reasons before a delete (T07B-2c)", () 
 
     // Blank every third reason, keep the rest; even positions by pointer, odd by keyboard.
     const blank = (i: number) => i % 3 === 0;
+
     const choose = async (i: number) => {
       const radio = group(i + 1).getByRole("radio", { name: blank(i) ? "Blank text" : "Keep text" });
+
       if (i % 2 === 0) await radio.check();
       else await radio.press("Space");
       await expect(radio).toBeChecked();
     };
+
     for (let i = 0; i < 50; i++) await choose(i);
     await expect(row.getByText("Choose Keep text or Blank text for 70 more reasons.")).toBeVisible();
 
@@ -783,6 +836,7 @@ test.describe("reviewing contact-request reasons before a delete (T07B-2c)", () 
     await row.getByRole("button", { name: "Next 50" }).click();
     await expect(row.getByText("Reasons 51 to 100 of 120", { exact: true })).toBeVisible();
     await expect(shown).toHaveCount(50);
+
     for (let i = 50; i < 100; i++) await choose(i);
     await row.getByRole("button", { name: "Previous 50" }).click();
     await expect(row.getByText("Reasons 1 to 50 of 120", { exact: true })).toBeVisible();
@@ -798,6 +852,7 @@ test.describe("reviewing contact-request reasons before a delete (T07B-2c)", () 
     await row.getByRole("button", { name: "Go", exact: true }).click();
     await expect(shown).toHaveCount(20);
     await expect(page.locator('[data-reason-heading="119"]')).toBeFocused();
+
     for (let i = 100; i < 119; i++) await choose(i);
     await expect(row.getByRole("button", { name: "Delete account" })).toBeDisabled();
     await expect(row.getByText("Choose Keep text or Blank text for 1 more reason.")).toBeVisible();
@@ -833,6 +888,7 @@ test.describe("reviewing contact-request reasons before a delete (T07B-2c)", () 
     expect(watch.ids.minted).toBe(2);
     expect(watch.ids.deleted).toHaveLength(2);
     expect(watch.ids.settled).toEqual([]);
+
     for (const i of [0, 1, 2, 3, 50, 60, 99, 100, 118, 119]) {
       expect(await reasonOf(request, reasons[i].requestId), `reason ${i + 1}`).toBe(blank(i) ? "" : reasons[i].text);
     }
@@ -893,13 +949,15 @@ test.describe("reviewing contact-request reasons before a delete (T07B-2c)", () 
     const { subject, askers } = await makeReasoned(request, suffix, 1);
     const admin = await apiAs(request, adminName);
     const first = await admin("POST", `/admin/users/${subject.id}/erasure-reasons/page`, { after: null });
-    const items = (recordOf(first).items as unknown[]).map((it) => ({ requestId: stringAt(it, "requestId"), reviewHash: stringAt(it, "reviewHash"), choice: "remove" }));
-    const csrf = ((await (await request.get("/api/v1/auth/csrf")).json()) as { csrfToken: string }).csrfToken;
+    const items = arrayAt(first, "items").map((it) => ({ requestId: stringAt(it, "requestId"), reviewHash: stringAt(it, "reviewHash"), choice: "remove" }));
+    const csrf = (schema.parse(schema.looseObject({ csrfToken: schema.string() }), (await (await request.get("/api/v1/auth/csrf")).json()))).csrfToken;
+
     const res = await request.fetch(`/api/v1/admin/users/${subject.id}`, {
       method: "DELETE", data: { successors: {}, hostSuccessors: {}, reasonReview: { items } }, headers: { "X-CSRF-Token": csrf },
     });
+
     expect(res.status()).toBe(409);
-    expect(((await res.json()) as { code: string }).code).toBe("reason_review_outdated");
+    expect((schema.parse(schema.looseObject({ code: schema.string() }), (await res.json()))).code).toBe("reason_review_outdated");
     expect(await reasonOf(request, askers[0].requestId)).toBe(askers[0].text);
   });
 
@@ -922,6 +980,7 @@ test.describe("reviewing contact-request reasons before a delete (T07B-2c)", () 
     const done = await deleteAccountKeepingReasons(admin, subject.id);
     expect(numberAt(done, "erasure", "reasonsKept")).toBe(askers.length);
     expect(numberAt(done, "erasure", "reasonsRemoved")).toBe(0);
+
     for (const asker of askers) expect(await reasonOf(request, asker.requestId)).toBe(asker.text);
   });
 
@@ -931,13 +990,17 @@ test.describe("reviewing contact-request reasons before a delete (T07B-2c)", () 
     // Delete both askers first (each is the requester of a reason, so each
     // delete carries a review of its own); their requests about the subject stay.
     const admin = await apiAs(request, adminName);
+
     for (const asker of askers) {
       const first = await admin("POST", `/admin/users/${asker.id}/erasure-reasons/page`, { after: null });
-      const items = (recordOf(first).items as unknown[]).map((it) => ({
+
+      const items = arrayAt(first, "items").map((it) => ({
         requestId: stringAt(it, "requestId"), reviewHash: stringAt(it, "reviewHash"),
       }));
+
       await admin("DELETE", `/admin/users/${asker.id}`, { successors: {}, hostSuccessors: {}, reasonReview: keepAllReview(items) });
     }
+
     await signInTo(page, adminName, "/admin?tab=users");
     const row = await openDelete(page, subject, false);
     // The panel is open before its review pages have loaded (expectReady is
@@ -948,6 +1011,7 @@ test.describe("reviewing contact-request reasons before a delete (T07B-2c)", () 
     const ids = refs.map((t) => /ref (\d+)/.exec(t)?.[1]);
     expect(ids[0]).toBeDefined();
     expect(ids[0]).not.toBe(ids[1]);
+
     for (const asker of askers) await expect(row.getByText(asker.name)).toHaveCount(0);
     await evidence(page, "reasons-deleted-counterparts");
   });

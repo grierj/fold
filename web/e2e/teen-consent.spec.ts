@@ -1,11 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { apiAs, attemptPendingSignIn, fromMore, PASSWORD, signIn, signInTo, soon } from "./helpers";
-// @ts-expect-error shared browser measurement is plain JavaScript
 import { measure } from "./ui-measure.mjs";
 
 async function shoot(page: Page, name: string) {
   if (!process.env.SCREENS_DIR) return;
+
   for (const width of [390, 768, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     await page.evaluate(() => new Promise<void>((resolve) => {
@@ -21,6 +21,7 @@ async function shoot(page: Page, name: string) {
     expect(violations.filter((item) => item.impact === "serious" || item.impact === "critical"), `${name}@${width} axe`).toEqual([]);
     await page.screenshot({ path: `${process.env.SCREENS_DIR}/${name}-${width}.png`, fullPage: true });
   }
+
   await page.setViewportSize({ width: 1280, height: 900 });
 }
 
@@ -32,6 +33,7 @@ test("admin scoped consent enables sign-in, revokes it, and keeps history", asyn
   const { user } = await admin("POST", "/admin/users", { name: "Consent Casey", email: "consent-casey@example.com", password: PASSWORD, ageBand: "teen", birthDate });
   const teenContext = await browser.newContext();
   const teenPage = await teenContext.newPage();
+
   try {
     await attemptPendingSignIn(teenPage, "consent-casey");
     await signInTo(page, "grier", "/admin?tab=users");
@@ -41,6 +43,7 @@ test("admin scoped consent enables sign-in, revokes it, and keeps history", asyn
     await expect(panel.getByLabel("Consent evidence")).toBeFocused();
     const fieldBox = await panel.getByLabel("Consent evidence").boundingBox();
     const headerBox = await page.locator("body header").boundingBox();
+
     if (!fieldBox || !headerBox) throw new Error("Focused evidence field or header is not visible");
     expect(Math.round(fieldBox.y), "WCAG 2.4.11: focused evidence is below the sticky header").toBeGreaterThanOrEqual(Math.round(headerBox.y + headerBox.height));
     await shoot(page, "consent-evidence-required");

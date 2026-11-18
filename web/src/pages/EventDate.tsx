@@ -26,6 +26,7 @@ import { DateReminderLines } from "../components/DateReminders";
 export function EventDatePage() {
   const { user } = useAuth();
   const { id = "", date = "" } = useParams();
+
   return <DateDetail key={`${user?.id ?? "anonymous"}:${id}:${date}`} id={id} date={date} />;
 }
 
@@ -46,7 +47,11 @@ function DateDetail({ id, date }: { id: string; date: string }) {
   const busy = current?.pending ?? false;
   const error = current?.error ?? "";
   const mounted = useRef(false);
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  useEffect(() => {
+    mounted.current = true;
+
+    return () => { mounted.current = false; };
+  }, []);
   // The date is gone for this person: drop it and anything still on its way.
   const gone = () => load.close();
 
@@ -54,40 +59,51 @@ function DateDetail({ id, date }: { id: string; date: string }) {
     if (!occurrence || !(occurrence.canDecline || occurrence.canRegister) || busy || (status === "declined" && (!occurrence.canRegister || occurrence.canDecline))) return;
     const epoch = load.epoch();
     setAttempt({ epoch, pending: true, error: "" });
+
     try {
       if (occurrence.canDecline && status !== "declined") await Dates.register(id, date, { status, ...options });
       else await Events.register(Number(id), { date, status, ...options });
+
       if (load.epoch() === epoch) void load.retry();
     } catch (e) {
       if (!mounted.current) return;
+
       if (e instanceof ApiError && [401, 403, 404].includes(e.status)) gone();
       else if (load.epoch() === epoch) setAttempt({ epoch, pending: false, error: errorText(e) });
     }
   }
+
   async function end(action: "decline" | "block") {
     if (!occurrence || busy || !(action === "block" ? occurrence.canBlock : occurrence.canDecline)) return;
+
     const copy = action === "decline"
       ? "Can't go to this date? This ends your invitation and access to this date only. Other accepted dates stay yours."
       : "Don't add me again? This ends your invitation to this date and stops future manager adds from this organizer (the group's leaders, or this event's hosts). Other accepted dates stay yours. It does not stop you choosing to register where you are eligible.";
+
     if (!window.confirm(copy)) return;
     const epoch = load.epoch();
     setAttempt({ epoch, pending: true, error: "" });
+
     try {
       await Dates.end(id, date, action);
+
       // A successful end revokes this date even if a focus read raced it.
       // Unlike an answer response, it must also invalidate newer pending reads.
       if (mounted.current) gone();
     } catch (e) {
       if (!mounted.current) return;
+
       if (e instanceof ApiError && [401, 403, 404].includes(e.status)) gone();
       else if (load.epoch() === epoch) setAttempt({ epoch, pending: false, error: errorText(e) });
     }
   }
+
   const zone = occurrence && heldIn(occurrence.startsAt, occurrence.tzid);
   const when = occurrence ? dateLine(occurrence.startsAt, occurrence.endsAt) : "";
   const place = occurrence ? placeLine(occurrence.room, occurrence.location) : "";
   const standing = occurrence && user ? standingLine(occurrence.myRegistration) : null;
   const canEmail = useCanEmailEvent(Number(id));
+
   return <div className="fold-page fold-page-narrow space-y-6 wrap-anywhere">
     <div className="fold-page-header">
       <div>
@@ -153,7 +169,8 @@ function DateAnswer({ occurrence, busy, onAnswer }: { occurrence: EventDate; bus
   const guestMax = occurrence.guestsAllowed;
   const guestValid = guests !== "" && Number.isInteger(Number(guests)) && Number(guests) >= 0 && Number(guests) <= guestMax;
   const showGuests = (occurrence.myGuestCount !== undefined || (occurrence.canRegister && !occurrence.canDecline)) && (guestMax > 0 || (occurrence.myGuestCount ?? 0) > 0);
-  const options = { ...(mode === undefined ? {} : { attendanceMode: mode }), ...(showGuests ? { guestCount: Number(guests) } : {}) };
+  const options = { attendanceMode: mode, guestCount: showGuests ? Number(guests) : undefined };
+
   return <div className="space-y-3">
     {/* The date JSON carries no capacity, so this can only be a general hint; it is moot once Going is saved. */}
     {occurrence.myRegistration !== "going" && occurrence.myRegistration !== "waitlisted" && <p className="text-sm text-text-muted">If it’s full, Going puts you on the waitlist.</p>}

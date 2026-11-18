@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { ContactHistory } from "./contactHistory";
 
 const filters = { purpose: "contact", action: "contact.reveal", from: "2026-10-01T09:00:00+02:00", until: "2026-11-01T07:00:00Z" };
+
 afterEach(() => vi.unstubAllGlobals());
 
 it("encodes people lookup parameters while preserving exact IDs and email values", async () => {
@@ -33,7 +34,8 @@ it("keeps signed-bigint person IDs/cursors exact and encodes timezone offsets", 
 it("exports all submitted filters without page fields and requests no-store CSV", async () => {
   const fetcher = vi.fn().mockResolvedValue(new Response("auditId,at\r\n", { headers: { "Content-Type": "text/csv; charset=utf-8" } }));
   vi.stubGlobal("fetch", fetcher);
-  const blob = await ContactHistory.csv("9007199254740993", { ...filters, before: "11", limit: "50" } as typeof filters);
+  const withPaging = { ...filters, before: "11", limit: "50" };
+  const blob = await ContactHistory.csv("9007199254740993", withPaging);
   expect(await blob.text()).toBe("auditId,at\r\n");
   const [path, options] = fetcher.mock.calls[0];
   const url = new URL(path, "https://fold.example");

@@ -1,4 +1,6 @@
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { renderWithAuth } from "../test/auth";
+import { stubService } from "../test/service";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -9,13 +11,23 @@ import type { EventDate, RegistrationResponse } from "../types";
 import { Messages } from "../api/messages";
 import { EventDatePage } from "./EventDate";
 
-const actor = vi.hoisted(() => ({ user: { id: 2 } as { id: number } | null, canCompose: false }));
-vi.mock("../auth", () => ({ useAuth: () => actor }));
-vi.mock("../api/events", () => ({ Events: { register: vi.fn() }, Dates: { get: vi.fn(), register: vi.fn(), end: vi.fn() } }));
-vi.mock("../api/messages", () => ({ Messages: { options: vi.fn() } }));
+type TestSession = { user: { id: number } | null; canCompose: boolean };
+
+const actor: TestSession = { user: { id: 2 }, canCompose: false };
+
+const render = renderWithAuth(() => actor);
+
+stubService(Events, () => ({ register: vi.fn() }));
+
+stubService(Dates, () => ({ get: vi.fn(), register: vi.fn(), end: vi.fn() }));
+
+stubService(Messages, () => ({ options: vi.fn() }));
+
 const occurrence = (overrides: Partial<EventDate> = {}): EventDate => ({ id: 51, eventId: 7, date: "2026-12-01", dateUrl: "/events/7/dates/2026-12-01", title: "One invited date", location: "Room 2", startsAt: "2026-12-01T19:00:00Z", endsAt: "2026-12-01T20:00:00Z", startsLocal: "2026-12-01T19:00", endsLocal: "2026-12-01T20:00", tzid: "UTC", durationMinutes: 60, remoteAvailable: true, guestsAllowed: 3, myRegistration: "going", myAttendanceMode: "remote", myGuestCount: 1, videoProvider: "link", videoUrl: "https://example.com/private-call", videoHidden: false, canSeeVideo: true, canSeeAttendees: false, canDecline: true, canBlock: true, ...overrides });
 const registration: RegistrationResponse = { registrationId: 8, userId: 2, eventId: 7, occurrenceId: 51, date: "2026-12-01", status: "going", guestCount: 1, attendanceMode: "remote", childcareCount: 2, childcareAgesNote: "Preserve this", waitlistPosition: null };
+
 function mount() { return render(<MemoryRouter initialEntries={["/events/7/dates/2026-12-01"]}><Routes><Route path="/events/:id/dates/:date" element={<EventDatePage />} /><Route path="/login" element={<p>Sign in first</p>} /></Routes></MemoryRouter>); }
+
 beforeEach(() => { vi.resetAllMocks(); actor.user = { id: 2 }; actor.canCompose = false; vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence() }); vi.mocked(Dates.register).mockResolvedValue({ registration }); vi.mocked(Dates.end).mockResolvedValue({}); vi.spyOn(window, "confirm").mockReturnValue(true); });
 
 it("renders only date disclosures, never hidden parent/group/host/roster/household navigation", async () => {
@@ -88,6 +100,7 @@ it.each([
   vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({ canRegister: true, canDecline: false, canBlock: false, myRegistration: status, myAttendanceMode: undefined, myGuestCount: undefined }) });
   mount(); await screen.findByText("One invited date");
   expect(screen.getByRole("status")).toHaveTextContent(status === "waitlisted" ? /on the waitlist/ : status === "going" ? "You're going. See you there!" : status === "maybe" ? "You said maybe" : status === "declined" ? "Got it. Only the leaders see this." : /^$/);
+
   for (const name of ["Going", "Maybe", "Can't go"]) {
     expect(screen.getByRole("button", { name })).toHaveAttribute("aria-pressed", String(name === selected));
   }
@@ -167,7 +180,7 @@ it("a confirmed end clears a newer focus read that completed before the end comm
 });
 
 it("a late authority refusal clears a newer read without exposing server text", async () => {
-  let fail!: (e: unknown) => void;
+  let fail!: (cause: unknown) => void;
   vi.mocked(Dates.register).mockImplementation(() => new Promise((_resolve, reject) => { fail = reject; }));
   mount(); await userEvent.click(await screen.findByRole("button", { name: "Maybe" }));
   fireEvent(window, new Event("focus")); await screen.findByText("One invited date");
@@ -199,21 +212,30 @@ it("ignores an initial read that resolves after unmount", async () => {
 });
 
  it("offers first ordinary RSVP options and withdraws without ending an invitation", async () => {
- vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({ canRegister: true, canDecline: false, canBlock: false, myRegistration: null, myAttendanceMode: undefined, myGuestCount: undefined }) });
- mount(); await screen.findByText("One invited date");
- expect(screen.getByLabelText("In person")).toBeChecked(); expect(screen.getByLabelText("Guests")).toHaveValue(0);
- await userEvent.click(screen.getByLabelText("Remote")); fireEvent.change(screen.getByLabelText("Guests"), {target:{value:"2"}});
- vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({canRegister:true,canDecline:false,canBlock:false,myAttendanceMode:"remote",myGuestCount:2}) });
- await userEvent.click(screen.getByRole("button",{name:"Going"})); await screen.findByText("You're going. See you there!");
- expect(Events.register).toHaveBeenCalledWith(7,{date:"2026-12-01",status:"going",attendanceMode:"remote",guestCount:2});
- vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({canRegister:true,canDecline:false,canBlock:false,myRegistration:"declined"}) });
- await userEvent.click(screen.getByRole("button",{name:"Can't go"})); await screen.findByText("Got it. Only the leaders see this.");
- expect(Events.register).toHaveBeenLastCalledWith(7,{date:"2026-12-01",status:"declined"}); expect(Dates.end).not.toHaveBeenCalled(); expect(Dates.register).not.toHaveBeenCalled(); expect(window.confirm).not.toHaveBeenCalled();
+   vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({ canRegister: true, canDecline: false, canBlock: false, myRegistration: null, myAttendanceMode: undefined, myGuestCount: undefined }) });
+   mount();
+   await screen.findByText("One invited date");
+   expect(screen.getByLabelText("In person")).toBeChecked();
+   expect(screen.getByLabelText("Guests")).toHaveValue(0);
+   await userEvent.click(screen.getByLabelText("Remote"));
+   fireEvent.change(screen.getByLabelText("Guests"), {target:{value:"2"}});
+   vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({canRegister:true,canDecline:false,canBlock:false,myAttendanceMode:"remote",myGuestCount:2}) });
+   await userEvent.click(screen.getByRole("button",{name:"Going"}));
+   await screen.findByText("You're going. See you there!");
+   expect(Events.register).toHaveBeenCalledWith(7,{date:"2026-12-01",status:"going",attendanceMode:"remote",guestCount:2});
+   vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({canRegister:true,canDecline:false,canBlock:false,myRegistration:"declined"}) });
+   await userEvent.click(screen.getByRole("button",{name:"Can't go"}));
+   await screen.findByText("Got it. Only the leaders see this.");
+   expect(Events.register).toHaveBeenLastCalledWith(7,{date:"2026-12-01",status:"declined"});
+   expect(Dates.end).not.toHaveBeenCalled();
+   expect(Dates.register).not.toHaveBeenCalled();
+   expect(window.confirm).not.toHaveBeenCalled();
  });
 
 it("shows a retained cancelled answer when the date is visible again", async () => {
- vi.mocked(Dates.get).mockResolvedValue({occurrence:occurrence({canRegister:true,canDecline:false,canBlock:false,myRegistration:"cancelled"})});
- mount(); expect(await screen.findByText("Your sign-up was cancelled.")).toBeInTheDocument();
+  vi.mocked(Dates.get).mockResolvedValue({occurrence:occurrence({canRegister:true,canDecline:false,canBlock:false,myRegistration:"cancelled"})});
+  mount();
+  expect(await screen.findByText("Your sign-up was cancelled.")).toBeInTheDocument();
 });
 
 it("lays the date out like the event page card: back link, when line, tile, place and date actions", async () => {

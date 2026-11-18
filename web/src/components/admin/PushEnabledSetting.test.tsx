@@ -1,13 +1,13 @@
+import { stubService } from "../../test/service";
+import { Admin } from "../../api/admin";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 
 const pushEnabled = vi.fn();
 const setPushEnabled = vi.fn();
-vi.mock("../../api/admin", async (orig) => {
-  const real = await orig<typeof import("../../api/admin")>();
-  return { ...real, Admin: { ...real.Admin, pushEnabled: () => pushEnabled(), setPushEnabled: (on: boolean) => setPushEnabled(on) } };
-});
+
+stubService(Admin, () => ({ pushEnabled: () => pushEnabled(), setPushEnabled: (on: boolean) => setPushEnabled(on) }));
 
 import { ApiError } from "../../api/core";
 import { PushEnabledSetting } from "./PushEnabledSetting";

@@ -1,4 +1,6 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { stubService } from "../test/service";
+import { renderWithAuth } from "../test/auth";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -8,9 +10,13 @@ import { Site } from "../api/site";
 import type { NeedsRoom, RoomPickerItem } from "../types";
 import { NeedsRoomList } from "./NeedsRoomList";
 
-vi.mock("../api/site", async (importActual) => ({ ...(await importActual<typeof import("../api/site")>()), Site: { get: vi.fn() } }));
-vi.mock("../api/rooms", async (importActual) => ({ ...(await importActual<typeof import("../api/rooms")>()), SeriesRooms: { list: vi.fn() }, DateRooms: { list: vi.fn(), set: vi.fn() } }));
-vi.mock("../auth", () => ({ useAuth: () => ({ isAdmin: false }) }));
+stubService(Site, () => ({ get: vi.fn() }));
+
+stubService(SeriesRooms, () => ({ list: vi.fn() }));
+
+stubService(DateRooms, () => ({ list: vi.fn(), set: vi.fn() }));
+
+const render = renderWithAuth(() => ({ isAdmin: false }));
 
 const hall: RoomPickerItem = { id: 1, name: "Fellowship Hall", building: "Main", capacity: 80, features: "", restricted: false, busy: false, tooSmall: false };
 const needs: NeedsRoom[] = [{ date: "2026-12-08", roomName: "Fellowship Hall", status: "requested" }, { date: "2026-12-15", roomName: "Chapel", status: "requested" }];
@@ -23,11 +29,13 @@ beforeEach(() => {
 
 function show(props: Partial<Parameters<typeof NeedsRoomList>[0]> = {}) {
   const onPick = vi.fn();
+
   const view = render(
     <MemoryRouter>
       <NeedsRoomList eventId={7} revision={0} hasDate={() => true} onPick={onPick} {...props} />
     </MemoryRouter>,
   );
+
   return { onPick, ...view };
 }
 

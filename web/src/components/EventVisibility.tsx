@@ -17,7 +17,9 @@ const CHOICES: { value: Visibility; label: string; description: string }[] = [
 
 export function visibilityRank(v: string): number {
   if (v === "public") return 2;
+
   if (v === "private") return 1;
+
   return 0;
 }
 
@@ -48,31 +50,42 @@ export function EventVisibilityControl({
   const [error, setError] = useState<string | null>(null);
   const [resetOverrides, setResetOverrides] = useState(false);
   const [futureOverrides, setFutureOverrides] = useState(0);
-  useEffect(() => { let live = true; Promise.resolve(Events.visibilityImpact(eventId, visibility)).then((impact) => { if (live) setFutureOverrides(impact?.futureOverrides ?? 0); }).catch(() => {}); return () => { live = false; }; }, [eventId, visibility]);
+  useEffect(() => {
+    let live = true;
+    Promise.resolve(Events.visibilityImpact(eventId, visibility)).then((impact) => { if (live) setFutureOverrides(impact?.futureOverrides ?? 0); }).catch(() => {});
+
+    return () => { live = false; };
+  }, [eventId, visibility]);
   const [review, setReview] = useState<VisibilityImpact | null>(null);
 
   // More private: preview first and confirm, the same as a group (DEC-48).
   async function save(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+
     if (resetOverrides || visibilityRank(value) < visibilityRank(visibility)) {
       try {
         const impact = await Events.visibilityImpact(eventId, value, resetOverrides);
+
         if (impact.tightened.length > 0) {
           setReview(impact);
+
           return;
         }
       } catch (err) {
         setError(errorText(err, "We couldn't check this event."));
+
         return;
       }
     }
+
     await commit(false);
   }
 
   async function commit(confirm: boolean) {
     setBusy(true);
     setError(null);
+
     try {
       await Events.setVisibility(eventId, { visibility: value, reason: reason.trim() || undefined, confirm, resetOverrides });
       setReview(null);
@@ -81,8 +94,10 @@ export function EventVisibilityControl({
       if (err instanceof ApiError && err.status === 409) {
         setReview(await Events.visibilityImpact(eventId, value, resetOverrides));
         setError("Registrations changed. Please review again.");
+
         return;
       }
+
       setError(errorText(err, "We couldn't change who can see this."));
     } finally {
       setBusy(false);
@@ -155,6 +170,7 @@ export function VisibilityField({
 }) {
   const opening = !churchWide && groupVisibility != null && visibilityRank(value) > visibilityRank(groupVisibility);
   const choices = churchWide ? CHOICES.filter((c) => c.value !== "invite_only") : CHOICES;
+
   return (
     <div className="space-y-3">
       <Choices legend={seriesVisibility ? "Who can see this date" : "Who can see this event"}>

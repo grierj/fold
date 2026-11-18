@@ -1,3 +1,4 @@
+import { stubService } from "../../test/service";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,10 +11,11 @@ import { AudiencePicker } from "./AudiencePicker";
 // The picker waits this long after a change before asking for the count.
 const COUNT_DELAY_MS = 300;
 
-vi.mock("../../api/messages", () => ({ Messages: { audiencePreview: vi.fn() } }));
+stubService(Messages, () => ({ audiencePreview: vi.fn() }));
 
 function Harness({ start = emptyChoice(), everyone = false }: { start?: AudienceChoice; everyone?: boolean }) {
   const [c, setC] = useState(start);
+
   return <AudiencePicker id="aud" options={composeOptions({ canMessageEveryone: everyone })} choice={c} onChange={setC} />;
 }
 
@@ -23,11 +25,13 @@ const HINT = "Your groups and the events you lead or host.";
 
 function LongHarness({ target, everyone = false }: { target: string; everyone?: boolean }) {
   const [c, setC] = useState({ ...emptyChoice(), target });
+
   const options = composeOptions({
     canMessageEveryone: everyone,
     groups: [bookClub, { id: 9, name: LONG_GROUP }],
     events: [bookNight, { ...bookNight, id: 4, title: LONG_EVENT }],
   });
+
   return <AudiencePicker id="aud" options={options} choice={c} onChange={setC} />;
 }
 
@@ -37,10 +41,12 @@ const optionText = (select: HTMLElement, value: string) => select.querySelector(
 function pending() {
   const calls: ((s: AudienceSummary) => void)[] = [];
   vi.mocked(Messages.audiencePreview).mockImplementation(() => new Promise((resolve) => calls.push((s) => resolve({ summary: s }))));
+
   return calls;
 }
 
 beforeEach(() => vi.useFakeTimers());
+
 afterEach(() => { vi.useRealTimers(); vi.mocked(Messages.audiencePreview).mockReset(); });
 
 const wait = () => act(async () => { vi.advanceTimersByTime(COUNT_DELAY_MS); });
@@ -87,14 +93,18 @@ describe("AudiencePicker", () => {
   it("tells apart long names that differ only in the middle, groups and events alike (#288)", () => {
     const wednesday = "Saint Brigid's Wednesday Evening Women's Bible Study (North Campus)";
     const thursday = wednesday.replace("Wednesday", "Thursday");
+
     const options = composeOptions({
       groups: [{ id: 21, name: wednesday }, { id: 22, name: thursday }, bookClub],
       events: [{ ...bookNight, id: 31, title: wednesday }, { ...bookNight, id: 32, title: thursday }],
     });
+
     function Alike() {
       const [c, setC] = useState(emptyChoice());
+
       return <AudiencePicker id="aud" options={options} choice={c} onChange={setC} />;
     }
+
     render(<Alike />);
     const select = screen.getByRole("combobox", { name: "Send to" });
     const groups = ["group:21", "group:22"].map((v) => optionText(select, v));
@@ -118,10 +128,13 @@ describe("AudiencePicker", () => {
   it("shows two groups with the very same long name alike, since nothing tells them apart", () => {
     const name = "Saint Brigid's Wednesday Evening Women's Bible Study (North Campus)";
     const options = composeOptions({ groups: [{ id: 21, name }, { id: 22, name }], events: [] });
+
     function Twins() {
       const [c, setC] = useState(emptyChoice());
+
       return <AudiencePicker id="aud" options={options} choice={c} onChange={setC} />;
     }
+
     render(<Twins />);
     const select = screen.getByRole("combobox", { name: "Send to" });
     const shown = optionText(select, "group:21");

@@ -24,6 +24,7 @@ import { MERGE_FIELDS } from "../../lib/messages";
 // don't write email never download TipTap.
 
 const BUTTON_CLASS = "fold-button";
+
 // The longest description the server keeps (content.MaxAltLen).
 const MAX_ALT = 300;
 const LINK_FIELDS = ["{{event_link}}", "{{manage_link}}"];
@@ -46,12 +47,14 @@ const kit = (isAllowedUri: (url: string) => boolean) => StarterKit.configure({
     isAllowedUri: (url) => isAllowedUri(url),
   },
 });
+
 // A picture is a block of its own, shrunk to the column. Only the composer's
 // own uploads are read in (pasted or loaded HTML with any other image loses
 // it, as the server's sanitizer would). Its class is the editor's styling; the
 // sanitizer drops it from what is stored.
 const picture = Image.extend({ parseHTML: () => [{ tag: 'img[src^="/uploads/messages/"]' }] }).configure({ inline: false, allowBase64: false, HTMLAttributes: { class: "max-w-full h-auto" } });
 const extensions = [kit(allowedHref), picture];
+
 // The read-only view keeps only real addresses: a link to a merge field
 // ({{event_link}}) has no address until it is sent, so it reads as text.
 const viewExtensions = [kit((url) => allowedHref(url) && !LINK_FIELD_RE.test(url.trim())), picture];
@@ -61,14 +64,21 @@ const viewExtensions = [kit((url) => allowedHref(url) && !LINK_FIELD_RE.test(url
 /** @public tested directly: which typed addresses are kept. */
 export function normalizeHref(typed: string): string {
   const s = typed.trim();
+
   if (!s) return "";
+
   if (LINK_FIELD_RE.test(s)) return s.toLowerCase().replace(/\s+/g, "");
+
   if (/^mailto:/i.test(s)) return s;
+
   if (/^[^\s@/]+@[^\s@/]+\.[^\s@/]+$/.test(s)) return `mailto:${s}`;
   const withScheme = /^https?:\/\//i.test(s) ? s : /^[a-z][a-z0-9+.-]*:/i.test(s) ? "" : `https://${s}`;
+
   if (!withScheme) return "";
+
   try {
     const u = new URL(withScheme);
+
     return u.hostname.includes(".") || u.hostname === "localhost" ? withScheme : "";
   } catch {
     return "";
@@ -100,8 +110,10 @@ function Toolbar({ editor, oneEvent, panel, onPanel, pictures }: { editor: Edito
       button: e.isActive("link") && e.getAttributes("link").class === BUTTON_CLASS,
     }),
   });
+
   const run = (f: (c: ReturnType<Editor["chain"]>) => ReturnType<Editor["chain"]>) => f(editor.chain().focus()).run();
   const fields = MERGE_FIELDS.filter((f) => oneEvent || !f.event);
+
   return (
     <div role="group" aria-label="Formatting" className="flex flex-wrap items-center gap-1 border-b border-border p-1">
       <ToolbarButton label="Bold" pressed={on.bold} onClick={() => run((c) => c.toggleBold())}><span className="font-bold">B</span></ToolbarButton>
@@ -127,27 +139,43 @@ function Toolbar({ editor, oneEvent, panel, onPanel, pictures }: { editor: Edito
 }
 
 function LinkPanel({ editor, kind, oneEvent, onClose }: { editor: Editor; kind: "link" | "button"; oneEvent: boolean; onClose: () => void }) {
-  const current = editor.isActive("link") ? (editor.getAttributes("link") as { href?: string; class?: string }) : null;
+  const current = editor.isActive("link") ? (editor.getAttributes("link")) : null;
   const editing = !!current && (current.class === BUTTON_CLASS) === (kind === "button");
   const startHref = editing ? current?.href ?? "" : "";
   const [target, setTarget] = useState(LINK_FIELDS.includes(startHref) && oneEvent ? startHref : "web");
   const [href, setHref] = useState(LINK_FIELDS.includes(startHref) ? "" : startHref);
+
   const [text, setText] = useState(() => {
     if (kind !== "button" || !editing) return "";
     const range = getMarkRange(editor.state.selection.$from, editor.schema.marks.link);
+
     return range ? editor.state.doc.textBetween(range.from, range.to) : "";
   });
+
   const [error, setError] = useState("");
   const first = useRef<HTMLInputElement>(null);
   useEffect(() => { first.current?.focus(); }, []);
 
   function apply() {
     const address = target === "web" ? normalizeHref(href) : target;
-    if (kind === "button" && !text.trim()) { setError("Enter the words on the button."); return; }
-    if (!address) { setError(href.trim() ? "Enter a web address that starts with https://, or an email address." : "Enter a web address."); return; }
+
+    if (kind === "button" && !text.trim()) {
+      setError("Enter the words on the button.");
+
+      return;
+    }
+
+    if (!address) {
+      setError(href.trim() ? "Enter a web address that starts with https://, or an email address." : "Enter a web address.");
+
+      return;
+    }
+
     const chain = editor.chain().focus();
+
     if (kind === "button") {
       const mark = { type: "link", attrs: { href: address, class: BUTTON_CLASS } };
+
       if (editing) chain.extendMarkRange("link").insertContent({ type: "text", text: text.trim(), marks: [mark] }).run();
       else chain.insertContent({ type: "paragraph", content: [{ type: "text", text: text.trim(), marks: [mark] }] }).run();
     } else if (editor.state.selection.empty && !editing) {
@@ -155,6 +183,7 @@ function LinkPanel({ editor, kind, oneEvent, onClose }: { editor: Editor; kind: 
     } else {
       chain.extendMarkRange("link").setLink({ href: address, class: null }).run();
     }
+
     onClose();
   }
 
@@ -166,10 +195,12 @@ function LinkPanel({ editor, kind, oneEvent, onClose }: { editor: Editor; kind: 
   // Enter applies the panel instead of submitting the whole message.
   function onKeyDown(e: KeyboardEvent) {
     if (e.key === "Enter") { e.preventDefault(); apply(); }
+
     if (e.key === "Escape") { e.preventDefault(); onClose(); editor.commands.focus(); }
   }
 
   const noun = kind === "button" ? "button" : "link";
+
   return (
     <div role="group" aria-label={editing ? `Change ${noun}` : `Add a ${noun}`} className="space-y-3 border-b border-border bg-sunken p-3" onKeyDown={onKeyDown}>
       {kind === "button" && (
@@ -217,8 +248,16 @@ function ImagePanel({ editor, pictures, onClose }: { editor: Editor; pictures: P
   function pick(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
     e.target.value = "";
+
     if (!f) return;
-    if (!PICTURE_TYPES.test(f.type)) { setFile(null); setError("Choose a JPEG, PNG or GIF picture."); return; }
+
+    if (!PICTURE_TYPES.test(f.type)) {
+      setFile(null);
+      setError("Choose a JPEG, PNG or GIF picture.");
+
+      return;
+    }
+
     setFile(f);
     setError("");
     words.current?.focus();
@@ -226,17 +265,38 @@ function ImagePanel({ editor, pictures, onClose }: { editor: Editor; pictures: P
 
   async function apply() {
     if (busy) return;
-    if (!file) { setError("Choose a picture first."); return; }
-    if (!alt.trim()) { setError("Say what the picture shows, in a few words."); words.current?.focus(); return; }
+
+    if (!file) {
+      setError("Choose a picture first.");
+
+      return;
+    }
+
+    if (!alt.trim()) {
+      setError("Say what the picture shows, in a few words.");
+      words.current?.focus();
+
+      return;
+    }
+
     setBusy(true);
     setError("");
+
     try {
       let id = pictures.messageId;
+
       if (id === null) {
         const saved = await pictures.save();
-        if ("error" in saved) { setError(saved.error); return; }
+
+        if ("error" in saved) {
+          setError(saved.error);
+
+          return;
+        }
+
         id = saved.id;
       }
+
       const { url } = await Messages.uploadImage(id, await prepareUpload(file, 1600));
       editor.chain().focus().setImage({ src: url, alt: alt.trim() }).run();
       onClose();
@@ -249,7 +309,8 @@ function ImagePanel({ editor, pictures, onClose }: { editor: Editor; pictures: P
 
   // Enter in the description adds the picture instead of sending the message.
   function onKeyDown(e: KeyboardEvent) {
-    if (e.key === "Enter" && (e.target as HTMLElement).tagName === "INPUT") { e.preventDefault(); void apply(); }
+    if (e.key === "Enter" && e.target instanceof HTMLInputElement) { e.preventDefault(); void apply(); }
+
     if (e.key === "Escape") { e.preventDefault(); onClose(); editor.commands.focus(); }
   }
 
@@ -297,17 +358,24 @@ export function RichTextEditor({ value, onChange, onReady, oneEvent, pictures }:
   changed.current = onChange;
   const ready = useRef(onReady);
   ready.current = onReady;
-  const editorProps = useMemo(() => ({
-    attributes: {
+
+  const editorProps = useMemo(() => {
+    const attributes: Partial<Record<"aria-describedby" | "aria-invalid", string>> = {};
+
+    if (w.describedBy) attributes["aria-describedby"] = w.describedBy;
+
+    if (w.invalid) attributes["aria-invalid"] = "true";
+
+    return { attributes: {
       id: w.id,
       role: "textbox",
       "aria-multiline": "true",
       "aria-labelledby": w.labelId,
-      ...(w.describedBy ? { "aria-describedby": w.describedBy } : {}),
-      ...(w.invalid ? { "aria-invalid": "true" } : {}),
+      ...attributes,
       class: "rich-text rich-text-editable",
-    },
-  }), [w.id, w.labelId, w.describedBy, w.invalid]);
+    } };
+  }, [w.id, w.labelId, w.describedBy, w.invalid]);
+
   const editor = useEditor({
     extensions,
     content: value,
@@ -316,7 +384,9 @@ export function RichTextEditor({ value, onChange, onReady, oneEvent, pictures }:
     onCreate: ({ editor: e }) => ready.current?.(htmlOf(e)),
     onUpdate: ({ editor: e }) => changed.current(htmlOf(e)),
   });
+
   if (!editor) return null;
+
   return (
     <div className="rounded-md border border-border-strong bg-surface">
       <Toolbar editor={editor} oneEvent={oneEvent} panel={panel} onPanel={setPanel} pictures={!!pictures} />
@@ -337,7 +407,9 @@ export function RichTextView({ html }: { html: string }) {
     injectCSS: false,
     editorProps: { attributes: { class: "rich-text", role: "region", "aria-label": "Message body" } },
   });
+
   if (!editor) return null;
+
   return <>
     {/(href="\{\{\s*(event_link|manage_link)\s*\}\}")/i.test(html) && (
       <p className="mb-3 text-sm text-text-muted">Links to the event page and to each person's sign-up fill in when it's sent.</p>

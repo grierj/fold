@@ -97,6 +97,7 @@ function EventRow({
     if (!confirm(`Cancel this date on ${instance.date}?`)) return;
     setCancelling(true);
     setCancelError(null);
+
     try {
       await Events.cancelOccurrence(instance.eventId, instance.date);
       onCancelled(instance.eventId, instance.date);
@@ -203,17 +204,23 @@ function ClampedDescription({ text, onReadMore }: { text: string; onReadMore: ()
   const [overflows, setOverflows] = useState(false);
   useLayoutEffect(() => {
     const el = ref.current;
+
     if (!el) return;
     const check = () => setOverflows(el.scrollHeight > el.clientHeight);
     check();
+
     if (typeof ResizeObserver !== "undefined") {
       const observer = new ResizeObserver(check);
       observer.observe(el);
+
       return () => observer.disconnect();
     }
+
     window.addEventListener("resize", check);
+
     return () => window.removeEventListener("resize", check);
   }, [text]);
+
   return (
     <div className="mb-6 max-w-3xl">
       <p ref={ref} className="text-text-muted whitespace-pre-wrap wrap-anywhere line-clamp-3">{text}</p>
@@ -229,6 +236,7 @@ function ClampedDescription({ text, onReadMore }: { text: string; onReadMore: ()
 export function GroupDetail() {
   const { id } = useParams<{ id: string }>();
   const { user, loading } = useAuth();
+
   // A new group or viewer must never inherit dates, cursors or pending loads.
   return <GroupDetailContent key={`${id}:${loading}:${user?.id}:${user?.role}:${user?.status}:${user?.accountType}`} />;
 }
@@ -236,7 +244,9 @@ export function GroupDetail() {
 // Dates keyed by id, soonest first; a date in both lists keeps the newer row.
 function mergeDates(old: EventOccurrence[], fresh: EventOccurrence[]): EventOccurrence[] {
   const dates = new Map(old.map((date) => [date.id, date]));
+
   for (const date of fresh) dates.set(date.id, date);
+
   return [...dates.values()].sort((a, b) => Date.parse(a.startsAt) - Date.parse(b.startsAt) || a.id - b.id);
 }
 
@@ -247,10 +257,12 @@ function mergeDates(old: EventOccurrence[], fresh: EventOccurrence[]): EventOccu
 async function fetchGroup(id: string, loaded: number): Promise<GroupDetailResponse> {
   let next = await Groups.get(id);
   let dates = mergeDates([], next.upcomingEvents);
+
   while (next.hasMore && next.nextCursor && dates.length < loaded) {
     next = await Groups.get(id, { cursor: next.nextCursor });
     dates = mergeDates(dates, next.upcomingEvents);
   }
+
   return { ...next, upcomingEvents: dates };
 }
 
@@ -302,8 +314,10 @@ function GroupDetailContent() {
     const stamp = load.epoch();
     setLoadingMore(true);
     setMoreFailure(null);
+
     try {
       const next = await Groups.get(id, { cursor: detail.nextCursor });
+
       if (load.epoch() !== stamp) return;
       setDetail((old) => old && { ...next, upcomingEvents: mergeDates(old.upcomingEvents, next.upcomingEvents) });
     } catch (e) {
@@ -323,6 +337,7 @@ function GroupDetailContent() {
       </div>
     );
   }
+
   if (notFound) {
     return (
       <Missing
@@ -331,6 +346,7 @@ function GroupDetailContent() {
       />
     );
   }
+
   if (!detail) {
     return (
       <div className="fold-page-narrow">
@@ -342,17 +358,21 @@ function GroupDetailContent() {
 
   const { group, members, upcomingEvents, canManage, isMember } = detail;
   const canSchedule = groupCanSchedule(group.status);
+
   const scheduleReason = group.status === "pending"
     ? "You can schedule events once an admin approves this group."
     : "This group is archived, so it can't schedule new events.";
+
   const events: EventOccurrence[] = upcomingEvents ?? [];
   // Count only loaded, visible dates: a capped page is not a series total.
   const nextDates: EventOccurrence[] = [];
   const datesPerEvent = new Map<number, number>();
+
   for (const m of events) {
     if (!datesPerEvent.has(m.eventId)) nextDates.push(m);
     datesPerEvent.set(m.eventId, (datesPerEvent.get(m.eventId) ?? 0) + 1);
   }
+
   // Leadership comes from membership roles (several leaders allowed).
   const leaderCount = (members ?? []).filter((m) => m.role === "leader").length;
   const isLeader = !!user && (members ?? []).some((m) => m.id === user.id && m.role === "leader");
@@ -367,14 +387,19 @@ function GroupDetailContent() {
   async function toggleJoin() {
     if (!user) {
       navigate("/login", { state: { from: `/groups/${id}` } });
+
       return;
     }
+
     if (isMember) {
       setDepartureStatus(null);
       setDepartureTarget({ allowNote: false });
+
       return;
     }
+
     setJoinBusy(true);
+
     try {
       setJoinError(null);
       await Groups.join(id!);
@@ -393,17 +418,22 @@ function GroupDetailContent() {
   async function completedDeparture(result: DepartureConfirmation) {
     setDepartureTarget(null);
     const summary = departureResult(result);
+
     if (result.action === "remove") {
       setDepartureStatus(summary);
       await refresh();
+
       return;
     }
+
     const outcome = await load.retry();
+
     if (outcome === "loaded") setDepartureStatus(summary);
     else if (outcome === "failed") navigate("/my-groups", { replace: true, state: { departureStatus: summary } });
   }
 
   function handleRsvp() { void refresh(); }
+
   function reportSeriesFeedback(eventId: number, date: string, actorResults: ActorRsvpResult[]) {
     const signal = { eventId, date, actorResults, revision: ++seriesFeedbackRevision.current };
     setDetail((current) => current ? {
@@ -429,11 +459,14 @@ function GroupDetailContent() {
     // the leader the list and get a decision before anything is saved.
     if (visibilityRank(data.visibility) < visibilityRank(group.visibility)) {
       const impact = await Groups.visibilityImpact(id!, data.visibility);
+
       if (impact.tightened.length > 0 || impact.leaderOpened.length > 0) {
         setReview({ data, impact });
+
         return false;
       }
     }
+
     await commitEdit(data);
   }
 
@@ -441,6 +474,7 @@ function GroupDetailContent() {
     if (!review) return;
     setReviewBusy(true);
     setReviewError(null);
+
     try {
       await commitEdit(review.data, decisions);
       setReview(null);
@@ -463,15 +497,16 @@ function GroupDetailContent() {
     } else if (data.removeCover) {
       await GroupCover.remove(id!);
     }
+
     await Groups.update(id!, {
       name: data.name,
       description: data.description,
       tags: data.tags,
       location: data.location,
-      ...(data.coverFocal ? { coverFocal: data.coverFocal } : {}),
+      coverFocal: data.coverFocal || undefined,
       visibility: data.visibility,
       memberLimit: data.memberLimit,
-      ...(openedEvents ? { openedEvents } : {}),
+      openedEvents,
     });
     setEditing(false);
     await load.retry();
@@ -481,9 +516,11 @@ function GroupDetailContent() {
     const question = role === "leader"
       ? `Make ${name} a leader of “${group.name}”? Church admins will be notified.`
       : `Remove ${name} as a leader of “${group.name}”?`;
+
     if (!confirm(question)) return;
     setMemberBusy(true);
     setMemberError(null);
+
     try {
       await Groups.setRole(id!, memberId, role);
       await load.retry();
@@ -504,6 +541,7 @@ function GroupDetailContent() {
     if (!confirm("Ask an admin to delete this group? It stays up until they approve.")) return;
     setMemberBusy(true);
     setMemberError(null);
+
     try {
       await Groups.requestDeletion(id!);
       await load.retry();
@@ -517,6 +555,7 @@ function GroupDetailContent() {
   async function cancelDeletion() {
     setMemberBusy(true);
     setMemberError(null);
+
     try {
       await Groups.cancelDeletion(id!);
       await load.retry();
@@ -529,6 +568,7 @@ function GroupDetailContent() {
 
   async function uploadCover(file: File) {
     setCoverBusy(true);
+
     try {
       const resized = await prepareUpload(file, 1600);
       setCoverError(null);
@@ -607,6 +647,7 @@ function GroupDetailContent() {
                     accept="image/jpeg,image/png,image/gif"
                     onChange={(e) => {
                       const f = e.target.files?.[0];
+
                       if (f) uploadCover(f);
                       e.target.value = "";
                     }}

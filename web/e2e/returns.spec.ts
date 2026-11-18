@@ -16,8 +16,10 @@ test("left-out account is told to ask a leader, who adds them over the limit", a
   await signIn(page, "lee");
   await page.goto("/groups/1");
   await expect(page.getByText("3 of 3 members")).toBeVisible();
+
   const membersTab = page.getByRole("tablist", { name: "Group sections", exact: true })
     .getByRole("tab", { name: "Members", exact: true });
+
   await membersTab.click();
   await expect(membersTab).toHaveAttribute("aria-selected", "true");
   const membersPanel = page.getByRole("tabpanel", { name: "Members", exact: true });

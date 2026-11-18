@@ -1,9 +1,13 @@
+import { stubService } from "../test/service";
+import { Site } from "../api/site";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { churchName, invalidateSite, useChurchZoneLoad, usePushEnabled, useRoomsEnabled, useSite } from "./useSite";
 
 const { get } = vi.hoisted(() => ({ get: vi.fn() }));
-vi.mock("../api/site", () => ({ Site: { get } }));
+
+stubService(Site, () => ({ get }));
+
 beforeEach(() => get.mockReset());
 
 const site = { name: "Grace Church", timezone: "America/Denver", selfSignup: "request", roomsEnabled: true, pushEnabled: true };

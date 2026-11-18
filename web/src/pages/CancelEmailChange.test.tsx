@@ -1,4 +1,7 @@
-import { render, screen } from "@testing-library/react";
+import { renderWithAuth } from "../test/auth";
+import { stubService } from "../test/service";
+import { Profile } from "../api/profile";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -8,10 +11,9 @@ const { refresh, cancelEmailChange } = vi.hoisted(() => ({
   cancelEmailChange: vi.fn(),
 }));
 
-vi.mock("../auth", () => ({
-  useAuth: () => ({ refresh }),
-}));
-vi.mock("../api/profile", async (original) => ({ ...(await original<typeof import("../api/profile")>()), Profile: { cancelEmailChange } }));
+const render = renderWithAuth(() => ({ refresh }));
+
+stubService(Profile, () => ({ cancelEmailChange }));
 
 import { ApiError } from "../api/core";
 import { CancelEmailChange } from "./CancelEmailChange";

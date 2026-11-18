@@ -1,3 +1,5 @@
+import { stubService } from "../../test/service";
+import { Admin } from "../../api/admin";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
@@ -7,17 +9,8 @@ const guardianCopies = vi.fn();
 const setGuardianCopies = vi.fn();
 const replyTo = vi.fn();
 const setReplyTo = vi.fn();
-vi.mock("../../api/admin", async (orig) => {
-  const real = await orig<typeof import("../../api/admin")>();
-  return {
-    ...real,
-    Admin: {
-      ...real.Admin,
-      guardianCopies: () => guardianCopies(), setGuardianCopies: (on: boolean) => setGuardianCopies(on),
-      replyTo: () => replyTo(), setReplyTo: (a: string) => setReplyTo(a),
-    },
-  };
-});
+
+stubService(Admin, () => ({ guardianCopies: () => guardianCopies(), setGuardianCopies: (on: boolean) => setGuardianCopies(on), replyTo: () => replyTo(), setReplyTo: (a: string) => setReplyTo(a) }));
 
 import { ApiError } from "../../api/core";
 import { ERROR_COPY } from "../../lib/errors";

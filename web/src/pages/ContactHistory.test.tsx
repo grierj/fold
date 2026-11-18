@@ -1,4 +1,6 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { renderWithAuth } from "../test/auth";
+import { stubService } from "../test/service";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -9,15 +11,35 @@ import type { ContactHistoryEntry, ContactHistoryResponse } from "../types";
 import { ContactHistoryPage } from "./ContactHistory";
 import { RequireUser } from "../components/RequireUser";
 
-const auth = vi.hoisted(() => ({ user: { id: 1, role: "admin", status: "active" } as { id: number; role: string; status: string } | null, loading: false, isAdmin: true }));
-vi.mock("../auth", () => ({ useAuth: () => auth }));
-vi.mock("../api/site", async (actual) => ({ ...(await actual<typeof import("../api/site")>()), Site: { get: vi.fn() } }));
-vi.mock("../api/contactHistory", async (actual) => ({ ...(await actual<typeof import("../api/contactHistory")>()), ContactHistory: { people: vi.fn(), list: vi.fn(), csv: vi.fn() } }));
+type TestSession = { user: { id: number; role: string; status: "active" } | null; loading: boolean; isAdmin: boolean };
+
+const auth: TestSession = { user: { id: 1, role: "admin", status: "active" }, loading: false, isAdmin: true };
+
+const render = renderWithAuth(() => auth);
+
+stubService(Site, () => ({ get: vi.fn() }));
+
+stubService(ContactHistory, () => ({ people: vi.fn(), list: vi.fn(), csv: vi.fn() }));
+
 const entry: ContactHistoryEntry = { id: "9007199254740993", at: "2026-10-01T12:00:00Z", action: "contact.decision", outcome: "decision", actorId: "9223372036854775807", requesterId: "9007199254740992", subjectUserId: "9007199254740993", purpose: "contact", requestId: "9223372036854775807", contextType: "group", contextId: "9007199254740993", party: "subject", decision: "approved", fields: "both" };
 const empty = { purpose: "", action: "", from: "", until: "" };
-function deferred<T>() { let resolve!: (value: T) => void; let reject!: (reason: unknown) => void; const promise = new Promise<T>((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; }
-function Switch() { const navigate = useNavigate(); return <button onClick={() => navigate("/admin/users/9007199254740992/contact-history")}>Other person</button>; }
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (cause: unknown) => void;
+  const promise = new Promise<T>((a, b) => { resolve = a; reject = b; });
+
+  return { promise, resolve, reject };
+}
+
+function Switch() {
+  const navigate = useNavigate();
+
+  return <button onClick={() => navigate("/admin/users/9007199254740992/contact-history")}>Other person</button>;
+}
+
 const openFilters = () => userEvent.click(screen.getByRole("button", { name: "Filters" }));
+
 function mount(path = "/admin/users/9223372036854775807/contact-history") {
   return render(<MemoryRouter initialEntries={[path]}><Switch /><Routes>
     <Route path="/admin/users/:id/contact-history" element={<RequireUser><ContactHistoryPage /></RequireUser>} />
@@ -25,6 +47,7 @@ function mount(path = "/admin/users/9223372036854775807/contact-history") {
     <Route path="/login" element={<p>Sign in first</p>} />
   </Routes></MemoryRouter>);
 }
+
 beforeEach(() => {
   vi.clearAllMocks(); auth.user = { id: 1, role: "admin", status: "active" }; auth.isAdmin = true;
   vi.mocked(ContactHistory.people).mockResolvedValue({ people: [] });
@@ -37,6 +60,7 @@ beforeEach(() => {
   });
   vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
 });
+
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 it("renders controlled decisions/provenance with exact distinct IDs, never invented context links or contact values", async () => {
@@ -48,6 +72,7 @@ it("renders controlled decisions/provenance with exact distinct IDs, never inven
   expect(screen.getAllByRole("link")).toHaveLength(1);
   expect(screen.getByRole("link")).toHaveAttribute("href", "/admin?tab=users");
 });
+
 it("uses returned cursors unchanged, keeps server order and suppresses exact duplicates only", async () => {
   vi.mocked(ContactHistory.list).mockResolvedValueOnce({ entries: [entry], nextBefore: "9007199254740993" }).mockResolvedValue({ entries: [entry, { ...entry, id: "9007199254740992" }] });
   mount(); await userEvent.click(await screen.findByRole("button", { name: "Load older entries" }));
@@ -55,6 +80,7 @@ it("uses returned cursors unchanged, keeps server order and suppresses exact dup
   const rows = screen.getAllByRole("listitem"); expect(rows).toHaveLength(2);
   expect(rows[0]).toHaveTextContent("Audit #9007199254740993"); expect(rows[1]).toHaveTextContent("Audit #9007199254740992");
 });
+
 it("separates drafts from submitted/export filters and preserves a valid date draft on server failure", async () => {
   mount(); await screen.findByText("Person's decision: Approved");
   await openFilters();
@@ -68,6 +94,7 @@ it("separates drafts from submitted/export filters and preserves a valid date dr
   expect(screen.queryByText("SECRET")).not.toBeInTheDocument();
   expect(screen.queryByText("Person's decision: Approved")).not.toBeInTheDocument();
 });
+
 it("supports manual deleted IDs and neutral empty history without a live user lookup", async () => {
   vi.mocked(ContactHistory.list).mockResolvedValue({ entries: [] });
   mount("/admin/contact-history");
@@ -79,6 +106,7 @@ it("supports manual deleted IDs and neutral empty history without a live user lo
   expect(ContactHistory.list).toHaveBeenCalledWith("9223372036854775807", empty);
   expect(screen.getByRole("button", { name: "Export all matching CSV" })).toBeEnabled();
 });
+
 it("rejects overflow without coercion and preserves all draft fields", async () => {
   mount("/admin/contact-history");
   await userEvent.click(screen.getByText("Look up a deleted account"));
@@ -93,6 +121,7 @@ it("rejects overflow without coercion and preserves all draft fields", async () 
   expect(screen.getByLabelText("Until (optional)")).toHaveValue("2026-11-01");
   expect(screen.getByLabelText("Direct contact")).toBeChecked(); expect(ContactHistory.list).not.toHaveBeenCalled();
 });
+
 it("finds a person by friendly metadata and submits the exact returned string ID", async () => {
   vi.mocked(ContactHistory.people).mockImplementation(async ({ q }) => ({
     people: q === "Pat" ? [{ id: "9007199254740993", name: "Pat Friendly", email: "pat@example.com" }] : [],
@@ -140,6 +169,7 @@ it("disables date application until retry loads the church timezone and never fa
 it.each([401, 403])("clears history when person metadata lookup loses authority %s", async (status) => {
   vi.mocked(ContactHistory.people).mockRejectedValue(new ApiError(status, "SECRET"));
   mount();
+
   if (status === 401) expect(await screen.findByText("Sign in first")).toBeInTheDocument();
   else expect(await screen.findByText(/This history is no longer available/)).toBeInTheDocument();
   expect(screen.queryByText("Person's decision: Approved")).not.toBeInTheDocument();
@@ -156,11 +186,13 @@ it.each([401, 403])("clears all history and suppresses pending CSV on authority 
   expect(screen.queryByText("Person's decision: Approved")).not.toBeInTheDocument();
   expect(URL.createObjectURL).not.toHaveBeenCalled();
 });
+
 it("signed-out and nonadmin pages never fetch protected history", () => {
   auth.user = null; const view = mount(); expect(screen.getByText("Sign in first")).toBeInTheDocument(); view.unmount();
   auth.user = { id: 1, role: "member", status: "active" }; auth.isAdmin = false; mount();
   expect(screen.getByText("This page is for church admins only.")).toBeInTheDocument(); expect(ContactHistory.list).not.toHaveBeenCalled(); expect(ContactHistory.csv).not.toHaveBeenCalled();
 });
+
 it.each(["focus", "filter", "person", "unmount"])("ignores late page and CSV responses after %s", async (change) => {
   const page = deferred<ContactHistoryResponse>(); const csv = deferred<Blob>();
   vi.mocked(ContactHistory.csv).mockReturnValue(csv.promise);
@@ -168,19 +200,25 @@ it.each(["focus", "filter", "person", "unmount"])("ignores late page and CSV res
   vi.mocked(ContactHistory.list).mockReturnValueOnce(page.promise).mockResolvedValue({ entries: [] });
   await userEvent.click(screen.getByRole("button", { name: "Export all matching CSV" }));
   await userEvent.click(screen.getByRole("button", { name: "Load older entries" }));
+
   if (change === "focus") fireEvent(window, new Event("focus"));
+
   if (change === "filter") { await openFilters(); await userEvent.click(screen.getByRole("button", { name: "Apply filters" })); }
+
   if (change === "person") await userEvent.click(screen.getByRole("button", { name: "Other person" }));
+
   if (change === "unmount") view.unmount();
   expect(screen.queryByText("Person's decision: Approved")).not.toBeInTheDocument();
   await act(async () => { page.resolve({ entries: [entry] }); csv.resolve(new Blob(["private"])); });
   expect(screen.queryByText("Person's decision: Approved")).not.toBeInTheDocument(); expect(URL.createObjectURL).not.toHaveBeenCalled();
 });
+
 it("does not let an old initial response restore data after focus", async () => {
   const initial = deferred<ContactHistoryResponse>(); vi.mocked(ContactHistory.list).mockReturnValueOnce(initial.promise).mockResolvedValue({ entries: [] });
   mount(); fireEvent(window, new Event("focus")); await screen.findByText("No matching history");
   await act(async () => initial.resolve({ entries: [entry] })); expect(screen.queryByText("Person's decision: Approved")).not.toBeInTheDocument();
 });
+
 it("blocks duplicate downloads, derives a safe filename, removes anchor and revokes blobs after use or unmount", async () => {
   const pending = deferred<Blob>(); vi.mocked(ContactHistory.csv).mockReturnValue(pending.promise);
   const view = mount(); await userEvent.click(await screen.findByRole("button", { name: "Export all matching CSV" }));
@@ -193,12 +231,14 @@ it("blocks duplicate downloads, derives a safe filename, removes anchor and revo
   await userEvent.click(screen.getByRole("button", { name: "Export all matching CSV" }));
   view.unmount(); expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2);
 });
+
 it.each([new ApiError(500, "SECRET"), new TypeError("NETWORK SECRET")])("handles download failure without protected output or stale disclosure", async (error) => {
   vi.mocked(ContactHistory.csv).mockRejectedValue(error); mount();
   await userEvent.click(await screen.findByRole("button", { name: "Export all matching CSV" }));
   expect(await screen.findByRole("alert")).not.toHaveTextContent("SECRET");
   expect(screen.queryByText("Person's decision: Approved")).not.toBeInTheDocument(); expect(URL.createObjectURL).not.toHaveBeenCalled();
 });
+
 it("never renders arbitrary action/outcome/party/decision/contact/context text", async () => {
   vi.mocked(ContactHistory.list).mockResolvedValue({ entries: [{ ...entry, action: "SECRET ACTION", outcome: "SECRET OUTCOME", party: "SECRET PARTY", decision: "SECRET DECISION", fields: "secret@example.com", contextType: "SECRET GROUP" }] });
   mount(); expect(await screen.findByText("Recorded activity")).toBeInTheDocument(); expect(screen.queryByText(/SECRET|secret@example/)).not.toBeInTheDocument();
@@ -208,6 +248,7 @@ it("keeps purpose, action and dates under a Filters disclosure", async () => {
   mount(); await screen.findByText("Person's decision: Approved");
   const toggle = screen.getByRole("button", { name: "Filters" });
   expect(toggle).toHaveAttribute("aria-expanded", "false");
+
   for (const label of ["Direct contact", "Action (optional)", "From (optional)"]) expect(screen.queryByLabelText(label)).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Apply filters" })).not.toBeInTheDocument();
   await userEvent.click(toggle);

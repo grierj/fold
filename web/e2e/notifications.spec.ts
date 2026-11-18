@@ -1,3 +1,5 @@
+import { csrfFor } from "./helpers";
+import * as schema from "valibot";
 import { expect, test } from "@playwright/test";
 import { apiAs, email, signIn } from "./helpers";
 
@@ -5,38 +7,49 @@ import { apiAs, email, signIn } from "./helpers";
 // Approve resolves the task, and archive (with Undo) is stored on the
 // server, so it survives signing out.
 
+const badge = schema.looseObject({ unread: schema.number(), waiting: schema.number() });
+
 test("a waiting group approval is counted and approved from the bell", async ({ page, request }) => {
   type Badge = { unread: number; waiting: number };
+
   const badgeAccessibleName = (badge: Badge) => {
     const parts = [];
+
     if (badge.unread > 0) parts.push(`${badge.unread} unread`);
+
     if (badge.waiting > 0) parts.push(`${badge.waiting} waiting on you`);
     const label = parts.length > 0 ? `Alerts, ${parts.join(", ")}` : "Alerts";
     const count = badge.unread + badge.waiting;
+
     return count > 0 ? `${count > 9 ? "9+" : count} ${label}` : label;
   };
+
   const admin = await apiAs(request, "grier");
-  const baseline = await admin("GET", "/notifications/badge") as Badge;
+  const baseline = schema.parse(badge, await admin("GET", "/notifications/badge"));
   const sam = await apiAs(request, "sam");
-  const { group } = await sam("POST", "/groups", {
+
+  const { group } = schema.parse(schema.looseObject({ group: schema.looseObject({ id: schema.number() }) }), await sam("POST", "/groups", {
     name: "Bell study", description: "", tags: [], imageUrl: "", location: "", visibility: "private", memberLimit: null,
-  }) as { group: { id: number } };
+  }));
 
   await signIn(page, "grier");
+
   const readBadge = async (): Promise<Badge> => {
     const response = await page.request.get("/api/v1/notifications/badge");
     expect(response.ok()).toBe(true);
-    return (await response.json()) as Badge;
+
+    return schema.parse(badge, await response.json());
   };
+
   await expect.poll(async () => (await readBadge()).waiting).toBe(baseline.waiting + 1);
   const createdBadge = await readBadge();
   expect(createdBadge).toEqual({ unread: baseline.unread, waiting: baseline.waiting + 1 });
 
   const waitingResponse = await page.request.get("/api/v1/notifications?filter=waiting");
   expect(waitingResponse.ok()).toBe(true);
-  const waitingFeed = await waitingResponse.json() as {
-    notifications: { id: number; subjectId?: number; title: string; waiting: boolean }[];
-  };
+
+  const waitingFeed = schema.parse(schema.looseObject({ notifications: schema.array(schema.looseObject({ id: schema.number(), subjectId: schema.optional(schema.number()), title: schema.string(), waiting: schema.boolean() })) }), await waitingResponse.json());
+
   const createdTask = waitingFeed.notifications.find((notification) => notification.subjectId === group.id);
   expect(createdTask).toMatchObject({ title: "Sam Member started a group: Bell study", waiting: true });
 
@@ -51,9 +64,11 @@ test("a waiting group approval is counted and approved from the bell", async ({ 
   const row = panel.getByRole("listitem").filter({ hasText: "Sam Member started a group: Bell study" });
   await expect(row).toHaveCount(1);
   await expect(row.getByText("Sam Member started a group: Bell study", { exact: true })).toBeVisible();
+
   const approved = page.waitForResponse((response) =>
     new URL(response.url()).pathname === `/api/v1/admin/groups/${group.id}/approve` && response.request().method() === "POST"
   );
+
   await row.getByRole("button", { name: "Approve" }).click();
   expect((await approved).ok()).toBe(true);
   await expect(row).toContainText("You approved this");
@@ -64,9 +79,9 @@ test("a waiting group approval is counted and approved from the bell", async ({ 
 
   const resolvedResponse = await page.request.get("/api/v1/notifications?filter=all");
   expect(resolvedResponse.ok()).toBe(true);
-  const resolvedFeed = await resolvedResponse.json() as {
-    notifications: { id: number; subjectId?: number; waiting: boolean; resolution?: { outcome: string; byMe: boolean } }[];
-  };
+
+  const resolvedFeed = schema.parse(schema.looseObject({ notifications: schema.array(schema.looseObject({ id: schema.number(), subjectId: schema.optional(schema.number()), waiting: schema.boolean(), resolution: schema.optional(schema.looseObject({ outcome: schema.string(), byMe: schema.boolean() })) })) }), await resolvedResponse.json());
+
   const resolvedTask = resolvedFeed.notifications.find((notification) => notification.id === createdTask!.id);
   expect(resolvedTask).toMatchObject({
     subjectId: group.id,
@@ -77,11 +92,13 @@ test("a waiting group approval is counted and approved from the bell", async ({ 
 
 test("archive survives signing out, and Undo or the Archived filter restores it", async ({ page, request }) => {
   const admin = await apiAs(request, "grier");
-  const { users } = (await admin("GET", "/admin/users")) as { users: { id: number; email: string }[] };
+  const { users } = schema.parse(schema.looseObject({ users: schema.array(schema.looseObject({ id: schema.number(), email: schema.string() })) }), (await admin("GET", "/admin/users")));
   const id = (name: string) => users.find((u) => u.email === email(name))!.id;
-  const { group } = (await admin("POST", "/groups", {
+
+  const { group } = schema.parse(schema.looseObject({ group: schema.looseObject({ id: schema.number() }) }), (await admin("POST", "/groups", {
     name: "Notice club", description: "", tags: [], imageUrl: "", location: "", visibility: "private", memberLimit: null,
-  })) as { group: { id: number } };
+  })));
+
   await admin("POST", `/admin/groups/${group.id}/members`, { userId: id("lee"), role: "leader" });
   await admin("POST", `/admin/groups/${group.id}/members`, { userId: id("sam"), role: "member" });
   // Lee (not an admin) makes Sam a leader: the admins hear about it.
@@ -136,8 +153,9 @@ test("an admin sees a Teen badge on a teen's account request, in the bell and on
   const stamp = Date.now();
   const teenName = `Badge Teen ${stamp}`;
   const adultName = `Badge Adult ${stamp}`;
-  const csrf = async () => (await (await request.get("/api/v1/auth/csrf")).json()).csrfToken as string;
+  const csrf = async () => csrfFor(request);
   const birth = `${new Date().getUTCFullYear() - 15}-01-01`;
+
   for (const body of [
     { name: teenName, email: email(`badge-teen-${stamp}`), ageBand: "teen", birthDate: birth },
     { name: adultName, email: email(`badge-adult-${stamp}`), ageBand: "adult" },

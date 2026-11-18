@@ -72,8 +72,10 @@ export function RoomField({ eventId, date, idPrefix, onChanged, focusOnLoad }: {
     setBusy(true);
     setError(null);
     setStatus("");
+
     try {
       const res = await DateRooms.set(eventId, date, body);
+
       if (!alive.current) return;
       setBooking(res.booking);
       setPending(null);
@@ -82,6 +84,7 @@ export function RoomField({ eventId, date, idPrefix, onChanged, focusOnLoad }: {
       onChanged?.();
     } catch (e) {
       if (!alive.current) return;
+
       if (errorCode(e) === "room_busy" && isAdmin && body.roomId !== null) {
         // An admin may book over a conflict, with a reason.
         setPending(body);
@@ -98,12 +101,17 @@ export function RoomField({ eventId, date, idPrefix, onChanged, focusOnLoad }: {
     if (busy) return;
     setPending(null);
     overlap.clearError();
+
     if (value === "") return;
+
     if (value === NO_ROOM) {
       void send({ roomId: null }, () => "Room released.");
+
       return;
     }
+
     const room = rooms.find((r) => String(r.id) === value);
+
     if (!room) return;
     void send({ roomId: room.id }, (b) => (b?.pending ? "" : `Booked ${room.name}.`));
   }
@@ -111,6 +119,7 @@ export function RoomField({ eventId, date, idPrefix, onChanged, focusOnLoad }: {
   function bookAnyway() {
     if (!pending) return;
     const why = overlap.read();
+
     if (why === null) return;
     const room = rooms.find((r) => r.id === pending.roomId);
     void send({ ...pending, overlapReason: why }, () => `Booked ${room?.name ?? "the room"} over another booking.`);
@@ -121,12 +130,15 @@ export function RoomField({ eventId, date, idPrefix, onChanged, focusOnLoad }: {
     const s = Number(setup);
     const t = Number(teardown);
     const ok = (n: number, raw: string) => raw.trim() !== "" && Number.isInteger(n) && n >= 0 && n <= 240;
+
     if (!ok(s, setup) || !ok(t, teardown)) {
       const field = ok(s, setup) ? "teardown" : "setup";
       setPadError({ field, text: "Enter a whole number of minutes from 0 to 240 for both." });
       (field === "setup" ? setupRef : teardownRef).current?.focus();
+
       return;
     }
+
     setPadError(null);
     void send({ roomId: booking.roomId, setupMinutes: s, teardownMinutes: t }, () => "Setup and cleanup times saved.");
   }
@@ -138,6 +150,7 @@ export function RoomField({ eventId, date, idPrefix, onChanged, focusOnLoad }: {
   const requested = booking?.status === "requested" && !waiting;
   const value = booking && (booking.status === "confirmed" || waiting) ? String(booking.roomId) : requested ? "" : NO_ROOM;
   const anyBusy = rooms.some((r) => r.busy);
+
   const onPaddingEnter = (e: KeyboardEvent<HTMLInputElement>) => {
     // Enter here is "save the times", not "submit the editor around this field".
     if (e.key !== "Enter") return;

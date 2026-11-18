@@ -1,3 +1,4 @@
+import { stubService } from "../../test/service";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
@@ -8,7 +9,9 @@ import { ERROR_COPY } from "../../lib/errors";
 import type { AdminDeliverySummary, AdminJob } from "../../types";
 import { SystemTab } from "./SystemTab";
 
-vi.mock("../../api/admin", async (actual) => ({ ...(await actual<typeof import("../../api/admin")>()), AdminJobs: { list: vi.fn(), retry: vi.fn(), dismiss: vi.fn() }, AdminBackup: { status: vi.fn() } }));
+stubService(AdminJobs, () => ({ list: vi.fn(), retry: vi.fn(), dismiss: vi.fn() }));
+
+stubService(AdminBackup, () => ({ status: vi.fn() }));
 
 const job = (id: number, extra: Partial<AdminJob> = {}): AdminJob => ({
   id, kind: "occurrences.extend", label: "Adding upcoming event dates", runsDaily: true, attempts: 5,
@@ -18,6 +21,7 @@ const job = (id: number, extra: Partial<AdminJob> = {}): AdminJob => ({
 // The tab with the list state its parent (the Admin page) keeps.
 function Harness({ initial, more = false, error = null, reload = () => {} }: { initial: AdminJob[] | null; more?: boolean; error?: string | null; reload?: () => void }) {
   const [jobs, setJobs] = useState(initial);
+
   return <SystemTab jobs={jobs} more={more} error={error} reload={reload} onRemoved={(id) => setJobs((p) => p && p.filter((j) => j.id !== id))} />;
 }
 
@@ -106,6 +110,7 @@ it("refreshes from the server after an action, even when nothing more was listed
 const summary = (extra: Partial<AdminDeliverySummary> = {}): AdminDeliverySummary => ({ queued: 0, deferred: 0, failed: 0, oldestQueuedAt: null, ...extra });
 
 const deliverJob = (id: number) => job(id, { kind: "notify.deliver", label: "Sending a notice by email and to devices", runsDaily: false });
+
 const renderTab = (deliveries: AdminDeliverySummary | null, jobs: AdminJob[] | null = [], extra: { more?: boolean; error?: string | null } = {}) =>
   render(<SystemTab jobs={jobs} more={extra.more ?? false} error={extra.error ?? null} reload={() => {}} onRemoved={() => {}} deliveries={deliveries} />);
 

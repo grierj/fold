@@ -1,3 +1,4 @@
+import type { JsonValue } from "../lib/wireValues";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ErasureReasonItem, LegacyReasonDecision } from "../types";
 import { AdminUsers } from "./adminUsers";
@@ -6,18 +7,21 @@ import { ApiError } from "./core";
 describe("AdminUsers attempt calls", () => {
   const ID = "0123456789abcdef".repeat(5);
   const csrf = () => new Response(JSON.stringify({ csrfToken: "csrf" }), { status: 200 });
+
   const stub = (answer: () => Response) => {
     const fetcher = vi.fn(async (url: RequestInfo | URL, _opts?: RequestInit) => (String(url).endsWith("/auth/csrf") ? csrf() : answer()));
     vi.stubGlobal("fetch", fetcher);
+
     return fetcher;
   };
+
   afterEach(() => vi.unstubAllGlobals());
 
   it("mints only a well-formed id, and sends the kind and the subject in the body", async () => {
     const fetcher = stub(() => new Response(JSON.stringify({ attemptId: ID }), { status: 200 }));
     await expect(AdminUsers.mintAttempt(9)).resolves.toEqual({ attemptId: ID });
     const post = fetcher.mock.calls.find(([url]) => String(url) === "/api/v1/admin/operation-attempts");
-    expect(JSON.parse((post?.[1] as RequestInit).body as string)).toEqual({ kind: "account_delete", subjectUserId: 9 });
+    expect(JSON.parse(String(post?.[1]?.body))).toEqual({ kind: "account_delete", subjectUserId: 9 });
   });
 
   it.each([
@@ -38,7 +42,7 @@ describe("AdminUsers attempt calls", () => {
     await expect(AdminUsers.remove(9, {}, {}, ID)).resolves.toEqual({ erasure: report });
     const del = fetcher.mock.calls.find(([, opts]) => opts?.method === "DELETE");
     expect(String(del?.[0])).toBe("/api/v1/admin/users/9");
-    expect(JSON.parse((del?.[1] as RequestInit).body as string)).toEqual({ successors: {}, hostSuccessors: {}, attemptId: ID });
+    expect(JSON.parse(String(del?.[1]?.body))).toEqual({ successors: {}, hostSuccessors: {}, attemptId: ID });
   });
 
   it("sends the set-v1 reasonReview in the DELETE body, and none when there is none", async () => {
@@ -47,7 +51,7 @@ describe("AdminUsers attempt calls", () => {
     const reasonReview = { format: "set-v1" as const, count: "2", digest: "a".repeat(64), choices: "Ag==" };
     await AdminUsers.remove(9, {}, {}, ID, reasonReview);
     await AdminUsers.remove(9, {}, {}, ID);
-    const bodies = fetcher.mock.calls.filter(([, opts]) => opts?.method === "DELETE").map(([, opts]) => JSON.parse((opts as RequestInit).body as string));
+    const bodies = fetcher.mock.calls.filter(([, opts]) => opts?.method === "DELETE").map(([, opts]) => JSON.parse(String(opts?.body)));
     expect(bodies[0]).toEqual({ successors: {}, hostSuccessors: {}, attemptId: ID, reasonReview });
     expect(Object.keys(bodies[0].reasonReview).sort()).toEqual(["choices", "count", "digest", "format"]);
     expect(bodies[1]).not.toHaveProperty("reasonReview");
@@ -74,14 +78,15 @@ describe("AdminUsers.erasureReasonsPage", () => {
       createdAt: "2026-11-01T12:00:00Z", counterpartName: "Deleted account", counterpartDeleted: true, counterpartRef: "41",
       reviewerIsParty: false, reason: "Needs a ride.",
     };
-    const page = { reviewRequired: true, items: [item], next: "-9223372036854775808" };
+
+    const page = { reviewRequired: true, items: [{ ...item }], next: "-9223372036854775808" };
     const fetcher = vi.fn(async (url: RequestInfo | URL, _opts?: RequestInit) => (String(url).endsWith("/auth/csrf") ? csrf() : new Response(JSON.stringify(page), { status: 200 })));
     vi.stubGlobal("fetch", fetcher);
     await expect(AdminUsers.erasureReasonsPage(9, null)).resolves.toEqual(page);
     await AdminUsers.erasureReasonsPage(9, "-5");
     const posts = fetcher.mock.calls.filter(([url]) => String(url) === "/api/v1/admin/users/9/erasure-reasons/page");
-    expect(posts.map(([, opts]) => JSON.parse((opts as RequestInit).body as string))).toEqual([{ after: null }, { after: "-5" }]);
-    expect((posts[0][1] as RequestInit).method).toBe("POST");
+    expect(posts.map(([, opts]) => JSON.parse(String(opts?.body)))).toEqual([{ after: null }, { after: "-5" }]);
+    expect(posts[0][1]?.method).toBe("POST");
   });
 });
 
@@ -89,14 +94,17 @@ describe("AdminUsers legacy reason review", () => {
   const ID = "fedcba9876543210".repeat(5);
   const HASH = "a".repeat(64);
   const csrf = () => new Response(JSON.stringify({ csrfToken: "csrf" }), { status: 200 });
+
   const stub = (answer: () => Response) => {
     const fetcher = vi.fn(async (url: RequestInfo | URL, _opts?: RequestInit) => (String(url).endsWith("/auth/csrf") ? csrf() : answer()));
     vi.stubGlobal("fetch", fetcher);
+
     return fetcher;
   };
-  const json = (body: unknown, status = 200) => () => new Response(JSON.stringify(body), { status });
+
+  const json = (body: JsonValue, status = 200) => () => new Response(JSON.stringify(body), { status });
   const sent = (fetcher: ReturnType<typeof stub>) => fetcher.mock.calls.filter(([url]) => !String(url).endsWith("/auth/csrf"));
-  const bodyOf = (call: [RequestInfo | URL, RequestInit?]) => JSON.parse((call[1] as RequestInit).body as string);
+  const bodyOf = (call: [RequestInfo | URL, RequestInit?]) => JSON.parse(String(call[1]?.body));
   afterEach(() => vi.unstubAllGlobals());
 
   describe("legacyReasons", () => {
@@ -188,7 +196,7 @@ describe("AdminUsers legacy reason review", () => {
     };
 
     it("posts the cursor in the body to the account's own path, string or number", async () => {
-      const page = { reviewRequired: true, items: [item], next: "-9223372036854775808" };
+      const page = { reviewRequired: true, items: [{ ...item }], next: "-9223372036854775808" };
       const fetcher = stub(json(page));
       await expect(AdminUsers.legacyReasonsPage("41", null)).resolves.toEqual(page);
       await AdminUsers.legacyReasonsPage(41, "-5");
@@ -281,11 +289,11 @@ describe("AdminUsers legacy reason review", () => {
       await expect(AdminUsers.saveLegacyReasons("41", ID, decisions)).resolves.toEqual({ kept: 1, removed: 1 });
       const [call] = sent(fetcher);
       expect(String(call[0])).toBe("/api/v1/admin/erasure-reasons/legacy/41");
-      expect((call[1] as RequestInit).method).toBe("PUT");
+      expect(call[1]?.method).toBe("PUT");
       expect(JSON.stringify(call[0])).not.toContain(ID);
       expect(bodyOf(call)).toEqual({ attemptId: ID, decisions });
       expect(Object.keys(bodyOf(call)).sort()).toEqual(["attemptId", "decisions"]);
-      expect(((call[1] as RequestInit).headers as Record<string, string>)["X-CSRF-Token"]).toBe("csrf");
+      expect(new Headers(call[1]?.headers).get("X-CSRF-Token")).toBe("csrf");
     });
 
     it.each([
@@ -298,7 +306,7 @@ describe("AdminUsers legacy reason review", () => {
       ["a fractional count", json({ kept: 0.5, removed: 0 })],
     ])("does not call a save answered with %s a success, and leaves it uncertain", async (_name, answer) => {
       stub(answer);
-      const err = await AdminUsers.saveLegacyReasons(41, ID, decisions).catch((e: unknown) => e);
+      const err = await AdminUsers.saveLegacyReasons(41, ID, decisions).catch((cause: unknown) => cause);
       expect(err).toBeInstanceOf(Error);
       // A plain Error, not an ApiError: the caller cannot tell it from a lost
       // answer, so it settles the id instead of saying nothing was saved.
@@ -353,8 +361,10 @@ describe("AdminUsers legacy reason review", () => {
     it("mints and settles a legacy save for the deleted account, the id still in the body", async () => {
       const fetcher = stub((() => {
         let n = 0;
+
         return () => (n++ === 0 ? new Response(JSON.stringify({ attemptId: ID }), { status: 200 }) : new Response(JSON.stringify({ result: "not_applied" }), { status: 200 }));
       })());
+
       await expect(AdminUsers.mintAttempt("41", "legacy_reason_save")).resolves.toEqual({ attemptId: ID });
       await expect(AdminUsers.settleAttempt(ID, "41", "legacy_reason_save")).resolves.toEqual({ result: "not_applied" });
       const [mint, settle] = sent(fetcher);

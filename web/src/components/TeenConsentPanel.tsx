@@ -24,19 +24,23 @@ export default function TeenConsentPanel({ user, onUpdated, onClose }: { user: U
   const [busy, setBusy] = useState(false);
   const [announcement, setAnnouncement] = useState("");
   const ref = useRef<HTMLDivElement>(null);
+
   const load = useCallback(async () => {
     const result = await AdminTeenConsents.list(user.id);
     setHistory(result.consents);
     setSuspended(result.administrativelyDisabled);
     setLoaded(true);
   }, [user.id]);
+
   useEffect(() => { load().catch((e) => setError(errorText(e, "We couldn't load consent history."))); }, [load]);
 
   async function change(status: TeenConsent["status"]) {
     if (status === "granted" && !evidence.trim()) {
       showFieldErrors(ref.current, () => setEvidenceError("Write how you received consent first."));
+
       return;
     }
+
     if (status === "revoked" && !confirm(scope === "account"
       ? `Revoke account consent for ${publicName(user)}? They will be signed out and can't sign in.`
       : `Revoke ${scope === "sms" ? "SMS" : "photo"} consent for ${publicName(user)}?`)) return;
@@ -44,6 +48,7 @@ export default function TeenConsentPanel({ user, onUpdated, onClose }: { user: U
     setError(null);
     setEvidenceError(null);
     setAnnouncement("");
+
     try {
       await AdminTeenConsents.change(user.id, { scope, status, evidenceText: evidence.trim() });
       await load();

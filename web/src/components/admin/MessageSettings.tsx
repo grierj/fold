@@ -17,9 +17,11 @@ import { ErrorNotice } from "../ErrorNotice";
 // GuardianCopiesSetting is one on/off switch (SettingSwitch, DEC-98).
 export function GuardianCopiesSetting() {
   const setting = useLoad(() => Admin.guardianCopies(), []);
+
   if (setting.error) {
     return <div className="mb-6 max-w-xl"><ErrorNotice message="We couldn't load the guardian copies setting." onRetry={setting.retry} /></div>;
   }
+
   return (
     <SettingSwitch
       label="Send guardians a copy of messages to their teens"
@@ -57,6 +59,7 @@ export function ReplyToSetting() {
   useEffect(() => {
     alive.current = true;
     load();
+
     return () => { alive.current = false; };
   }, [load]);
 
@@ -64,11 +67,13 @@ export function ReplyToSetting() {
     e.preventDefault();
     setError(null); setOk(false); setFieldError(null);
     setBusy(true);
+
     try {
       const r = await Admin.setReplyTo(address.trim());
       setAddress(r.address); setSaved(r.address); setOk(true);
     } catch (err) {
       const text = errorText(err, "We couldn't save where replies go. Try again.");
+
       if (errorCode(err) === "reply_to_invalid") setFieldError(text);
       else setError(text);
     } finally { setBusy(false); }
@@ -77,6 +82,7 @@ export function ReplyToSetting() {
   if (loadFailed) {
     return <div className="mb-6 max-w-xl"><ErrorNotice message="We couldn't load where replies go." onRetry={load} /></div>;
   }
+
   return (
     <Form onSubmit={save} className="mb-6 max-w-xl space-y-4">
       {guard}

@@ -15,6 +15,7 @@ const item = (over: Partial<ErasureReasonItem> = {}): ErasureReasonItem => ({
 function show(items: ErasureReasonItem[], choices: Record<string, ReasonChoice | undefined> = {}, changed?: Set<string>) {
   const onChoose = vi.fn();
   render(<ReasonReviewList items={items} choices={choices} changed={changed} onChoose={onChoose} />);
+
   return onChoose;
 }
 
@@ -26,6 +27,7 @@ describe("ReasonReviewList", () => {
     expect(screen.getByText("Please call me about the ride.")).toBeInTheDocument();
     expect(screen.getByText("Second reason")).toBeInTheDocument();
     expect(screen.getAllByRole("radio")).toHaveLength(4);
+
     for (const r of screen.getAllByRole("radio")) expect(r).not.toBeChecked();
     expect(screen.getAllByRole("radio", { name: "Keep text" })).toHaveLength(2);
     expect(screen.getAllByRole("radio", { name: "Blank text" })).toHaveLength(2);
@@ -119,6 +121,7 @@ describe("ReasonReviewList", () => {
     const { rerender } = render(
       <ReasonReviewList items={[item({ requestId: "1" }), item({ requestId: "2" })]} choices={{}} changed={new Set(["1"])} onChoose={vi.fn()} />,
     );
+
     expect(screen.getAllByText(CHANGED_COPY)).toHaveLength(1);
     expect(screen.getByText(CHANGED_COPY).closest("li")).toHaveAttribute("data-changed", "true");
     rerender(<ReasonReviewList items={[item({ requestId: "1" }), item({ requestId: "2" })]} choices={{ "1": "keep" }} changed={new Set(["1"])} onChoose={vi.fn()} />);
@@ -127,6 +130,7 @@ describe("ReasonReviewList", () => {
 
   it("turns every radio off when disabled", () => {
     render(<ReasonReviewList items={[item()]} choices={{}} onChoose={vi.fn()} disabled />);
+
     for (const r of screen.getAllByRole("radio")) expect(r).toBeDisabled();
   });
 });

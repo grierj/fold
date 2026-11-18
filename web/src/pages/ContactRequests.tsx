@@ -17,7 +17,9 @@ import { formatWhen } from "../lib/when";
 export function ContactRequestsPage() {
   const { user } = useAuth();
   const { id } = useParams();
+
   if (!user) return null;
+
   return <div className="fold-page-narrow space-y-5">
     <h1 className="text-2xl font-bold">Direct contact</h1>
     <p className="text-text-muted">Review requests and manage shared contact access. Contact details stay private.</p>
@@ -32,6 +34,7 @@ function ContactRequestLists() {
   const error = requests.error || grants.error;
   const busy = requests.busy || grants.busy;
   const refresh = () => { requests.refresh(); grants.refresh(); };
+
   return <>
     {error && <><FormError>{error}</FormError><Button variant="secondary" onClick={refresh}>Try again</Button></>}
     {!loaded && !error && <p role="status">Loading your contact requests…</p>}
@@ -61,11 +64,14 @@ function ContactRequestLists() {
 // cursors; never infer permission to show the request's reason or decisions.
 async function matchingGrants(requestId: number): Promise<ContactGrant[]> {
   let before: number | undefined;
+
   for (;;) {
     const { grants } = await Contacts.grants(before);
     const matches = grants.filter((g) => g.requestId === requestId);
+
     if (matches.length || grants.length < 100) return matches;
     const next = grants[grants.length - 1]?.id;
+
     if (next === undefined || (before !== undefined && next >= before)) return [];
     before = next;
   }
@@ -81,21 +87,29 @@ function ContactRequestDetail({ id }: { id: number }) {
   useEffect(() => {
     let live = true;
     setLoaded(false); setRequest(null); setGrants([]); setError("");
+
     async function load() {
       if (!Number.isSafeInteger(id) || id <= 0) throw new ApiError(404, "invalid request");
       let r: ContactRequest | null = null;
+
       try { r = (await Contacts.request(id)).request; }
       catch (e) { if (!(e instanceof ApiError) || e.status !== 404) throw e; }
+
       const g = !r || r.status === "granted" ? await matchingGrants(id) : [];
+
       if (live) { setRequest(r); setGrants(r ? g : g.filter((grant) => !grant.endedAt)); setLoaded(true); }
     }
-    void load().catch((e: unknown) => { if (live) setError(errorText(e)); });
+
+    void load().catch((cause: unknown) => { if (live) setError(errorText(cause)); });
     const refresh = () => setRevision((n) => n + 1);
     window.addEventListener("focus", refresh);
+
     return () => { live = false; window.removeEventListener("focus", refresh); };
   }, [id, revision]);
+
   async function action(party?: "subject" | "admin", decision?: "approved" | "denied") {
     setBusy(true); setError("");
+
     try {
       if (party && decision) await Contacts.decide(id, party, decision);
       else await Contacts.withdraw(id);
@@ -103,6 +117,7 @@ function ContactRequestDetail({ id }: { id: number }) {
     } catch (e) { setError(errorText(e)); }
     finally { setBusy(false); }
   }
+
   return <>
     <ButtonLink variant="link" to="/contact-requests">All contact requests</ButtonLink>
     {error && <><FormError>{error}</FormError><Button variant="secondary" onClick={() => setRevision((n) => n + 1)}>Try again</Button></>}

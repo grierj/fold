@@ -43,6 +43,7 @@ export function scheduleReady(when: Pick<WhenState, "date" | "recurring" | "days
 // The busy and size notes for the chosen room, in words.
 function notes(room: SeriesRoom, dates: number): string[] {
   const busy = busyDatesNote(room, dates, "create");
+
   return [...(busy ? [busy] : []), ...(room.tooSmall ? ["This room may seat fewer people than the seat limit allows."] : [])];
 }
 
@@ -84,28 +85,36 @@ export function CreateRoomField({ id, schedule, groupId, visibility, roomId, onC
   const key = schedule ? JSON.stringify([schedule, groupId ?? null, visibility ?? null]) : "";
   useEffect(() => {
     if (!enabled) return;
+
     if (!key) {
       setRooms([]);
       setSuggestions(null);
       setDates(0);
       setError(null);
       setChecking(false);
+
       return;
     }
+
+    // SAFETY: key is the serialized schedule, group ID, and visibility tuple built above.
     const [fields, group, vis] = JSON.parse(key) as [Schedule, number | null, string | null];
     const mine = ++seq.current;
     setChecking(true);
+
     const timer = setTimeout(async () => {
       try {
-        const res = await SeriesRooms.check({ ...fields, ...(group === null ? {} : { groupId: group }), ...(vis === null ? {} : { visibility: vis }) });
+        const res = await SeriesRooms.check({ ...fields, groupId: group ?? undefined, visibility: vis ?? undefined });
+
         if (seq.current !== mine) return;
         setRooms(res.rooms);
         setSuggestions(res.suggestions ?? null);
         setDates(res.dates);
         setError(null);
         const { roomId: chosen, onChange: report } = latest.current;
+
         if (chosen !== null) {
           const room = res.rooms.find((r) => r.id === chosen);
+
           if (room) {
             setKept(room);
             setDropped("");
@@ -127,6 +136,7 @@ export function CreateRoomField({ id, schedule, groupId, visibility, roomId, onC
         if (seq.current === mine) setChecking(false);
       }
     }, DEBOUNCE_MS);
+
     return () => {
       clearTimeout(timer);
       seq.current++;
@@ -140,14 +150,17 @@ export function CreateRoomField({ id, schedule, groupId, visibility, roomId, onC
   const shown = !chosen && roomId !== null && kept?.id === roomId ? kept : null;
   const value = chosen ? String(chosen.id) : shown ? String(shown.id) : NO_ROOM;
   const recurring = !!schedule && schedule.recurrenceRule !== "";
+
   const hint = !schedule
     ? "Finish the date, time and seat limit first to see which rooms are free."
     : recurring
       ? "Booked for every date when you schedule the event."
       : "Booked when you schedule the event.";
+
   const choose = (v: string) => {
     const room = rooms.find((r) => String(r.id) === v);
     setDropped("");
+
     if (room) setKept(room);
     onChange(room ? room.id : null);
   };

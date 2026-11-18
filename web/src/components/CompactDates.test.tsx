@@ -4,16 +4,21 @@ import { expect, it } from "vitest";
 import { occurrence } from "../test/occurrence";
 import { CompactDates } from "./CompactDates";
 import { addDays } from "../lib/days";
+
 const dates = Array.from({ length: 40 }, (_, i) => {
   const date = addDays("2026-12-01", i);
+
   return occurrence({ id: i + 1, title: `Gathering ${i + 1}`, date, startsAt: `${date}T18:00:00Z`, endsAt: `${date}T19:00:00Z` });
 });
+
 const child = (d: typeof dates[number]) => <input aria-label={`Draft ${d.id}`} defaultValue="" />;
+
 it("keeps a small schedule's direct answers", () => {
   render(<CompactDates dates={dates.slice(0, 4)}>{child}</CompactDates>);
   expect(screen.getAllByRole("textbox")).toHaveLength(4);
   expect(screen.queryByRole("button", { name: /Details and RSVP/ })).not.toBeInTheDocument();
 });
+
 it("pages long schedules and preserves a draft while another date is expanded", async () => {
   render(<CompactDates dates={dates}>{child}</CompactDates>);
   expect(screen.getAllByRole("textbox")).toHaveLength(1);
@@ -26,6 +31,7 @@ it("pages long schedules and preserves a draft while another date is expanded", 
   await userEvent.click(screen.getByRole("button", { name: "Next dates" }));
   expect(screen.getByRole("status")).toHaveTextContent("Showing 13 to 24 of 40 dates");
 });
+
 it("preserves every mounted draft while crossing the compact threshold both ways", async () => {
   const view = (n: number) => <CompactDates dates={dates.slice(0, n)}>{child}</CompactDates>;
   const rendered = render(view(6));
@@ -53,6 +59,7 @@ it("does not expand sibling events that share the same date", async () => {
   expect(screen.getAllByRole("textbox")).toHaveLength(1);
   expect(screen.getByRole("textbox")).toHaveAccessibleName("Draft 2");
 });
+
 it("opens a requested date beyond the first page, even after searching", async () => {
   const view = (requested?: string) => <CompactDates dates={dates} requested={requested}>{child}</CompactDates>;
   const rendered = render(view());

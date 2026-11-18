@@ -28,10 +28,13 @@ const POLL_MS = 60_000;
 export function useBadge(refreshKey: string, enabled = true): Badge & { loaded: boolean } {
   const [badge, setBadge] = useState<Badge & { loaded: boolean }>({ unread: 0, waiting: 0, loaded: false });
   const etag = useRef("");
+
   const load = useCallback(async () => {
     if (document.visibilityState === "hidden") return;
+
     try {
       const got = await Api.badge(etag.current);
+
       if (got) {
         etag.current = got.etag;
         setBadge({ ...got.badge, loaded: true });
@@ -48,14 +51,17 @@ export function useBadge(refreshKey: string, enabled = true): Badge & { loaded: 
 
   useEffect(() => {
     if (!enabled) return;
+
     const onVisible = () => {
       if (document.visibilityState === "visible") load();
     };
+
     window.addEventListener("focus", load);
     window.addEventListener("online", load);
     window.addEventListener(CHANGED, load);
     document.addEventListener("visibilitychange", onVisible);
     const t = setInterval(load, POLL_MS);
+
     return () => {
       window.removeEventListener("focus", load);
       window.removeEventListener("online", load);
@@ -64,13 +70,17 @@ export function useBadge(refreshKey: string, enabled = true): Badge & { loaded: 
       clearInterval(t);
     };
   }, [load, enabled]);
+
   return badge;
 }
 
 function badgeLabel(b: Badge): string {
   const parts = [];
+
   if (b.unread > 0) parts.push(`${b.unread} unread`);
+
   if (b.waiting > 0) parts.push(`${b.waiting} waiting on you`);
+
   return parts.length ? `Alerts, ${parts.join(", ")}` : "Alerts";
 }
 
@@ -81,6 +91,7 @@ export function badgeCount(b: Pick<Badge, "unread" | "waiting">): number {
 
 export function badgeText(b: Badge): string {
   const n = badgeCount(b);
+
   return n > 9 ? "9+" : String(n);
 }
 
@@ -115,9 +126,10 @@ export interface Feed {
 // useFeed loads one filter of the feed and keeps it in memory. A failed
 // refresh keeps what was loaded (stale-on-error, 6.4).
 export function useFeed(filter: NotificationFilter, enabled = true): Feed {
-  const [state, setState] = useState({
-    waiting: [] as Notification[], waitingTotal: 0, items: [] as Notification[], next: "",
+  const [state, setState] = useState<Pick<Feed, "waiting" | "waitingTotal" | "items" | "next">>({
+    waiting: [], waitingTotal: 0, items: [], next: "",
   });
+
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState(false);
@@ -133,8 +145,10 @@ export function useFeed(filter: NotificationFilter, enabled = true): Feed {
 
   const reload = useCallback(async () => {
     const mine = ++rev.current;
+
     try {
       const f = await Api.list(filter);
+
       if (mine !== rev.current) return;
       setState({ waiting: f.waiting, waitingTotal: f.waitingTotal, items: f.notifications, next: f.next });
       setError(false);
@@ -155,6 +169,7 @@ export function useFeed(filter: NotificationFilter, enabled = true): Feed {
     const off = () => setOffline(true);
     window.addEventListener("online", on);
     window.addEventListener("offline", off);
+
     return () => {
       window.removeEventListener(CHANGED, reload);
       window.removeEventListener("online", on);
@@ -167,8 +182,10 @@ export function useFeed(filter: NotificationFilter, enabled = true): Feed {
     if (!state.next) return;
     const mine = rev.current;
     setLoadingMore(true);
+
     try {
       const f = await Api.list(filter, state.next);
+
       if (mine !== rev.current) return;
       setState((s) => ({ ...s, items: [...s.items, ...f.notifications], next: f.next }));
     } catch {
@@ -196,16 +213,21 @@ export function useFeed(filter: NotificationFilter, enabled = true): Feed {
   // did not, the row stays as it was and says so under itself.
   const setArchived = useCallback(async (n: Notification, archived: boolean) => {
     setRowError((e) => ({ ...e, [n.id]: "" }));
+
     try {
       await Api.archive(n.id, archived);
     } catch {
       setRowError((e) => ({ ...e, [n.id]: archived ? "Couldn't archive this. Try again." : "Couldn't restore this. Try again." }));
+
       return false;
     }
+
     if (archived) setState((s) => ({ ...s, items: s.items.filter((x) => x.id !== n.id) }));
     notificationsChanged();
+
     return true;
   }, []);
+
   const archive = useCallback((n: Notification) => setArchived(n, true), [setArchived]);
   const unarchive = useCallback((n: Notification) => setArchived(n, false), [setArchived]);
 
@@ -217,6 +239,7 @@ export function useFeed(filter: NotificationFilter, enabled = true): Feed {
       // rows stay unread) and the reload below shows the truth; the next
       // tap tries again. (The "Couldn't refresh" line is about reloads.)
     }
+
     notificationsChanged();
   }, []);
 
@@ -224,6 +247,7 @@ export function useFeed(filter: NotificationFilter, enabled = true): Feed {
     if (!n.subjectId) return;
     setBusy((b) => ({ ...b, [n.id]: true }));
     setRowError((e) => ({ ...e, [n.id]: "" }));
+
     try {
       // Inline Approve exists on exactly two kinds (DEC-44); the server
       // allow-lists both and refuses anything else (6.6).
@@ -232,6 +256,7 @@ export function useFeed(filter: NotificationFilter, enabled = true): Feed {
       } else {
         await Admin.approve(n.subjectId, undefined, n.id);
       }
+
       patch(n.id, {
         waiting: false, actions: [],
         resolution: { outcome: "approved", by: "", byMe: true, at: new Date().toISOString() },
@@ -242,7 +267,7 @@ export function useFeed(filter: NotificationFilter, enabled = true): Feed {
         const outcome = String(err.data.resolution ?? "approved");
         const by = String(err.data.resolvedBy ?? "someone");
         patch(n.id, { waiting: false, actions: [], resolution: { outcome, by, byMe: false, at: new Date().toISOString() } });
-        setHandled((h) => ({ ...h, [n.id]: `Already ${OUTCOME[outcome] ?? "handled"} by ${by}` }));
+        setHandled((h) => ({ ...h, [n.id]: `Already ${OUTCOME.get(outcome) ?? "handled"} by ${by}` }));
       } else {
         setRowError((e) => ({ ...e, [n.id]: "Couldn't approve. Try again or open the request." }));
       }
@@ -262,27 +287,42 @@ export function useFeed(filter: NotificationFilter, enabled = true): Feed {
 export function relativeTime(iso: string, now = new Date()): string {
   const t = new Date(iso);
   const mins = Math.round((now.getTime() - t.getTime()) / 60000);
+
   if (mins < 1) return "now";
+
   if (mins < 60) return `${mins}m`;
   const hours = Math.round(mins / 60);
+
   if (hours < 24) return `${hours}h`;
   const days = Math.round(hours / 24);
+
   if (days === 1) return "Yesterday";
+
   if (days < 7) return new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }).format(-days, "day");
+
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(t);
 }
 
-const OUTCOME: Record<string, string> = {
-  approved: "approved", confirmed: "confirmed", rejected: "rejected", deleted: "deleted", kept: "kept", withdrawn: "withdrawn",
-};
+const OUTCOME = new Map<string, string>([
+  ["approved", "approved"],
+  ["confirmed", "confirmed"],
+  ["rejected", "rejected"],
+  ["deleted", "deleted"],
+  ["kept", "kept"],
+  ["withdrawn", "withdrawn"],
+]);
 
 // resolutionText: "You approved this" or "Done · approved by Pat".
 export function resolutionText(n: Notification): string {
   const r = n.resolution;
+
   if (!r) return "";
-  const verb = OUTCOME[r.outcome] ?? "handled";
+  const verb = OUTCOME.get(r.outcome) ?? "handled";
+
   if (r.byMe) return `You ${r.outcome === "withdrawn" ? "withdrew" : verb} this`;
+
   if (r.outcome === "withdrawn") return "Done · withdrawn by " + (r.by || "the leader");
+
   return `Done · ${verb} by ${r.by || "someone"}`;
 }
 
@@ -293,9 +333,14 @@ export type KindIcon = "calendar" | "person" | "check" | "group" | "shield" | "g
 // (group.pending) shows the group icon; only the decision reads as done.
 export function kindIcon(kind: string): KindIcon {
   if (kind === "group.approved") return "check";
+
   if (/^(event|occurrence|registration|waitlist)\./.test(kind)) return "calendar";
+
   if (/^(account|add|household)\./.test(kind)) return "person";
+
   if (/^(membership|group)\./.test(kind)) return "group";
+
   if (/^(teen_consent|contact|guardian|consent)\./.test(kind)) return "shield";
+
   return "generic";
 }

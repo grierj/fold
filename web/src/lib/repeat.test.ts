@@ -7,6 +7,7 @@ const denverWed = (date: string, utcDay: string): RepeatDate & { endsAt: string 
   startsAt: `${utcDay}T02:00:00Z`,
   endsAt: `${utcDay}T03:30:00Z`,
 });
+
 const WEDS = [denverWed("2026-11-04", "2026-11-05"), denverWed("2026-11-11", "2026-11-12"), denverWed("2026-11-18", "2026-11-19")];
 const NOW = new Date("2026-10-30T12:00:00Z");
 
@@ -77,6 +78,7 @@ describe("repeatPattern", () => {
     ]) {
       expect(repeatPattern(rule, noon("2026-11-04"), "UTC"), rule).toBe("Repeats");
     }
+
     expect(repeatPattern("FREQ=WEEKLY;BYDAY=WE", [], "UTC")).toBe("Repeats");
   });
 

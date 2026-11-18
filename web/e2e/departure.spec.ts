@@ -1,3 +1,5 @@
+import type { JsonValue } from "../src/lib/wireValues";
+import * as schema from "valibot";
 import AxeBuilder from "@axe-core/playwright";
 import { mkdirSync } from "node:fs";
 import { expect, test } from "@playwright/test";
@@ -22,11 +24,14 @@ async function assertDialogQuality(page: import("@playwright/test").Page) {
   const dialog = page.getByRole("dialog");
   const { violations } = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"]).analyze();
   expect(violations.filter((item) => item.impact === "serious" || item.impact === "critical").map((item) => item.id)).toEqual([]);
+
   if ((await page.viewportSize())?.width === 390) {
     const sizes = await dialog.locator("button, label.choice-row").evaluateAll((nodes) => nodes.map((node) => {
       const box = node.getBoundingClientRect();
+
       return { text: node.textContent?.trim(), width: box.width, height: box.height };
     }));
+
     expect(sizes.filter((size) => size.width < 44 || size.height < 44)).toEqual([]);
   }
 }
@@ -36,10 +41,10 @@ test("a delayed pre-leave group response cannot restore leader controls or roste
   const suffix = Date.now().toString(36);
   const departingLogin = `departure-refresh-${suffix}`;
   const continuingLogin = `departure-continuing-${suffix}`;
-  const asAdmin = async (method: string, path: string, data?: unknown) => (await apiAs(request, "grier"))(method, path, data);
-  const departing = (await asAdmin("POST", "/admin/users", { ageBand: "adult", name: "Departing Leader", email: email(departingLogin), password: PASSWORD, role: "member" })).user as { id: number };
-  const continuing = (await asAdmin("POST", "/admin/users", { ageBand: "adult", name: "Continuing Leader", email: email(continuingLogin), password: PASSWORD, role: "member" })).user as { id: number };
-  const { group } = await asAdmin("POST", "/groups", { name: `Departure refresh ${suffix}`, description: "Refresh ordering proof", tags: [], location: "Hall", visibility: "public", memberLimit: null }) as { group: { id: number } };
+  const asAdmin = async (method: string, path: string, data?: JsonValue) => (await apiAs(request, "grier"))(method, path, data);
+  const departing = schema.parse(schema.looseObject({ id: schema.number() }), (await asAdmin("POST", "/admin/users", { ageBand: "adult", name: "Departing Leader", email: email(departingLogin), password: PASSWORD, role: "member" })).user);
+  const continuing = schema.parse(schema.looseObject({ id: schema.number() }), (await asAdmin("POST", "/admin/users", { ageBand: "adult", name: "Continuing Leader", email: email(continuingLogin), password: PASSWORD, role: "member" })).user);
+  const { group } = schema.parse(schema.looseObject({ group: schema.looseObject({ id: schema.number() }) }), await asAdmin("POST", "/groups", { name: `Departure refresh ${suffix}`, description: "Refresh ordering proof", tags: [], location: "Hall", visibility: "public", memberLimit: null }));
   await asAdmin("POST", `/admin/groups/${group.id}/members`, { userId: departing.id, role: "leader" });
   await asAdmin("POST", `/admin/groups/${group.id}/members`, { userId: continuing.id, role: "leader" });
   const startsLocal = local(14);
@@ -106,8 +111,8 @@ test("departure chooser handles self, leader and admin paths, kept private acces
   const adminRemovedLogin = `departure-admin-removed-${suffix}`;
   const staleLogin = `departure-stale-${suffix}`;
   const zeroLogin = `departure-zero-${suffix}`;
-  const asAdmin = async (method: string, path: string, data?: unknown) => (await apiAs(request, "grier"))(method, path, data);
-  const makeUser = async (login: string, name: string) => (await asAdmin("POST", "/admin/users", { ageBand: "adult", name, email: email(login), password: PASSWORD, role: "member" })).user as { id: number };
+  const asAdmin = async (method: string, path: string, data?: JsonValue) => (await apiAs(request, "grier"))(method, path, data);
+  const makeUser = async (login: string, name: string) => schema.parse(schema.looseObject({ id: schema.number() }), (await asAdmin("POST", "/admin/users", { ageBand: "adult", name, email: email(login), password: PASSWORD, role: "member" })).user);
   const member = await makeUser(memberLogin, "Departure Member");
   const leader = await makeUser(leaderLogin, "Departure Leader");
   const removed = await makeUser(removedLogin, "Leader Removal Target");
@@ -115,12 +120,14 @@ test("departure chooser handles self, leader and admin paths, kept private acces
   const stale = await makeUser(staleLogin, "Stale Preview Member");
   const zero = await makeUser(zeroLogin, "Zero Date Member");
 
-  const makeGroup = async (name: string, visibility: "public" | "private" | "invite_only" = "invite_only") => (await asAdmin("POST", "/groups", { name, description: "Departure browser proof", tags: [], location: "", visibility, memberLimit: null })).group as { id: number };
+  const makeGroup = async (name: string, visibility: "public" | "private" | "invite_only" = "invite_only") => schema.parse(schema.looseObject({ id: schema.number() }), (await asAdmin("POST", "/groups", { name, description: "Departure browser proof", tags: [], location: "", visibility, memberLimit: null })).group);
   const selfGroup = await makeGroup(`Departure private ${suffix}`);
+
   for (const [id, role] of [[leader.id, "leader"], [member.id, "member"]] as const) await asAdmin("POST", `/admin/groups/${selfGroup.id}/members`, { userId: id, role });
 
   const createEvent = async (groupId: number, title: string, startsLocal: string, visibility: "public" | "private" | "invite_only" = "invite_only", durationMinutes = 60) =>
-    (await asAdmin("POST", `/groups/${groupId}/events`, { title, startsLocal, durationMinutes, tzid: "UTC", visibility, capacity: null, waitlistEnabled: true })).event as { id: number };
+    schema.parse(schema.looseObject({ id: schema.number() }), (await asAdmin("POST", `/groups/${groupId}/events`, { title, startsLocal, durationMinutes, tzid: "UTC", visibility, capacity: null, waitlistEnabled: true })).event);
+
   const underwayAt = local(0, -10);
   const underway = await createEvent(selfGroup.id, "Kept underway private date", underwayAt, "invite_only", 120);
   const publicAt = local(5);
@@ -132,6 +139,7 @@ test("departure chooser handles self, leader and admin paths, kept private acces
   const pastAt = local(-3);
   const pastEvent = await createEvent(selfGroup.id, "Past attendance date", pastAt, "invite_only");
   const memberApi = await apiAs(request, memberLogin);
+
   for (const [event, at, status] of [[underway, underwayAt, "going"], [publicEvent, publicAt, "going"], [privateEvent, privateAt, "maybe"], [pastEvent, pastAt, "going"]] as const) {
     await memberApi("PUT", `/events/${event.id}/registrations`, { date: at.slice(0, 10), status, attendanceMode: "in_person", people: [] });
   }
@@ -151,11 +159,13 @@ test("departure chooser handles self, leader and admin paths, kept private acces
   await expect(page.getByText("Your past attendance stays.")).toBeVisible();
   await assertDialogQuality(page);
   await screenshot(page, "departure-self-dialog-390");
+
   for (const width of [768, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     await assertDialogQuality(page);
     await screenshot(page, `departure-self-dialog-${width}`);
   }
+
   await page.setViewportSize({ width: 390, height: 844 });
 
   let releaseDeparture!: () => void;
@@ -241,11 +251,13 @@ test("departure chooser handles self, leader and admin paths, kept private acces
   await page.setViewportSize({ width: 390, height: 844 });
   await assertDialogQuality(page);
   await screenshot(page, "departure-admin-remove-390");
+
   for (const width of [768, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     await assertDialogQuality(page);
     await screenshot(page, `departure-admin-remove-${width}`);
   }
+
   await page.setViewportSize({ width: 390, height: 844 });
 
   const adminDepartureRoute = `**/api/v1/groups/${adminGroup.id}/members/${adminRemoved.id}/departure`;
@@ -282,11 +294,13 @@ test("departure chooser handles self, leader and admin paths, kept private acces
   await expect(page.getByText(/0 upcoming dates?/i)).toHaveCount(0);
   await assertDialogQuality(page);
   await screenshot(page, "departure-zero-dialog-390");
+
   for (const width of [768, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     await assertDialogQuality(page);
     await screenshot(page, `departure-zero-dialog-${width}`);
   }
+
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "Stay" }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);

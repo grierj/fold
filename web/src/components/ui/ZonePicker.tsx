@@ -24,10 +24,12 @@ export function ZonePicker({
   const w = useField("ZonePicker");
   const church = useChurchZone();
   const browser = browserTimeZone();
+
   const options = useMemo(
     () => zonePickerOptions(forChurchSetting ? null : church, browser, value, (z) => zoneOffset(z)),
     [forChurchSetting, church, browser, value],
   );
+
   const selected = options.find((o) => o.value === value);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState<string | null>(null);
@@ -45,17 +47,21 @@ export function ZonePicker({
     setActive(Math.max(0, shown.findIndex((o) => o.value === value)));
     setOpen(true);
   }
+
   function close() {
     setOpen(false);
     setQuery(null);
   }
+
   function pick(o: ZonePick | undefined) {
     if (o) onChange(o.value);
     close();
   }
+
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
+
       if (!open) return openList();
       const step = e.key === "ArrowDown" ? 1 : -1;
       setActive((a) => Math.min(Math.max(a + step, 0), Math.max(shown.length - 1, 0)));
@@ -69,6 +75,7 @@ export function ZonePicker({
   }
 
   const display = selected ? selected.label : value;
+
   return (
     <div className="relative">
       <input

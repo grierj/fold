@@ -1,8 +1,9 @@
+import type { JsonObject, JsonValue } from "../src/lib/wireValues";
+import { isJsonObject, isNumber } from "../src/lib/wireValues";
 import AxeBuilder from "@axe-core/playwright";
 import { mkdirSync } from "node:fs";
 import { expect, test, type Locator, type Page, type Route } from "@playwright/test";
 import { apiAs, email, fromMore, gotoReady, nextFrames, PASSWORD, signInTo } from "./helpers";
-// @ts-expect-error plain JS module shared with verify-ui
 import { measure } from "./ui-measure.mjs";
 
 // Deleting an account that is the only host of a church-wide event needs a
@@ -16,23 +17,29 @@ const WIDTHS = [390, 768, 1280] as const;
 
 const futureDate = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
 
-function recordOf(value: unknown): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("expected a JSON object");
-  return Object.fromEntries(Object.entries(value));
+function recordOf(value: JsonValue | undefined): JsonObject {
+  if (!isJsonObject(value)) throw new Error("expected a JSON object");
+
+  return value;
 }
 
-function numberAt(value: unknown, ...path: string[]): number {
-  let at: unknown = value;
+function numberAt(value: JsonValue | undefined, ...path: string[]): number {
+  let at: JsonValue | undefined = value;
+
   for (const key of path) at = recordOf(at)[key];
-  if (typeof at !== "number") throw new Error(`expected a number at ${path.join(".")}`);
+
+  if (!isNumber(at)) throw new Error(`expected a number at ${path.join(".")}`);
+
   return at;
 }
 
 type Admin = Awaited<ReturnType<typeof apiAs>>;
+
 type Person = { id: number; email: string; name: string };
 
 async function makePerson(admin: Admin, login: string, name: string): Promise<Person> {
   const made = await admin("POST", "/admin/users", { ageBand: "adult", name, email: email(login), password: PASSWORD, role: "member" });
+
   return { id: numberAt(made, "user", "id"), email: email(login), name };
 }
 
@@ -43,8 +50,10 @@ async function soleHostedEvent(admin: Admin, adminId: number, host: Person, titl
     title, startsLocal: `${futureDate(days)}T18:00`, durationMinutes: 60, tzid: "UTC", location: "Hall",
     visibility: "public", hosts: [host.email], recurrenceRule: "",
   });
+
   const id = numberAt(made, "event", "id");
   await admin("DELETE", `/events/${id}/hosts/${adminId}`);
+
   return id;
 }
 
@@ -53,12 +62,15 @@ async function soleHostedEvent(admin: Admin, adminId: number, host: Person, titl
 // status and headers. A response that is not the expected real one is passed
 // through untouched and recorded, so the spec fails on `problems`, not on a
 // hang inside the handler.
-async function modifyJSON(page: Page, pathname: string, edit: (body: Record<string, unknown>) => void) {
-  const state = { fulfilled: 0, problems: [] as string[] };
+async function modifyJSON(page: Page, pathname: string, edit: (body: JsonObject) => void) {
+  const problems: string[] = [];
+  const state = { fulfilled: 0, problems };
   const matches = (url: URL) => url.pathname === pathname;
+
   const handler = async (route: Route) => {
     if (route.request().method() !== "GET") return route.continue();
     const response = await route.fetch();
+
     try {
       if (response.status() !== 200) throw new Error(`${pathname}: status ${response.status()}`);
       const body = recordOf(await response.json());
@@ -70,7 +82,9 @@ async function modifyJSON(page: Page, pathname: string, edit: (body: Record<stri
       await route.fulfill({ response });
     }
   };
+
   await page.route(matches, handler);
+
   return { state, stop: () => page.unroute(matches, handler) };
 }
 
@@ -78,6 +92,7 @@ async function openDelete(page: Page, target: Person): Promise<Locator> {
   await page.getByRole("searchbox", { name: "Search by name or email" }).fill(target.email);
   const row = page.getByRole("row").filter({ hasText: target.email });
   await fromMore(row, "Delete");
+
   return row;
 }
 
@@ -90,15 +105,20 @@ async function chooseHost(page: Page, row: Locator, title: string, name: string)
   const select = row.getByLabel(`New host for ${title}`, { exact: true });
   await select.focus();
   await expect(select).toBeFocused();
+
   const steps = await select.evaluate((el, wanted) => {
     if (!(el instanceof HTMLSelectElement)) throw new Error("expected a select");
     const enabled = [...el.options].filter((o) => !o.disabled);
     const at = enabled.findIndex((o) => o.selected);
     const to = enabled.findIndex((o) => o.textContent?.trim() === wanted);
+
     if (to < 0) throw new Error(`no option for ${wanted}`);
+
     return to - at;
   }, name);
+
   expect(steps, `${name} is not already chosen`).not.toBe(0);
+
   for (let i = 0; i < Math.abs(steps); i++) await page.keyboard.press(steps > 0 ? "ArrowDown" : "ArrowUp");
   await expect(select.locator("option:checked")).toHaveText(name);
 }
@@ -111,31 +131,38 @@ async function evidence(page: Page, state: string) {
     await page.setViewportSize({ width, height: 900 });
     await page.evaluate(() => window.scrollTo(0, 0));
     await nextFrames(page);
+
     if (width >= 768 && (state === "panel" || state === "stale")) {
       for (const label of [page.getByRole("columnheader", { name: "Actions" }), page.getByText("Member", { exact: true })]) {
         const lines = await label.evaluate((element) => {
           const range = document.createRange();
           range.selectNodeContents(element);
-          return new Set([...range.getClientRects()].filter((rect) => rect.width > 0 && rect.height > 0).map((rect) => Math.round(rect.top))).size;
+
+          return new Set([...range.getClientRects()].flatMap((rect) => rect.width > 0 && rect.height > 0 ? [Math.round(rect.top)] : [])).size;
         });
+
         expect(lines, `${state} at ${width}px: ${await label.textContent()} wraps`).toBe(1);
       }
+
       // Keeping those labels whole must not push the page sideways.
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
       expect(overflow, `${state} at ${width}px: sideways overflow`).toBeLessThanOrEqual(0);
     }
+
     if (width !== 768) {
       const wcag = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]).analyze();
       const headings = await new AxeBuilder({ page }).withRules(["heading-order"]).analyze();
       const bad = [...wcag.violations, ...headings.violations].filter((v) => v.impact === "moderate" || v.impact === "serious" || v.impact === "critical");
       expect(bad.map((v) => `${v.impact} ${v.id}: ${v.nodes.map((n) => n.target.join(" ")).join(", ")}`), `${state} at ${width}px`).toEqual([]);
     }
+
     if (width === 390) {
       const layout = await page.evaluate(measure);
       expect(layout.overflow, `${state}: sideways overflow`).toBeLessThanOrEqual(0);
       expect(layout.clipped, `${state}: clipped select`).toEqual([]);
       expect(layout.under24, `${state}: targets under 24px`).toEqual([]);
     }
+
     if (proof) {
       mkdirSync(proof, { recursive: true });
       await page.screenshot({ path: `${proof}/account-deletion-${state}-${width}.png`, fullPage: true, animations: "disabled" });
@@ -237,11 +264,13 @@ test.describe("replacement host before an account is deleted", () => {
     await soleHostedEvent(admin, adminId, target, title, 23);
 
     await signInTo(page, adminName, "/admin?tab=users");
+
     // The real list has candidates; the only change is that there are none.
     const fixture = await modifyJSON(page, `/api/v1/admin/users/${target.id}/sole-host-events`, (body) => {
       if (!Array.isArray(body.events) || body.events.length < 1) throw new Error("the real list has no events");
       body.candidates = [];
     });
+
     const row = await openDelete(page, target);
     await expect(row.getByText(title)).toBeVisible();
     const line = row.getByText("No one else can host these events yet. Add or enable an adult account, then come back.");
@@ -262,20 +291,25 @@ test.describe("replacement host before an account is deleted", () => {
     const suffix = Date.now().toString(36);
     const admin = await apiAs(request, adminName);
     const title = `Hostless gathering ${suffix}`;
+
     const made = await admin("POST", "/events", {
       title, startsLocal: `${futureDate(24)}T18:00`, durationMinutes: 60, tzid: "UTC", location: "Hall",
       visibility: "public", hosts: [], recurrenceRule: "",
     });
+
     const eventId = numberAt(made, "event", "id");
 
     await signInTo(page, adminName, "/admin");
+
     // The real event has its creator as host; the only change is an empty host list.
     const fixture = await modifyJSON(page, `/api/v1/events/${eventId}`, (body) => {
       const event = recordOf(body.event);
+
       if (event.churchWide !== true || !Array.isArray(event.hosts)) throw new Error("not a church-wide event with a host list");
       event.hosts = [];
       body.event = event;
     });
+
     await gotoReady(page, `/events/${eventId}`);
     await expect(page.getByRole("heading", { name: title, level: 1 })).toBeVisible();
     const line = page.getByText("No one hosts this event right now. Add a host below.");

@@ -19,21 +19,28 @@ export function AddRequestForm({ person, scope, full = false, onClose }: {
   const [created, setCreated] = useState<AddRequest | null>(null);
   const group = scope.contextType === "group";
   const [over, setOver] = useState(group ? scope.overLimit === true : scope.overCapacity === true);
+
   async function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+
     if (Array.from(reason).length > 1000) {
       showFieldErrors(e.currentTarget, () => setReasonError(ERROR_COPY.add_reason_long));
+
       return;
     }
+
     if (over && !confirm(group ? "Allow this ask to add someone over the group's member limit? This choice is logged and cannot be changed on this request." : "Allow this ask to add someone over this date's capacity? This choice is logged and cannot be changed on this request.")) return;
     setBusy(true); setError(""); setReasonError("");
+
     const body: AddRequestInput = scope.contextType === "group"
       ? { ...scope, selectionId: person.selectionId, reason, overLimit: over }
       : { ...scope, selectionId: person.selectionId, reason, overCapacity: over };
+
     try { setCreated((await Adds.create(body)).request); }
     catch (e) { setError(errorText(e)); }
     finally { setBusy(false); }
   }
+
   return <section aria-label="Ask to add" className="mt-3 p-4 rounded-lg border border-border bg-surface space-y-3">
     <h3 className="font-semibold">Ask to add {person.displayName}</h3>
     {created ? <>

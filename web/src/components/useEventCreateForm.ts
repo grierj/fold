@@ -35,36 +35,47 @@ export function useEventCreateForm(kind: "group" | "church") {
   // moves focus there, and on success it marks the form busy.
   function begin(): boolean {
     if (kind === "church" && !title.trim()) return fail("Give the event a title.");
+
     if (!when.date) return fail("Pick a date.");
+
     if (!tzid.trim()) return fail("Pick a time zone.");
+
     if (when.recurring && when.days.length === 0) return fail("Pick at least one day to repeat weekly.");
     const problem = validateEventOptions(options);
+
     if (problem) {
       showFieldErrors(form.current, () => {
         setError(problem.message);
         setOptionErrors({ [problem.field]: problem.message });
         setMoreOpen(true);
       });
+
       return false;
     }
+
     setOptionErrors({});
     setBusy(true);
     setError(null);
+
     return true;
   }
 
   function fail(message: string): false {
     setError(message);
+
     return false;
   }
 
-  function reject(err: unknown, fallback: string) {
-    const message = errorText(err, fallback);
-    const field = optionFieldOfError(err);
+  function reject(cause: unknown, fallback: string) {
+    const message = errorText(cause, fallback);
+    const field = optionFieldOfError(cause);
+
     if (!field) {
       setError(message);
+
       return;
     }
+
     showFieldErrors(form.current, () => {
       setError(message);
       setOptionErrors({ [field]: message });
@@ -81,14 +92,17 @@ export function useEventCreateForm(kind: "group" | "church") {
     // The room check needs the schedule once it is filled in enough.
     schedule: scheduleReady(when, tzid, options.seats) ? scheduleFields(when, tzid, options.seats) : null,
     // The fields every create request carries; the form adds its own.
-    body: () => ({
-      title: title.trim(),
-      description: description.trim(),
-      ...scheduleFields(when, tzid, options.seats),
-      location: location.trim(),
-      visibility,
-      ...eventOptionsBody(options),
-      ...(roomId !== null ? { roomId } : {}),
-    }),
+    body: () => {
+      const payload = {
+        title: title.trim(),
+        description: description.trim(),
+        ...scheduleFields(when, tzid, options.seats),
+        location: location.trim(),
+        visibility,
+        ...eventOptionsBody(options),
+      };
+
+      return roomId === null ? payload : { ...payload, roomId };
+    },
   };
 }

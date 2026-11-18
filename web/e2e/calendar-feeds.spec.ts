@@ -1,3 +1,4 @@
+import * as schema from "valibot";
 import { expect, test } from "@playwright/test";
 import { apiAs, signIn } from "./helpers";
 
@@ -11,7 +12,7 @@ test("personal calendar link serves my events and remaking it kills the old one"
   const startsLocal = `${soon.getFullYear()}-${pad(soon.getMonth() + 1)}-${pad(soon.getDate())}T19:00`;
 
   const { groups } = await admin("GET", "/groups");
-  const room201 = (groups as { id: number; name: string }[]).find((g) => g.name === "Room 201 class");
+  const room201 = schema.parse(schema.array(schema.looseObject({ id: schema.number(), name: schema.string() })), groups).find((g) => g.name === "Room 201 class");
   expect(room201, "seed group Room 201 class").toBeTruthy();
   await admin("POST", `/groups/${room201!.id}/events`, {
     title: "Feed Rehearsal Night", startsLocal, durationMinutes: 60, tzid: "America/Boise",
@@ -21,6 +22,7 @@ test("personal calendar link serves my events and remaking it kills the old one"
     name: "Feed Hidden Circle", description: "", tags: [], imageUrl: "", location: "",
     visibility: "invite_only", memberLimit: null,
   });
+
   await admin("POST", `/groups/${hidden.id}/events`, {
     title: "Feed Secret Night", startsLocal, durationMinutes: 60, tzid: "America/Boise",
   });

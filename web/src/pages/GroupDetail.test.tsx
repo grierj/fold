@@ -1,4 +1,7 @@
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { testUser } from "../test/fixtures";
+import { renderWithAuth } from "../test/auth";
+import { stubService } from "../test/service";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, Route, RouterProvider, Routes, createMemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -12,32 +15,50 @@ import { occurrence } from "../test/occurrence";
 import { UnsavedChangesBlocker } from "../lib/unsavedChanges";
 import { GroupDetail } from "./GroupDetail";
 
-const actor = vi.hoisted(() => ({ user: { id: 2, accountType: "adult", hideContactFromLeaders: false } as User | null, canCompose: false }));
-vi.mock("../auth", () => ({ useAuth: () => ({ user: actor.user, loading: false, isAdmin: false, canCompose: actor.canCompose }) }));
-vi.mock("../api/people", async (actual) => ({ ...(await actual<typeof import("../api/people")>()), People: { search: vi.fn() } }));
-vi.mock("../api/groups", async (actual) => ({ ...(await actual<typeof import("../api/groups")>()), Groups: { get: vi.fn(), update: vi.fn(), addMember: vi.fn(), join: vi.fn(), departurePreview: vi.fn(), confirmDeparture: vi.fn(), memberDeparturePreview: vi.fn(), confirmMemberDeparture: vi.fn() } }));
-vi.mock("../api/events", async (actual) => ({ ...(await actual<typeof import("../api/events")>()), Events: { register: vi.fn(), registerSeries: vi.fn(), undoSeriesRegistration: vi.fn() } }));
-vi.mock("../api/households", async (actual) => ({ ...(await actual<typeof import("../api/households")>()), Households: { mine: vi.fn() } }));
+type TestSession = { user: User | null; canCompose: boolean };
+
+const actor: TestSession = {
+  user: testUser({ id: 2, accountType: "adult", hideContactFromLeaders: false }),
+  canCompose: false,
+};
+
+const render = renderWithAuth(() => ({ user: actor.user, loading: false, isAdmin: false, canCompose: actor.canCompose }));
+
+stubService(People, () => ({ search: vi.fn() }));
+
+stubService(Groups, () => ({ get: vi.fn(), update: vi.fn(), addMember: vi.fn(), join: vi.fn(), departurePreview: vi.fn(), confirmDeparture: vi.fn(), memberDeparturePreview: vi.fn(), confirmMemberDeparture: vi.fn() }));
+
+stubService(Events, () => ({ register: vi.fn(), registerSeries: vi.fn(), undoSeriesRegistration: vi.fn() }));
+
+stubService(Households, () => ({ mine: vi.fn() }));
+
 const family: Household = { id: 1, name: "Family", address: "", createdBy: 2, accounts: [], people: [{ id: 3, householdId: 1, canConvert: false, firstName: "Mary", lastName: "", name: "Mary", kind: "adult", photoConsent: false, linkStatus: "none", registrationEligibility: "eligible", createdBy: 2 }] };
 const page: GroupDetailResponse = { group: { id: 1, name: "Family group", description: "", tags: [], imageUrl: "", coverFocalX: 50, coverFocalY: 50, location: "Hall", leaderName: "Leader", memberCount: 1, nextEventAt: null, status: "active", leaderId: 1, visibility: "public", deletionRequested: false, memberLimit: null }, members: [], upcomingEvents: [occurrence({})], truncated: false, hasMore: false, nextCursor: "", canManage: false, isMember: true };
+
 function open() { render(<MemoryRouter initialEntries={["/groups/1"]}><Routes><Route path="/groups/:id" element={<GroupDetail />} /></Routes></MemoryRouter>); }
+
 function GroupRouteWithSwitcher() {
   const navigate = useNavigate();
+
   return <><button onClick={() => navigate("/groups/2")}>Open next group</button><GroupDetail /></>;
 }
+
 function openWithSwitcher() {
   render(<MemoryRouter initialEntries={["/groups/1"]}><Routes>
     <Route path="/groups/:id" element={<GroupRouteWithSwitcher />} />
     <Route path="/my-groups" element={<h1>My groups destination</h1>} />
   </Routes></MemoryRouter>);
 }
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
+  let reject!: (cause: unknown) => void;
   const promise = new Promise<T>((accept, decline) => { resolve = accept; reject = decline; });
+
   return { promise, resolve, reject };
 }
-beforeEach(() => { vi.resetAllMocks(); actor.user = { id: 2, accountType: "adult", hideContactFromLeaders: false } as User; vi.mocked(Groups.get).mockResolvedValue(page); vi.mocked(Households.mine).mockResolvedValue({ household: family }); vi.mocked(Groups.departurePreview).mockResolvedValue({ departure: { action: "leave", groupId: 1, groupName: "Family group", subjectId: 2, subjectName: "Member", affectedCount: 0, goingCount: 0, maybeCount: 0, waitlistedCount: 0, keepableCount: 0, defaultKeepCount: 0, dates: [], snapshot: "self" } }); vi.mocked(Groups.confirmDeparture).mockResolvedValue({ departure: { action: "leave", groupId: 1, subjectId: 2, keptCount: 0, endedCount: 0 } }); });
+
+beforeEach(() => { vi.resetAllMocks(); actor.user = testUser({ id: 2, accountType: "adult", hideContactFromLeaders: false }); vi.mocked(Groups.get).mockResolvedValue(page); vi.mocked(Households.mine).mockResolvedValue({ household: family }); vi.mocked(Groups.departurePreview).mockResolvedValue({ departure: { action: "leave", groupId: 1, groupName: "Family group", subjectId: 2, subjectName: "Member", affectedCount: 0, goingCount: 0, maybeCount: 0, waitlistedCount: 0, keepableCount: 0, defaultKeepCount: 0, dates: [], snapshot: "self" } }); vi.mocked(Groups.confirmDeparture).mockResolvedValue({ departure: { action: "leave", groupId: 1, subjectId: 2, keptCount: 0, endedCount: 0 } }); });
 
 it("fetches the household once and refetches all date state after a batch", async () => {
   vi.mocked(Events.register).mockResolvedValue({ registration: null, people: [{ registrationId: 9, personId: 3, registeredBy: 2, status: "going", attendanceMode: "in_person", waitlistPosition: null, childcareRequested: false }] });
@@ -183,7 +204,7 @@ it("keeps the newest group refresh when an older quiet request resolves last", a
   expect(screen.queryByRole("heading", { name: "Stale group details" })).not.toBeInTheDocument();
 });
 
-it.each([null, { id: 2, accountType: "teen", hideContactFromLeaders: true } as User])("does not fetch household data for an unsigned or teen viewer", async (user) => {
+it.each([null, testUser({ id: 2, accountType: "teen", hideContactFromLeaders: true })])("does not fetch household data for an unsigned or teen viewer", async (user) => {
   actor.user = user; open(); await screen.findByRole("heading", { name: "Family group" });
   expect(Households.mine).not.toHaveBeenCalled();
 });
@@ -209,7 +230,7 @@ it("shows supplied roster contact without reconstructing hidden members' details
 });
 
 it.each(["group_full", "teen_add_approval_required", "people_selection_unavailable"])("adds by name and only retries the actual member limit: %s", async (code) => {
-  actor.user = { id: 2, status: "active", accountType: "adult" } as User;
+  actor.user = testUser({ id: 2, status: "active", accountType: "adult" });
   vi.mocked(Groups.get).mockResolvedValue({ ...page, canManage: true });
   vi.mocked(People.search).mockResolvedValue({ state: "results", people: [{ selectionId: "opaque", displayName: "Pat", teen: false, sharedGroups: [], otherGroups: [] }] });
   vi.mocked(Groups.addMember).mockRejectedValueOnce(new ApiError(409, "private", { code })).mockResolvedValueOnce({});
@@ -219,12 +240,13 @@ it.each(["group_full", "teen_add_approval_required", "people_selection_unavailab
   await userEvent.type(within(screen.getByRole("region", { name: "Add people" })).getByRole("combobox"), "Pat"); await userEvent.click(await within(screen.getByRole("region", { name: "Add people" })).findByRole("option"));
   await userEvent.click(screen.getByRole("button", { name: "Add member" }));
   expect(Groups.addMember).toHaveBeenNthCalledWith(1, 1, { selectionId: "opaque" });
+
   if (code === "group_full") expect(Groups.addMember).toHaveBeenLastCalledWith(1, { selectionId: "opaque" }, true);
   else { expect(Groups.addMember).toHaveBeenCalledTimes(1); expect(screen.getByRole("alert")).not.toHaveTextContent("private"); }
 });
 
 it("offers an explicit Ask to add for a selected teen instead of direct add", async () => {
-  actor.user = { id: 2, status: "active", accountType: "adult" } as User;
+  actor.user = testUser({ id: 2, status: "active", accountType: "adult" });
   vi.mocked(Groups.get).mockResolvedValue({ ...page, canManage: true });
   vi.mocked(People.search).mockResolvedValue({ state: "results", people: [{ selectionId: "teen", displayName: "Teen Pat", teen: true, sharedGroups: [], otherGroups: [] }] });
   open(); await userEvent.click(await screen.findByRole("tab", { name: "Members" }));
@@ -334,6 +356,7 @@ it("links to the full group calendar when upcoming dates are truncated", async (
 it("says how many dates a complete bounded series has", async () => {
   const dates = [occurrence({ id: 1, date: "2026-12-01" }), occurrence({ id: 2, date: "2026-12-08" }), occurrence({ id: 3, date: "2026-12-15" })]
     .map((d) => ({ ...d, recurrenceRule: "FREQ=WEEKLY", rruleUntil: "2026-12-15" }));
+
   vi.mocked(Groups.get).mockResolvedValue({ ...page, upcomingEvents: dates });
   open();
   expect(await screen.findByRole("link", { name: "See all 3 dates" })).toHaveAttribute("href", "/events/7");
@@ -536,7 +559,11 @@ it("invites a signed-out visitor to log in to join, and sends them to log in", a
   expect(await screen.findByRole("heading", { name: "Login page" })).toBeInTheDocument();
 });
 
-function Where() { const l = useLocation(); return <p>At {l.pathname}{l.search}</p>; }
+function Where() {
+  const l = useLocation();
+
+  return <p>At {l.pathname}{l.search}</p>;
+}
 
 it("adds Manage sign-ups to each date's More menu for leaders, opening that date on the event page", async () => {
   vi.mocked(Groups.get).mockResolvedValue({ ...page, canManage: true });
@@ -557,10 +584,11 @@ it("keeps Manage sign-ups away from people who can't manage the group", async ()
 });
 
 it("replaces the three add forms with one Add people button on the Members tab", async () => {
-  actor.user = { id: 2, status: "active", accountType: "adult" } as User;
+  actor.user = testUser({ id: 2, status: "active", accountType: "adult" });
   vi.mocked(Groups.get).mockResolvedValue({ ...page, canManage: true });
   open(); await userEvent.click(await screen.findByRole("tab", { name: "Members" }));
   expect(screen.getAllByRole("button", { name: "Add people" })).toHaveLength(1);
+
   for (const old of ["Invite someone to Fold", "Add a member by email", "Find a person by name"]) expect(screen.queryByLabelText(old)).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Add people" }));
   expect(screen.getByRole("combobox", { name: "Find a person by name" })).toBeInTheDocument();
@@ -594,10 +622,12 @@ it("asks before leaving an edited group form, and not once saved", async () => {
   vi.mocked(Groups.get).mockResolvedValue({ ...page, canManage: true });
   vi.mocked(Groups.update).mockResolvedValue({ group: page.group });
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+
   const router = createMemoryRouter([
     { path: "/groups/:id", element: <><UnsavedChangesBlocker /><Link to="/elsewhere">Elsewhere</Link><GroupDetail /></> },
     { path: "/elsewhere", element: <p>Elsewhere page</p> },
   ], { initialEntries: ["/groups/1"] });
+
   render(<RouterProvider router={router} />);
   await userEvent.click(await screen.findByRole("button", { name: "More group actions" }));
   await userEvent.click(screen.getByRole("menuitem", { name: "Edit group" }));
@@ -660,6 +690,7 @@ it("offers Schedule event in the cover and the empty state of an active group", 
 
 it("offers a leader who can compose Email members and Email people going (M3.4c)", async () => {
   actor.canCompose = true;
+
   try {
     vi.mocked(Groups.get).mockResolvedValue({ ...page, canManage: true });
     const router = createMemoryRouter([{ path: "/groups/:id", element: <GroupDetail /> }, { path: "/messages/new", element: <p>Composer</p> }], { initialEntries: ["/groups/1"] });
@@ -682,6 +713,7 @@ it("offers no Email members when the leader can't compose or the group isn't app
   expect(screen.queryByRole("menuitem", { name: "Email members" })).not.toBeInTheDocument();
   cleanup();
   actor.canCompose = true;
+
   try {
     vi.mocked(Groups.get).mockResolvedValue({ ...page, canManage: true, group: { ...page.group, status: "pending" } });
     open();

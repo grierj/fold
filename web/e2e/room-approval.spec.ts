@@ -1,3 +1,4 @@
+import * as schema from "valibot";
 import { expect, test } from "@playwright/test";
 import { apiAs, pickRoom, signIn } from "./helpers";
 
@@ -9,14 +10,15 @@ test("a leader's room waits for an admin, who confirms it", async ({ page, reque
   try {
     const admin = await apiAs(request, "grier");
     await admin("PUT", "/admin/settings/room-approval", { enabled: true });
-    const { groups } = (await admin("GET", "/groups")) as { groups: { id: number; name: string }[] };
+    const { groups } = schema.parse(schema.looseObject({ groups: schema.array(schema.looseObject({ id: schema.number(), name: schema.string() })) }), (await admin("GET", "/groups")));
     const group = groups.find((g) => g.name === "Room 201 class")!;
     const lee = await apiAs(request, "lee");
     const day = new Date(Date.now() + 47 * 864e5).toISOString().slice(0, 10);
-    const { event } = (await lee("POST", `/groups/${group.id}/events`, {
+
+    const { event } = schema.parse(schema.looseObject({ event: schema.looseObject({ id: schema.number() }) }), (await lee("POST", `/groups/${group.id}/events`, {
       title: "Approval night", startsLocal: `${day}T14:00`, durationMinutes: 60, tzid: "America/Boise",
       location: "south door",
-    })) as { event: { id: number } };
+    })));
 
     // The leader asks for the hall and is told it is waiting.
     await signIn(page, "lee");

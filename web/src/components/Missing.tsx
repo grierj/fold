@@ -33,5 +33,6 @@ export function Missing({ title, body, myGroups }: { title: string; body: string
 
 export function NotFound() {
   const { user } = useAuth();
+
   return <Missing title="Page not found" body="The link may be old, or the page may have moved." myGroups={!!user} />;
 }

@@ -27,15 +27,19 @@ const PROVIDERS: { value: VideoProvider; label: string; description?: string }[]
 export function videoProblem(v: VideoValue): string | null {
   if (v.provider === "none") return null;
   const url = v.url.trim();
+
   if (url === "") {
     return v.provider === "jitsi" ? "Generate a Jitsi link, or pick No video link." : "Paste the video link, or pick No video link.";
   }
+
   if (!/^https:\/\/\S+$/i.test(url)) return "The video link needs to be a full address starting with https://.";
+
   return null;
 }
 
-export const isVideoError = (err: unknown) => {
-  const code = errorCode(err);
+export const isVideoError = (cause: unknown) => {
+  const code = errorCode(cause);
+
   return code === "invalid_video_url" || code === "invalid_video_provider" || code === "invalid_video_reveal";
 };
 
@@ -61,6 +65,7 @@ export function VideoField({
   async function generate() {
     setBusy(true);
     setError(null);
+
     try {
       const { url } = await Events.generateJitsi();
       onChange({ ...value, provider: "jitsi", url });
@@ -118,7 +123,11 @@ export function VideoField({
           >
             <Select
               value={value.reveal}
-              onChange={(e) => onChange({ ...value, reveal: e.target.value as VideoReveal })}
+              onChange={(e) => {
+          const reveal = e.target.value;
+
+          if (reveal === "always" || reveal === "registered_only") onChange({ ...value, reveal });
+        }}
               options={[
                 { value: "registered_only", label: "Registered people only" },
                 { value: "always", label: "Everyone who can see the event" },

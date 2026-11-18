@@ -1,20 +1,23 @@
+import type { JsonValue } from "../src/lib/wireValues";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { apiAs, email, fromMore, PASSWORD, signIn, signInTo, soon } from "./helpers";
-// @ts-expect-error plain JS measurement shared with verify-ui
 import { measure } from "./ui-measure.mjs";
 import type { EventOccurrence } from "../src/types";
 
 const adminName = process.env.VERIFY_URL ? "verify-admin" : "grier";
 const proof = process.env.DATE_PROOF_DIR;
-const results: unknown[] = [];
-function save(name: string, data: unknown) {
+  const results: { name: string; width: number; layout: ReturnType<typeof measure>; axe: string[]; bottomClearance: number | null }[] = [];
+
+function save(name: string, data: JsonValue) {
   if (!proof) return;
   mkdirSync(proof, { recursive: true }); writeFileSync(`${proof}/${name}.json`, JSON.stringify(data, null, 2));
 }
+
 async function capture(page: Page, name: string, widths = [390, 768, 1280]) {
   if (!proof) return;
+
   for (const width of widths) {
     await page.setViewportSize({ width, height: 900 }); await page.waitForLoadState("networkidle");
     await page.evaluate(() => window.scrollTo(0, 0));
@@ -22,19 +25,26 @@ async function capture(page: Page, name: string, widths = [390, 768, 1280]) {
     const { violations } = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]).analyze();
     const axe = violations.filter((v) => v.impact === "serious" || v.impact === "critical").map((v) => v.id);
     mkdirSync(proof!, { recursive: true }); await page.screenshot({ path: `${proof}/${name}-${width}.png`, fullPage: true });
+
     const bottomClearance = width === 390 ? await page.evaluate(() => {
       const bar = document.querySelector('nav[aria-label="Tabs"]');
+
       if (!bar || bar.getBoundingClientRect().height === 0) return 0;
       window.scrollTo(0, document.documentElement.scrollHeight);
       let bottom = 0;
+
       for (const element of document.querySelectorAll("main *, footer *")) {
         const rect = element.getBoundingClientRect();
+
         if (rect.width > 0 && rect.height > 0 && getComputedStyle(element).position !== "fixed") bottom = Math.max(bottom, rect.bottom);
       }
+
       return Math.round(bottom - bar.getBoundingClientRect().top);
     }) : null;
+
     if (width === 390) await page.screenshot({ path: `${proof}/${name}-bottom-390.png` });
     results.push({ name, width, layout, axe, bottomClearance }); save("results", results);
+
     if (bottomClearance !== null) expect(bottomClearance).toBeLessThanOrEqual(1);
     expect(layout.overflow).toBe(0); expect(layout.cutOff).toEqual([]); expect(layout.clipped).toEqual([]); expect(layout.under24).toEqual([]); expect(axe).toEqual([]);
   }
@@ -47,7 +57,8 @@ for (const scenario of ["adult-decline", "adult-block", "teen-removal"] as const
     const name = `Exact ${scenario}`;
     const login = `exact-${scenario}`;
     const admin = await apiAs(request, adminName);
-    const { user } = await admin("POST", "/admin/users", { name, email: email(login), password: PASSWORD, ageBand: teen ? "teen" : "adult", ...(teen ? { birthDate: `${new Date().getUTCFullYear() - 15}-01-01` } : {}) });
+    const { user } = await admin("POST", "/admin/users", { name, email: email(login), password: PASSWORD, ageBand: teen ? "teen" : "adult", birthDate: teen ? `${new Date().getUTCFullYear() - 15}-01-01` : undefined });
+
     if (teen) await admin("POST", `/admin/users/${user.id}/teen-consents`, { scope: "account", status: "granted", evidenceText: "Parent signed account consent" });
     const { group } = await admin("POST", "/groups", { name: `Hidden organizer ${scenario}`, visibility: "invite_only", tags: [] });
     const date = new Date(Date.now() + 7 * 86400_000).toISOString().slice(0, 10);
@@ -60,6 +71,7 @@ for (const scenario of ["adult-decline", "adult-block", "teen-removal"] as const
 
     // A confirmed guardian receives an opaque copy, not read authority.
     let guardianLogin = "";
+
     if (teen) {
       guardianLogin = "exact-date-guardian";
       await admin("POST", "/admin/users", { name: "Exact guardian", email: email(guardianLogin), password: PASSWORD, ageBand: "adult" });
@@ -73,6 +85,7 @@ for (const scenario of ["adult-decline", "adult-block", "teen-removal"] as const
     }
 
     await signIn(page, adminName);
+
     if (teen) {
       await page.goto("/admin?tab=groups");
       const card = page.locator("div.bg-surface").filter({ has: page.getByRole("link", { name: group.name, exact: true }) });
@@ -84,23 +97,28 @@ for (const scenario of ["adult-decline", "adult-block", "teen-removal"] as const
       await expect(card.getByRole("button", { name: "Send ask to add" })).toBeVisible();
       await capture(page, "admin-member-manager-teen", [390]);
     }
+
     await page.goto(`/events/${event.id}`);
     await fromMore(page, "Manage sign-ups", /More for/);
     const picker = page.getByRole("combobox", { name: "Find a person by name" });
     await (await soon(picker)).fill(name); await expect(await soon(page.getByRole("option", { name: new RegExp(name) }))).toBeVisible();
     await picker.press("ArrowDown"); await picker.press("Enter");
+
     if (!teen) {
       await page.getByRole("button", { name: "Add", exact: true }).click();
       await expect(page.getByRole("alert")).toContainText("They need to approve this date");
     }
+
     await page.getByRole("button", { name: "Ask to add", exact: true }).click();
     await page.getByRole("button", { name: "Send ask to add" }).click();
     await page.getByRole("link", { name: "View ask", exact: true }).click();
     const askPath = new URL(page.url()).pathname;
+
     if (teen) {
       await (await soon(page.getByRole("button", { name: "Approve adding" }))).click();
       await expect(page.getByText("Not added yet", { exact: true })).toBeVisible();
     }
+
     await signInTo(page, login, "/notifications");
     await page.getByRole("link", { name: /Review an ask to add/ }).click();
     await expect(page).toHaveURL(new RegExp(askPath + "$"));
@@ -111,6 +129,7 @@ for (const scenario of ["adult-decline", "adult-block", "teen-removal"] as const
     await expect(page).toHaveURL(new RegExp(path + "$"));
     await expect(await soon(page.getByText("You're going. See you there!", { exact: true }))).toBeVisible();
     const exact = await (await page.request.get(`/api/v1${path}`)).json();
+
     for (const key of ["groupId", "groupName", "hostedBy", "hosts", "attendees", "removedRegistrations", "recurrenceRule", "seriesTitle", "description", "canManage", "myHouseholdRegistrations", "myChildcareCount", "myChildcareAgesNote"]) expect(exact.occurrence).not.toHaveProperty(key);
     expect(exact.occurrence.canSeeVideo).toBe(true); expect(exact.occurrence.videoUrl).toBe("https://example.com/exact-private-call");
     save(`${scenario}-safe-date`, exact);
@@ -122,6 +141,7 @@ for (const scenario of ["adult-decline", "adult-block", "teen-removal"] as const
     const search = await admin("GET", `/people/search?q=${encodeURIComponent(name)}`);
     const person = search.people.find((row: { displayName: string }) => row.displayName === name);
     const second = await admin("POST", "/add-requests", { selectionId: person.selectionId, contextType: "event", contextId: event.id, occurrenceId: other.id, childcareCount: 1, childcareAgesNote: "Age 5, keep this care request" });
+
     if (teen) await admin("POST", `/add-requests/${second.request.id}/decision`, { party: "admin", decision: "approved" });
     await page.goto(`/add-requests/${second.request.id}`); await (await soon(page.getByRole("button", { name: "Approve adding" }))).click();
     await expect(page.getByText("Added", { exact: true })).toBeVisible();
@@ -139,9 +159,11 @@ for (const scenario of ["adult-decline", "adult-block", "teen-removal"] as const
     await expect(selectedLink).toBeVisible(); await expect(page.locator(`main a[href="${otherPath}"]`)).toBeVisible();
     const calendar = await (await page.request.get(`/api/v1/calendar?from=${selected.date}&to=${sibling.date}&tz=UTC&mine=1`)).json();
     save(`${scenario}-calendar`, calendar);
+
     for (const hidden of [`/events/${event.id}`, `/groups/${group.id}`, `/events/${event.id}/dates/${sibling.date}`]) expect((await page.request.get(`/api/v1${hidden}`)).status()).toBe(404);
     await selectedLink.focus(); await page.keyboard.press("Enter");
     await expect(await soon(page.getByText("You're going. See you there!", { exact: true }))).toBeVisible();
+
     // Own scoped RSVP, not household/proxy or ordinary RSVP. The real server
     // returns the current answer after each save; mode/guests are explicit.
     if (scenario === "adult-decline") {
@@ -160,6 +182,7 @@ for (const scenario of ["adult-decline", "adult-block", "teen-removal"] as const
       expect(maybe.occurrence.canSeeVideo).toBe(false); expect(maybe.occurrence).not.toHaveProperty("videoUrl");
       save("maybe-video-not-disclosed", maybe); await capture(page, "maybe-no-video");
     }
+
     await page.getByLabel("Remote", { exact: true }).check(); await page.getByLabel("Guests", { exact: true }).fill("1");
     const saved = page.waitForRequest((r) => r.method() === "PUT" && r.url().endsWith(`${path}/registration`));
     await page.getByRole("button", { name: "Going", exact: true }).focus(); await page.keyboard.press("Enter");
@@ -200,6 +223,7 @@ for (const scenario of ["adult-decline", "adult-block", "teen-removal"] as const
       page.once("dialog", async (dialog) => { expect(dialog.message()).toContain("Other accepted dates stay yours"); await dialog.accept(); });
       await page.getByRole("button", { name: block ? "Don't add me again" : "Can't go", exact: true }).click();
     }
+
     await expect(page.getByText("This date is not available", { exact: true })).toBeVisible();
     await expect(page.getByText(title, { exact: true })).toHaveCount(0); await expect(page.getByRole("link", { name: /Join video call/ })).toHaveCount(0);
     await capture(page, `${scenario}-unavailable`);

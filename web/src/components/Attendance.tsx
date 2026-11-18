@@ -18,15 +18,18 @@ export function Attendance({ instance, headingLevel = 4 }: { instance: EventOccu
   const maybe = instance.registrations.maybe ?? 0;
   const declined = instance.registrations.declined; // undefined unless you run the event
   const cant = (instance.attendees ?? []).filter((a) => a.status === "declined");
+
   const coming = instance.attendeesVisible
     ? (instance.attendees ?? []).filter((a) => a.status === "going" || a.status === "maybe")
     : [];
+
   // These section counts describe visible names, not the total seats above.
   const sections = [
     { label: registrationStatusLabel("going"), people: coming.filter((a) => a.status === "going") },
     { label: registrationStatusLabel("maybe"), people: coming.filter((a) => a.status === "maybe") },
     { label: registrationStatusLabel("declined"), people: cant },
   ];
+
   return (
     <div className="mt-1 text-sm text-text-muted">
       <div>
@@ -54,14 +57,14 @@ export function Attendance({ instance, headingLevel = 4 }: { instance: EventOccu
           </Button>
           {open && (
             <div id={listId} className="space-y-3">
-              {sections.filter((section) => section.people.length > 0).map((section) => (
+              {sections.flatMap((section) => section.people.length > 0 ? [
                 <section key={section.label} aria-label={`${section.label} names`}>
                   <Heading className="font-semibold">{section.label} ({section.people.length})</Heading>
                   <ul className="space-y-2">
                     {section.people.map((a) => <li key={a.registrationId}><AttendeeDetails attendee={a} childcare={instance.childcareAvailable} /></li>)}
                   </ul>
-                </section>
-              ))}
+                </section>,
+              ] : [])}
             </div>
           )}
         </>
@@ -76,6 +79,8 @@ export function Attendance({ instance, headingLevel = 4 }: { instance: EventOccu
 // keep the plain count.
 function seatsLeft(left: number, capacity: number, kind: "" | "remote "): ReactNode {
   if (left <= 0) return kind ? "Remote seats full" : "Seats full";
+
   if (!kind && left <= 5) return <span className="font-semibold text-warning-on-subtle">Only {left} {left === 1 ? "seat" : "seats"} left</span>;
+
   return `${left} of ${capacity} ${kind}${capacity === 1 ? "seat" : "seats"} left`;
 }
