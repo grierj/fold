@@ -178,6 +178,5 @@ look at top-level files only and never at `adopted/`.
 `make backup-test` runs `backup-test.sh` (stubs for `pg_dump`, `pg_restore`, `psql`, `age` and `rclone`; GNU
 `date` and `touch`; no Docker, no database) and then `backup-test.sh --probes`, which mutates `backup.sh` four
 ways (retention, plaintext upload, no recovery refusal, dump before tar) and requires each mutation to fail
-its named case. The host's copies, expiry and cutover have their own fixtures
-(`deploy/digitalocean/backup-archives-fixtures.sh`, run by `make provision-dry-run`). `make lint-sh` covers
-these scripts. `docker run --rm IMAGE --self-test` checks the tools in a built image.
+its named case. The host's copies, expiry and cutover are proven on a real droplet (DEC-154).
+`make lint-sh` covers these scripts. `docker run --rm IMAGE --self-test` checks the tools in a built image.

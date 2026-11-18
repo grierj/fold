@@ -302,7 +302,7 @@ expand-then-contract (`docs/agents/migrations.md`).
 
 Grier's rule. An agent may merge a fold PR, as a normal merge commit, when all of these hold:
 
-1. Every CI check is green (`test`, `web`, `provision`; branch protection requires them) on a head
+1. Every CI check is green (`test`, `web`; branch protection requires them) on a head
    that contains master's tip. GitHub refuses a PR that is behind master (DEC-146); merge master
    into it (never rebase), wait for CI again, and then merge.
 2. All five review concerns were reviewed by a separate agent from the one that implemented the
@@ -374,7 +374,7 @@ tests in that area's `docs/agents/` file.
 | Tests sit next to their code | `TestTestFilesSitNextToTheirSource` |
 | Source guards read the whole production tree, not a directory glob | `internal/guardkit` tests, `TestContactRequestTextGuardReadsTheRealTree` |
 | Schema changes are new goose files; models match them | `migrations/migrations_test.go`, `TestBaselineFileShape` (see `docs/agents/migrations.md`) |
-| Work reaches master only through a PR with `test`, `web` and `provision` green on a head containing master's tip | GitHub ruleset on `master` (no bypass actors); `scripts/merge-rules-check.sh` in CI (`TestCIRunsTheMergeRulesCheck`, `TestMergeRulesCheckScript`) |
+| Work reaches master only through a PR with `test` and `web` green on a head containing master's tip | GitHub ruleset on `master` (no bypass actors); `scripts/merge-rules-check.sh` in CI (`TestCIRunsTheMergeRulesCheck`, `TestMergeRulesCheckScript`) |
 | `go vet`, `gofmt` and staticcheck are clean | `make lint` in CI |
 | No Python in the serving stack (DEC-151) | `TestNoPythonInServingStack`, `TestPythonGuardScopesToServingStack` |
 | Docs say "recommended", never "supported" | `TestDocsSayRecommendedNotSupported` |

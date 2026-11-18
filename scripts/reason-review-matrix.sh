@@ -264,8 +264,7 @@ if ((self_test)); then
 	rev=$(printf 'a%.0s' {1..40})
 	other=$(printf 'b%.0s' {1..40})
 	# A stub cell is a run directory (the runner's evidence.json) with the QC-1 evidence under qc1/. Its measurement rows are two and cannot be the full matrix, and its saved status LIES
-	# (full, complete, release evidence), as an edited or stale status would: the matrix recomputes the status from the rows, so the lie is a gap and no stub is ever FULL here. The positive
-	# control, a real full matrix of consistent cells, is in deploy/digitalocean/qc1-fixtures.sh, which has the generators of the full rows.
+	# (full, complete, release evidence), as an edited or stale status would: the matrix recomputes the status from the rows, so the lie is a gap and no stub is ever FULL here.
 	# stub NAME [REVISION] [RUNNER_VERDICT] [RUNNER_RESULT] writes the run directory $work/NAME.
 	stub() {
 		local name=$1 r=${2:-$rev} verdict=${3:-pass} result=${4:-partial} run=$work/$1 d=$work/$1/qc1 cs ly

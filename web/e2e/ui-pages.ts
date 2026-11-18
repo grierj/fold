@@ -202,10 +202,10 @@ export function uiPart<T>(list: T[], part: number): T[] {
   return list.slice(Math.floor((part * list.length) / UI_PARTS), Math.floor(((part + 1) * list.length) / UI_PARTS));
 }
 
-// e2e/run.sh hands each shard its share of the page checks in E2E_PARTS, as
-// "<spec>:<part>" words ("a11y:0 layout:3 a11y:rest"; rest is the spec's
-// tests outside the parts). Unset, as in a plain `npx playwright test`,
-// every part runs.
+// e2e/run.sh hands each shard its share of the specs that run in parts
+// (e2e/shards.mjs lists them) in E2E_PARTS, as "<spec>:<part>" words
+// ("a11y:0 layout:3 a11y:rest reason-review:390"; rest is the spec's tests
+// outside the parts). Unset, as in a plain `npx playwright test`, every part runs.
 export function partSelected(spec: string, part: number | "rest"): boolean {
   const parts = process.env.E2E_PARTS;
 

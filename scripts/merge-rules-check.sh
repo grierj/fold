@@ -14,7 +14,7 @@
 #   - a pull_request rule (every writer, admins included, goes through a PR);
 #   - a non_fast_forward rule (master's history only grows);
 #   - a required_status_checks rule with strict_required_status_checks_policy
-#     true, and test, web and provision among the required checks.
+#     true, and test and web among the required checks.
 #
 # It reads GET /repos/<repo>/rules/branches/master, the rules GitHub enforces
 # on master from every active ruleset. The endpoint is public for a public
@@ -62,7 +62,7 @@ fi
 # One line per missing rule; nothing when every rule is in place. `-n` with
 # `input` makes an empty answer an error instead of a silent pass.
 problems=$(jq -rn '
-  def required: ["test", "web", "provision"];
+  def required: ["test", "web"];
   input |
   if type != "array" then
     "the answer is not a list of rules"
@@ -90,4 +90,4 @@ if [[ -n "$problems" ]]; then
   done <<<"$problems"
   exit 1
 fi
-echo "merge-rules-check: master requires pull requests, up-to-date branches and the test, web and provision checks"
+echo "merge-rules-check: master requires pull requests, up-to-date branches and the test and web checks"

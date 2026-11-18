@@ -2,6 +2,7 @@ import { isString } from "../src/lib/wireValues";
 import { expect, test, type APIRequestContext, type Locator, type Page, type Request, type Route } from "@playwright/test";
 import { apiAs, checkState, fromMore, PASSWORD, signInTo } from "./helpers";
 import { decideElsewhere, makeMany, makeLegacy, makePerson, pageOf, recordOf, stringAt, type Many } from "./legacy-reasons";
+import { partSelected } from "./ui-pages";
 
 // Long reason reviews, used the way a person at a phone would (#295): a long
 // history that takes several pages, the keyboard alone, a screen reader's view
@@ -211,7 +212,8 @@ async function setClock(request: APIRequestContext, offsetSeconds: number) {
   await admin("POST", "/e2e/attempt-clock", { offsetSeconds });
 }
 
-for (const width of [390, 1280]) test.describe(`long reason reviews at ${width}px: keyboard, assistive technology, lost connections and ended sessions (#295)`, () => {
+// Each width is its own part ("reason-review:390"), so e2e/run.sh can put the two on different shards.
+for (const width of [390, 1280]) if (partSelected("reason-review", width)) test.describe(`long reason reviews at ${width}px: keyboard, assistive technology, lost connections and ended sessions (#295)`, () => {
   test.use({ locale: "en-US", timezoneId: "America/Boise", viewport: { width, height: 900 } });
   test.setTimeout(600_000);
 

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # R4-6c-V / T07B-2-V: real-binary recovery-level crossings, the current-release
-# restore and the older-archive restores. Sourced only by restore-drill.sh (and
-# by restore-crossings-fixtures.sh, which tests the pure functions without a
-# daemon). Nothing here changes a shipped script: it builds real images from
+# restore and the older-archive restores. Sourced only by restore-drill.sh.
+# Nothing here changes a shipped script: it builds real images from
 # real commits, pushes them to the drill registry the runner already owns, and
 # drives the installed entry points.
 #
@@ -135,8 +134,7 @@ CROSSING_HOST_BEFORE=()
 crossing_dir() { printf '%s/crossings' "$WORK"; }
 
 # ---------------------------------------------------------------------------
-# Pure functions. No daemon and no runner globals; restore-crossings-fixtures.sh
-# exercises each of them.
+# Pure functions. No daemon and no runner globals.
 # ---------------------------------------------------------------------------
 
 # Migration file versions at a revision, as a sorted comma list ("1,2,3").
@@ -1118,8 +1116,8 @@ crossing_panel_mint() { # target file: a press that minted its id (and kept it)
 # items-json [attempt-id]: the set-v1 DELETE body the panel sends for a review's
 # items: the first removed, the rest kept (two bits a reason, a digest over the
 # ids and hashes it came with). It is built by qc1/set-v1.mjs, an implementation
-# independent of the browser's and held to the shared vectors by its selftest
-# (restore-crossings-fixtures.sh). No attempt id: a body without attemptId.
+# independent of the browser's and held to the shared vectors by its selftest.
+# No attempt id: a body without attemptId.
 crossing_set_body() {
   local items="$1" id="${2-}" n codes
   n="$(jq 'length' <<<"$items")"
@@ -1550,7 +1548,7 @@ assert_crossing_evidence() {
 # ---------------------------------------------------------------------------
 CROSSINGS_ONLY_FAMILIES=(real_binary_refusals real_level_lineage real_same_level_rollback real_current_release_restore real_older_archive_restore)
 CROSSINGS_ONLY_PLAN=(bootstrap base-prerequisites "${CROSSINGS_ONLY_FAMILIES[@]}" crossings-evidence)
-# The full run's case names, in order. restore-drill-modes-fixtures.sh keeps this equal to the plan restore-drill.sh passes to drill_progress_init.
+# The full run's case names, in order: the plan restore-drill.sh passes to drill_progress_init.
 DRILL_FULL_PLAN_NAMES=(bootstrap base-proof recovery-interruptions reopen-interruptions abort-interruptions tamper accidental-app-reuse abort-ack-loss operations-lock recovery-configuration
   count_races archive_failures pin_and_abort_cases cleanup_and_tamper_cases concurrency_cases lifecycle_cases legacy_archive_case review_reconciliation_cases
   review_backup_archive_cases review_cleanup_retry_cases review_orphaned_restore_case review_moving_tag_case

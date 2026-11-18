@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # A fake S3 bucket for the offsite tests of both producers. Sourced by the PATH
-# stubs that stand in for rclone (deploy/backup/backup-test.sh) and for the host's
-# amazon/aws-cli (backup-archives-fixtures.sh), and by both harnesses, so the two
-# producers are judged against one model. It is a test file: nothing ships it.
+# stub that stands in for rclone in deploy/backup/backup-test.sh. It is a test
+# file: nothing ships it.
 #
 # BUCKET is a directory holding
 #   objects/<full key>   what a producer committed, by its whole key

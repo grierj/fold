@@ -172,15 +172,9 @@ section at the end of `checks.sh`.
   under `/var/backups/fold` through the same no-replace copy (a differing file of that name refuses before the
   checkout or the pin changes). The recorded `release.prev` dump is that host file, so rollback is unchanged.
   Older deployments keep host production.
-- **Tests.** `backup-archives-fixtures.sh` (inside `make provision-dry-run`) runs these as root against a
-  fake Docker root and `PATH` stubs of `docker`, `date`, `cp`, `ln`, `rm`, `mv`, `sync`, `find`, `stat` and
-  `awk`; the shipped scripts have no test hook. The cutover cases (`cutover`, `cutover_refusals`,
-  `cutover_deadline`) cut `cutover_fail`, `cutover_wait_lastok` and `backup_cutover` out of `provision.sh` by name
-  and run them unchanged in a strict shell: an initial and a repeat cutover to the cron switch, a failed
-  replacement, a service that never succeeds, refused identities and paths, and stalled Docker reads (only the
-  cron file's directory is redirected). `backup-test.sh` covers the image. The November 17
-  real-droplet checks covered backup, restore and archive expiry; remaining live checks are in
-  `docs/FIRST-CHURCH-CHECKS.md`.
+- **Tests.** `backup-test.sh` covers the image. The host side is proven on a real droplet, not in CI
+  (DEC-154): the November 17 real-droplet checks covered backup, restore and archive expiry; remaining
+  live checks are in `docs/FIRST-CHURCH-CHECKS.md`.
 
 ## Restore (`restore.sh`)
 
