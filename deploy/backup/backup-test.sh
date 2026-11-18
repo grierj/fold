@@ -38,7 +38,8 @@ N2=fedcba9876543210fedcba9876543210
 for tool in flock tar gzip sha256sum stat touch find df awk sed sync; do
   command -v "$tool" >/dev/null 2>&1 || { echo "backup-test: $tool is required" >&2; exit 2; }
 done
-date --version 2>/dev/null | grep -q 'GNU coreutils' || { echo "backup-test: GNU date is required" >&2; exit 2; }
+[[ "$(date --version 2>/dev/null)" == *'GNU coreutils'* ]] || { echo "backup-test: GNU date is required" >&2; exit 2; }
+[[ "$(touch --version 2>/dev/null)" == *'GNU coreutils'* ]] || { echo "backup-test: GNU touch is required" >&2; exit 2; }
 for z in UTC America/New_York Europe/Berlin; do
   [[ -f "/usr/share/zoneinfo/$z" ]] || { echo "backup-test: zoneinfo for $z is required" >&2; exit 2; }
 done
