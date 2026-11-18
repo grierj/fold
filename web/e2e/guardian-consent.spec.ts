@@ -8,9 +8,11 @@ async function proof(page: Page, state: string) {
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `${state} overflow at ${width}`).toBe(true);
     const { violations } = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]).analyze();
     expect(violations.filter((v) => v.impact === "serious" || v.impact === "critical"), `${state} axe at ${width}`).toEqual([]);
+
     if (process.env.SCREENS_DIR) {
       await page.evaluate(() => window.scrollTo(0, 0));
       await page.screenshot({ path: `${process.env.SCREENS_DIR}/${state}-${width}.png`, fullPage: true });
+
       if (state === "guardian-confirmed" || state === "guardian-revoked") await page.getByRole("region", { name: "Teen consent", exact: true }).screenshot({ path: `${process.env.SCREENS_DIR}/${state}-controls-${width}.png` });
     }
   }
@@ -38,11 +40,13 @@ test("a confirmed guardian manages teen account and scope consent", async ({ pag
   await proof(page, "guardian-confirmed");
   await section.getByRole("button", { name: "Grant consent", exact: true }).click();
   await expect(section.getByText("Account consent granted.", { exact: true })).toBeVisible();
+
   for (const scope of ["sms", "photos"]) {
     await section.getByLabel("Consent", { exact: true }).selectOption(scope);
     await section.getByRole("button", { name: "Grant consent", exact: true }).click();
     await expect(section.getByText("Consent granted", { exact: true })).toBeVisible();
   }
+
   await section.getByLabel("Consent", { exact: true }).selectOption("account");
   await signIn(page, "guardian-proof-teen");
   await expect(page.getByRole("heading", { name: "Waiting for consent" })).toHaveCount(0);
@@ -75,6 +79,7 @@ test("a consent email previews before its explicit one-use grant", async ({ page
     const html = await (await page.request.get("/dev/outbox")).text();
     const section = html.split("<section").find((s) => s.includes(`To: ${email("email-guardian-proof")}`));
     url = section?.match(/https?:[^\s<]+\/guardian-consent\?token=[A-Za-z0-9_.-]+/)?.[0] ?? "";
+
     return url;
   }).not.toBe("");
   const target = new URL(url);

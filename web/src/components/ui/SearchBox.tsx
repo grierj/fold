@@ -8,6 +8,7 @@ import { SearchIcon } from "../icons";
 export function SearchBox({ id: suppliedId, label, value, onChange, disabled }: { id?: string; label: string; value: string; onChange: (v: string) => void; disabled?: boolean }) {
   const generatedId = useId();
   const id = suppliedId ?? generatedId;
+
   return (
     <div className="relative">
       <label className="sr-only" htmlFor={id}>

@@ -6,9 +6,11 @@ import { ChildcareRequestField, childcareCountProblem } from "./ChildcareRequest
 it.each(["0", "20", ""])("accepts the child count %s", (value) => {
   expect(childcareCountProblem(value)).toBeNull();
 });
+
 it.each(["-1", "21", "1.5", "1e", "NaN"])("rejects the child count %s", (value) => {
   expect(childcareCountProblem(value)).toMatch(/whole number from 0 to 20/);
 });
+
 describe("ChildcareRequestField", () => {
   it("labels the count and ages and preserves typed text", async () => {
     const onCount = vi.fn();

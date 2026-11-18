@@ -37,16 +37,21 @@ export function Menu({ items, label = "More", text = "More", align = "end", tone
     // when it opens near the bottom.
     const el = document.getElementById(id);
     const r = el?.getBoundingClientRect();
+
     if (r && r.width > 0) {
       if (r.left < 0) setSide("start");
       else if (r.right > window.innerWidth) setSide("end");
     }
+
     el?.scrollIntoView?.({ block: "nearest" });
     itemRefs.current.find((b) => b && !b.disabled)?.focus({ preventScroll: true });
+
     const away = (e: PointerEvent) => {
-      if (!root.current?.contains(e.target as Node)) setOpen(false);
+      if (e.target instanceof Node && !root.current?.contains(e.target)) setOpen(false);
     };
+
     document.addEventListener("pointerdown", away);
+
     return () => document.removeEventListener("pointerdown", away);
   }, [open, id]);
 
@@ -54,13 +59,15 @@ export function Menu({ items, label = "More", text = "More", align = "end", tone
 
   function close(focusTrigger: boolean) {
     setOpen(false);
+
     if (focusTrigger) trigger.current?.focus();
   }
 
   function onKey(e: React.KeyboardEvent) {
     const enabled = itemRefs.current.filter((b): b is HTMLButtonElement => !!b && !b.disabled);
-    const at = enabled.indexOf(document.activeElement as HTMLButtonElement);
+    const at = enabled.findIndex((button) => button === document.activeElement);
     const go = (i: number) => enabled[(i + enabled.length) % enabled.length]?.focus();
+
     switch (e.key) {
       case "ArrowDown": e.preventDefault(); go(at + 1); break;
       case "ArrowUp": e.preventDefault(); go(at - 1); break;

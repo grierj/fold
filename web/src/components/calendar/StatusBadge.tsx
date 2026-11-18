@@ -10,6 +10,7 @@ export function StatusBadge({ state }: { state: CalendarState }) {
   if (!state) return null;
   const label = registrationStatusLabel(state);
   const tone = state === "going" ? "text-success-on-subtle" : "text-text-muted";
+
   return (
     <span className={`inline-flex items-center gap-1 text-xs font-semibold ${tone}`} aria-label={label}>
       {state === "going" && <CheckIcon className="h-3 w-3" />}

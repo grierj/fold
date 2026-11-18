@@ -1,3 +1,4 @@
+import { isCallable } from "../lib/wireValues";
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { AdminIcon, BellIcon, CalendarIcon, CheckIcon, ChevronRightIcon, GroupsIcon, UserPlusIcon } from "./icons";
 import { Link, NavLink, useNavigate } from "react-router-dom";
@@ -17,7 +18,7 @@ import type { Badge, Notification } from "../types";
 const MOBILE = "(max-width: 639px)";
 
 function isMobile(): boolean {
-  return typeof window.matchMedia === "function" && window.matchMedia(MOBILE).matches;
+  return isCallable(window.matchMedia) && window.matchMedia(MOBILE).matches;
 }
 
 const KIND_ICONS = {
@@ -29,6 +30,7 @@ const KIND_ICONS = {
 function KindBadge({ kind }: { kind: string }) {
   const name = kindIcon(kind);
   const Glyph = KIND_ICONS[name];
+
   return (
     <span className="w-9 h-9 text-text-muted flex items-center justify-center shrink-0">
       <Glyph className="w-5 h-5" data-icon={name} />
@@ -51,6 +53,7 @@ function NotificationRow({
   const handled = feed.handled[n.id];
   // A decided task keeps only its outcome: the original ask is stale.
   const resolved = !!(done || handled);
+
   return (
     <li className="relative flex gap-3 px-4 py-4 hover:bg-sunken">
       {unread && <span className="absolute left-1.5 top-5 w-2 h-2 rounded-full bg-primary" aria-hidden="true" />}
@@ -136,8 +139,10 @@ function ArchivedToast({ item, failed, onUndo, onClose }: { item: Notification; 
   useEffect(() => {
     if (paused) return;
     const t = setTimeout(onClose, 8000);
+
     return () => clearTimeout(t);
   }, [paused, onClose, item.id]);
+
   return (
     <div
       role="status"
@@ -157,9 +162,11 @@ function ArchivedToast({ item, failed, onUndo, onClose }: { item: Notification; 
 
 function StatusLine({ feed }: { feed: Feed }) {
   const at = feed.loadedAt?.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+
   if (feed.offline) {
     return <p className="px-4 py-1 text-xs text-text-muted">You're offline. Showing what was loaded{at ? ` at ${at}` : ""}.</p>;
   }
+
   if (feed.error && feed.loadedAt) {
     return (
       <p className="px-4 py-1 text-xs text-text-muted">
@@ -170,6 +177,7 @@ function StatusLine({ feed }: { feed: Feed }) {
       </p>
     );
   }
+
   return null;
 }
 
@@ -209,7 +217,9 @@ export function FeedBody({
 }) {
   const headingId = useId();
   const Heading = headingLevel === 2 ? "h2" : "h3";
+
   if (feed.loading && !feed.loadedAt) return <Skeleton />;
+
   if (feed.error && !feed.loadedAt) {
     return (
       <div className="px-4 py-6 text-center text-sm">
@@ -220,10 +230,13 @@ export function FeedBody({
       </div>
     );
   }
+
   if (feed.waiting.length + feed.items.length === 0) return <FeedEmpty text={emptyText} action={emptyAction} />;
+
   const row = (n: Notification) => (
     <NotificationRow key={n.id} n={n} feed={feed} onArchived={onArchived} onNavigate={onNavigate} />
   );
+
   return (
     <>
       <StatusLine feed={feed} />
@@ -276,8 +289,11 @@ function splitByDay(rows: Notification[]): [string, Notification[]][] {
   const t = rows.filter((n) => new Date(n.updatedAt).toDateString() === today);
   const e = rows.filter((n) => new Date(n.updatedAt).toDateString() !== today);
   const out: [string, Notification[]][] = [];
+
   if (t.length) out.push(["Today", t]);
+
   if (e.length) out.push(["Earlier", e]);
+
   return out;
 }
 
@@ -286,6 +302,7 @@ export function useArchiveToast(feed: Feed) {
   const [failed, setFailed] = useState(false);
   const close = useCallback(() => setToast(null), []);
   const show = useCallback((n: Notification) => { setFailed(false); setToast(n); }, []);
+
   const node = toast ? (
     <ArchivedToast
       item={toast}
@@ -299,6 +316,7 @@ export function useArchiveToast(feed: Feed) {
       }}
     />
   ) : null;
+
   return { onArchived: show, toast: node };
 }
 
@@ -330,32 +348,42 @@ export function NotificationBell({ badge }: { badge: Badge & { loaded: boolean }
   useEffect(() => {
     if (!badge.loaded) return;
     const now = Date.now();
+
     if (last.current.count >= 0 && count > last.current.count && now - last.current.at > 60_000) {
       const more = count - last.current.count;
       setAnnounce(`${more} new alert${more === 1 ? "" : "s"}`);
       last.current.at = now;
     }
+
     last.current.count = count;
   }, [count, badge.loaded]);
 
   const close = useCallback((focusBell: boolean) => {
     setOpen(false);
+
     if (focusBell) bellRef.current?.focus();
   }, []);
 
   useEffect(() => {
     if (!open) return;
     headingRef.current?.focus();
+
     function onDocClick(e: MouseEvent) {
-      const t = e.target as Node;
+      const t = e.target;
+
+      if (!(t instanceof Node)) return;
+
       // A row removed by its own click (×) is no longer in the document.
       if (boxRef.current && document.contains(t) && !boxRef.current.contains(t)) setOpen(false);
     }
+
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") close(true);
     }
+
     document.addEventListener("click", onDocClick);
     document.addEventListener("keydown", onKey);
+
     return () => {
       document.removeEventListener("click", onDocClick);
       document.removeEventListener("keydown", onKey);
@@ -363,13 +391,14 @@ export function NotificationBell({ badge }: { badge: Badge & { loaded: boolean }
   }, [open, close]);
 
   const ordinaryUnread = badge.unread > 0;
+
   return (
     <div
       ref={boxRef}
       className="relative"
       onBlur={(e) => {
         // Tabbing past the last control closes the panel (6.2).
-        if (open && !e.currentTarget.contains(e.relatedTarget as Node | null) && e.relatedTarget) setOpen(false);
+        if (open && e.relatedTarget instanceof Node && !e.currentTarget.contains(e.relatedTarget)) setOpen(false);
       }}
     >
       <button
@@ -425,6 +454,7 @@ export function NotificationBell({ badge }: { badge: Badge & { loaded: boolean }
 
 export function NotificationTab({ badge, className }: { badge: Badge; className: (a: { isActive: boolean }) => string }) {
   const count = badgeCount(badge);
+
   return (
     <NavLink to="/notifications" className={className} aria-label={badgeAriaLabel(badge)}>
       <span className="relative">

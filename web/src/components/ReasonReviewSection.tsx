@@ -44,6 +44,7 @@ export function ReasonReviewSection({ store, disabled, loading, jump }: Props) {
   items.forEach((it, i) => {
     const c = store.choiceAt(from + i);
     choices[it.requestId] = c === KEEP ? "keep" : c === REMOVE ? "remove" : undefined;
+
     if (store.isChanged(from + i)) changed.add(it.requestId);
   });
 
@@ -58,6 +59,7 @@ export function ReasonReviewSection({ store, disabled, loading, jump }: Props) {
   const show = useCallback(
     (ordinal: number) => {
       const n = store.total;
+
       if (n === 0) return;
       const at = Math.min(Math.max(ordinal, 0), n - 1);
       const first = Math.floor(at / DISPLAY_PAGE) * DISPLAY_PAGE;
@@ -85,15 +87,19 @@ export function ReasonReviewSection({ store, disabled, loading, jump }: Props) {
 
   function go() {
     const n = Number(goTo);
+
     if (!Number.isInteger(n) || n < 1 || n > total) {
       setAnnounce(`Enter a reason number from 1 to ${fmt(total)}.`);
+
       return;
     }
+
     show(n - 1);
   }
 
   function nextWithout(find: (from: number) => number, none: string) {
     const at = find(from);
+
     if (at < 0) setAnnounce(none);
     else show(at);
   }
@@ -157,8 +163,10 @@ export function ReasonProgress({ store, done }: { store: ReasonReviewStore; done
   const line = progressLine(snap.total, snap.unchosen, done);
   useEffect(() => {
     const t = setTimeout(() => setSaid(line), 2000);
+
     return () => clearTimeout(t);
   }, [line]);
+
   return (
     <>
       <p className="text-text-muted">{line}</p>
@@ -173,12 +181,14 @@ const reasonsWord = (n: number) => `${fmt(n)} ${n === 1 ? "reason" : "reasons"}`
 
 function progressLine(total: number, unchosen: number, done: boolean): string {
   if (!done) return `${reasonsWord(total - unchosen)} chosen of ${fmt(total)} so far.`;
+
   return unchosen === 0 ? `All ${reasonsWord(total)} chosen.` : `Choose Keep text or Blank text for ${unchosen === 1 ? "1 more reason" : `${fmt(unchosen)} more reasons`}.`;
 }
 
 // What pressing Delete would do, in words.
 export function ReasonSummary({ store }: { store: ReasonReviewStore }) {
   const snap = useSyncExternalStore(store.subscribe, store.getSnapshot);
+
   return (
     <p className="font-semibold">{`Delete this account. Keep ${reasonsWord(snap.keep)} and blank ${fmt(snap.remove)}.`}</p>
   );

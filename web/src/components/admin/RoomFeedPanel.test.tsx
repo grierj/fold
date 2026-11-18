@@ -1,3 +1,5 @@
+import { stubService } from "../../test/service";
+import { AdminRooms } from "../../api/rooms";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -5,11 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const getFeed = vi.fn();
 const makeFeed = vi.fn();
 const revokeFeed = vi.fn();
-vi.mock("../../api/rooms", async (orig) => ({ ...(await orig<typeof import("../../api/rooms")>()), AdminRooms: {
-    getFeed: (id: number) => getFeed(id),
-    makeFeed: (id: number) => makeFeed(id),
-    revokeFeed: (id: number) => revokeFeed(id),
-  } }));
+
+stubService(AdminRooms, () => ({ getFeed: (id) => getFeed(id), makeFeed: (id) => makeFeed(id), revokeFeed: (id) => revokeFeed(id) }));
 
 import { ApiError } from "../../api/core";
 import type { Room } from "../../types";
@@ -19,6 +18,7 @@ const hall: Room = {
   id: 7, name: "Fellowship Hall", building: "Main", capacity: 80, features: "", notes: "",
   active: true, restricted: false, defaultSetupMinutes: 0, defaultTeardownMinutes: 0,
 };
+
 const URL_ = "https://church.example/cal/rooms/7/s3cret.ics";
 
 describe("RoomFeedPanel (M2.2b)", () => {

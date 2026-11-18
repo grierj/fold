@@ -38,20 +38,24 @@ export function useCursorList<T extends { id: number }>(fetchPage: (before?: num
     setState({ items: [], loaded: false, more: false, error: "", busy: false });
     latest.current.fetchPage().then(
       (rows) => { if (current === generation.current) setState({ items: rows, loaded: true, more: rows.length === CURSOR_PAGE_SIZE, error: "", busy: false }); },
-      (e: unknown) => { if (current === generation.current) setState((s) => ({ ...s, error: errorText(e) })); },
+      (cause: unknown) => { if (current === generation.current) setState((s) => ({ ...s, error: errorText(cause) })); },
     );
     window.addEventListener("focus", refresh);
+
     return () => { generation.current++; window.removeEventListener("focus", refresh); };
   }, [revision, refresh]);
 
   const older = useCallback(async () => {
     const { fetchPage: fetch, state: s } = latest.current;
     const cursor = s.items[s.items.length - 1]?.id;
+
     if (!s.loaded || !s.more || s.busy || cursor === undefined) return;
     const current = generation.current;
     setState((old) => ({ ...old, busy: true, error: "" }));
+
     try {
       const rows = await fetch(cursor);
+
       if (current !== generation.current) return;
       setState((old) => ({ ...old, items: [...old.items, ...rows], more: rows.length === CURSOR_PAGE_SIZE, busy: false }));
     } catch (e) {

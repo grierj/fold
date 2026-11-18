@@ -238,25 +238,27 @@ function isCode(code: string): code is ErrorCode {
 // the general codes, where it says more than the general line does. A
 // specific code always wins, and anything that isn't an API error (a
 // dropped connection, a bug) gets the connection line.
-export function errorText(e: unknown, fallback?: string): string {
-  if (!(e instanceof ApiError)) return NETWORK;
-  const code = isCode(e.code) ? e.code : "server_error";
+export function errorText(cause: unknown, fallback?: string): string {
+  if (!(cause instanceof ApiError)) return NETWORK;
+  const code = isCode(cause.code) ? cause.code : "server_error";
   const general = code === "invalid" || code === "server_error" || code === "conflict";
+
   if (general && fallback) {
     return code === "server_error" ? `${fallback} Please try again in a minute.` : `${fallback} Please try again.`;
   }
+
   return ERROR_COPY[code];
 }
 
 // errorCode is the code of a caught API error, for pages that react to one
 // (a full event, an expired link), or "" for anything else.
-export function errorCode(e: unknown): ErrorCode | "" {
-  return e instanceof ApiError && isCode(e.code) ? e.code : "";
+export function errorCode(cause: unknown): ErrorCode | "" {
+  return cause instanceof ApiError && isCode(cause.code) ? cause.code : "";
 }
 
 // needsDecision is true for the group or event update the server refused
 // because the events it would change are not the ones the leader was shown:
 // it answers 409 with `needsDecision` in the body, and no code of its own.
-export function needsDecision(e: unknown): boolean {
-  return e instanceof ApiError && e.status === 409 && e.data.needsDecision === true;
+export function needsDecision(cause: unknown): boolean {
+  return cause instanceof ApiError && cause.status === 409 && cause.data.needsDecision === true;
 }

@@ -1,3 +1,4 @@
+import { isString } from "../lib/wireValues";
 import { useEffect, useId, useRef, useState } from "react";
 import { ApiError } from "../api/core";
 import { Groups } from "../api/groups";
@@ -64,21 +65,24 @@ export function AddPeople({ groupId, groupName, memberCount, memberLimit, canSea
     setBusy(true);
     setError(null);
     setStatus(null);
+
     try {
       try {
         await Groups.addMember(groupId, target);
       } catch (err) {
         if (errorCode(err) !== "group_full") throw err;
+
         if (!confirm(`“${groupName}” is full (${memberCount} of ${memberLimit}). Add ${label} anyway?`)) return;
         await Groups.addMember(groupId, target, true);
       }
+
       setSelection(null);
       setEmail("");
       setStatus(`Added ${label}.`);
       await onAdded();
     } catch (err) {
-      if (typeof target === "string" && err instanceof ApiError && err.status === 404) setInviteFor(target);
-      else if (errorCode(err) === "teen_add_approval_required" && typeof target === "string") {
+      if (isString(target) && err instanceof ApiError && err.status === 404) setInviteFor(target);
+      else if (errorCode(err) === "teen_add_approval_required" && isString(target)) {
         setError("Select this person by name, then choose Ask to add. An email address cannot be used to send an ask.");
       } else setError(errorText(err, "We couldn't add that person."));
     } finally {
@@ -88,14 +92,22 @@ export function AddPeople({ groupId, groupName, memberCount, memberLimit, canSea
 
   function addByName(e: React.FormEvent) {
     e.preventDefault();
+
     if (!selection) return;
-    if (selection.teen) { setAskPerson(selection); return; }
+
+    if (selection.teen) {
+      setAskPerson(selection);
+
+      return;
+    }
+
     void add({ selectionId: selection.selectionId }, selection.displayName);
   }
 
   function addByEmail(e: React.FormEvent) {
     e.preventDefault();
     const address = email.trim();
+
     if (!address) return;
     setInviteFor(null);
     void add(address, address);
@@ -108,6 +120,7 @@ export function AddPeople({ groupId, groupName, memberCount, memberLimit, canSea
     setBusy(true);
     setError(null);
     setStatus(null);
+
     try {
       await Invitations.create({ email: inviteFor, groupId, overLimit });
       setStatus(`Invitation sent to ${inviteFor}.`);

@@ -38,6 +38,7 @@ export function useSecretFeed<T extends FeedInfo>({ load, deps, create, revoke, 
 
   // Each answer fills the state in the render that first sees it.
   const [applied, setApplied] = useState(feed.data);
+
   if (feed.data && feed.data !== applied) {
     setApplied(feed.data);
     setHasToken(feed.data.hasToken);
@@ -50,6 +51,7 @@ export function useSecretFeed<T extends FeedInfo>({ load, deps, create, revoke, 
     setBusy(true);
     setError(null);
     setStatus("");
+
     try {
       await run();
     } catch (err) {
@@ -91,15 +93,18 @@ export function useSecretFeed<T extends FeedInfo>({ load, deps, create, revoke, 
     async copyLink() {
       if (!link) return;
       setError(null);
+
       if (navigator.clipboard) {
         try {
           await navigator.clipboard.writeText(link);
           setStatus("Link copied.");
+
           return;
         } catch {
           // Fall through to selecting the text by hand.
         }
       }
+
       linkRef.current?.select();
       setStatus("The link is selected. Copy it from the box above.");
     },

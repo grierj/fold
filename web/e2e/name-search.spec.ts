@@ -11,10 +11,12 @@ test("name picker keeps safe identities, teen guidance and existing adult add co
   const teenName = `Picker Teen ${suffix}`;
   const leaderLogin = `picker-leader-${suffix}`;
   let admin = await apiAs(request, "grier");
+
   const create = async (login: string, name: string, teen = false) => (await admin("POST", "/admin/users", {
     email: email(login), name, password: PASSWORD, ageBand: teen ? "teen" : "adult",
-    ...(teen ? { birthDate: `${new Date().getUTCFullYear() - 15}-01-01` } : {}), phone: "2085550149",
+    birthDate: teen ? `${new Date().getUTCFullYear() - 15}-01-01` : undefined, phone: "2085550149",
   })).user;
+
   const leader = await create(leaderLogin, "Picker Leader");
   const adult = await create(`picker-adult-${suffix}`, patName);
   const other = await create(`picker-other-${suffix}`, patName);
@@ -24,6 +26,7 @@ test("name picker keeps safe identities, teen guidance and existing adult add co
   const destination = await group("Picker group");
   await admin("POST", `/admin/groups/${destination.id}/members`, { userId: leader.id, role: "leader" });
   const shared = await group("Picker Choir");
+
   for (const userId of [leader.id, adult.id]) await admin("POST", `/admin/groups/${shared.id}/members`, { userId, role: "member" });
   // A public group the leader is not in: its roster, and so this label, stays
   // hidden from them (policy.CanSeeRoster, M7.2 slice a).
@@ -40,7 +43,9 @@ test("name picker keeps safe identities, teen guidance and existing adult add co
 
   const results: unknown[] = [];
   const proof = process.env.SCREENS_DIR;
+
   if (proof) await mkdir(proof, { recursive: true });
+
   async function capture(name: string, p: Page = page) {
     for (const width of [390, 768, 1280]) {
       await p.setViewportSize({ width, height: 900 });
@@ -55,6 +60,7 @@ test("name picker keeps safe identities, teen guidance and existing adult add co
       expect(violations.filter((v) => v.impact === "serious" || v.impact === "critical").map((v) => ({ id: v.id, targets: v.nodes.map((n) => n.target) })), `${name}@${width}`).toEqual([]);
       const rows = await p.getByRole("listbox", { name: "People" }).getByRole("option").evaluateAll((nodes) => nodes.map((n) => n.getBoundingClientRect().height));
       expect(rows.every((height) => height >= 44), name).toBe(true);
+
       if (proof) await p.screenshot({ path: `${proof}/${name}-${width}.png`, fullPage: true });
       results.push({ name, width, layout, rows, seriousOrCritical: [] });
     }
@@ -63,8 +69,10 @@ test("name picker keeps safe identities, teen guidance and existing adult add co
   await signIn(page, leaderLogin);
   page.on("dialog", (dialog) => dialog.accept());
   await page.goto(`/groups/${destination.id}`);
+
   const membersTab = page.getByRole("tablist", { name: "Group sections", exact: true })
     .getByRole("tab", { name: "Members", exact: true });
+
   await membersTab.click();
   await expect(membersTab).toHaveAttribute("aria-selected", "true");
   const membersPanel = page.getByRole("tabpanel", { name: "Members", exact: true });
@@ -76,10 +84,12 @@ test("name picker keeps safe identities, teen guidance and existing adult add co
   await picker.fill(patName);
   const search = await (await searchReply).json();
   expect(search.people).toHaveLength(2);
+
   for (const person of search.people) {
     expect(person).not.toHaveProperty("email"); expect(person).not.toHaveProperty("phone"); expect(person).not.toHaveProperty("id");
     expect(JSON.stringify(person)).not.toContain(hidden.name); expect(JSON.stringify(person)).not.toContain(notShared.name);
   }
+
   await expect(page.getByRole("status").filter({ hasText: "people found" })).toContainText("2 people found");
   await expect(page.getByRole("listbox", { name: "People" }).getByRole("option").filter({ hasText: shared.name })).toContainText(`Shared groups: ${shared.name}`);
   await picker.press("ArrowDown");
@@ -128,5 +138,6 @@ test("name picker keeps safe identities, teen guidance and existing adult add co
   expect((await adminPost).postDataJSON()).toEqual({ selectionId: expect.any(String), role: "member", overLimit: false });
   await expect(card.getByText(patName, { exact: true })).toHaveCount(2);
   await capture("admin-adult-added");
+
   if (proof) await writeFile(`${proof}/results.json`, JSON.stringify({ feature: "name-search", entry: "group members / event Manage sign-ups / admin Manage members", results }, null, 2));
 });

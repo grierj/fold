@@ -1,3 +1,4 @@
+import { stubService } from "../test/service";
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
@@ -8,9 +9,10 @@ import type { ContactGrant } from "../types";
 import { GuardianConsentCard } from "./GuardianConsentCard";
 import { Guardians } from "../api/guardians";
 
-vi.mock("../api/guardians", () => ({ Guardians: { teens: vi.fn(), claim: vi.fn(), change: vi.fn(), email: vi.fn() } }));
+stubService(Guardians, () => ({ teens: vi.fn(), claim: vi.fn(), change: vi.fn(), email: vi.fn() }));
 
-vi.mock("../api/contacts", () => ({ Contacts: { grants: vi.fn(), reveal: vi.fn(), revoke: vi.fn() } }));
+stubService(Contacts, () => ({ grants: vi.fn(), reveal: vi.fn(), revoke: vi.fn() }));
+
 const teen = { linkId: 1, teenUserId: 2, teenName: "Sam Teen", accountConsent: true, smsConsent: false, photosConsent: false };
 const grant: ContactGrant = { id: 1, requestId: 1, requesterId: 10, requesterName: "Lee", subjectUserId: 2, subjectName: "Sam Teen", contextType: "group", fields: "email", needsAdmin: true, grantedAt: "2026-10-02T12:00:00Z", endReason: "", canReveal: false, canRevoke: true };
 
@@ -76,12 +78,14 @@ test("a grant load pending at consent revocation cannot restore ended access aft
 test.each(["cancelled", "failed"])("%s consent revocation preserves the expanded current grant", async (outcome) => {
   vi.mocked(Guardians.teens).mockResolvedValue({ teens: [teen] });
   vi.mocked(Contacts.grants).mockResolvedValue({ grants: [grant] });
+
   if (outcome === "cancelled") vi.mocked(window.confirm).mockReturnValue(false);
   else vi.mocked(Guardians.change).mockRejectedValue(new ApiError(403, "private", { code: "contact_unavailable" }));
   render(<MemoryRouter><GuardianConsentCard /></MemoryRouter>);
   await userEvent.click(await screen.findByRole("button", { name: "View active contact access" }));
   expect(await screen.findByRole("button", { name: "Revoke access" })).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Revoke consent" }));
+
   if (outcome === "cancelled") expect(Guardians.change).not.toHaveBeenCalled();
   else expect(await screen.findByRole("alert")).toHaveTextContent("no longer available to you");
   expect(screen.getByRole("button", { name: "Close contact access" })).toHaveAttribute("aria-expanded", "true");

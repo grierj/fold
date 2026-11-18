@@ -1,3 +1,4 @@
+import * as schema from "valibot";
 import { expect, test } from "@playwright/test";
 import { signIn } from "./helpers";
 
@@ -11,11 +12,11 @@ import { signIn } from "./helpers";
 // says what those counts say. Retry and Dismiss are covered by Vitest
 // (SystemTab.test.tsx) and the Go handler tests: e2e can't seed a dead job
 // through the API.
-type Summary = { jobs: unknown[]; more: boolean; deliveries: { queued: number; deferred: number; failed: number } };
+const summary = schema.looseObject({ jobs: schema.array(schema.unknown()), more: schema.boolean(), deliveries: schema.looseObject({ queued: schema.number(), deferred: schema.number(), failed: schema.number() }) });
 
 test("the System tab reports background tasks and email truthfully", async ({ page }) => {
   await signIn(page, "grier");
-  const load = async () => (await (await page.request.get("/api/v1/admin/jobs")).json()) as Summary;
+  const load = async () => schema.parse(summary, await (await page.request.get("/api/v1/admin/jobs")).json());
 
   // Queued emails drain on their own within a few polls of the job worker.
   await expect.poll(async () => (await load()).deliveries.queued, { timeout: 15_000 }).toBe(0);
@@ -27,25 +28,31 @@ test("the System tab reports background tasks and email truthfully", async ({ pa
   await expect(page.getByRole("heading", { name: "Background tasks" })).toBeVisible();
 
   // The Backups panel says what the server's own answer says, and it never hides the tasks.
-  const backup = (await (await page.request.get("/api/v1/admin/backup")).json()) as { state: string };
+  const backup = schema.parse(schema.looseObject({ state: schema.string() }), (await (await page.request.get("/api/v1/admin/backup")).json()));
   await expect(page.getByRole("heading", { name: "Backups", level: 2 })).toBeVisible();
-  const words: Record<string, string | RegExp> = {
-    unwatched: "Fold isn't watching backups here.",
-    missing: "Backups are overdue",
-    stale: "Backups are overdue",
-    unreadable: "Fold can't read the backup status",
-    ok: /^Last backup finished/,
-  };
-  await expect(page.getByText(words[backup.state]).first()).toBeVisible();
+
+  const words = new Map<string, string | RegExp>([
+    ["unwatched", "Fold isn't watching backups here."],
+    ["missing", "Backups are overdue"],
+    ["stale", "Backups are overdue"],
+    ["unreadable", "Fold can't read the backup status"],
+    ["ok", /^Last backup finished/],
+  ]);
+
+  await expect(page.getByText(words.get(backup.state) ?? "Unknown backup state").first()).toBeVisible();
 
   const quiet = before.jobs.length === 0 && before.deliveries.deferred === 0 && before.deliveries.failed === 0;
+
   if (quiet) {
     await expect(page.getByText("Nothing needs attention.")).toBeVisible();
     await expect(page.getByText("Background tasks are running normally.")).toBeVisible();
+
     return;
   }
+
   // Something is worth saying, so the empty state must not claim otherwise.
   await expect(page.getByText("Nothing needs attention.")).toHaveCount(0);
+
   if (before.deliveries.failed > 0) {
     await expect(page.getByText(/could not be sent in the last 7 days/)).toBeVisible();
     await expect(page.getByText(/email isn't set up/)).toBeVisible();

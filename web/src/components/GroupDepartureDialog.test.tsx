@@ -1,3 +1,4 @@
+import { stubService } from "../test/service";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -6,12 +7,7 @@ import { Groups } from "../api/groups";
 import type { DeparturePreview } from "../types";
 import { GroupDepartureDialog } from "./GroupDepartureDialog";
 
-vi.mock("../api/groups", async (actual) => ({ ...(await actual<typeof import("../api/groups")>()), Groups: {
-    departurePreview: vi.fn(),
-    memberDeparturePreview: vi.fn(),
-    confirmDeparture: vi.fn(),
-    confirmMemberDeparture: vi.fn(),
-  } }));
+stubService(Groups, () => ({ departurePreview: vi.fn(), memberDeparturePreview: vi.fn(), confirmDeparture: vi.fn(), confirmMemberDeparture: vi.fn() }));
 
 const preview = (action: "leave" | "remove" = "leave", overrides: Partial<DeparturePreview> = {}): DeparturePreview => ({
   action,
@@ -127,6 +123,7 @@ it("refreshes a stale preview, resets to new server defaults, preserves the note
     defaultKeepCount: 1,
     keepableCount: 2,
   });
+
   vi.mocked(Groups.memberDeparturePreview)
     .mockResolvedValueOnce({ departure: preview("remove") })
     .mockResolvedValueOnce({ departure: fresh });

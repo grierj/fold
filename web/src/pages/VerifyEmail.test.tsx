@@ -1,4 +1,7 @@
-import { render, screen } from "@testing-library/react";
+import { renderWithAuth } from "../test/auth";
+import { stubService } from "../test/service";
+import { Profile } from "../api/profile";
+import { screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 
@@ -7,16 +10,9 @@ const { refresh, verifyEmail } = vi.hoisted(() => ({
   verifyEmail: vi.fn(),
 }));
 
-vi.mock("../auth", () => ({
-  useAuth: () => ({ refresh }),
-}));
-vi.mock("../api/profile", async (original) => {
-  const actual = await original<typeof import("../api/profile")>();
-  return {
-    ...actual,
-    Profile: { ...actual.Profile, verifyEmail },
-  };
-});
+const render = renderWithAuth(() => ({ refresh }));
+
+stubService(Profile, () => ({ verifyEmail }));
 
 import { VerifyEmail } from "./VerifyEmail";
 

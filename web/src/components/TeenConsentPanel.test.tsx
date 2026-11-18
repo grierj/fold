@@ -1,3 +1,4 @@
+import { stubService } from "../test/service";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -6,13 +7,14 @@ import { ApiError } from "../api/core";
 import type { TeenConsent, User } from "../types";
 import TeenConsentPanel from "./TeenConsentPanel";
 
-vi.mock("../api/adminUsers", async (actual) => ({ ...(await actual<typeof import("../api/adminUsers")>()), AdminTeenConsents: { list: vi.fn(), change: vi.fn() } }));
+stubService(AdminTeenConsents, () => ({ list: vi.fn(), change: vi.fn() }));
 
 const teen: User = {
   id: 7, name: "Casey Teen", displayName: "Casey", email: "casey@example.com", phone: "",
   avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50, role: "member", status: "pending_consent",
   hasPassword: true, accountType: "teen", hideContactFromLeaders: true, birthDate: "2011-01-01", timezone: "",
 };
+
 const consent: TeenConsent = {
   id: 11, teenUserId: teen.id, scope: "account", status: "granted", grantedBy: 1, granterRole: "admin",
   evidenceText: "Signed parent form", at: "2026-10-22T12:00:00Z",

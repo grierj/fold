@@ -11,11 +11,13 @@ export function occurrenceLink(occ: CalendarOccurrence): string {
 
 export function calendarState(occ: CalendarOccurrence): CalendarState {
   if (occ.myStatus) return occ.myStatus;
+
   return occ.ownScope ? "not_answered" : null;
 }
 
 export function calendarStateLabel(occ: CalendarOccurrence): string | null {
   const state = calendarState(occ);
+
   return state ? registrationStatusLabel(state) : null;
 }
 

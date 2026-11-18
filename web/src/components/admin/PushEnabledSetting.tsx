@@ -9,9 +9,11 @@ import { SettingSwitch } from "./SettingSwitch";
 // the directions page; members' devices are kept for when it comes back on.
 export function PushEnabledSetting() {
   const setting = useLoad(() => Admin.pushEnabled(), []);
+
   if (setting.error) {
     return <div className="mb-6 max-w-xl"><ErrorNotice message="We couldn't load the notifications setting." onRetry={setting.retry} /></div>;
   }
+
   return (
     <SettingSwitch
       label="Notifications on devices"

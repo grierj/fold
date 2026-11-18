@@ -1,3 +1,4 @@
+import { stubService } from "../../test/service";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -6,18 +7,20 @@ import { ApiError } from "../../api/core";
 import type { AdminBackupStatus } from "../../types";
 import { BackupStatus } from "./BackupStatus";
 
-vi.mock("../../api/admin", async (actual) => ({ ...(await actual<typeof import("../../api/admin")>()), AdminBackup: { status: vi.fn() } }));
+stubService(AdminBackup, () => ({ status: vi.fn() }));
 
 const status = (over: Partial<AdminBackupStatus> = {}): AdminBackupStatus => ({
   state: "ok", lastOkAt: "2026-11-12T10:31:00Z", dumpBytes: 1_572_864, uploadsBytes: 3_221_225_472, offsite: "uploaded",
   lastFailedAt: null, lastFailedStep: null, ...over,
 });
+
 const show = async (s: AdminBackupStatus) => {
   vi.mocked(AdminBackup.status).mockResolvedValue(s);
   render(<BackupStatus />);
   await screen.findByRole("heading", { name: "Backups" });
   await waitFor(() => expect(screen.queryByText("Loading backup status…")).not.toBeInTheDocument());
 };
+
 const row = (label: string) => screen.getByText(label).nextElementSibling;
 
 beforeEach(() => { vi.mocked(AdminBackup.status).mockReset(); });

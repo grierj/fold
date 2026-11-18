@@ -40,6 +40,7 @@ const ManageRoster = lazy(() => import("../components/ManageRoster").then((modul
 
 export function EventDetail() {
   const { id } = useParams<{ id: string }>();
+
   // Another event must never inherit the editor, feedback or pending loads.
   return <EventDetailContent key={id} />;
 }
@@ -82,6 +83,7 @@ function EventDetailContent() {
   const setPage = load.setData;
 
   function handleRsvp() { void load.reload(); }
+
   function reportSeriesFeedback(eventId: number, date: string, actorResults: ActorRsvpResult[]) {
     const signal = { eventId, date, actorResults, revision: ++seriesFeedbackRevision.current };
     setPage((current) => current ? {
@@ -98,9 +100,11 @@ function EventDetailContent() {
       </div>
     );
   }
+
   if (notFound) {
     return <Missing title="Event not found" body="It may have been cancelled or removed, or it may be private." />;
   }
+
   if (!page) {
     return (
       <div className="fold-page fold-page-narrow">
@@ -122,6 +126,7 @@ function EventDetailContent() {
   async function deleteEvent() {
     if (!confirm(`Delete “${title}”? This removes every date and its registrations.`)) return;
     setDeleteError(null);
+
     try {
       await Events.delete(event.id);
       navigate("/", { replace: true });
@@ -311,6 +316,7 @@ function DateRow({
     if (!confirm(`Cancel this date on ${instance.date}?`)) return;
     setCancelling(true);
     setCancelError(null);
+
     try {
       await Events.cancelOccurrence(instance.eventId, instance.date);
       onChanged();
@@ -419,9 +425,11 @@ function HostEditor({
 
   async function add(e: React.FormEvent) {
     e.preventDefault();
+
     if (!email.trim()) return;
     setBusy(true);
     setError(null);
+
     try {
       await Events.addHost(eventId, email.trim());
       setEmail("");
@@ -436,6 +444,7 @@ function HostEditor({
   async function remove(userId: number) {
     setBusy(true);
     setError(null);
+
     try {
       await Events.removeHost(eventId, userId);
       onChanged();

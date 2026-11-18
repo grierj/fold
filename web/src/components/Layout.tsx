@@ -19,9 +19,11 @@ import { DirectoryPositionProvider } from "../lib/directoryPosition";
 // (scroll-padding in index.css).
 const topLink = ({ isActive }: { isActive: boolean }) =>
   `fold-nav-link inline-flex items-center min-h-11 px-2 rounded-md whitespace-nowrap ${isActive ? "text-primary" : "text-text-muted hover:text-primary"}`;
+
 // The phone's "+ New group" (DEC-62: a labeled pill, not a bare icon).
 const pill = ({ isActive }: { isActive: boolean }) =>
   `inline-flex items-center gap-1 min-h-11 px-3 rounded-full border whitespace-nowrap font-semibold ${isActive ? "border-primary-border bg-primary-subtle text-primary-on-subtle" : "border-border-strong text-primary"}`;
+
 const tab = ({ isActive }: { isActive: boolean }) =>
   `fold-tab flex flex-1 flex-col items-center justify-center gap-0.5 min-h-14 whitespace-nowrap text-xs font-medium ${isActive ? "text-primary" : "text-text-muted"}`;
 
@@ -34,11 +36,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const header = useRef<HTMLElement>(null);
   useLayoutEffect(() => {
     const element = header.current;
+
     if (!element) return;
     const update = () => document.documentElement.style.setProperty("--fold-header-height", `${element.getBoundingClientRect().height}px`);
     update();
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
     observer?.observe(element);
+
     return () => { observer?.disconnect(); document.documentElement.style.removeProperty("--fold-header-height"); };
   }, []);
   const plainLogin = ["/login", "/join", "/forgot-password"].some((p) => pathname === p || pathname.startsWith(`${p}/`));

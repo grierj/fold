@@ -18,7 +18,9 @@ function size(bytes: number): string {
   const units = ["KB", "MB", "GB", "TB", "PB"];
   let n = bytes / 1024;
   let i = 0;
+
   while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+
   return `${n >= 10 ? Math.round(n) : Math.round(n * 10) / 10} ${units[i]}`;
 }
 
@@ -42,10 +44,15 @@ function Warning({ title, children }: { title: string; children?: ReactNode }) {
 // is left out, never shown as zero or as "off".
 function Details({ s }: { s: AdminBackupStatus }) {
   const rows: [string, string][] = [];
+
   if (s.dumpBytes !== null) rows.push(["Database", size(s.dumpBytes)]);
+
   if (s.uploadsBytes !== null) rows.push(["Photos", size(s.uploadsBytes)]);
+
   if (s.offsite !== null) rows.push(["Offsite copy", s.offsite === "uploaded" ? "Sent to your offsite storage" : "Not set up"]);
+
   if (rows.length === 0) return null;
+
   return (
     <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm">
       {rows.map(([label, value]) => (
@@ -64,9 +71,11 @@ function Failure({ s }: { s: AdminBackupStatus }) {
   if (s.lastFailedAt === null) return null;
   const at = lowerLead(when(s.lastFailedAt));
   const kept = s.lastOkAt !== null ? " The last good backup is still the one above." : "";
+
   if (s.lastFailedStep === "config") {
     return <Warning title="The backup settings need attention"><p>The last try, {at}, couldn&rsquo;t start.{kept}</p></Warning>;
   }
+
   return <Warning title="The last backup try didn't finish"><p>It stopped {at}.{kept}</p></Warning>;
 }
 
@@ -101,6 +110,7 @@ function ForOperators({ watched }: { watched: boolean }) {
 
 function Body({ s }: { s: AdminBackupStatus }) {
   const last = s.lastOkAt;
+
   if (s.state === "unwatched") {
     return (
       <EmptyState
@@ -109,6 +119,7 @@ function Body({ s }: { s: AdminBackupStatus }) {
       />
     );
   }
+
   if (s.state === "unreadable") {
     return (
       <Warning title="Fold can't read the backup status">
@@ -116,6 +127,7 @@ function Body({ s }: { s: AdminBackupStatus }) {
       </Warning>
     );
   }
+
   if (last === null) {
     return (
       <Warning title="Backups are overdue">
@@ -123,6 +135,7 @@ function Body({ s }: { s: AdminBackupStatus }) {
       </Warning>
     );
   }
+
   if (s.state === "stale") {
     return (
       <>
@@ -133,6 +146,7 @@ function Body({ s }: { s: AdminBackupStatus }) {
       </>
     );
   }
+
   return (
     <>
       <p className="flex items-start gap-2">
@@ -147,6 +161,7 @@ function Body({ s }: { s: AdminBackupStatus }) {
 export function BackupStatus() {
   const load = useLoad(() => AdminBackup.status(), [], { refreshOnFocus: true });
   const s = load.data;
+
   return (
     <section aria-labelledby="backup-heading" className="space-y-3">
       <h2 id="backup-heading" className="text-xl font-bold">Backups</h2>

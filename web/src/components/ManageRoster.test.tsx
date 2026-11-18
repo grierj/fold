@@ -1,4 +1,6 @@
-import { render, screen, within } from "@testing-library/react";
+import { renderWithAuth } from "../test/auth";
+import { stubService } from "../test/service";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 import { ApiError } from "../api/core";
@@ -8,11 +10,18 @@ import { occurrence } from "../test/occurrence";
 import type { Attendee, User } from "../types";
 import { ManageRoster } from "./ManageRoster";
 
-const actor = vi.hoisted(() => ({ user: null as Pick<User, "id" | "status" | "accountType"> | null }));
-vi.mock("../auth", () => ({ useAuth: () => actor }));
-vi.mock("../api/people", async (actual) => ({ ...(await actual<typeof import("../api/people")>()), People: { search: vi.fn() } }));
-vi.mock("../api/events", async (actual) => ({ ...(await actual<typeof import("../api/events")>()), Events: { removeRegistration: vi.fn(), promoteRegistration: vi.fn(), restoreRegistration: vi.fn(), addRegistration: vi.fn() } }));
+type TestSession = { user: Pick<User, "id" | "status" | "accountType"> | null };
+
+const actor: TestSession = { user: null };
+
+const render = renderWithAuth(() => actor);
+
+stubService(People, () => ({ search: vi.fn() }));
+
+stubService(Events, () => ({ removeRegistration: vi.fn(), promoteRegistration: vi.fn(), restoreRegistration: vi.fn(), addRegistration: vi.fn() }));
+
 const child: Attendee = { registrationId: 91, name: "Kit", status: "waitlisted", guestCount: 0, attendanceMode: "remote", householdPerson: { personId: 3, name: "Kit", kind: "child", age: 6, householdName: "Leader household", registeredBy: { userId: 7, name: "Holder" } } };
+
 beforeEach(() => { vi.resetAllMocks(); actor.user = null; vi.spyOn(window, "confirm").mockReturnValue(true); });
 
 it("acts on the registration ID when user and person IDs overlap", async () => {
@@ -61,6 +70,7 @@ it("keeps waitlist positions per pool and places status before care notes", () =
   expect(screen.getByText("Waitlist position 2")).toBeInTheDocument();
   const note = screen.getByText("Care notes: First note");
   const row = note.closest("li");
+
   if (!row) throw new Error("missing roster row");
   const signer = within(row).getByText(/Signed up by/);
   expect(signer.nextElementSibling).toHaveTextContent("Waitlist position 1");

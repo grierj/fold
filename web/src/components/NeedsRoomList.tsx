@@ -47,6 +47,7 @@ export function NeedsRoomList({ eventId, revision, hasDate, onPick }: {
   useEffect(() => {
     if (asked.current === stamp) return;
     asked.current = stamp;
+
     if (enabled) reload();
   }, [stamp, enabled, reload]);
   const needs: NeedsRoom[] = list.data?.needsRoom ?? [];
@@ -55,6 +56,7 @@ export function NeedsRoomList({ eventId, revision, hasDate, onPick }: {
   useEffect(() => {
     if (!loaded) return;
     const was = watching.current;
+
     if (was && !loaded.needsRoom.some((n) => n.date === was)) {
       watching.current = null;
       setOpen(null);
@@ -76,8 +78,10 @@ export function NeedsRoomList({ eventId, revision, hasDate, onPick }: {
       </div>
     );
   }
+
   if (needs.length === 0) return <>{notes}</>;
   const rows = all ? needs : needs.slice(0, SHOWN);
+
   return (
     <>
       {notes}
@@ -91,6 +95,7 @@ export function NeedsRoomList({ eventId, revision, hasDate, onPick }: {
             const day = formatDayLong(n.date);
             const inline = !hasDate(n.date);
             const panel = `needs-room-${n.date}`;
+
             return (
               <li key={n.date} className="space-y-2">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -104,7 +109,12 @@ export function NeedsRoomList({ eventId, revision, hasDate, onPick }: {
                     aria-expanded={inline ? open === n.date : undefined}
                     aria-controls={inline ? panel : undefined}
                     onClick={() => {
-                      if (!inline) { onPick(n.date); return; }
+                      if (!inline) {
+                        onPick(n.date);
+
+                        return;
+                      }
+
                       setNotice("");
                       watching.current = open === n.date ? null : n.date;
                       setOpen(open === n.date ? null : n.date);

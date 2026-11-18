@@ -19,9 +19,11 @@ export function EventIntro({
   if (churchWide) {
     return <p className="text-sm text-text-muted">Church-wide event</p>;
   }
+
   if (hostedBy) {
     return <p className="text-sm text-text-muted">Hosted by {hostedBy}</p>;
   }
+
   if (groupId && groupName) {
     return (
       <p className="text-sm text-text-muted">
@@ -32,6 +34,7 @@ export function EventIntro({
       </p>
     );
   }
+
   return null;
 }
 

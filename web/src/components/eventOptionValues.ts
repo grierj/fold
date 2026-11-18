@@ -26,7 +26,9 @@ export const emptyEventOptions = (): EventOptionValues => ({
 });
 
 export type OptionField = "seats" | "video" | "childcare" | "remote";
+
 export type OptionErrors = Partial<Record<OptionField, string>>;
+
 export interface OptionProblem {
   field: OptionField;
   message: string;
@@ -41,16 +43,22 @@ export function validateEventOptions(v: EventOptionValues): OptionProblem | null
     ["childcare", childcareProblem(v.childcare)],
     ["remote", remoteProblem(v.remote)],
   ];
+
   const hit = checks.find(([, message]) => message);
+
   return hit ? { field: hit[0], message: hit[1]! } : null;
 }
 
 // Which option a server error is about, or null when it is about none of them.
-export function optionFieldOfError(err: unknown): OptionField | null {
-  if (isSeatsError(err)) return "seats";
-  if (isChildcareCapacityError(err)) return "childcare";
-  if (isRemoteError(err)) return "remote";
-  if (isVideoError(err)) return "video";
+export function optionFieldOfError(cause: unknown): OptionField | null {
+  if (isSeatsError(cause)) return "seats";
+
+  if (isChildcareCapacityError(cause)) return "childcare";
+
+  if (isRemoteError(cause)) return "remote";
+
+  if (isVideoError(cause)) return "video";
+
   return null;
 }
 

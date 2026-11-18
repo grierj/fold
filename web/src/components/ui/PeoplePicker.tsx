@@ -39,22 +39,27 @@ export function PeoplePicker({ value, onChange, disabled = false }: {
     setActive(-1);
     setResponse({ state: "short_query", people: [] });
     const trimmed = query.trim();
+
     if (disabled || value || Array.from(trimmed).length < 2) {
       setLoading(false);
+
       return () => { generation.current++; };
     }
+
     setLoading(true);
+
     const timer = window.setTimeout(() => {
       People.search(trimmed).then((result) => {
         if (generation.current !== current) return;
         setResponse(result);
         setLoading(false);
-      }).catch((e: unknown) => {
+      }).catch((cause: unknown) => {
         if (generation.current !== current) return;
-        setError(errorText(e, "We couldn't search for people. Try again."));
+        setError(errorText(cause, "We couldn't search for people. Try again."));
         setLoading(false);
       });
     }, 300);
+
     return () => { window.clearTimeout(timer); generation.current++; };
   }, [query, value, disabled]);
 
@@ -76,6 +81,7 @@ export function PeoplePicker({ value, onChange, disabled = false }: {
     person.avatarFocalX === other.avatarFocalX && person.avatarFocalY === other.avatarFocalY &&
     JSON.stringify(person.sharedGroups) === JSON.stringify(other.sharedGroups) &&
     JSON.stringify(person.otherGroups) === JSON.stringify(other.otherGroups)));
+
   const status = value ? value.teen ? "Adding a teen needs their approval and an admin's approval. Choose Ask to add to continue." : `${value.displayName} selected` :
     loading ? "Searching…" : error ?? (response.state === "results" ? `${people.length} ${people.length === 1 ? "person" : "people"} found` : COPY[response.state]);
 
@@ -102,6 +108,7 @@ export function PeoplePicker({ value, onChange, disabled = false }: {
             setActive((i) => Math.max(0, Math.min(people.length - 1, i + (e.key === "ArrowDown" ? 1 : -1))));
           } else if (e.key === "Enter" && expanded) {
             e.preventDefault();
+
             if (people[active]) pick(people[active]);
           } else if (e.key === "Escape") {
             e.preventDefault();

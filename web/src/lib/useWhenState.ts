@@ -21,15 +21,20 @@ export function useWhenState(init: WhenInit) {
 
   function setDate(v: string) {
     setDateRaw(v);
+
     if (recurring && days.length === 0 && v) setDays([weekdayCode(v)]);
   }
+
   function setRecurring(on: boolean) {
     setRecurringRaw(on);
+
     if (on && days.length === 0 && date) setDays([weekdayCode(date)]);
   }
+
   function toggleDay(v: string) {
     setDays((prev) => (prev.includes(v) ? prev.filter((d) => d !== v) : [...prev, v]));
   }
+
   return { date, setDate, time, setTime, duration, setDuration, recurring, setRecurring, days, toggleDay };
 }
 

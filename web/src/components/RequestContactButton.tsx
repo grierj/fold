@@ -7,6 +7,7 @@ const ContactRequestForm = lazy(() => import("./ContactRequestForm").then((m) =>
 // contact keys were omitted. The server rechecks eligibility at submission.
 export function RequestContactButton(props: { subjectUserId: number; subjectName: string; contextType: "group" | "event"; contextId: number }) {
   const [open, setOpen] = useState(false);
+
   return open ? <Suspense fallback={<p role="status">Loading request form…</p>}><ContactRequestForm {...props} onClose={() => setOpen(false)} /></Suspense>
     : <Button variant="link" onClick={() => setOpen(true)}>Request direct contact</Button>;
 }

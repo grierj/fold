@@ -1,3 +1,4 @@
+import { isCallable } from "./wireValues";
 import { useCallback, useEffect, useRef, useState, type DependencyList } from "react";
 
 // How an attempt that a caller asked for ended: it brought an answer, it failed,
@@ -73,11 +74,14 @@ export function useLoad<T>(fn: () => Promise<T>, deps: DependencyList, options: 
     inflight.current = mine;
     const settle = (outcome: LoadOutcome) => { for (const done of mine.splice(0)) done(outcome); };
     const run = ++generation.current;
+
     if (!enabled) {
       setState((s) => (s.data === undefined && s.error === null && !s.loading ? s : { data: undefined, error: null, loading: false, closed: false }));
       settle("stale");
+
       return;
     }
+
     // A quiet reload keeps the old answer only under the same inputs.
     const prev = lastDeps.current;
     const sameDeps = prev !== null && prev.length === deps.length && deps.every((d, i) => Object.is(d, prev[i]));
@@ -87,8 +91,9 @@ export function useLoad<T>(fn: () => Promise<T>, deps: DependencyList, options: 
     setState((s) => (keep ? (s.error === null && !s.closed ? s : { ...s, error: null, closed: false }) : { data: undefined, error: null, loading: true, closed: false }));
     latest.current().then(
       (data) => { if (generation.current === run) { setState({ data, error: null, loading: false, closed: false }); settle("loaded"); } },
-      (error: unknown) => { if (generation.current === run) { setState((s) => ({ data: keep ? s.data : undefined, error, loading: false, closed: false })); settle("failed"); } },
+      (cause: unknown) => { if (generation.current === run) { setState((s) => ({ data: keep ? s.data : undefined, error: cause, loading: false, closed: false })); settle("failed"); } },
     );
+
     return () => { generation.current++; settle("stale"); };
     // Restarts on the caller's deps, which are not known statically.
   }, [...deps, enabled, tick]);
@@ -99,32 +104,45 @@ export function useLoad<T>(fn: () => Promise<T>, deps: DependencyList, options: 
   const ask = useCallback((keepData: boolean) => new Promise<LoadOutcome>((done) => {
     generation.current++;
     quiet.current = keepData;
+
     if (!keepData) setState({ data: undefined, error: null, loading: true, closed: false });
     waiters.current.push(done);
     setTick((n) => n + 1);
   }), []);
+
   const retry = useCallback(() => ask(false), [ask]);
   const reload = useCallback(() => ask(true), [ask]);
+
   const setData = useCallback((next: T | undefined | ((old: T | undefined) => T | undefined)) => {
-    setState((s) => ({ ...s, data: typeof next === "function" ? (next as (old: T | undefined) => T | undefined)(s.data) : next }));
+    function isUpdater(value: typeof next): value is (old: T | undefined) => T | undefined {
+      return isCallable(value);
+    }
+
+    setState((s) => ({ ...s, data: isUpdater(next) ? next(s.data) : next }));
   }, []);
+
   const close = useCallback(() => {
     generation.current++;
+
     // Nothing will answer the asks still waiting: they end stale now, not never.
     for (const done of [...waiters.current.splice(0), ...inflight.current.splice(0)]) done("stale");
     setState({ data: undefined, error: null, loading: false, closed: true });
   }, []);
+
   const epoch = useCallback(() => generation.current, []);
 
   useEffect(() => {
     if (!refreshOnFocus || !enabled) return;
     const onFocus = () => { void retry(); };
+
     window.addEventListener("focus", onFocus);
+
     return () => window.removeEventListener("focus", onFocus);
   }, [refreshOnFocus, enabled, retry]);
 
   // Loading also covers the render before the effect has started the request.
   const { closed, ...answer } = state;
   const loading = state.loading || (enabled && !closed && state.data === undefined && state.error === null);
+
   return { ...answer, loading, retry, reload, setData, close, epoch };
 }

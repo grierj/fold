@@ -13,12 +13,12 @@ import type { NotificationSettings } from "../types";
 import { useAuth } from "../auth";
 
 // "You came here from …": one email of the kind the link came from.
-const ONE_OF: Record<string, string> = {
-  groups: "a group update",
-  events: "an event update",
-  messages: "a message from a leader",
-  admin: "an admin notice",
-};
+const ONE_OF = new Map<string, string>([
+  ["groups", "a group update"],
+  ["events", "an event update"],
+  ["messages", "a message from a leader"],
+  ["admin", "an admin notice"],
+]);
 
 // Shown above the switches when the link can't turn email back on. A refused
 // turn-on has its own wording (ERROR_COPY.email_link_turn_on), which stands
@@ -50,13 +50,16 @@ export function EmailSettingsPage() {
         else setLoadError(errorText(err, "We couldn't open your email settings."));
       });
   }, [token]);
+
   useEffect(() => { check(); }, [check]);
 
   const load = useCallback(() => {
     const cached = first.current;
     first.current = null;
+
     return cached ? Promise.resolve(cached) : EmailSettingsLink.get(token).then((r) => r.emailSettings);
   }, [token]);
+
   const save = useCallback((c: EmailSettingsChange) => EmailSettingsLink.update(token, c).then((r) => r.emailSettings), [token]);
 
   return (
@@ -73,7 +76,7 @@ export function EmailSettingsPage() {
       ) : (
         <>
           <p className="text-text-muted">For {who.email}</p>
-          {ONE_OF[who.from] && <p className="text-text-muted">You came here from {ONE_OF[who.from]}; it's listed first.</p>}
+          {ONE_OF.get(who.from) && <p className="text-text-muted">You came here from {ONE_OF.get(who.from)}; it's listed first.</p>}
           <div className="mt-6">
             {who.canTurnOn === false && <p className="mb-4 text-sm text-text-muted">{TURN_OFF_ONLY}</p>}
             <EmailSettings load={load} save={save} first={who.from} />

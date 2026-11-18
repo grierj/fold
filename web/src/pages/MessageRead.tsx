@@ -28,10 +28,13 @@ export function MessageReadPage() {
 
   // Back to Messages for those who can open it (authors, admins), else Home.
   const { isAdmin, canCompose } = useAuth();
+
   const back = isAdmin || canCompose
     ? <ButtonLink variant="link" to="/messages"><ChevronLeftIcon className="h-4 w-4 shrink-0" /><span aria-hidden="true">Messages</span><span className="sr-only">Back to messages</span></ButtonLink>
     : <ButtonLink variant="link" to="/"><ChevronLeftIcon className="h-4 w-4 shrink-0" /><span aria-hidden="true">Home</span><span className="sr-only">Back to home</span></ButtonLink>;
+
   const page = (children: React.ReactNode) => <div className="fold-page fold-page-narrow space-y-6 wrap-anywhere">{back}{children}</div>;
+
   if (failed?.missing) {
     return page(
       <EmptyState level={1} title="This message isn't here"
@@ -39,13 +42,16 @@ export function MessageReadPage() {
         action={<ButtonLink variant="primary" to="/">Go to home</ButtonLink>} />,
     );
   }
+
   if (failed) {
     return page(<>
       <h1 className="text-3xl font-bold">Message</h1>
       <ErrorNotice message={failed.text} onRetry={load.retry} />
     </>);
   }
+
   if (!message) return page(<Skeleton kind="page" label="Loading the message…" />);
+
   return page(
     <article aria-labelledby="message-subject" className="space-y-4">
       <header className="fold-page-header flex-col items-start gap-2">

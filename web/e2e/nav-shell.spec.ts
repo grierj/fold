@@ -28,6 +28,7 @@ test("phones get a tab bar that reaches every main page, and it never covers a f
 
   // Focus each text field on the profile page: none ends up under the bar.
   const barTop = (await tabs.boundingBox())!.y;
+
   for (const field of await page.locator("main input:not([type=hidden]):not([type=file]), main select, main textarea").all()) {
     if (!(await field.isVisible())) continue;
     await field.focus();
@@ -76,6 +77,7 @@ test("an admin on a phone reaches Admin from Me and can't disable or delete them
   await other.scrollIntoViewIfNeeded();
   await expect(other.getByRole("button", { name: /^More for/ })).toBeInViewport({ ratio: 1 });
   await other.getByRole("button", { name: /^More for/ }).click();
+
   for (const name of ["Edit", "Reset password", "Disable", "Delete"]) await expect(other.getByRole("menuitem", { name })).toBeInViewport({ ratio: 1 });
 
 });
@@ -91,6 +93,7 @@ test("five tab labels stay on one line at 390, even with a 9+ badge", async ({ p
   // A wrapped label would make its tab taller than the 56px bar.
   const links = await tabs.getByRole("link").all();
   expect(links).toHaveLength(5);
+
   for (const link of links) {
     expect((await link.boundingBox())!.height, `${await link.textContent()} wraps`).toBeLessThanOrEqual(56);
   }

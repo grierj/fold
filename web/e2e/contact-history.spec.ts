@@ -1,18 +1,22 @@
+import type { JsonValue } from "../src/lib/wireValues";
+import { isString } from "../src/lib/wireValues";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { apiAs, deleteAccountKeepingReasons, email, fromMore, PASSWORD, signIn, signInTo, soon } from "./helpers";
 import type { ContactHistoryResponse } from "../src/types";
-// @ts-expect-error plain JS module shared with verify-ui
 import { measure } from "./ui-measure.mjs";
 
 test.use({ actionTimeout: 10_000 });
+
 const adminName = process.env.VERIFY_URL ? "verify-admin" : "grier";
 const proof = process.env.HISTORY_PROOF_DIR;
 const results: unknown[] = [];
+
 async function capture(page: Page, name: string) {
   if (!proof) return;
   mkdirSync(proof, { recursive: true });
+
   for (const width of [390, 768, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     await page.waitForLoadState("networkidle");
@@ -26,7 +30,8 @@ async function capture(page: Page, name: string) {
     expect(layout.overflow).toBe(0); expect(layout.cutOff).toEqual([]); expect(layout.clipped).toEqual([]); expect(layout.under24).toEqual([]); expect(axe).toEqual([]);
   }
 }
-function save(name: string, value: unknown) {
+
+function save(name: string, value: JsonValue | ContactHistoryResponse) {
   if (proof) { mkdirSync(proof, { recursive: true }); writeFileSync(`${proof}/${name}.json`, JSON.stringify(value, null, 2)); }
 }
 
@@ -49,8 +54,10 @@ test("admin user entry reviews retained history, filters and CSV; nonadmins get 
   const addition = await page.request.post(`/api/v1/groups/${group.id}/members`, { headers: { "X-CSRF-Token": addCSRF }, data: { email: added.email } });
   expect(addition.ok()).toBe(true);
   await page.reload();
+
   const membersTab = page.getByRole("tablist", { name: "Group sections", exact: true })
     .getByRole("tab", { name: "Members", exact: true });
+
   await membersTab.click();
   await expect(membersTab).toHaveAttribute("aria-selected", "true");
   const membersPanel = page.getByRole("tabpanel", { name: "Members", exact: true });
@@ -92,8 +99,10 @@ test("admin user entry reviews retained history, filters and CSV; nonadmins get 
   const json: ContactHistoryResponse = await (await page.request.get(`/api/v1${historyPath}`)).json();
   expect(json.entries.map((e) => e.action)).toEqual(expect.arrayContaining(["contact.requested", "contact.decision", "contact.reveal", "contact.refused", "membership.added"]));
   const serialized = JSON.stringify(json);
+
   for (const secret of [email(adultLogin), "2085550197", "PRIVATE HISTORY REASON", "password1234"]) expect(serialized).not.toContain(secret);
-  for (const e of json.entries) expect(typeof e.id).toBe("string");
+
+  for (const e of json.entries) expect(isString(e.id)).toBe(true);
   save("actual-history", json); save("domain-ids", { personId, adultId: String(adult.id), groupId: String(group.id) });
   await capture(page, "loaded");
 
@@ -103,10 +112,13 @@ test("admin user entry reviews retained history, filters and CSV; nonadmins get 
   await page.getByLabel("Action (optional)").selectOption("contact.reveal");
   await page.getByLabel("From (optional)").fill("2020-01-01");
   await page.getByLabel("Until (optional)").fill("2099-01-01");
+
   const filteredRequest = page.waitForRequest((request) => {
     const url = new URL(request.url());
+
     return request.method() === "GET" && url.pathname === `/api/v1${historyPath}` && url.searchParams.get("action") === "contact.reveal";
   });
+
   await page.getByRole("button", { name: "Apply filters" }).focus(); await page.keyboard.press("Enter");
   const filteredURL = new URL((await filteredRequest).url());
   expect(filteredURL.searchParams.get("from")).toBe("2020-01-01T07:00:00.000Z");
@@ -122,7 +134,9 @@ test("admin user entry reviews retained history, filters and CSV; nonadmins get 
   const csv = readFileSync(csvPath!, "utf8");
   expect(csv.split("\r\n")[0]).toBe("auditId,at,action,actorId,requesterId,subjectUserId,purpose,requestId,accessId,contextType,contextId,occurrenceId,fields,outcome,party,decision");
   expect(csv).toContain("contact.reveal"); expect(csv).not.toContain("contact.requested");
+
   for (const secret of [email(adultLogin), "2085550197", "PRIVATE HISTORY REASON", "password1234"]) expect(csv).not.toContain(secret);
+
   if (proof) writeFileSync(`${proof}/actual-history.csv`, csv);
 
   await page.getByLabel("From (optional)").fill("2090-01-01");

@@ -4,11 +4,13 @@ import { apiAs, attemptPendingSignIn, email, PASSWORD, signIn, signOut } from ".
 
 async function shoot(page: Page, name: string) {
   if (!process.env.SCREENS_DIR) return;
+
   for (const width of [390, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await page.screenshot({ path: `${process.env.SCREENS_DIR}/${name}-${width}.png`, fullPage: true });
     const household = page.getByRole("region", { name: "My household", exact: true });
+
     if (await household.count()) await household.screenshot({ path: `${process.env.SCREENS_DIR}/${name}-household-${width}.png`, style: "header, nav[aria-label='Tabs'] { visibility: hidden; }" });
   }
 }
@@ -42,6 +44,7 @@ test("a household keeps its teen's sign-up until approval, consent, and the new 
     const html = await (await request.get("/dev/outbox")).text();
     const section = html.split("<section").find((part) => part.includes(`To: ${email(ownName)}`));
     link = section?.match(/https?:[^\s<]+\/invite\?token=[A-Za-z0-9_-]+/)?.[0] ?? "";
+
     return link;
   }).not.toBe("");
   await signOut(page);
