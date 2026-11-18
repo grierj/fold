@@ -257,7 +257,6 @@ func TestNoPythonInServingStack(t *testing.T) {
 func TestPythonGuardScopesToServingStack(t *testing.T) {
 	// Python in the verify-fold skill script is tooling, so allowed.
 	oldVerify := "  python3 - \"$1\" \"$2\" <<'PY'\n  port=\"$(python3 -c 'import socket')\"\n"
-	runnerLine := `  "${CP}(python3?|perl|ruby|php)( |\$)|no scripting language is installed in the runner"` + "\n"
 	for _, c := range []struct {
 		name, path, src string
 		want            int
@@ -296,7 +295,6 @@ func TestPythonGuardScopesToServingStack(t *testing.T) {
 		{"e2e server script", "web/e2e/server.sh", "port=\"$(python3 -c 'x')\"\n", 0},
 		{"Makefile", "Makefile", "\tpython3 tool.py\n", 0},
 		{"workflow", ".github/workflows/test.yml", "      - run: python3 x.py\n", 0},
-		{"runner compat forbids line", "deploy/digitalocean/runner-compat-fixtures.sh", runnerLine, 0},
 		{"migration prose", "migrations/00001_baseline.sql", "-- python is not needed\n", 0},
 	} {
 		if got := pythonViolations(c.path, c.src); len(got) != c.want {

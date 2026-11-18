@@ -230,10 +230,23 @@ acceptance: the wrapper records the run as `coverage.kind` `partial` with the re
 and the restore drill (`deploy/digitalocean/restore-drill.sh`) behind one entry point, one
 revision-bound record, and the same cautions as the hardening script: outside CI, a clean
 committed HEAD only, an evidence directory outside the checkout that is new or empty, and a
-record that starts `incomplete` so an interrupted rerun cannot keep a previous pass. By default
-each step runs in a throwaway container with its own Docker daemon
-(`restore-drill-nested.sh`); `--runner direct` is for a machine that already is that disposable
-host. `--dry-run` prints the steps, the matrix, the coverage the invocation asks for and the
+record that starts `incomplete` so an interrupted rerun cannot keep a previous pass. Each step
+is the production command itself, run directly (`qc1-measure.sh --dir`, `restore-drill.sh --dir`),
+on the machine the script is started on, which has to be a disposable host: a droplet created for
+the run, declared with `FOLD_DRILL_ISOLATED_DAEMON=1`. Run them behind a firewall that restricts inbound
+access to the operator: crossings bind ports 80 and 443 and use an internal health check, not the standard
+public HTTPS smoke check. Both tools refuse before they create anything
+when it is not declared, when `DOCKER_HOST` or `DOCKER_CONTEXT` points away from the local default
+daemon, when the daemon is not named for this host, or when it already holds a container (the QC-1
+harness alone accepts a busy daemon, and only with `--shared-daemon`, which makes the run not
+complete evidence); the drill also refuses when a Docker socket or an owner path (`/etc`, `/opt/fold`,
+`/home`, ...) is mounted writable into its filesystem or when a file its provisioners write already
+exists (`isolation.sh`). Before either step, prepare the browser once on that host:
+`export FOLD_DRILL_ISOLATED_DAEMON=1; QC1_WEB_DIR="$PWD/web" QC1_PREPARE_FIREFOX=1 deploy/digitalocean/qc1/browser-prepare.sh DIR`
+(root, Ubuntu with apt: it runs `npm ci` as locked, installs the locked Playwright's Chromium with its
+system libraries, proves the launch and builds the Firefox container), then `set -a; . DIR/browser.env; set +a`,
+which exports `QC1_CHROMIUM`, the explicit root sandbox setting `QC1_NO_SANDBOX=1` and the Firefox
+record. `--dry-run` prints the steps, the matrix, the coverage the invocation asks for and the
 record path, and starts nothing; read it before a run that takes hours.
 
 ```bash
@@ -264,215 +277,48 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   run is `partial`, never `pass`, until the pending cases are built.
 - **Cancelling** (TERM, HUP or INT to the script) ends the step's whole process group, including
   a descendant that ignores TERM after its parent has gone, and nothing outside the group. The
-  command gets `FOLD_SCALE_STOP_GRACE` seconds (default 180) to finish its own cleanup, then the
-  group is killed; the step stays in the record as `interrupted`, saying which happened. For the
-  default nested run that cleanup is the point, and `restore-drill-nested.sh` does it in three
-  ordered steps on every end, not only a signal: stop, then collect, then remove. Every process
-  the workload starts carries `FOLD_NESTED_RUN=<run id>` in its environment (each `docker exec`
-  passes it), so the runner counts Node, Chromium, npm and orphans as well as the bash scripts,
-  by that marker, with a lookup run inside the container that signals nothing: no process is
-  ever stopped, resumed or ended by its number, because a number alone is not a process (it can
-  be handed to another between a look and a signal) and a shell holds only its own children.
-  Two things end anything. Each `docker exec` runs the workload under a small supervisor
-  (`WRAP`) that polls for `/work/stop-request` and sends one TERM to the workload's process
-  group. The group is held by a leader process that ends only when the supervisor says so, so its
-  number stays in use whenever the supervisor can send: the workload itself can end at any moment
-  and no signal ever goes to the number of a process that has ended (bash reaps a finished child
-  at once, and its number can be handed to another). The directory it works in is `$FOLD_WRAP_ROOT` (`/work` unless
-  the self-test sets it), read as data and always quoted, and it is a lease: the leader and the
-  supervisor end by themselves when it is gone. After a signal the runner writes that file
-  (`FOLD_NESTED_STOP_GRACE` seconds, default 90). Then the container is killed (`docker kill`:
-  every process in it, at once, by no number) and the daemon is asked whether it has stopped
-  (`FOLD_NESTED_KILL_WAIT`, default 15). A stop is established only by that answer or by two
-  successful lookups, a second apart, that both count zero; a lookup or a kill that fails is
-  never read as "none". If the stop cannot be established the container is frozen (`docker
-  pause`) before the copy. It then copies `/work/prep` and `/work/out` into the step's artifact
-  directory (`docker cp` reads a stopped container too) and only then removes the container. `INTERRUPTED.txt` there says how the run stopped, `LEFTOVERS-STOPPED.txt`
-  notes a leftover ended after a normal finish, and `COLLECTION-FAILED.txt` names any copy that
-  failed or a stop that could not be established. Such a failure is a failure of the run: the
-  runner exits 1 instead of 0 (or 10 for `--crossings-only`), and the wrapper fails the step and
-  carries the lines in its summary and coverage reasons even when the tool itself exited 0.
-  A workload that ends 137 or 143 while no signal reached the runner (a killed docker client, an
-  OOM kill) gets `FOLD_NESTED_SIGNAL_WAIT` seconds (default 5) for a pending signal, never an open-ended
-  wait, then goes through the same bounded stop and collection and keeps its own status.
-  The workload's own docker client is held the same way: a job in a process group of its own that
-  records its status and only waits, which the runner polls for its status. It is ended through
-  that job, once, after its name has been cleared with signals held, at the end of the run or last
-  in a cleanup, so a client that answered long before a stalled copy is over is never signalled by
-  a number it no longer has. A held group also ends itself when the runner is gone, however it
-  went (`life_hold`: a watcher in the group reads a FIFO whose only writer is the runner's
-  descriptor 8, and ends the group at end-of-file), so a KILL of the runner leaves no client
-  behind. Every Docker call the cleanup makes (lookups, kill, state, pause, unpause, both
-  copies, removal) is a client
-  with an absolute deadline, in a process group the runner holds until it has ended it: one that
-  has not answered is killed with its whole group, also when it ignores TERM, and so is a
-  descendant a client leaves behind after it exits. A signal between the launch of a client's
-  group and the moment the runner has named it (where cleanup could not yet find it) is held and
-  taken as soon as the group is named, once (it is cleared before the exit into cleanup, whose own
-  calls must not find it again), and the client starts with default INT, TERM and HUP,
-  also when cleanup, which ignores them, launched it. A stall is counted (a stalled lookup, pause or
-  copy is said in `COLLECTION-FAILED.txt`). The whole cleanup has `FOLD_NESTED_CLEANUP_BUDGET`
-  seconds (default 170; a whole number of at least 3, otherwise the runner refuses to start), a
-  single call `FOLD_NESTED_CALL_TIMEOUT` (15; the copy of `/work/out` may use its whole slice),
-  and the last `FOLD_NESTED_RM_RESERVE` seconds (30, at most a third of the budget) are for
-  removal alone. The window is laid out from its end, so a step cannot take what a later one
-  needs, however short the budget: the copy of `/work/out` owns the 2 seconds before the reserve,
-  the pause and the preparation copy end before those, and the stop ends 2 seconds before them
-  (and takes at most three quarters of the time before the reserve). A step with no time left is
-  not started and is said in `COLLECTION-FAILED.txt`. The unpause comes after the copies and runs
-  only if 2 seconds would still remain for removal after it (it ends by then, taking half of the
-  time before that at most); otherwise it is skipped and removal gets its attempt. The
-  wrapper checks `FOLD_SCALE_STOP_GRACE` and the budget together before it starts anything (a
-  `--dry-run` shows the result): the budget it sets is the grace less ten seconds (less five for a
-  grace of 40 or shorter), a grace under 8 seconds is refused, and an explicit budget must leave
-  5 seconds of the grace or is refused; it is never replaced by a longer default. A container that
-  cannot be shown to be gone (a
-  listing by its id that ran and came back empty) is named, with its id and
-  `docker rm -fv <id>`, on stderr and in `COLLECTION-FAILED.txt`, and the run exits 1 instead of 0.
-  Limits: a KILL sent to either script cannot run the cleanup (it does end the held client
-  groups); a tool that replaces its whole
-  environment would hide from the marker; the drill's own nested containers belong to the
-  daemon and go with the container.
+  command gets `FOLD_SCALE_STOP_GRACE` seconds (default 180, a whole number) to finish its own
+  cleanup (the drill's exit trap removes its stack and the QC-1 harness its containers, network
+  and volume), then the group is killed; the step stays in the record as `interrupted`, saying
+  which happened. Each step is one background pipeline in a process group of its own: a holder
+  that only keeps the group alive, piped to the supervisor that runs the command. The group is
+  signalled only through that job, never by a number read from a process list, so a bystander
+  can never receive it. A process that leaves the group on purpose (`setsid`, `setpgid`) is
+  outside what this can own. Limits: a KILL sent to the script cannot run its cleanup.
 - **When the full drill is owed** is decided only in `docs/agents/deploy.md` ("Full restore drill
   frequency"). The script makes you state the reason (`--drill-reason`) and records it with the
   run date; it does not repeat the rule.
 - **Its own test**: `make reason-review-scale-test` (also part of `make test`) runs
   `scripts/reason-review-scale.sh --self-test`, which copies the script into a scratch git
   repository whose `deploy/digitalocean` tools are stubs and checks, with no Docker: the record
-  shape; that a partial, pilot, crossings-only, one-step or pass-through run is never `full`;
+  shape and that each step is the production command run directly with its pass-through arguments;
+  that a partial, pilot, crossings-only, one-step or pass-through run is never `full`;
   that a failed step, an unreadable QC-1 record or another revision fails; the QC-1 outcomes for
   the shapes `qc1/lib.sh` really writes (pending only is `partial`; missing, invalid and aborted
   are `fail`); the dry run; the refusals (dirty tree, used or in-checkout evidence directory,
-  missing drill reason); that the record a running step sees is `incomplete`; that TERM and HUP
-  end the step, keep it in the record as `interrupted` and leave an `incomplete` record, with
-  a TERM-ignoring descendant of a tool that already exited, a leftover after a tool that ended
-  by itself and a tool that ignores TERM all ended, and a bystander process untouched; and, with
-  the real `restore-drill-nested.sh` against a stub docker that holds the artifacts only inside
-  its "container" (the workload shell is started with the run's marker already in its initial
-  environment, as `docker exec -e` does; before the cancel, the ownership count the runner
-  sends is run for real, on this host's /proc, and must count at least that shell and any
-  stubborn writer, and not the process without the marker), that a cancel stops the run inside,
-  copies the artifacts out and only then removes the container, also when the container has to
-  be killed; that a non-bash descendant in a session of its own that ignores TERM and keeps
-  writing is gone before the copy (the container was killed), while a process without the marker
-  is not touched; that a failing lookup is never read as "nothing running", and neither is a kill
-  that does not take effect (the container is frozen, and the copy recorded as incomplete, also
-  when the freeze fails); that a docker exec ending 137 or 143 with no signal to
-  the runner and a TERM-ignoring writer left behind finishes in bounded time, kills the writer
-  before the copy and keeps the workload's status; that a leftover after a normal end is ended and
-  noted; that a lookup, a pause, a copy and a removal that stall (the stub's client has a child of
-  its own, and ignores TERM in some cases) are all ended, the run returns within its budget on its
-  own, the stall is recorded, the evidence copy is not starved by a stalled preparation copy (also
-  with the default call timeout and a short budget), a stalled unpause still leaves a removal
-  attempt, a client that exits and leaves a TERM-ignoring child has that child ended, a TERM sent
-  to the runner exactly while a lookup's group is being launched (a DEBUG trap loaded through
-  `BASH_ENV` fires it just before `LIMITED_JOB` is assigned) ends the run with 143 having finished
-  its cleanup (`INTERRUPTED.txt` says TERM, no collection failure, evidence and preparation copied
-  before the container is removed), ends every stalled client and its child, leaves nothing the case
-  started running (every process of the case carries `STUB_CASE=<name>` and the run's
-  `REASON_SCALE_SELFTEST` marker, the stub records that it saw both, and only a process with both is
-  found: a probe shows that one borrowing the label with no or another run's marker is not).
-  The self-test never signals a process it found by looking at the host, and never one by a number
-  recorded earlier, because a number can be handed to an unrelated process between the look and the
-  signal whatever is checked in between. Looking is read-only (`find_marked`, which names what a
-  failed case left). What a failed case leaves ends by itself: the simulated container is a
-  directory, removal and the freeze are flag files (`removed`, `paused`) that the stub's processes
-  (the workload shell, the writer that ignores TERM) watch, and each case has a directory of its own,
-  deleted by the next, which they also watch, as they do the run's directory that the exit trap
-  deletes (the trap reads the marker from the exported variable, so a temporary directory with
-  spaces is handled); the stalled clients and children the stubs leave carry a bound of 90 seconds.
-  The probes are owned through pipes, one FIFO each, whose only writer is a descriptor of the test
-  shell, and end by themselves when it closes (also when the shell is interrupted). A probe has no
-  timer of its own and nothing signals it. The read end is opened before the fork and inherited, so
-  a probe never opens the FIFO by name; an interruption case kills a shell holding two freshly
-  forked probes (one marked, one not) before they take a step and checks that they end by
-  themselves once released. A guard reads the script itself and fails if a signal is aimed at what
-  a look at the host found, at a pid read from a file, or at the container's holders. The
-  self-test has no watchdog of its own: every runner it starts runs under `timeout --foreground
-  -s KILL` (`bounded_exec`), whose parent-child pair is the only thing that can send the time
-  limit's KILL, so a limit cannot outlive its runner or signal a number that has changed hands. The
-  signal a case sends goes to that `timeout` (alive, because the runner it holds cannot leave the
-  running workload before the signal), which passes it on to the runner alone. A fixture
-  interrupts a shell that has started a runner under `bounded_exec` while the runner waits at a
-  gate, lets the runner finish long before its limit and checks that nothing carrying the case's
-  marker remains. The runner's cleanup restores the stderr the run started with (fd 7) before it
-  reports anything, because a signal taken inside a polling loop's `2>/dev/null` would otherwise send
-  the container's name and the command to remove it nowhere; `nest-hang-rm` and `nest-direct`
-  read that line from stderr. For the
-  signals that remain, a function loaded through `BASH_ENV` records every `kill` of the runner and
-  the stubs (the function, the file, whether the target was a live process, the arguments) in two
-  cases: a cancel whose evidence copy stalls after the workload has ended and its docker client has
-  long answered, and a cancel whose removal stalls after the workload has ended. Every KILL the
-  runner sends must hit a live process, which is a client group it still holds (the recorder must
-  have seen the runner, so an empty record cannot pass), and the simulated container sends none.
-  No signal reaches a host process by number. The runner's container-side lookup script is
-  run by the stub on this host's /proc in its read-only mode (`count`) whichever mode is
-  asked for; a request to stop arrives at the simulated processes as a flag file (`sig-term`),
-  and `docker kill` as another (`sig-end`) with the state `docker inspect` then reports, that
-  they act on themselves. The lookup signals nothing at all, which is the answer to a number
-  that has changed hands (`n_scan_quiet`): the script, read as it stands, holds no signal, and
-  the count, run on this host's /proc beside two idle probes (one with the run's marker, one
-  without, which stands for an unrelated process that came to hold a number), counts only the
-  marked one and leaves both running. Those probes are owned through a channel like all the
-  others, so an interrupt at any point, between their fork and any later bookkeeping included,
-  leaves nothing stopped or waiting (`n_probe_interrupt` is that boundary). `n_wrap_group` runs
-  the real `WRAP`, extracted from the runner, with its `/work` in a directory of the case and
-  its `kill` replaced by a function that records every call and whether the target was alive.
-  A workload asked to stop ends 143 after one TERM to a live group; a workload that ends
-  between the supervisor's last look at the group and the signal (a hook, through `BASH_ENV`,
-  holds the workload at that boundary and lets it go) keeps its own status, and the one signal
-  goes to the held group, never to the number of the process that ended; a workload with no
-  request gets no signal. Its files are gone and no process carrying the case's marker remains.
-  The case directory has a blank in its name, so a path is proved to be data. `n_wrap_interrupt` interrupts a self-test shell (TERM) with the real `WRAP` running a workload (`gate.sh`, or `term.sh` / `release.sh`, the workloads of the cases above).
-  The workload is held at a gate outside the directory immediately before its first write into it, and keeps creating files there; the exit opens the gate and removes the directory,
-  so the removal runs against the creation. The exit revokes the lease first, by renaming the directory away (one atomic step), and only then deletes it. That is the quick path, not
-  the bound: the workload also holds the read end of a lifeline (a FIFO whose write end only the interrupted shell holds), so it ends when that shell does, whether or not the rename
-  or the removal worked, and it ends if its gate disappears. Every `WRAP` a fixture starts goes through `n_wrap_start` (the cases above and the interrupted shell alike), which gives the
-  supervisor's tree the lifeline's read end on fd 8 and no write end, and every waiting workload (`term.sh`, `release.sh`, `gate.sh`) reads it as its wait and its check; once the workload
-  ends, the leader and the supervisor end through the lease and parent checks `WRAP` already has. The modes: `request` (after the workload started, before any request to stop, runner registered), `registration`
-  (before the runner is registered, so the exit knows nothing of it), `norename` (the rename is impossible and the removal runs in the order that lost the race: the directory is
-  emptied, the workload writes its first file, then the `rmdir` fails; the case checks that the directory and its lease stayed, and the workload still ends), `lost` (run with `term.sh`
-  and with `release.sh`: the rename is impossible and the removal fails outright, so the directory stays for good; the case checks that it stayed with the workload's `wl.pid` in it and that
-  the workload, its leader and the supervisor all end anyway) and `launch` (the
-  interrupted shell plays the self-test and has forked, without registering it, the shell that runs the workload; the whole case directory, gate included, is removed). In every mode
-  the directories are gone (except those of `norename` and `lost`, by design) and nothing carrying the case's marker remains.
-  Every wait of
-  the simulated container (the docker client's wait for the workload's readiness, the writer's
-  wait to record itself) ends when the container's directory, the lease its processes hold, is
-  gone; `n_startup_interrupt` removes it at the boundary between the workload's launch and its
-  readiness (the workload is held from ever becoming ready) and checks that the client exits by
-  itself (status 1, not the limit's KILL) and that nothing carrying the case's marker remains.
-  The self-test's own exit does not leave a runner behind either: a runner it has started and
-  not waited for is asked to stop and waited for before the run's directory (the stub docker,
-  the nested repository, the simulated container) is removed (`drop_selftest`), and the limit
-  of `bounded_exec` (240 seconds) leaves a signalled runner the whole of its cleanup budget.
-  `n_outer_interrupt` plays this with the real runner and a run directory of its own: the
-  shell is sent TERM mid-run, the evidence is copied and the container removed before the
-  directory goes, and no runner, client group, holder or simulated process carrying the case's
-  marker remains. `n_orphan_holders` ends the runner with a KILL (the limit of `bounded_exec`)
-  while its workload's client is held, and checks that the group ends by itself
-  (`life_hold`). A
-  bystander survives, a budget the
-  runner cannot use or one that does not fit the wrapper's grace is refused, a
-  removal that stalls once is retried, one that never works names the container and fails the
-  run, and a process or container that is not the run's is untouched; and that a failed copy or an
-  unestablished stop turns a run that exited 0 (or a
-  crossings-only 10) into exit 1, and fails the wrapper's step, with the reasons kept. Real runs
-  on a droplet-class host are a hand check (`docs/FIRST-CHURCH-CHECKS.md`), not covered by this.
-- **The launcher fixtures** (`isolation-fixtures.sh`, `qc1-runtime-fixtures.sh`, `restore-drill-modes-fixtures.sh`, run by `make provision-dry-run`) log each Docker call twice: as one
-  line for the ordinary line checks (a newline inside an argument is written as `\n`, so the supervisor script, `WRAP`, one multi-line argument, neither splits a call across lines nor
-  reads as calls of its own), and in `<log>.argv` with every argument `%q`-quoted, which keeps where each argument ends (the file starts anew with each launch's `run`). They take `WRAP` out of
-  `restore-drill-nested.sh` and require, in the argv file, that each exec line ends with `bash -c`, exactly that text as ONE argument, `_`, `bash` and the workload's words as separate
-  arguments; a call whose `WRAP` and words are joined into one argument is refused (each fixture checks that on a made-up line). They also require that it loads the prepared Chromium,
-  polls for the stop request and TERMs the group, and does not exec the command in its place. The scale self-test's stub docker does the same, and `nest-done` checks the preparation's call.
-- **The nested daemon has no TCP API** (`isolation-fixtures.sh`). The `docker:*-dind` entrypoint adds `--host=tcp://0.0.0.0:2375` (an unauthenticated API of a privileged daemon) to its
-  default command whenever the arguments after the image are empty or start with `-`; an extra `--host=unix://...` after those defaults does not remove it. So the launcher starts the
-  daemon as `docker run ... <image> dockerd --host=unix:///var/run/docker.sock`, and the fixture reads the launch's argv file and requires exactly those twelve arguments (the image
-  being the digest-pinned default or, with `--dind-image`, the reference as given). The launcher then reads the container's `/proc/net/tcp` and `tcp6` with `LISTEN_SCAN` once the
-  daemon answers and refuses the run, removing the container, if 2375 or 2376 is a listening port or the lookup proves nothing (fails, prints anything but `checked ipv4` or `checked ipv4 ipv6`);
-  the fixture runs that lookup for real on made-up proc files and drives the refusals through the stub docker. This is the container's own network namespace, not a test of what could
-  reach it, and it does not run the real image: the real daemon is a hand check (`docs/FIRST-CHURCH-CHECKS.md`). Moving the pinned digest is a deliberate change: read the new image's
-  `dockerd-entrypoint.sh` first.
+  missing drill reason, a bad stop grace, the removed `--runner` option); that the record a
+  running step sees is `incomplete`; and that TERM and HUP end the step, keep it in the record as
+  `interrupted` and leave an `incomplete` record, with a TERM-ignoring descendant of a tool that
+  already exited, a leftover after a tool that ended by itself and a tool that ignores TERM all
+  ended, and a bystander process untouched. The self-test never signals a process it found by
+  looking at the host or by a number recorded earlier; every copy of the script it starts runs
+  under `timeout --foreground -s KILL` (`bounded_exec`), whose parent-child pair is the only
+  thing that can send the time limit's KILL, and its exit asks a copy still running to stop and
+  waits for it before it removes the run's directory (`drop_selftest`). Real runs on a droplet
+  are a hand check (`docs/FIRST-CHURCH-CHECKS.md`), not covered by this.
+- **The isolation fixtures** (`isolation-fixtures.sh`, `qc1-fixtures.sh`, `qc1-runtime-fixtures.sh`,
+  `restore-drill-modes-fixtures.sh`, run by `make provision-dry-run`) hold the pure checks in
+  `isolation.sh` (mount table, daemon scope and contents, existing configuration, the guarded host
+  paths) and source guards over the real scripts: the local-daemon pin, the declared-disposable
+  check and the scope check come before anything the restore drill or the QC-1 runner creates, the
+  runner's volume is unnamed and removed only after its owner label is read, `browser-prepare.sh`
+  refuses before it installs and installs only from the lock, and each crossing revision's own
+  `check_os` accepts the host's real `/etc/os-release` (nothing is replaced;
+  `crossings/os-release.json` records the identity with `applied:false`). They no longer run the
+  drill, the runner or `browser-prepare.sh` against a stub `docker`, `node` or `npm`: the
+  refusals of an undeclared host, a remote daemon, a busy daemon, a mislabelled image, a dirty
+  tree, the browser preparation and the runner's order of work are real
+  checks on a disposable droplet (`docs/FIRST-CHURCH-CHECKS.md`, "Drill and QC-1 isolation").
 
 ### Reason-review scale matrix (#293, #294)
 
@@ -501,8 +347,8 @@ scripts/reason-review-matrix.sh --out $E/matrix.json \
   --cell ascii-head=$E/ascii-head/qc1 --cell multibyte-spread=$E/multibyte-spread/qc1
 ```
 
-Each run takes hours, needs a **dedicated** Docker daemon (the nested runner makes one; a shared
-daemon makes the run a pilot) and starts from a clean commit. Run the cells one after another on a host with no other nested run: the cells share the host's CPUs, so another run during a cell makes its times noisier (the `8ef97ff7` cells took 4,900 to 7,246 s each, about 6.6 hours for the four). Leave the checkout alone while a cell runs; it records the tree it started from. All four cells must be measured on
+Each run takes hours, needs a **dedicated** Docker daemon (a disposable droplet's own; a shared
+daemon makes the run a pilot) and starts from a clean commit. Run the cells one after another on a host with no other run: the cells share the host's CPUs, so another run during a cell makes its times noisier (the `8ef97ff7` cells took 4,900 to 7,246 s each, about 6.6 hours for the four). Leave the checkout alone while a cell runs; it records the tree it started from. All four cells must be measured on
 one revision: the report refuses to call a matrix `FULL` when they differ. A pass-through argument
 makes the wrapper record that step `partial`, which the matrix accepts (it requires `pass` or
 `partial`, exit 0). `scripts/reason-review-matrix.sh --dry-run` lists the cells.
@@ -521,9 +367,7 @@ be the one the run recorded (the sha256 of `qc1/lib.sh` and `qc1/app-facts.json`
 environment record), a complete environment with no problem named, settings that name the full
 matrix, and the runner's own record (`evidence.json`, one directory above the cell) to show a clean
 tree, the same revision and one QC-1 step that exited 0 and was neither a failure nor an
-interruption, for this directory, with the summary the rows give. `COLLECTION-FAILED.txt` (what the
-nested runner could not bring out of the container) is a gap of its own even when every row is
-complete.
+interruption, for this directory, with the summary the rows give.
 
 An explained deletion's audit-retention report (item 6, `order-control-delete-*-explained`) is tied
 to its deletion by what the application sends around it, not by a statement the harness remembers:
@@ -591,10 +435,10 @@ argument above 128 KiB. `qc1-fixtures.sh` runs the runner's real `record()` on s
   capacity is not claimed for a history nobody has.
 - **Status.** `FULL` only when every cell is present, on one revision, and the status recomputed from
   its rows and environment is complete, coverage full and release evidence, with nothing missing,
-  pending, invalid or aborted, a runner record that finished cleanly and no collection failure.
+  pending, invalid or aborted, a runner record that finished cleanly.
   Anything else is `PILOT`, and `matrix.json` lists each gap by name: an absent cell, a cell of
   another revision, a saved status that differs from the recomputed one, a runner record that is
-  missing or failed, a `COLLECTION-FAILED.txt`, a cell whose coverage is not full, and
+  missing or failed, a cell whose coverage is not full, and
   the cases a cell reports as pending (the legacy discovery and legacy save cases, which a matrix cell does
   not measure, so a real matrix is a `PILOT` until a later change adds them to the cell; the focused
   `--legacy-only` run measures them apart, see below). If a 1M-row table cannot run on
@@ -625,11 +469,11 @@ status (`qc1_evidence_status`, which reads `settings.mode` from `environment.jso
 and is **never FULL and never release evidence**: its status says `legacy-only run: the live matrix rows were not run` in its coverage
 reasons. A matrix run still records the two legacy placeholders as pending, with text that names this mode.
 
-- **Run it as one invocation on one head** through the T-297 entry point (a dedicated nested daemon, never `--keep`):
+- **Run it as one invocation on one head** through the T-297 entry point (a disposable host's own daemon, never `--keep`):
   `scripts/reason-review-scale.sh --only qc1 --evidence-dir <new dir outside the checkout> --qc1-arg --legacy-only --qc1-arg --no-browser --qc1-arg --sizes --qc1-arg 10000,100000,1000000`.
-  One invocation resolves one image id for every row, which is what the acceptance comparison needs. Each nested invocation builds its own
-  image in its own anonymous image store, so two separate invocations cannot share an image id: the same revision and the same source hashes
-  never establish the same image id, and there is no transfer of the built image between the disposable daemons. Do not accept two invocations
+  One invocation resolves one image id for every row, which is what the acceptance comparison needs. Each invocation builds its own
+  image, so two separate invocations cannot be assumed to share an image id: the same revision and the same source hashes
+  never establish the same image id. Do not accept two invocations
   as one acceptance set. If the invocation aborts at a size, rerun all three sizes in a new directory (the 10k and 100k work is minutes); a
   complete invocation is never superseded, and every attempt is listed. The run is judged on its own `evidence-status.json`.
 - **The wrapper says `partial`** (exit 10) for a successful legacy-only run, by design: pass-through arguments and the pilot coverage make

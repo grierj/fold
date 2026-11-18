@@ -856,8 +856,8 @@ preflight() {
   if [[ -n "$app_id" ]]; then
     [[ "$app_id" != *$'\n'* ]] || fail 'cannot identify one deployed app; nothing stopped'
     deployed="$(docker inspect --format '{{.Image}}' "$app_id")" || fail 'cannot inspect deployed image; nothing stopped'
-    [[ "$deployed" == "$(jq -er .imageId <<<"$current")" ]] || fail "the local pin differs from the deployed image $deployed. Recover that exact pinned image before retrying; nothing stopped"
-    deployed_level="$(image_recovery_level "$deployed")"
+    assert_image "$app_id" "$(jq -er .imageId <<<"$current")" || fail "the local pin differs from the deployed image $deployed. Recover that exact pinned image before retrying; nothing stopped"
+    deployed_level="$(image_recovery_level "$(jq -er .imageId <<<"$current")")"
     (( deployed_level<=floor )) || floor="$deployed_level"
   fi
   if [[ -n "$COMMIT" ]]; then
@@ -1136,9 +1136,6 @@ health() {
     sleep 1
   done
   return 1
-}
-assert_image() {
-  [[ "$(docker inspect --format '{{.Image}}' "$1")" == "$2" ]]
 }
 recovery_start() {
   local ids id count=0 reuse="" image nonce

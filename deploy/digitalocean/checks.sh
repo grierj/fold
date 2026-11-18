@@ -304,7 +304,7 @@ public_port_open() {
 
 assert_published_ports() {
   local deploy_dir="$1" ps line svc rest pubs
-  if ! ps="$(compose_in "$deploy_dir" ps --format '{{.Service}}|{{.Status}}|{{.Publishers}}')"; then
+  if ! ps="$(compose_in "$deploy_dir" ps --format '{{.Service}}|{{.Status}}|{{range .Publishers}}{{if .PublishedPort}}{{if eq .URL "::1"}}[::1]{{else}}{{.URL}}{{end}}:{{.PublishedPort}},{{end}}{{end}}')"; then
     check_fail "docker compose ps failed in ${deploy_dir}; cannot verify that 5432 and 8080 are private" || return
   fi
   [[ -n "$ps" ]] || { check_fail "no containers in ${deploy_dir}" || return; }
@@ -980,6 +980,24 @@ archive_name_ok() {
     ARC_STAMP="${BASH_REMATCH[4]}-${BASH_REMATCH[5]}"
     ARC_DAY="${BASH_REMATCH[4]:6:2}"
   fi
+}
+
+# assert_image CONTAINER IMAGE_ID: whether the container runs that image. The classic
+# image store gives a container the image's id; Docker's containerd image store gives
+# it the config digest while the image's id is the index, so when the two differ the
+# container's own platform manifest must be the one IMAGE_ID selects for that
+# platform. Every tool that identifies a running image uses this and never compares
+# the raw ids.
+assert_image() {
+  local container="$1" expected="$2" actual descriptor platform selected
+  actual="$(docker inspect --format '{{.Image}}' "$container")" || return 1
+  [[ "$actual" != "$expected" ]] || return 0
+  descriptor="$(docker inspect --format '{{.ImageManifestDescriptor.Digest}}|{{.ImageManifestDescriptor.Platform.OS}}/{{.ImageManifestDescriptor.Platform.Architecture}}' "$container" 2>/dev/null)" || return 1
+  platform="${descriptor#*|}"
+  descriptor="${descriptor%%|*}"
+  [[ "$descriptor" =~ ^sha256:[0-9a-f]{64}$ && "$platform" =~ ^[a-z0-9]+/[a-z0-9_]+$ ]] || return 1
+  selected="$(docker image inspect --platform "$platform" --format '{{.Id}}' "$expected" 2>/dev/null)" || return 1
+  [[ "$selected" == "$descriptor" ]]
 }
 
 # --- bounded Docker observations ---------------------------------------------

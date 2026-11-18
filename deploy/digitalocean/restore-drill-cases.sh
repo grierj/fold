@@ -990,15 +990,14 @@ lifecycle_cases() {
   reopen_checked
 }
 
-# Firefox proof (R4-6c-V). Playwright's Firefox is a glibc build; the Alpine runner cannot execute it (spawn ENOENT: no ELF loader), so it runs in the
-# Debian container the launcher built and launched once already (FOLD_FIREFOX_IMAGE, qc1/firefox-runtime.sh): the same private-browser.cjs, the same
-# environment, the runner's own network (where the recovery instance is published on 127.0.0.1). If the image could not be BUILT, the recorded reason
-# becomes an explicit hand check; a Firefox that starts in the preflight and fails here fails the drill.
+# Firefox proof (R4-6c-V). It runs in the Debian container browser-prepare.sh built and launched once already (FOLD_FIREFOX_IMAGE, qc1/firefox-runtime.sh): the same
+# private-browser.cjs, the same environment, the host's own network (where the recovery instance is published on 127.0.0.1). If the image could not be BUILT, the
+# recorded reason becomes an explicit hand check; a Firefox that starts in the preflight and fails here fails the drill.
 firefox_proof() { # target-user-id
   local reason flags=()
   if [[ -z "${FOLD_FIREFOX_IMAGE:-}" ]]; then
     reason="$(jq -r '.reason // "no reason recorded"' "$WORK/firefox-runtime.json")"
-    printf '%s\n' "R4-6c-V hand check: Firefox Secure localhost sign-in and real delete dialog; the Firefox runtime could not be installed in the drill runner ($reason; see firefox-runtime.json and prep/firefox-build.log). Safari also requires a hand check." >>"$WORK/hand-checks.txt"
+    printf '%s\n' "R4-6c-V hand check: Firefox Secure localhost sign-in and real delete dialog; the Firefox runtime could not be installed on the drill host ($reason; see firefox-runtime.json and firefox-build.log beside it). Safari also requires a hand check." >>"$WORK/hand-checks.txt"
     return 0
   fi
   # shellcheck source=deploy/digitalocean/qc1/firefox-runtime.sh
@@ -1173,7 +1172,8 @@ review_orphaned_restore_case() {
 review_moving_tag_case() {
   local original target rc
   reset_case
-  original="$(docker inspect --format '{{.Image}}' "$(dc ps -q app)")"
+  original="$(docker image inspect --format '{{.Id}}' "$BASE_REGISTRY_IMAGE")"
+  assert_image "$(dc ps -q app)" "$original"
   mkdir "$WORK/moving-tag-context"
   printf 'FROM %s\nLABEL fold.drill.moved="yes"\n' "$BASE_REGISTRY_IMAGE" >"$WORK/moving-tag-context/Dockerfile"
   docker build --pull=false -t "$BASE_REGISTRY_IMAGE" "$WORK/moving-tag-context"

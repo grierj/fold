@@ -56,7 +56,7 @@ narratives and follow-up lists, is kept in
 | M4.8 `fold setup` CLI | Not started | |
 | M4.9 Admin two-factor sign-in (TOTP) | Not started | |
 | M5.1 Prebuilt images | In progress: the `fold` image and release workflow are built; the first tagged release remains | #251, #252 |
-| M5.2 Backups | In progress: host scripts `backup.sh` and `restore.sh` are built; the backup container, its System page warning and the CI restore test remain | |
+| M5.2 Backups | In progress: on branch `autoflow/fold-m52-20261115` (not merged): the backup image and Compose service, `LAST_OK`, the System warning, retention, adopted host archives and `restore.sh` with uploads are built; the CI restore test and the checks in `docs/FIRST-CHURCH-CHECKS.md` remain. Encrypted offsite uploads are deferred with no milestone (DEC-152) | |
 | M5.3 Upgrades | In progress: host `upgrade.sh` dumps first and can roll back; the app's pre-migration backup check and `docs/UPGRADING.md` remain | |
 | M5.4 Deployment docs (Compose) | In progress: `docs/DEPLOY-DIGITALOCEAN.md` and `docs/agents/deploy.md` exist; `docs/DEPLOY.md` (generic Compose) remains | |
 | M5.5 Render Blueprint | Deferred: cut from the roadmap (DEC-140, DEC-142) | |

@@ -233,3 +233,24 @@ released.
 `scripts/reason-review-scale.sh` wraps this drill (`docs/agents/testing.md`, "Reason-review scale
 run") and requires `--drill-reason` for a full drill step; this section stays the only statement
 of the frequency.
+
+The drill runs directly, as root, on a disposable droplet created for it and declared with
+`FOLD_DRILL_ISOLATED_DAEMON=1`, after `deploy/digitalocean/qc1/browser-prepare.sh` has prepared the
+browser (`docs/agents/testing.md`). It refuses an undeclared host, a remote or non-default Docker
+daemon, a daemon that already holds a container, and any host path its provisioners would write,
+before it creates anything. Never point it at a machine that runs anything you keep.
+
+Two rules keep a drill's checks honest on Docker's containerd image store, where a container's
+`.Image` is a config digest and an image's id is an index. Whether a container runs an image is
+`assert_image` (`checks.sh`) alone, which accepts the raw ids when they match and otherwise the
+platform manifest the image id selects; never compare `{{.Image}}` to an image id by hand. QC-1
+records the verified id and keeps the raw one (`appImageRawId`, `dbImageRawId`, `rawImageId`) for
+diagnosis. Drill `timeout`s are plain: at its deadline `timeout` ends its whole process group, so a
+timed-out command leaves no descendant behind to race a snapshot or the teardown. Cancellation is
+best effort, not guaranteed. A TERM to the drill is acted on when the command it is waiting for
+ends, which a deadline bounds; if the supervisor's grace runs out first and it KILLs the drill, that
+one command can run on, in its own group, until its own deadline (`pgrep -af 'docker compose'`,
+then end it by hand). `deploy-drill.sh --prepare-only` removes its stack when it fails or is
+signalled, and `restore-drill.sh` removes it if it stops between that hand-off and its own cleanup.
+Nothing reaches a browser that Playwright's launcher detaches into its own group (its Node
+handlers clean it up during the grace) or work the Docker daemon has already accepted.

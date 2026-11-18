@@ -68,10 +68,8 @@ a release is announced.
 | 2 GiB, 2 vCPU, $18/mo | `s-2vcpu-2gb` | 60 GiB, 3,000 GiB | When the 1 vCPU size is busy. |
 
 Weekly Droplet Backups add 20% of the droplet price. Daily adds 30%.
-Snapshots are $0.06 per GB-month. Offsite dumps use Backblaze B2, a few
-cents at this size (first 10 GB free, then $6.95 per TB per month:
-[B2 pricing](https://www.backblaze.com/cloud-storage/pricing)). Spaces
-works instead and starts at $5/month. Cloud Firewalls and the metrics
+Snapshots are $0.06 per GB-month. Encrypted offsite uploads are optional and
+deferred (DEC-152); provider compatibility has not been verified. Cloud Firewalls and the metrics
 agent are free. Pick a region near the church; `nyc3` below is only an
 example.
 
@@ -350,10 +348,10 @@ does not replace the live `fold` database. Run it after the first real
 dump and again after the first upgrade.
 
 **Offsite.** A disk in the same region is not a backup of the region.
-Backblaze B2 is the recommendation: it is the cheapest store in the plan
-for a small backup. Any S3-compatible bucket works the same way, including
-DigitalOcean Spaces. Create the bucket and a key for the server in the church's
-account (control panel). The script will not create them.
+Encrypted offsite upload is optional and its completion is deferred (DEC-152).
+It has been exercised against one disposable S3-compatible server; Backblaze B2,
+DigitalOcean Spaces and the host upload path have not been verified in that test.
+Create any bucket and server key in the church's account; the script will not create them.
 
 **What the server's key needs.** Each backup uploads two files and never lists, reads or deletes anything in the
 bucket, so the key on the server needs only permission to write objects under `fold/`: on an S3-style policy
@@ -1057,4 +1055,4 @@ The script does not call the Hetzner API and does not create servers.
 
 - **Images.** Pull a published, pinned release (`--image ghcr.io/grierj/fold:x.y.z`, from the GitHub release workflow). Until the first release exists, build on the droplet with `--allow-onbox-build` on the 2 GB size. No separate build setup.
 - **Ubuntu.** The create command uses `ubuntu-26-04-x64`. The script also runs on 24.04 (`ubuntu-24-04-x64`). Hetzner uses the same script on those Ubuntu images.
-- **Services.** One recommendation each, and another provider still works. Postmark for email (any SMTP host works). Telnyx for SMS when a church wants texting (Fold runs without it). Backblaze B2 for offsite dumps (any S3-compatible bucket, including DigitalOcean Spaces, works).
+- **Services.** Postmark is the email recommendation; any SMTP host works. Telnyx is the SMS recommendation when a church wants texting; Fold runs without it. Encrypted offsite backups remain optional and deferred (DEC-152).

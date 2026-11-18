@@ -246,7 +246,8 @@ cleanup() {
   trap - EXIT
   [[ -z "$holder" ]] || kill -KILL "$holder" 2>/dev/null || true
   [[ -z "$descendant" ]] || kill -KILL "$descendant" 2>/dev/null || true
-  if (( ! KEEP && started )); then
+  # A prepare-only run keeps its stack only when it hands it over by exiting 0.
+  if (( started && ( ! KEEP || ( PREPARE_ONLY && rc != 0 ) ) )); then
     compose_in "$DIR" -f "$SOURCE/docker-compose.yml" down -v --remove-orphans || rc=1
   fi
   echo "drill result=$rc artifacts=$WORK retained_stack=$KEEP"
