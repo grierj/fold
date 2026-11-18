@@ -16,11 +16,12 @@ test("leader roster labels the admin and offers no Remove for them", async ({ pa
   await expect(membersTab).toHaveAttribute("aria-selected", "true");
   const membersPanel = page.getByRole("tabpanel", { name: "Members", exact: true });
   await expect(membersPanel).toBeVisible();
-  await expect(membersTab).toHaveAttribute("aria-controls", await membersPanel.getAttribute("id") as string);
+  await expect(membersTab).toHaveAttribute("aria-controls", (await membersPanel.getAttribute("id")) ?? "");
 
   const grier = page.getByRole("listitem").filter({ hasText: "Grier" });
   await expect(grier.getByText("Admin", { exact: true })).toBeVisible();
   const grierMore = grier.getByRole("button", { name: /^More for/ });
+
   if (await grierMore.count()) await grierMore.click();
   await expect(grier.getByRole("menuitem", { name: "Remove from group" })).toHaveCount(0);
   await expect(grier.getByRole("menuitem", { name: "Remove as leader" })).toHaveCount(0);

@@ -1,3 +1,4 @@
+import * as schema from "valibot";
 import { expect, test } from "@playwright/test";
 import { apiAs, email, fromMore, PASSWORD, signInTo, watchCSP } from "./helpers";
 
@@ -7,7 +8,7 @@ import { apiAs, email, fromMore, PASSWORD, signInTo, watchCSP } from "./helpers"
 test("a leader emails their group: write, count, preview, test, schedule, cancel", async ({ page, request }) => {
   const csp = await watchCSP(page);
   const admin = await apiAs(request, "grier");
-  const { groups } = (await admin("GET", "/groups")) as { groups: { id: number; name: string }[] };
+  const { groups } = schema.parse(schema.looseObject({ groups: schema.array(schema.looseObject({ id: schema.number(), name: schema.string() })) }), (await admin("GET", "/groups")));
   const room = groups.find((g) => g.name === "Room 201 class")!;
   const subject = `Snacks this week ${Date.now()}`;
 
@@ -46,6 +47,7 @@ test("a leader emails their group: write, count, preview, test, schedule, cancel
   // production mode with no provider the page says so in words instead.
   const outbox = (await page.request.get("/dev/outbox")).status() === 200;
   await page.getByRole("button", { name: "Send a test to me" }).click();
+
   if (outbox) {
     await expect(page.getByText("Sent to you at lee@example.com.")).toBeVisible();
     expect(await (await page.request.get("/dev/outbox")).text()).toContain(`[Test] ${subject}`);
@@ -86,7 +88,7 @@ test("a leader emails their group: write, count, preview, test, schedule, cancel
 test("a leader sends now and the page follows it: sent with counts, or failed with Try again", async ({ page, request }) => {
   const csp = await watchCSP(page);
   const admin = await apiAs(request, "grier");
-  const { groups } = (await admin("GET", "/groups")) as { groups: { id: number; name: string }[] };
+  const { groups } = schema.parse(schema.looseObject({ groups: schema.array(schema.looseObject({ id: schema.number(), name: schema.string() })) }), (await admin("GET", "/groups")));
   const room = groups.find((g) => g.name === "Room 201 class")!;
   const subject = `Room change ${Date.now()}`;
 
@@ -99,6 +101,7 @@ test("a leader sends now and the page follows it: sent with counts, or failed wi
   await page.getByRole("group", { name: /^Send to \d+ (people|person) now\?$/ }).getByRole("button", { name: "Send now" }).click();
 
   const dev = (await page.request.get("/dev/outbox")).status() === 200;
+
   // The page checks every 5 seconds while it waits and sends.
   if (dev) {
     await expect(page.getByText(/^Sent to \d+ (people|person)/).first()).toBeVisible({ timeout: 20_000 });
@@ -144,7 +147,7 @@ test("a leader adds a picture and sends: the read page and the email show it", a
   test.skip((await request.get("/dev/outbox")).status() !== 200, "Reads the sent email from the dev outbox (E2E_APP_ENV=dev)");
   const csp = await watchCSP(page);
   const admin = await apiAs(request, "grier");
-  const { groups } = (await admin("GET", "/groups")) as { groups: { id: number; name: string }[] };
+  const { groups } = schema.parse(schema.looseObject({ groups: schema.array(schema.looseObject({ id: schema.number(), name: schema.string() })) }), (await admin("GET", "/groups")));
   const room = groups.find((g) => g.name === "Room 201 class")!;
   const subject = `Picnic photos ${Date.now()}`;
 
@@ -183,6 +186,7 @@ test("a leader adds a picture and sends: the read page and the email show it", a
     const section = (await (await page.request.get("/dev/outbox")).text()).split("<section").find((s) => s.includes(subject)) ?? "";
     expect(section === "" || section.includes("[Image: The picnic table]")).toBe(true);
     htmlPath = section.match(/href="(\/dev\/outbox\/\d+\/html)"/)?.[1] ?? "";
+
     return htmlPath;
   }, { timeout: 20_000 }).not.toBe("");
   const html = await (await page.request.get(htmlPath)).text();
@@ -199,17 +203,20 @@ test("Push notification too is on by default, counted, and saved off", async ({ 
   const stamp = Date.now() % 100000;
   const login = `push-reader-${stamp}`;
   const admin = await apiAs(request, "grier");
-  const { users } = (await admin("GET", "/admin/users")) as { users: { id: number; email: string }[] };
+  const { users } = schema.parse(schema.looseObject({ users: schema.array(schema.looseObject({ id: schema.number(), email: schema.string() })) }), (await admin("GET", "/admin/users")));
   const lee = users.find((u) => u.email === email("lee"))!;
   const { user } = await admin("POST", "/admin/users", { ageBand: "adult", email: email(login), name: "Pia Pusher", password: PASSWORD, role: "member" });
+
   const { group } = await admin("POST", "/groups", {
     name: `Push check ${stamp}`, description: "For the push switch.", tags: [], imageUrl: "", location: "", visibility: "public", memberLimit: null,
   });
+
   await admin("POST", `/admin/groups/${group.id}/members`, { userId: lee.id, role: "leader" });
   await admin("POST", `/admin/groups/${group.id}/members`, { userId: user.id, role: "member" });
   const pia = await apiAs(request, login);
   const endpoint = `https://fcm.googleapis.com/fcm/send/e2e-composer-${stamp}`;
   await pia("PUT", "/push/subscriptions", { endpoint, expirationTime: null, keys: { p256dh: RFC_P256DH, auth: RFC_AUTH } });
+
   try {
     await signInTo(page, "lee", `/messages/new?group=${group.id}`);
     const box = page.getByRole("checkbox", { name: /Push notification too/ });

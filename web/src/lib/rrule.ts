@@ -39,15 +39,19 @@ export function isWeekly(rule: string): boolean {
 
 export function bydays(rule: string): string[] {
   const m = rule.match(/BYDAY=([A-Z,]+)/);
+
   return m ? m[1].split(",").filter(Boolean) : [];
 }
 
 // A rule's KEY=value parts, keys upper-cased, any "RRULE:" prefix dropped.
 export function parseRule(rule: string): Map<string, string> {
   const parts = new Map<string, string>();
+
   for (const part of rule.replace(/^RRULE:/i, "").split(";")) {
     const [key, value] = part.split("=");
+
     if (key && value !== undefined) parts.set(key.toUpperCase(), value);
   }
+
   return parts;
 }

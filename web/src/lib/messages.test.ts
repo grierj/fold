@@ -55,6 +55,7 @@ describe("counts", () => {
     // Keep the scheduled date beyond tomorrow in both time zones.
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-11-02T18:00:00Z"));
+
     try {
       expect(confirmLine(133, null, "America/Boise")).toBe("Send to 133 people now?");
       expect(confirmLine(1, "2026-11-05T16:00:00Z", "America/Boise")).toMatch(/^Send to 1 person on Thu, Nov 5 at 9:00 AM( MST)?\?$/);
@@ -100,6 +101,7 @@ describe("history", () => {
       counts: counts({ sent: 120, delivered: 10, complained: 2, bounced: 3, skipped: 9 }),
       skippedBy: { "turned off messages from leaders": 6, "no email address": 3 },
     });
+
     expect(historyLine(h, sent)).toBe("Sent to 132 people · 3 bounced · 9 skipped (6 turned off messages from leaders, 3 have no email address)");
     expect(historyLine(recipients({ counts: counts({ sent: 1, skipped: 0 }) }), sent)).toBe("Sent to 1 person");
     expect(historyLine(recipients({ counts: counts({ sent: 128, failed: 4, skipped: 0 }) }), sent)).toBe("Sent to 128 people · 4 didn't get it");
@@ -179,7 +181,7 @@ describe("push words", () => {
 
 // Intl.Segmenter has no types in this project's lib, so the tests use the
 // same minimal shape the code does.
-const segmenter = new (Intl as unknown as { Segmenter: new (locale: undefined, o: { granularity: "grapheme" }) => { segment(s: string): Iterable<{ segment: string }> } }).Segmenter(undefined, { granularity: "grapheme" });
+const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 const clusters = (s: string) => Array.from(segmenter.segment(s), (x) => x.segment);
 const count = (s: string) => clusters(s).length;
 
@@ -189,6 +191,7 @@ function cutsWholeClusters(name: string, label: string) {
   const all = clusters(name);
   const first = all.slice(0, count(head)).join("");
   const last = tail === "" ? "" : all.slice(-count(tail)).join("");
+
   return first === head && last === tail;
 }
 
@@ -244,11 +247,13 @@ describe("shortLabel (#288)", () => {
 
   it("gives wide characters fewer graphemes than narrow ones, and never overruns the width", () => {
     const narrow = count(shortLabel("i".repeat(40)).label);
+
     for (const wide of ["W", "m", "@", "字", "\u{1F600}", FAMILY]) {
       const { label } = shortLabel(wide.repeat(40));
       expect(labelWidthEm(label)).toBeLessThanOrEqual(AUDIENCE_LABEL_WIDTH_EM);
       expect(count(label)).toBeLessThan(narrow);
     }
+
     expect(labelWidthEm("W".repeat(30))).toBeGreaterThan(labelWidthEm("i".repeat(30)));
     // A short run of wide characters is still too wide to leave alone.
     expect(shortLabel("W".repeat(20)).shortened).toBe(true);
@@ -282,11 +287,14 @@ const THURSDAY = WEDNESDAY.replace("Wednesday", "Thursday");
 // Every piece between ellipses is the name's own text, in the name's order.
 function onlyTheNamesText(name: string, label: string) {
   let from = 0;
+
   for (const piece of label.split("…").filter((p) => p !== "")) {
     const at = name.indexOf(piece, from);
+
     if (at < 0) return false;
     from = at + piece.length;
   }
+
   return true;
 }
 
@@ -306,6 +314,7 @@ describe("audienceLabels (#288)", () => {
     expect(wed.shortened && thu.shortened).toBe(true);
     expect(wed.label).toContain("Wednesday");
     expect(thu.label).toContain("Thursday");
+
     for (const [name, { label }] of [[WEDNESDAY, wed], [THURSDAY, thu]] as const) {
       expect(label.startsWith("Saint")).toBe(true);
       expect(label.endsWith("Campus)")).toBe(true);
@@ -360,6 +369,7 @@ describe("audienceLabels (#288)", () => {
     const b = a.replace("Wednesday", "Thursdayxx");
     const out = audienceLabels([a, b]);
     expect(out[0].label).not.toBe(out[1].label);
+
     for (const [name, { label }] of [[a, out[0]], [b, out[1]]] as const) {
       expect(onlyTheNamesText(name, label)).toBe(true);
       expect(count(label)).toBeLessThanOrEqual(AUDIENCE_LABEL_MAX);

@@ -3,8 +3,8 @@ import { syncAppBadge } from "./push";
 
 describe("syncAppBadge", () => {
   afterEach(() => {
-    delete (navigator as unknown as Record<string, unknown>).setAppBadge;
-    delete (navigator as unknown as Record<string, unknown>).clearAppBadge;
+    Reflect.deleteProperty(navigator, "setAppBadge");
+    Reflect.deleteProperty(navigator, "clearAppBadge");
   });
   it("sets the icon's count and clears it at 0, where the browser can", () => {
     syncAppBadge(3); // no Badging API: nothing happens, nothing throws

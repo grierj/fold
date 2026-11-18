@@ -10,6 +10,7 @@ export function useSavedSetting<T>() {
   const [error, setError] = useState<string | null>(null);
   const [ok, setOk] = useState(false);
   const [saving, setSaving] = useState(false);
+
   return {
     pending, saving, ok, error,
     async change(next: T, save: (next: T) => Promise<void>) {
@@ -19,6 +20,7 @@ export function useSavedSetting<T>() {
       setPending(next);
       setError(null);
       setOk(false);
+
       try {
         await save(next);
         setOk(true);
@@ -48,6 +50,7 @@ export function SettingSwitch({ label, description, value, save }: {
   save: (next: boolean) => Promise<void>;
 }) {
   const setting = useSavedSetting<boolean>();
+
   return (
     <div className="mb-6 max-w-xl space-y-2">
       <Checkbox

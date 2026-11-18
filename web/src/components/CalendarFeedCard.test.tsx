@@ -1,3 +1,5 @@
+import { stubService } from "../test/service";
+import { CalendarFeeds } from "../api/profile";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
@@ -6,7 +8,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const get = vi.fn();
 const create = vi.fn();
 const setScope = vi.fn();
-vi.mock("../api/profile", async (orig) => ({ ...(await orig<typeof import("../api/profile")>()), CalendarFeeds: { get: () => get(), create: (s: string) => create(s), setScope: (s: string) => setScope(s), revoke: vi.fn() } }));
+
+stubService(CalendarFeeds, () => ({ get: () => get(), create: (s: string) => create(s), setScope: (s: string) => setScope(s), revoke: vi.fn() }));
 
 import { ApiError } from "../api/core";
 import { CalendarFeedCard } from "./CalendarFeedCard";

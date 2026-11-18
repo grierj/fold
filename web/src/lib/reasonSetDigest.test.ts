@@ -23,6 +23,7 @@ const hexOf = (b: Uint8Array) => Array.from(b, (x) => x.toString(16).padStart(2,
 const node = (b: Uint8Array) => createHash("sha256").update(b).digest("hex");
 
 type Vector = (typeof vectors.vectors)[number];
+
 const hashesOf = (v: Vector) => Uint8Array.from(v.hashes.flatMap((h) => [...bytes(h)]));
 const codes = (v: Vector) => Uint8Array.from(v.choices);
 
@@ -30,6 +31,7 @@ const codes = (v: Vector) => Uint8Array.from(v.choices);
 const nodeSubtle = {
   digest: async (_algorithm: string, data: Uint8Array) => {
     const out = createHash("sha256").update(data).digest();
+
     return out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength);
   },
 };
@@ -78,6 +80,7 @@ describe("the bundled SHA-256", () => {
       const data = randomBytes(n);
       expect(hexOf(new Sha256().update(data).digest())).toBe(node(data));
     }
+
     for (const n of [55, 56, 63, 64, 65, 119, 120, 127, 128, 129, 1_000_003]) {
       const data = randomBytes(n);
       expect(hexOf(new Sha256().update(data).digest())).toBe(node(data));
@@ -87,10 +90,13 @@ describe("the bundled SHA-256", () => {
   it("gives the same digest however the input is split", () => {
     const data = randomBytes(1000);
     const want = node(data);
+
     for (const cut of [1, 3, 55, 56, 63, 64, 65, 500, 999]) {
       expect(hexOf(new Sha256().update(data.subarray(0, cut)).update(data.subarray(cut)).digest())).toBe(want);
     }
+
     const sha = new Sha256();
+
     for (let i = 0; i < data.length; i += 7) sha.update(data.subarray(i, i + 7));
     expect(hexOf(sha.digest())).toBe(want);
   });
@@ -145,10 +151,12 @@ function fixture(n: number) {
   const ids = Array.from({ length: n }, (_, i) => String(i - 3));
   const hashes = new Uint8Array(n * 32);
   let x = 123456789 + n;
+
   for (let i = 0; i < hashes.length; i++) {
     x = (Math.imul(x, 1664525) + 1013904223) >>> 0;
     hashes[i] = x >>> 24;
   }
+
   return { ids, hashes };
 }
 
@@ -159,10 +167,12 @@ function referenceDigest(ids: string[], hashes: Uint8Array): string {
   pre.set(Uint8Array.from("fold:erasure-reason-set:v1", (c) => c.charCodeAt(0)), 0);
   const view = new DataView(pre.buffer);
   view.setBigUint64(27, BigInt(n));
+
   for (let i = 0; i < n; i++) {
     view.setBigInt64(35 + 40 * i, BigInt(ids[i]));
     pre.set(hashes.subarray(i * 32, i * 32 + 32), 35 + 40 * i + 8);
   }
+
   return node(pre);
 }
 
@@ -177,19 +187,23 @@ describe("chunking", () => {
     const parts = [...preimageChunks(ids, hashes, n)];
     expect(parts[0].length).toBe(35);
     const sizes = parts.slice(1).map((p) => p.length);
+
     for (const size of sizes) {
       expect(size % 40).toBe(0);
       expect(size).toBeLessThanOrEqual(ITEMS_PER_CHUNK * 40);
       expect(size).toBeLessThanOrEqual(1024 * 1024);
     }
+
     expect(sizes.length).toBe(Math.ceil(n / ITEMS_PER_CHUNK));
     expect(sizes.reduce((a, b) => a + b, 0)).toBe(40 * n);
     const joined = new Uint8Array(35 + 40 * n);
     let at = 0;
+
     for (const p of parts) {
       joined.set(p, at);
       at += p.length;
     }
+
     expect(hexOf(joined)).toBe(hexOf(digestPreimage(ids, hashes, n)));
     expect(node(joined)).toBe(referenceDigest(ids, hashes));
   });
@@ -229,6 +243,7 @@ describe("the digest across chunk sizes and the 16 MiB line", () => {
     const delays = () => spy.mock.calls.filter(([, ms]) => ms === 0).length;
     const spy = vi.spyOn(globalThis, "setTimeout");
     vi.stubGlobal("crypto", {});
+
     for (const [n, yields] of [[26213, 0], [26214, 1], [26215, 1], [52428, 2], [60000, 2]] as const) {
       const { ids, hashes } = fixture(n);
       resetDigestChoice();
@@ -236,6 +251,7 @@ describe("the digest across chunk sizes and the 16 MiB line", () => {
       await setDigestHex(ids, hashes, n);
       expect(delays(), `${n} reasons`).toBe(yields);
     }
+
     spy.mockRestore();
   });
 
@@ -245,6 +261,7 @@ describe("the digest across chunk sizes and the 16 MiB line", () => {
     expect(35 + 40 * last).toBeLessThanOrEqual(WEBCRYPTO_PREIMAGE_LIMIT);
     expect(35 + 40 * (last + 1)).toBeGreaterThan(WEBCRYPTO_PREIMAGE_LIMIT);
     vi.stubGlobal("crypto", { subtle: nodeSubtle });
+
     for (const [n, path] of [[last, "webcrypto"], [last + 1, "fallback"], [600_000, "fallback"]] as const) {
       const { ids, hashes } = fixture(n);
       resetDigestChoice();
@@ -267,11 +284,14 @@ function buildGenerated(g: Generated) {
   const ids = Array.from({ length: g.count }, (_, i) => String(first + BigInt(i) * step));
   const hashes = new Uint8Array(g.count * 32);
   let x = g.hashSeed >>> 0;
+
   for (let i = 0; i < hashes.length; i++) {
     x = (Math.imul(x, 1664525) + 1013904223) >>> 0;
     hashes[i] = x >>> 24;
   }
+
   const codes = Uint8Array.from({ length: g.count }, (_, i) => (i % 3 === 1 ? 2 : 1));
+
   return { ids, hashes, codes };
 }
 
@@ -281,6 +301,7 @@ describe("the generated vectors", () => {
   it("cover every chunk and WebCrypto boundary, derived from the exported constants", () => {
     const last = Math.floor((WEBCRYPTO_PREIMAGE_LIMIT - 35) / 40);
     const have = new Set(vectors.generated.map((g) => g.count));
+
     for (const n of [ITEMS_PER_CHUNK - 1, ITEMS_PER_CHUNK, ITEMS_PER_CHUNK + 1, ITEMS_PER_CHUNK + 2, 2 * ITEMS_PER_CHUNK, 2 * ITEMS_PER_CHUNK + 1, last, last + 1]) {
       expect(have.has(n), `a generated vector with ${n} reasons`).toBe(true);
     }
@@ -317,6 +338,7 @@ describe("any way of splitting the preimage gives the same digest", () => {
   it.each(vectors.vectors)("$name: whole records in chunks of any size", (v) => {
     for (const per of [...sizes, ITEMS_PER_CHUNK, 100_000]) {
       const sha = new Sha256();
+
       for (const part of preimageChunks(v.ids, hashesOf(v), v.ids.length, per)) sha.update(part);
       expect(hexOf(sha.digest()), `${per} records per chunk`).toBe(v.digest);
     }
@@ -325,8 +347,10 @@ describe("any way of splitting the preimage gives the same digest", () => {
   it("26,215 generated reasons: chunks of one record, a chunk less than all, all, and more", () => {
     const g = vectors.generated.find((x) => x.count === ITEMS_PER_CHUNK + 1)!;
     const { ids, hashes } = buildGenerated(g);
+
     for (const per of [1, 3, ITEMS_PER_CHUNK - 1, ITEMS_PER_CHUNK, ITEMS_PER_CHUNK + 1, 100_000]) {
       const sha = new Sha256();
+
       for (const part of preimageChunks(ids, hashes, g.count, per)) sha.update(part);
       expect(hexOf(sha.digest()), `${per} records per chunk`).toBe(g.digest);
     }
@@ -338,20 +362,24 @@ describe("any way of splitting the preimage gives the same digest", () => {
 // FOLD_REASON_RUNS choose the range (scripts/reason-review-hardening.sh sets them).
 function mulberry32(seed: number) {
   let a = seed >>> 0;
+
   return () => {
     a = (a + 0x6d2b79f5) >>> 0;
     let t = a;
     t = Math.imul(t ^ (t >>> 15), t | 1);
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
 
 function seedsFromEnv(): number[] {
   const one = env.FOLD_REASON_SEED;
+
   if (one) return [Number(one)];
   const base = Number(env.FOLD_REASON_SEED_BASE ?? 20261111);
   const runs = Number(env.FOLD_REASON_RUNS ?? 8);
+
   return Array.from({ length: runs }, (_, i) => base + i);
 }
 
@@ -366,16 +394,19 @@ describe("random reviews, replayable by seed", () => {
     const rng = mulberry32(seed);
     const below = (n: number) => Math.floor(rng() * n);
     const trace: string[] = [];
+
     try {
       for (let round = 0; round < 4; round++) {
         const n = 1 + (rng() < 0.25 ? below(ITEMS_PER_CHUNK * 2 + 10) : below(300));
         const start = -(2n ** 63n) + BigInt(below(2 ** 50)) * BigInt(below(2 ** 10) + 1);
         const ids: string[] = [];
         let id = start;
+
         for (let i = 0; i < n; i++) {
           ids.push(String(id));
           id += 1n + BigInt(below(2 ** 40));
         }
+
         const hashes = Uint8Array.from({ length: n * 32 }, () => below(256));
         const per = 1 + below(n + 2);
         trace.push(`round ${round}: ${n} reasons from ${ids[0]}, ${per} per chunk`);
@@ -388,13 +419,15 @@ describe("random reviews, replayable by seed", () => {
         resetDigestChoice();
         expect(await setDigestHex(ids, hashes, n), "the native digest").toBe(want);
         const sha = new Sha256();
+
         for (const part of preimageChunks(ids, hashes, n, per)) sha.update(part);
         expect(hexOf(sha.digest()), "the chunked digest").toBe(want);
       }
+
       record(`digest seed ${seed} ok: ${trace.join(" | ")}`);
     } catch (e) {
-      record(`digest seed ${seed} FAILED: ${trace.join(" | ")}; ${(e as Error).message}`);
-      throw new Error(`reproduce with FOLD_REASON_SEED=${seed}; trace: ${trace.join(" | ")}; ${(e as Error).message}`);
+      record(`digest seed ${seed} FAILED: ${trace.join(" | ")}; ${e instanceof Error ? e.message : String(e)}`);
+      throw new Error(`reproduce with FOLD_REASON_SEED=${seed}; trace: ${trace.join(" | ")}; ${e instanceof Error ? e.message : String(e)}`);
     }
   }, 60_000);
 });

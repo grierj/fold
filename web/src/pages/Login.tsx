@@ -1,3 +1,4 @@
+import { isObject, isString } from "../lib/wireValues";
 import { Form } from "../components/ui/Form";
 import { useEffect, useState } from "react";
 import { useLocation, useNavigate, Link } from "react-router-dom";
@@ -18,7 +19,8 @@ export function Login() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [waiting, setWaiting] = useState(false);
-  const from = (location.state as { from?: string } | null)?.from ?? "/";
+  const state: unknown = location.state;
+  const from = isObject(state) && "from" in state && isString(state.from) ? state.from : "/";
   // The Home Screen app keeps its own sign-in (signed_out_app, research 2.7).
   const [homeScreen] = useState(isStandalone);
 
@@ -37,6 +39,7 @@ export function Login() {
     setBusy(true);
     setError(null);
     setWaiting(false);
+
     try {
       await login(email, password);
       navigate(from, { replace: true });

@@ -1,3 +1,4 @@
+import { isCallable } from "./wireValues";
 // The set digest the DELETE carries for the contact-request reason review
 // (M7.4 T07B-2, F2). It must equal what the server streams:
 //
@@ -23,6 +24,7 @@ const ITEM = 8 + 32;
 /** @public test seam for the digest vectors. */
 export const WEBCRYPTO_PREIMAGE_LIMIT = 16 * 1024 * 1024;
 const CHUNK_BYTES = 1024 * 1024;
+
 /** Whole records in one chunk: a record is never split, so a chunk is a little under CHUNK_BYTES (1 MiB / 40 is 26,214.4). */
 /** @public test seam for the digest vectors. */
 export const ITEMS_PER_CHUNK = Math.floor(CHUNK_BYTES / ITEM);
@@ -44,18 +46,22 @@ export class DigestUnavailableError extends Error {
 export function* preimageChunks(ids: readonly string[], hashes: Uint8Array, count: number, itemsPerChunk = ITEMS_PER_CHUNK): Generator<Uint8Array<ArrayBuffer>> {
   const per = Math.max(1, Math.floor(itemsPerChunk));
   const head = new Uint8Array(HEADER);
+
   for (let i = 0; i < PREFIX.length; i++) head[i] = PREFIX.charCodeAt(i);
   new DataView(head.buffer).setBigUint64(PREFIX.length + 1, BigInt(count));
   yield head;
+
   for (let start = 0; start < count; start += per) {
     const end = Math.min(start + per, count);
     const out = new Uint8Array((end - start) * ITEM);
     const view = new DataView(out.buffer);
+
     for (let i = start; i < end; i++) {
       const o = (i - start) * ITEM;
       view.setBigInt64(o, BigInt(ids[i]));
       out.set(hashes.subarray(i * 32, i * 32 + 32), o + 8);
     }
+
     yield out;
   }
 }
@@ -64,10 +70,12 @@ export function* preimageChunks(ids: readonly string[], hashes: Uint8Array, coun
 export function digestPreimage(ids: readonly string[], hashes: Uint8Array, count: number): Uint8Array<ArrayBuffer> {
   const out = new Uint8Array(HEADER + count * ITEM);
   let at = 0;
+
   for (const part of preimageChunks(ids, hashes, count)) {
     out.set(part, at);
     at += part.length;
   }
+
   return out;
 }
 
@@ -94,20 +102,25 @@ export class Sha256 {
   update(data: Uint8Array): this {
     this.total += data.length;
     let at = 0;
+
     if (this.filled > 0) {
       const take = Math.min(64 - this.filled, data.length);
       this.block.set(data.subarray(0, take), this.filled);
       this.filled += take;
       at = take;
+
       if (this.filled < 64) return this;
       this.compress(this.block, 0);
       this.filled = 0;
     }
+
     for (; at + 64 <= data.length; at += 64) this.compress(data, at);
+
     if (at < data.length) {
       this.block.set(data.subarray(at), 0);
       this.filled = data.length - at;
     }
+
     return this;
   }
 
@@ -123,23 +136,29 @@ export class Sha256 {
     this.total = total;
     const out = new Uint8Array(32);
     const o = new DataView(out.buffer);
+
     for (let i = 0; i < 8; i++) o.setUint32(i * 4, this.h[i]);
+
     return out;
   }
 
   private compress(b: Uint8Array, o: number): void {
     const w = this.w;
     const h = this.h;
+
     for (let i = 0; i < 16; i++) {
       const j = o + i * 4;
       w[i] = (b[j] << 24) | (b[j + 1] << 16) | (b[j + 2] << 8) | b[j + 3];
     }
+
     for (let i = 16; i < 64; i++) {
       const a = w[i - 15];
       const c = w[i - 2];
       w[i] = w[i - 16] + (rotr(a, 7) ^ rotr(a, 18) ^ (a >>> 3)) + w[i - 7] + (rotr(c, 17) ^ rotr(c, 19) ^ (c >>> 10));
     }
+
     let a = h[0], b1 = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+
     for (let i = 0; i < 64; i++) {
       const t1 = (hh + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + w[i]) >>> 0;
       const t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b1) ^ (a & c) ^ (b1 & c))) >>> 0;
@@ -152,6 +171,7 @@ export class Sha256 {
       b1 = a;
       a = (t1 + t2) >>> 0;
     }
+
     h[0] += a;
     h[1] += b1;
     h[2] += c;
@@ -180,8 +200,9 @@ export type DigestPath = "webcrypto" | "fallback";
 type Subtle = { digest(algorithm: string, data: Uint8Array<ArrayBuffer>): Promise<ArrayBuffer> };
 
 function subtleOf(): Subtle | null {
-  const s = (globalThis as { crypto?: { subtle?: Partial<Subtle> } }).crypto?.subtle;
-  return s && typeof s.digest === "function" ? (s as Subtle) : null;
+  const s = globalThis.crypto?.subtle;
+
+  return s && isCallable(s.digest) ? s : null;
 }
 
 function fallbackSum(bytes: Uint8Array): string {
@@ -191,6 +212,7 @@ function fallbackSum(bytes: Uint8Array): string {
 async function selfTestSubtle(subtle: Subtle): Promise<boolean> {
   try {
     for (const [msg, want] of KNOWN) if (toHex(new Uint8Array(await subtle.digest("SHA-256", bytesOf(msg)))) !== want) return false;
+
     return true;
   } catch {
     return false;
@@ -209,8 +231,10 @@ export const lastDigestPath = (): DigestPath | null => lastPath;
 function chosen() {
   verdict ??= (async () => {
     const subtle = subtleOf();
+
     return { subtle: subtle && (await selfTestSubtle(subtle)) ? subtle : null, fallback: selfTestFallback() };
   })();
+
   return verdict;
 }
 
@@ -231,19 +255,26 @@ const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 /** @public test seam for the digest vectors. */
 export async function setDigestHex(ids: readonly string[], hashes: Uint8Array, count: number): Promise<string> {
   const { subtle, fallback } = await chosen();
+
   if (subtle && HEADER + count * ITEM <= WEBCRYPTO_PREIMAGE_LIMIT) {
     const out = new Uint8Array(await subtle.digest("SHA-256", digestPreimage(ids, hashes, count)));
     lastPath = "webcrypto";
+
     return toHex(out);
   }
+
   if (!fallback) throw new DigestUnavailableError();
   const sha = new Sha256();
+
   for (const part of preimageChunks(ids, hashes, count)) {
     sha.update(part);
+
     // Yield after every full chunk (just under a megabyte of records) so the page stays responsive.
     if (part.length >= ITEMS_PER_CHUNK * ITEM) await tick();
   }
+
   lastPath = "fallback";
+
   return toHex(sha.digest());
 }
 
@@ -252,9 +283,12 @@ export async function setDigestHex(ids: readonly string[], hashes: Uint8Array, c
 /** @public test seam for the digest vectors; the e2e helper builds its review from it. */
 export function encodeChoices(codes: Uint8Array, count: number): string {
   const packed = new Uint8Array(Math.ceil(count / 4));
+
   for (let i = 0; i < count; i++) packed[i >> 2] |= codes[i] << ((i & 3) * 2);
   let binary = "";
+
   for (let i = 0; i < packed.length; i += 0x8000) binary += String.fromCharCode(...packed.subarray(i, i + 0x8000));
+
   return btoa(binary);
 }
 

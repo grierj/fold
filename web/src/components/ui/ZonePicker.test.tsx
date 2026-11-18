@@ -1,16 +1,18 @@
+import { stubService } from "../../test/service";
+import { Site } from "../../api/site";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
-vi.mock("../../api/site", () => ({ Site: { get: () => Promise.resolve({ name: "c", timezone: "America/Los_Angeles", selfSignup: "off" }) } }));
-vi.mock("../../lib/when", async (orig) => ({ ...(await orig<typeof import("../../lib/when")>()), browserTimeZone: () => "America/Boise" }));
+stubService(Site, () => ({ get: () => Promise.resolve({ name: "c", timezone: "America/Los_Angeles", selfSignup: "off", roomsEnabled: false, pushEnabled: false }) }));
 
 import { Field } from "./Field";
 import { ZonePicker } from "./ZonePicker";
 
 function Harness({ initial = "America/Los_Angeles", church = false }: { initial?: string; church?: boolean }) {
   const [v, setV] = useState(initial);
+
   return (
     <>
       <Field label="Time zone" hint="Pick one.">
@@ -22,6 +24,7 @@ function Harness({ initial = "America/Los_Angeles", church = false }: { initial?
 }
 
 const box = () => screen.getByRole("combobox", { name: "Time zone" });
+
 // Role queries compute every option's accessibility state (about 420 options in jsdom), which is slow enough to
 // time out under load. Find the one listbox by role, then read its options straight from the DOM.
 const optionEls = () => [...screen.getByRole("listbox", { name: "Time zones" }).querySelectorAll('[role="option"]')];
@@ -51,7 +54,7 @@ describe("ZonePicker", () => {
     await userEvent.click(box());
     await userEvent.keyboard("pac");
     expect(options()[0]).toMatch(/^Los Angeles \(Pacific\)/);
-    expect(options().some((o) => /^Boise/.test(o ?? ""))).toBe(false);
+    expect(options().some((o) => o?.startsWith("Boise"))).toBe(false);
     await userEvent.keyboard("{Enter}");
     expect(screen.getByTestId("value")).toHaveTextContent("America/Los_Angeles");
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();

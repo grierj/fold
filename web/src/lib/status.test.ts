@@ -7,6 +7,6 @@ it.each(["future_internal_code", "constructor", "__proto__", "toString"])("does 
   expect(groupStatusLabel(value)).toBe("Unknown status");
   expect(registrationStatusLabel(value)).toBe("Unknown status");
   expect(contactRequestStatusLabel(value)).toBe("Unknown status");
-  expect(decisionLabel(value as Parameters<typeof decisionLabel>[0])).toBe("Unknown status");
+  expect(decisionLabel(value)).toBe("Unknown status");
   expect(roleLabel(value)).toBe("Unknown role");
 });

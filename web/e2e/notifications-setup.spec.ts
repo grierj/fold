@@ -14,6 +14,7 @@ async function shot(target: Locator, name: string) {
 
 test("an iPhone gets the iPhone steps first, an Android phone the Android ones", async ({ browser }) => {
   const baseURL = test.info().project.use.baseURL;
+
   for (const [ua, heading, name] of [[IPHONE, "Get notifications on your iPhone or iPad", "iphone"], [ANDROID, "Get notifications on your Android phone", "android"]]) {
     const context = await browser.newContext({ baseURL, userAgent: ua, viewport: { width: 390, height: 844 } });
     const page = await context.newPage();
@@ -24,6 +25,7 @@ test("an iPhone gets the iPhone steps first, an Android phone the Android ones",
     // The other devices start collapsed.
     await expect(page.locator("details[open]")).toHaveCount(0);
     await shot(page.getByRole("region", { name: heading }), name);
+
     if (name === "iphone") await page.locator("main").screenshot({ path: test.info().outputPath("setup-collapsed-default-390.png") });
     await context.close();
   }
@@ -57,6 +59,7 @@ test("a blocking browser gets its undo steps at the top", async ({ page }) => {
 test("the page and the card are gone while the church has notifications off", async ({ page, request }) => {
   const admin = await apiAs(request, "grier");
   await admin("PUT", "/admin/settings/push-enabled", { on: false });
+
   try {
     await page.goto("/notifications/setup");
     await expect(page.getByRole("heading", { name: "Page not found", level: 1 })).toBeVisible();
@@ -67,6 +70,7 @@ test("the page and the card are gone while the church has notifications off", as
   } finally {
     await admin("PUT", "/admin/settings/push-enabled", { on: true });
   }
+
   await page.goto("/notifications/setup");
   await expect(page.getByRole("heading", { name: "Get notifications on your phone", level: 1 })).toBeVisible();
 });

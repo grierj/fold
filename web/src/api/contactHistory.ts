@@ -10,6 +10,7 @@ export interface ContactHistoryFilters {
 
 function historyPath(personId: Id, filters: ContactHistoryFilters, csv: boolean, before?: string) {
   const { purpose, action, from, until } = filters;
+
   return `${path`/admin/users/${personId}/contact-history`}${csv ? ".csv" : ""}${query({ purpose, action, from, until, before: csv ? undefined : before })}`;
 }
 

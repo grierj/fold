@@ -19,6 +19,7 @@ export const Notifications = {
   // badge sends the last ETag; null means "unchanged" (304).
   badge: async (etag: string): Promise<{ badge: Badge; etag: string } | null> => {
     const got = await apiIfChanged<Badge>("/notifications/badge", etag);
+
     return got && { badge: got.data, etag: got.etag };
   },
   read: (id: Id, read = true) => api<NotificationResponse>(path`/notifications/${id}/read`, { method: read ? "POST" : "DELETE" }),

@@ -30,6 +30,7 @@ export function GuestRegistrationForm({ instance }: { instance: Pick<EventOccurr
     e.preventDefault();
     setBusy(true);
     setError(null);
+
     try {
       const res = await Guests.register(instance.eventId, {
         name, email, date: instance.date, over18,
@@ -37,6 +38,7 @@ export function GuestRegistrationForm({ instance }: { instance: Pick<EventOccurr
         timezone: browserTimeZone(),
         website: website || undefined,
       });
+
       setDone(res.message);
     } catch (err) {
       setError(errorText(err));

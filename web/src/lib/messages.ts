@@ -1,3 +1,4 @@
+import { isCallable } from "./wireValues";
 import { people } from "./plural";
 import type { AudienceRole, AudienceStatus, AudienceSummary, ComposeOptions, HistoryStatus, Message, MessageAudience, MessageHistoryPush, MessagePushCounts, MessagePushWait, MessageRecipientCounts, MessageRecipients } from "../types";
 import { formatShortDay, formatWhenIn } from "./when";
@@ -20,10 +21,12 @@ export const STATUS_CHOICES: { id: AudienceStatus; label: string }[] = [
   { id: "waitlisted", label: registrationStatusLabel("waitlisted") },
   { id: "maybe", label: registrationStatusLabel("maybe") },
 ];
+
 export const ROLE_CHOICES: { id: AudienceRole; label: string }[] = [
   { id: "member", label: "Members" },
   { id: "leader", label: "Leaders" },
 ];
+
 const DEFAULT_STATUSES: AudienceStatus[] = ["going", "waitlisted"];
 const DEFAULT_ROLES: AudienceRole[] = ["member", "leader"];
 
@@ -32,12 +35,19 @@ export const emptyChoice = (): AudienceChoice => ({ target: "", dates: "all", st
 export function toAudience(c: AudienceChoice): MessageAudience | null {
   const [kind, raw] = c.target.split(":");
   const id = Number(raw);
+
   if (c.target === "all") return { type: "all_members" };
+
   if (!id) return null;
+
   if (kind === "group") return c.roles.length ? { type: "group", groupId: id, roles: c.roles } : null;
+
   if (!c.statuses.length) return null;
+
   if (kind === "occurrence") return { type: "occurrence", occurrenceId: id, statuses: c.statuses };
+
   if (kind !== "event") return null;
+
   return c.dates === "all"
     ? { type: "event_series", eventId: id, statuses: c.statuses }
     : { type: "occurrence", occurrenceId: Number(c.dates), statuses: c.statuses };
@@ -47,23 +57,30 @@ export function toAudience(c: AudienceChoice): MessageAudience | null {
 // under its event when the event is listed.
 export function fromAudience(a: MessageAudience, options: ComposeOptions): AudienceChoice {
   const c: AudienceChoice = { ...emptyChoice(), statuses: a.statuses?.length ? a.statuses : DEFAULT_STATUSES, roles: a.roles?.length ? a.roles : DEFAULT_ROLES };
+
   switch (a.type) {
     case "all_members": return { ...c, target: "all" };
     case "group": return { ...c, target: `group:${a.groupId}` };
     case "event_series": return { ...c, target: `event:${a.eventId}` };
     case "occurrence": {
       const ev = eventOfDate(options, a.occurrenceId ?? 0);
+
       return ev ? { ...c, target: `event:${ev.id}`, dates: String(a.occurrenceId) } : { ...c, target: `occurrence:${a.occurrenceId}` };
     }
+
     default: return c;
   }
 }
 
 export function prefillChoice(params: URLSearchParams, options: ComposeOptions): AudienceChoice {
   const group = Number(params.get("group")), event = Number(params.get("event")), occurrence = Number(params.get("occurrence"));
+
   if (group) return fromAudience({ type: "group", groupId: group }, options);
+
   if (event) return fromAudience({ type: "event_series", eventId: event }, options);
+
   if (occurrence) return fromAudience({ type: "occurrence", occurrenceId: occurrence }, options);
+
   return emptyChoice();
 }
 
@@ -87,6 +104,7 @@ export const audienceKey = (a: MessageAudience | null) => (a ? JSON.stringify(a)
 // The full name stays in the title, the accessible description and a line
 // under the select.
 export const AUDIENCE_LABEL_MAX = 32;
+
 // The text room in ems at the select's 16px font: 20em is 320px.
 /** @public tested directly: the width a shortened Send to label is held to. */
 export const AUDIENCE_LABEL_WIDTH_EM = 20;
@@ -101,11 +119,13 @@ export const AUDIENCE_LABEL_WIDTH_EM = 20;
 // the real select.
 const WIDTH_BUDGET = AUDIENCE_LABEL_WIDTH_EM * 100;
 const ELLIPSIS = "…";
+
 // The tail (the end of the name) may take half of what the label has room
 // for, so it can't be starved and the head still gets the rest.
 const TAIL_SHARE = 0.5;
 
 const widthsOf = (chars: string, width: number): [string, number][] => [...chars].map((c) => [c, width]);
+
 const GLYPH_WIDTHS = new Map<string, number>([
   ...widthsOf("W@%—…ÆŒæœ‰", 110),
   ...widthsOf("mM", 100),
@@ -121,12 +141,18 @@ const WIDE_GLYPH = /[\p{Extended_Pictographic}\p{Emoji_Modifier}\p{Regional_Indi
 
 function glyphWidth(cp: string): number {
   if (/[\p{Mn}\p{Me}\p{Cf}]/u.test(cp)) return 0;
+
   if (WIDE_GLYPH.test(cp)) return 200;
+
   if (cp === " " || cp === "\u00a0" || /\p{Cc}/u.test(cp)) return 40;
+
   if (/\s/u.test(cp)) return 100;
   const known = GLYPH_WIDTHS.get(cp);
+
   if (known !== undefined) return known;
+
   if (/\p{Script=Latin}/u.test(cp)) return /\p{Lu}/u.test(cp) ? 80 : /\p{Ll}/u.test(cp) ? 66 : 90;
+
   return /\p{L}/u.test(cp) ? 100 : 90;
 }
 
@@ -134,7 +160,9 @@ function glyphWidth(cp: string): number {
 function graphemeWidth(g: string): number {
   if (WIDE_GLYPH.test(g)) return 200;
   let sum = 0;
+
   for (const cp of g) sum += glyphWidth(cp);
+
   return g.includes("\u20e3") ? Math.max(sum, 200) : sum;
 }
 
@@ -147,20 +175,26 @@ type GraphemeSegmenter = { segment(text: string): Iterable<{ segment: string }> 
 // it is missing, code points join to the one before them by the same rules for
 // marks, joiners, skin tones and flag pairs.
 function makeSegmenter(): GraphemeSegmenter | null {
-  const Segmenter = (Intl as unknown as { Segmenter?: new (locale: undefined, o: { granularity: "grapheme" }) => GraphemeSegmenter }).Segmenter;
-  return typeof Segmenter === "function" ? new Segmenter(undefined, { granularity: "grapheme" }) : null;
+  const Segmenter = Intl.Segmenter;
+
+  return isCallable(Segmenter) ? new Segmenter(undefined, { granularity: "grapheme" }) : null;
 }
+
 const segmenter = makeSegmenter();
 
 function codePointClusters(text: string): string[] {
   const out: string[] = [];
+
   for (const cp of text) {
     const prev = out[out.length - 1];
+
     const joins = prev !== undefined && (/[\p{M}\p{Cf}\p{Emoji_Modifier}]/u.test(cp) || prev.endsWith("\u200d") ||
       (/\p{Regional_Indicator}/u.test(cp) && /^\p{Regional_Indicator}$/u.test(prev)));
+
     if (joins) out[out.length - 1] = prev + cp;
     else out.push(cp);
   }
+
   return out;
 }
 
@@ -177,7 +211,7 @@ const isSpace = (x: string) => /^\s+$/u.test(x);
 // cutAround picks where a name is cut for a label of at most max graphemes and
 // budget width: the head is g[0, head) and the tail is g[tail, end), around
 // one ellipsis.
-function cutAround(g: string[], w: number[], max: number, budget: number): { head: number; tail: number } {
+function cutAround(g: string[], w: number[], max: number, budget: number) {
   const space = g.map(isSpace);
   const roomCount = max - 1;
   const roomWidth = budget - graphemeWidth(ELLIPSIS);
@@ -187,11 +221,14 @@ function cutAround(g: string[], w: number[], max: number, budget: number): { hea
   const tailCount = Math.floor(roomCount * TAIL_SHARE);
   const tailWidth = Math.floor(roomWidth * TAIL_SHARE);
   let fit = g.length;
+
   for (let n = 0, sum = 0; fit > 0 && n < tailCount && sum + w[fit - 1] <= tailWidth; n++) sum += w[--fit];
   let tail = fit;
+
   for (let i = fit; i < g.length; i++) {
     if (!space[i] && (i === 0 || space[i - 1])) { tail = i; break; }
   }
+
   while (tail < g.length && (space[tail] || TAIL_EDGE.has(g[tail]))) tail++;
 
   // The head fills what is left: the longest whole-word prefix, or when the
@@ -199,12 +236,16 @@ function cutAround(g: string[], w: number[], max: number, budget: number): { hea
   const headCount = roomCount - (g.length - tail);
   const headWidth = roomWidth - w.slice(tail).reduce((a, b) => a + b, 0);
   let reach = 0;
+
   for (let n = 0, sum = 0; reach < tail && n < headCount && sum + w[reach] <= headWidth; n++) sum += w[reach++];
   let head = reach;
+
   for (let e = reach; e > 0; e--) {
     if (!space[e - 1] && (e === g.length || space[e])) { head = e; break; }
   }
+
   while (head > 0 && (space[head - 1] || HEAD_EDGE.has(g[head - 1]))) head--;
+
   return { head, tail };
 }
 
@@ -213,17 +254,20 @@ function cutAround(g: string[], w: number[], max: number, budget: number): { hea
 // at word boundaries around one ellipsis, e.g. "Saint Brigid's…(North
 // Campus)". A name with no word boundary to cut at is cut by graphemes. Two
 // names alike at both ends can share a label; audienceLabels tells those apart.
-export function shortLabel(text: string, max = AUDIENCE_LABEL_MAX): { label: string; shortened: boolean } {
+export function shortLabel(text: string, max = AUDIENCE_LABEL_MAX) {
   const g = graphemes(text);
   const w = g.map(graphemeWidth);
+
   if (g.length <= max && w.reduce((a, b) => a + b, 0) <= WIDTH_BUDGET) return { label: text, shortened: false };
   const { head, tail } = cutAround(g, w, max, WIDTH_BUDGET);
+
   return { label: g.slice(0, head).join("") + ELLIPSIS + g.slice(tail).join(""), shortened: true };
 }
 
 // The first word that tells names apart is shown in the cut, up to this long.
 const MID_MAX = 12;
 const MID_WIDTH = 800;
+
 // A cut needs this much room left for its two ends to be worth showing.
 const MIN_ENDS = 8;
 
@@ -237,32 +281,43 @@ function withMiddle(texts: string[], max: number): Map<string, string> | null {
     g.forEach((x, i) => {
       if (isSpace(x)) return;
       const last = words[words.length - 1];
+
       if (i > 0 && last && last.end === i) { last.end = i + 1; last.text += x; } else words.push({ start: i, end: i + 1, text: x });
     });
+
     return { text, g, w: g.map(graphemeWidth), words };
   });
+
   const shared = Math.min(...parsed.map((p) => p.words.length));
   let at = 0;
+
   while (at < shared && parsed.every((p) => p.words[at].text === parsed[0].words[at].text)) at++;
+
   if (at >= shared) return null;
 
   const out = new Map<string, string>();
+
   for (const p of parsed) {
     const word = p.words[at];
     const mid: string[] = [];
     let midWidth = 0;
+
     for (const x of graphemes(word.text)) {
       if (mid.length >= MID_MAX || midWidth + graphemeWidth(x) > MID_WIDTH) break;
       mid.push(x);
       midWidth += graphemeWidth(x);
     }
+
     const room = max - 1 - mid.length;
+
     if (room - 1 < MIN_ENDS) return null;
     const { head, tail } = cutAround(p.g, p.w, room, WIDTH_BUDGET - graphemeWidth(ELLIPSIS) - midWidth);
+
     // The word must sit in what the cut leaves out, or the label would repeat or reorder text.
     if (word.start < head || word.end > tail) return null;
     out.set(p.text, p.g.slice(0, head).join("") + ELLIPSIS + mid.join("") + ELLIPSIS + p.g.slice(tail).join(""));
   }
+
   return new Set(out.values()).size === texts.length ? out : null;
 }
 
@@ -277,18 +332,22 @@ export function audienceLabels(names: string[], max = AUDIENCE_LABEL_MAX): { lab
   const out = names.map((n) => shortLabel(n, max));
   const alike = new Map<string, number[]>();
   out.forEach((o, i) => { if (o.shortened) alike.set(o.label, [...(alike.get(o.label) ?? []), i]); });
+
   for (const at of alike.values()) {
     const texts = [...new Set(at.map((i) => names[i]))];
     const labels = texts.length > 1 ? withMiddle(texts, max) : null;
+
     if (labels) for (const i of at) out[i] = { label: labels.get(names[i])!, shortened: true };
   }
+
   return out;
 }
 
 const statusWords = (s: AudienceStatus[] | undefined) =>
-  STATUS_CHOICES.filter((x) => (s ?? DEFAULT_STATUSES).includes(x.id)).map((x) => x.label).join(", ");
+  STATUS_CHOICES.flatMap((x) => (s ?? DEFAULT_STATUSES).includes(x.id) ? [x.label] : []).join(", ");
+
 const roleWords = (r: AudienceRole[] | undefined) =>
-  ROLE_CHOICES.filter((x) => (r ?? DEFAULT_ROLES).includes(x.id)).map((x) => x.label).join(", ");
+  ROLE_CHOICES.flatMap((x) => (r ?? DEFAULT_ROLES).includes(x.id) ? [x.label] : []).join(", ");
 
 // audienceLabel says who a message goes to in a line: "Room 201 class
 // (Members, Leaders)", "Book night, all upcoming dates (Going, Waitlisted)".
@@ -297,17 +356,23 @@ export function audienceLabel(a: MessageAudience, options: ComposeOptions | null
     case "all_members": return "Everyone at church";
     case "group": {
       const g = options?.groups.find((x) => x.id === a.groupId);
+
       return `${g ? g.name : "A group that's no longer listed"} (${roleWords(a.roles)})`;
     }
+
     case "event_series": {
       const ev = options?.events.find((x) => x.id === a.eventId);
+
       return `${ev ? ev.title : "An event that's no longer listed"}, all upcoming dates (${statusWords(a.statuses)})`;
     }
+
     case "occurrence": {
       const ev = options ? eventOfDate(options, a.occurrenceId ?? 0) : undefined;
       const d = ev?.dates.find((x) => x.occurrenceId === a.occurrenceId);
+
       return `${ev && d ? `${ev.title}, ${formatShortDay(d.startsAt)}` : "One date of an event"} (${statusWords(a.statuses)})`;
     }
+
     case "events": return `${a.eventIds?.length ?? 0} events (${statusWords(a.statuses)})`;
     case "users": return `${a.userIds?.length ?? 0} chosen people`;
   }
@@ -316,20 +381,22 @@ export function audienceLabel(a: MessageAudience, options: ComposeOptions | null
 // Reasons that need a verb to read after a count ("3 have no email
 // address"). Any other reason the API sends ("turned off messages from
 // leaders", "marked our email as spam") reads as it comes.
-const REASONS: Record<string, [one: string, many: string]> = {
-  "no email address": ["has no email address", "have no email address"],
-  "email not working": ["has an email address that isn't working", "have email addresses that aren't working"],
-  "not active": ["isn't active", "aren't active"],
-  "no longer on the list": ["is no longer on the list", "are no longer on the list"],
-  "guest, hasn't asked for updates": ["is a guest who hasn't asked for updates", "are guests who haven't asked for updates"],
-};
+const REASONS = new Map<string, [one: string, many: string]>([
+  ["no email address", ["has no email address", "have no email address"]],
+  ["email not working", ["has an email address that isn't working", "have email addresses that aren't working"]],
+  ["not active", ["isn't active", "aren't active"]],
+  ["no longer on the list", ["is no longer on the list", "are no longer on the list"]],
+  ["guest, hasn't asked for updates", ["is a guest who hasn't asked for updates", "are guests who haven't asked for updates"]],
+]);
 
 // summaryLine is the live count: "142 people; 9 won't get it: 6 turned off
 // messages from leaders, 3 have no email address".
 export function summaryLine(s: AudienceSummary): string {
   if (s.people === 0) return "No one is on this list yet.";
   const skipped = s.people - s.eligible;
+
   if (skipped === 0) return `${people(s.people)}; everyone on the list will get it.`;
+
   return `${people(s.people)}; ${skipped} won't get it: ${reasonList(s.skipped)}`;
 }
 
@@ -339,7 +406,7 @@ function reasonList(by: Record<string, number>): string {
   return Object.entries(by)
     .filter(([, n]) => n > 0)
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .map(([reason, n]) => `${n} ${REASONS[reason]?.[n === 1 ? 0 : 1] ?? reason}`)
+    .map(([reason, n]) => `${n} ${REASONS.get(reason)?.[n === 1 ? 0 : 1] ?? reason}`)
     .join(", ");
 }
 
@@ -350,18 +417,24 @@ function reasonList(by: Record<string, number>): string {
 export function historyLine(h: Pick<MessageRecipients, "counts" | "skippedBy">, m: Pick<Message, "status" | "sentAt">): string {
   const c = h.counts;
   const done = c.sent + c.delivered + c.bounced + c.complained + c.failed;
+
   if (m.status === "sending") return `${m.sentAt ? "Sending again" : "Sending"}… ${done} of ${done + c.queued} so far`;
   // Someone who marked it as spam got it.
   const reached = c.sent + c.delivered + c.complained;
   const parts: string[] = [];
+
   // No email reached anyone, though someone was on the list: said plainly,
   // since its pushes may still have gone (they follow push consent,
   // DEC-122), never "Sent to 0 people".
   if (reached) parts.push(`Sent to ${people(reached)}`);
   else if (c.bounced || c.failed || c.skipped) parts.push("No emails went out");
+
   if (c.bounced) parts.push(`${c.bounced} bounced`);
+
   if (c.failed) parts.push(`${c.failed} didn't get it`);
+
   if (c.skipped) parts.push(`${c.skipped} skipped (${reasonList(h.skippedBy)})`);
+
   return parts.length ? parts.join(" · ") : "No one was on the list.";
 }
 
@@ -373,8 +446,11 @@ const guardianCopies = (n: number) => `${n} guardian ${n === 1 ? "copy" : "copie
 export function guardianLine(c: Pick<MessageRecipientCounts, "guardianCopies" | "guardianCopiesMissed">): string {
   const sent = c.guardianCopies - c.guardianCopiesMissed;
   const parts: string[] = [];
+
   if (sent) parts.push(`${guardianCopies(sent)} sent`);
+
   if (c.guardianCopiesMissed) parts.push(`${sent ? c.guardianCopiesMissed : guardianCopies(c.guardianCopiesMissed)} didn't go out`);
+
   return parts.join(" · ");
 }
 
@@ -395,20 +471,25 @@ export const HISTORY_WORDS: Record<HistoryStatus, string> = {
 // banner's words: people, and guardian copies apart.
 export function retryQuestion(failed: number, copies = 0): string {
   if (failed > 0 && copies > 0) return `Send again to the ${people(failed)} and ${guardianCopies(copies)} it didn't reach?`;
+
   if (failed > 0) return `Send again to the ${people(failed)} it didn't reach?`;
+
   if (copies > 0) return `Send the ${guardianCopies(copies)} that didn't go out again?`;
+
   return "Try sending this message again?";
 }
 
 // historyTeenLine counts the teens a sent message was for (DEC-20), or "".
 export function historyTeenLine(teens: number): string {
   if (teens === 0) return "";
+
   return teens === 1 ? "1 of the people it was for is a teen." : `${teens} of the people it was for are teens.`;
 }
 
 // teenLine counts the teens who will get it (DEC-20), or "" for none.
 export function teenLine(s: AudienceSummary): string {
   if (s.teens === 0) return "";
+
   return s.teens === 1 ? "1 of them is a teen." : `${s.teens} of them are teens.`;
 }
 
@@ -417,30 +498,30 @@ export function teenLine(s: AudienceSummary): string {
 // they still get the email.
 export function pushLine(s: AudienceSummary): string {
   if (!s.push) return "";
+
   return `${s.push} also ${s.push === 1 ? "gets" : "get"} a push notification.`;
 }
 
 // A push row's reason (the pipeline's words) as the history says it.
-const PUSH_REASONS: Record<string, [one: string, many: string]> = {
-  "device gone": ["device gone", "devices gone"],
-  "hourly limit": ["over the hourly limit", "over the hourly limit"],
-  "push turned off for messages from leaders": ["turned notifications off for messages from leaders", "turned notifications off for messages from leaders"],
-  "push not turned on": ["turned notifications off", "turned notifications off"],
-  "push turned off by the church": ["notifications turned off by the church", "notifications turned off by the church"],
-  "recipient not active": ["not active", "not active"],
-  "no longer current": ["not sent: the message stopped", "not sent: the message stopped"],
-  "the push service refused it": ["refused by the push service", "refused by the push service"],
-  "the push service couldn't be reached": ["the push service couldn't be reached", "the push service couldn't be reached"],
-  "the notification was too large to push": ["too large to push", "too large to push"],
-  "didn't go out": ["didn't go out", "didn't go out"],
-  // A push reminder's (M3.13d3).
-  "push turned off for event updates": ["turned notifications off for event updates", "turned notifications off for event updates"],
-  "outside quiet hours": ["skipped: it would have come during quiet hours", "skipped: it would have come during quiet hours"],
-  "date cancelled or moved": ["not sent: the date was cancelled or moved", "not sent: the date was cancelled or moved"],
-  "push reminder turned off": ["not sent: push reminders were turned off", "not sent: push reminders were turned off"],
-  "no longer going": ["no longer going", "no longer going"],
-  "can't see this date anymore": ["can't see this date anymore", "can't see this date anymore"],
-};
+const PUSH_REASONS = new Map<string, [one: string, many: string]>([
+  ["device gone", ["device gone", "devices gone"]],
+  ["hourly limit", ["over the hourly limit", "over the hourly limit"]],
+  ["push turned off for messages from leaders", ["turned notifications off for messages from leaders", "turned notifications off for messages from leaders"]],
+  ["push not turned on", ["turned notifications off", "turned notifications off"]],
+  ["push turned off by the church", ["notifications turned off by the church", "notifications turned off by the church"]],
+  ["recipient not active", ["not active", "not active"]],
+  ["no longer current", ["not sent: the message stopped", "not sent: the message stopped"]],
+  ["the push service refused it", ["refused by the push service", "refused by the push service"]],
+  ["the push service couldn't be reached", ["the push service couldn't be reached", "the push service couldn't be reached"]],
+  ["the notification was too large to push", ["too large to push", "too large to push"]],
+  ["didn't go out", ["didn't go out", "didn't go out"]],
+  ["push turned off for event updates", ["turned notifications off for event updates", "turned notifications off for event updates"]],
+  ["outside quiet hours", ["skipped: it would have come during quiet hours", "skipped: it would have come during quiet hours"]],
+  ["date cancelled or moved", ["not sent: the date was cancelled or moved", "not sent: the date was cancelled or moved"]],
+  ["push reminder turned off", ["not sent: push reminders were turned off", "not sent: push reminders were turned off"]],
+  ["no longer going", ["no longer going", "no longer going"]],
+  ["can't see this date anymore", ["can't see this date anymore", "can't see this date anymore"]],
+]);
 
 // pushBadge is one person's push in their history row, in words (status
 // is never colour alone): "Push sent", "Push waiting until 8:00 AM", or
@@ -453,7 +534,8 @@ export function pushBadge(p: MessageHistoryPush): string {
     case "waiting":
       return p.until ? `Push waiting until ${p.until}` : "Push waiting";
   }
-  return p.reason ? `Push didn't go out: ${PUSH_REASONS[p.reason]?.[0] ?? p.reason}` : "Push didn't go out";
+
+  return p.reason ? `Push didn't go out: ${PUSH_REASONS.get(p.reason)?.[0] ?? p.reason}` : "Push didn't go out";
 }
 
 // pushHistoryLine counts a message's companion pushes (M3.13d2): "38
@@ -462,13 +544,16 @@ export function pushBadge(p: MessageHistoryPush): string {
 export function pushHistoryLine(c: MessagePushCounts | undefined): string {
   if (!c) return "";
   const parts: string[] = [];
+
   if (c.sent) parts.push(`${c.sent} pushed`);
   const waiting = (w: MessagePushWait) => (w.until ? `${w.n} waiting until ${w.until}` : `${w.n} waiting`);
+
   for (const w of c.waiting) parts.push(waiting(w));
   Object.entries(c.missed)
     .filter(([, n]) => n > 0)
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .forEach(([reason, n]) => parts.push(`${n} ${PUSH_REASONS[reason]?.[n === 1 ? 0 : 1] ?? reason}`));
+    .forEach(([reason, n]) => parts.push(`${n} ${PUSH_REASONS.get(reason)?.[n === 1 ? 0 : 1] ?? reason}`));
+
   return parts.length ? `Push notifications: ${parts.join(" · ")}` : "";
 }
 
@@ -479,6 +564,7 @@ export function pushHistoryLine(c: MessagePushCounts | undefined): string {
 export function confirmLine(eligible: number, at: string | null, zone: string): string {
   if (!at) return `Send to ${people(eligible)} now?`;
   const when = formatWhenIn(at, zone);
+
   return `Send to ${people(eligible)} ${/^(Today|Tomorrow) /.test(when) ? when[0].toLowerCase() + when.slice(1) : `on ${when}`}?`;
 }
 
@@ -493,18 +579,23 @@ export function confirmLine(eligible: number, at: string | null, zone: string): 
 export function statusLabel(m: Pick<Message, "status" | "scheduledAt" | "sentAt"> & { failedCount?: number; channel?: Message["channel"]; pushWaiting?: number }, zone: string, now = new Date()): string {
   if (m.channel === "push" && m.status === "sent") {
     if (m.sentAt) return `Pushed ${formatWhenIn(m.sentAt, zone, now)}`;
+
     return m.pushWaiting ? "Waiting to go out" : "Nobody got it";
   }
+
   switch (m.status) {
     case "draft": return "Draft";
     case "scheduled":
       if (!m.scheduledAt || new Date(m.scheduledAt).getTime() <= now.getTime()) return "Waiting to send";
+
       return `Scheduled for ${formatWhenIn(m.scheduledAt, zone, now)}`;
     case "sending": return "Sending";
     case "sent": {
       const word = m.failedCount ? "Partly sent" : "Sent";
+
       return m.sentAt ? `${word} ${formatWhenIn(m.sentAt, zone, now)}` : word;
     }
+
     case "failed": return "Failed";
     case "cancelled": return m.scheduledAt ? "Cancelled" : "Discarded";
   }

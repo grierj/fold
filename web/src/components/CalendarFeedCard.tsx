@@ -6,6 +6,7 @@ import { SecretFeedLink, useSecretFeed } from "./SecretFeedLink";
 
 export function CalendarFeedCard({ showHeading = true }: { showHeading?: boolean }) {
   const [scope, setScope] = useState<CalendarFeed["scope"]>("mine");
+
   const feed = useSecretFeed({
     load: async () => (await CalendarFeeds.get()).calendarFeed,
     deps: [],
@@ -22,6 +23,7 @@ export function CalendarFeedCard({ showHeading = true }: { showHeading?: boolean
   async function chooseScope(next: CalendarFeed["scope"]) {
     const prev = scope;
     setScope(next);
+
     if (!feed.hasToken) return;
     await feed.act(async () => {
       try {
@@ -30,6 +32,7 @@ export function CalendarFeedCard({ showHeading = true }: { showHeading?: boolean
         setScope(prev);
         throw err;
       }
+
       feed.setStatus("Feed choice saved.");
     }, "We couldn't save that choice.");
   }

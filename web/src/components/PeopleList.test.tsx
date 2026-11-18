@@ -1,3 +1,4 @@
+import { stubService } from "../test/service";
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
@@ -6,10 +7,12 @@ import { MemoryRouter } from "react-router-dom";
 import { RequestContactButton } from "./RequestContactButton";
 import { Contacts } from "../api/contacts";
 import { ApiError } from "../api/core";
-vi.mock("../api/contacts", () => ({ Contacts: { create: vi.fn() } }));
+
+stubService(Contacts, () => ({ create: vi.fn() }));
 
 const people = Array.from({ length: 60 }, (_, i) => ({ name: `Member ${String(i + 1).padStart(2, "0")}`, leader: i >= 55 }));
 const view = (rows = people) => <PeopleList rows={rows} noun="members" filters={[{ value: "leader", label: "Leaders", matches: (p) => p.leader }]}>{(p) => <li key={p.name}>{p.name}</li>}</PeopleList>;
+
 it("bounds all sixty people, preserves order, and focuses the new page count", async () => {
   Element.prototype.scrollIntoView = vi.fn();
   render(view());
@@ -22,6 +25,7 @@ it("bounds all sixty people, preserves order, and focuses the new page count", a
   expect(screen.getAllByRole("listitem")).toHaveLength(10);
   expect(screen.getByRole("button", { name: "Next members" })).toBeDisabled();
 });
+
 it("searches all rows, resets paging on every filter change, and keeps a useful empty state", async () => {
   render(view());
   await userEvent.click(screen.getByRole("button", { name: "Next members" }));
@@ -37,8 +41,9 @@ it("searches all rows, resets paging on every filter change, and keeps a useful 
   expect(screen.getByText("No one matches")).toBeInTheDocument();
   expect(within(screen.getByRole("list")).queryAllByRole("listitem")).toHaveLength(0);
 });
+
 it("keeps the real contact-request draft and async result across pages and search", async () => {
-  let reject!: (reason: unknown) => void;
+  let reject!: (cause: unknown) => void;
   vi.mocked(Contacts.create).mockReturnValue(new Promise((_, fail) => { reject = fail; }));
   render(<MemoryRouter><PeopleList rows={people} noun="members">{(p) => <li key={p.name}>{p.name}<RequestContactButton subjectUserId={Number(p.name.slice(-2))} subjectName={p.name} contextType="group" contextId={1} /></li>}</PeopleList></MemoryRouter>);
   await userEvent.click(within(screen.getAllByRole("listitem")[0]).getByRole("button", { name: "Request direct contact" }));

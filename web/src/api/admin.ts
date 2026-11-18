@@ -1,3 +1,4 @@
+import { isNumber } from "../lib/wireValues";
 import type {
   AdminBackupStatus,
   AdminJobStatusResponse,
@@ -40,7 +41,7 @@ export const Admin = {
 export const AdminGroups = {
   list: () => api<GroupListResponse>("/admin/groups"),
   addMember: (id: Id, target: number | { selectionId: string }, role: "leader" | "member" = "member", overLimit = false) =>
-    api<unknown>(path`/admin/groups/${id}/members`, { method: "POST", body: { ...(typeof target === "number" ? { userId: target } : target), role, overLimit } }),
+    api<unknown>(path`/admin/groups/${id}/members`, { method: "POST", body: { ...(isNumber(target) ? { userId: target } : target), role, overLimit } }),
 };
 
 export const AdminJobs = {

@@ -82,6 +82,7 @@ function PendingCard({ group, onDone }: { group: GroupSummary; onDone: (decision
   async function approve() {
     setBusy(true);
     setError(null);
+
     try {
       await Admin.approve(
         group.id,
@@ -156,6 +157,7 @@ function DeletionCard({ group, onDone }: { group: GroupSummary; onDone: () => vo
     if (!confirm(`Delete “${group.name}”? This removes the group, its members, and its events.`)) return;
     setBusy(true);
     setError(null);
+
     try {
       await Admin.deleteGroup(group.id);
       onDone();
@@ -169,6 +171,7 @@ function DeletionCard({ group, onDone }: { group: GroupSummary; onDone: () => vo
   async function keep() {
     setBusy(true);
     setError(null);
+
     try {
       await Admin.rejectDeletion(group.id);
       onDone();
@@ -214,17 +217,21 @@ function AccountRequestCard({ request, onDone }: { request: AccountRequest; onDo
   async function decide(approve: boolean) {
     if (approve && grantConsent && !evidence.trim()) {
       showFieldErrors(ref.current, () => setEvidenceError("Write how you received consent first."));
+
       return;
     }
+
     if (!approve && !confirm(`Reject the account request from ${request.name}? They'll be emailed.`)) return;
     setBusy(true);
     setError(null);
+
     try {
       if (approve) {
         await AdminAccountRequests.approve(request.id, note || undefined, undefined, grantConsent ? evidence.trim() : undefined);
       } else {
         await AdminAccountRequests.reject(request.id, note || undefined);
       }
+
       onDone();
     } catch (e) {
       setError(errorText(e, "That didn't work."));
@@ -234,9 +241,13 @@ function AccountRequestCard({ request, onDone }: { request: AccountRequest; onDo
   }
 
   const warnings: string[] = [];
+
   if (request.accountType === "teen") warnings.push("Teen: account consent required");
+
   if (request.warnings.duplicate) warnings.push("Duplicate pending request");
+
   if (request.warnings.honeypot) warnings.push("Honeypot filled");
+
   if (request.warnings.rateLimited) warnings.push("Many requests from one connection");
 
   return (
@@ -308,10 +319,12 @@ function ApprovalsTab({ onCount, onGroupDecided }: { onCount: (n: number) => voi
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
+
     try {
       const [pending, requested, accounts, guardian] = await Promise.all([
         Admin.pending(), Admin.deletions(), AdminAccountRequests.list(), AdminGuardianLinks.list(),
       ]);
+
       setLinks(guardian.guardianLinks);
       setNominations(guardian.nominations);
       setGroups(pending.groups);
@@ -455,16 +468,20 @@ function MemberManager({ group, users, onUnavailable, fallbackFocus }: {
     setMembers(null);
     setMembersLoading(true);
     setError(null);
+
     try {
       const { members: nextMembers } = await Groups.members(group.id);
       setMembers(nextMembers);
       setAccessUnavailable(false);
+
       return true;
     } catch (e) {
       const denied = e instanceof ApiError && (e.status === 401 || e.status === 403 || e.status === 404);
       setAccessUnavailable(denied);
       setError(errorText(e, "We couldn't load the members."));
+
       if (denied && collapseOnDenied) onUnavailable(group.id);
+
       return false;
     } finally {
       setMembersLoading(false);
@@ -476,20 +493,28 @@ function MemberManager({ group, users, onUnavailable, fallbackFocus }: {
   }, [load]);
 
   async function add() {
-    if (selection?.teen) { setAskPerson(selection); return; }
+    if (selection?.teen) {
+      setAskPerson(selection);
+
+      return;
+    }
+
     if (!selection && !addUserId) return;
     const target = selection ? { selectionId: selection.selectionId } : Number(addUserId);
     setBusy(true);
     setError(null);
+
     try {
       try {
         await AdminGroups.addMember(group.id, target, addRole);
       } catch (err) {
         // Full group: going over the limit is an explicit, audited choice (DEC-39).
         if (errorCode(err) !== "group_full") throw err;
+
         if (!confirm(`“${group.name}” is full. Add this person anyway?`)) return;
         await AdminGroups.addMember(group.id, target, addRole, true);
       }
+
       setAddUserId("");
       setSelection(null);
       await load();
@@ -518,6 +543,7 @@ function MemberManager({ group, users, onUnavailable, fallbackFocus }: {
 
   function cancelDeparture() {
     setDepartureMember(null);
+
     if (accessUnavailable) onUnavailable(group.id);
   }
 
@@ -602,6 +628,7 @@ function MemberManager({ group, users, onUnavailable, fallbackFocus }: {
 // Pending groups wait on the admin, so they lead; the rest follow by name (DEC-99).
 function sortGroups(groups: GroupSummary[]): GroupSummary[] {
   const rank = (g: GroupSummary) => (g.status === "pending" ? 0 : 1);
+
   return [...groups].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
 }
 
@@ -622,6 +649,7 @@ function GroupsTab({ users, groups, error, reload, onDeleted }: {
   const [deleted, setDeleted] = useState("");
   const deletedRef = useRef<HTMLParagraphElement>(null);
   const manageMemberButtons = useRef(new Map<number, HTMLButtonElement>());
+
   const closeMembers = useCallback((groupId: number) => {
     setOpenMembers((current) => current === groupId ? null : current);
   }, []);
@@ -637,6 +665,7 @@ function GroupsTab({ users, groups, error, reload, onDeleted }: {
     setDeletingId(g.id);
     setDeleteError(null);
     setDeleted("");
+
     try {
       await Admin.deleteGroup(g.id);
       onDeleted(g.id);
@@ -652,6 +681,7 @@ function GroupsTab({ users, groups, error, reload, onDeleted }: {
   const needle = query.trim().toLowerCase();
   const shown = sortGroups(groups ?? []).filter((g) => (!statusFilter || g.status === statusFilter) && (!needle || g.name.toLowerCase().includes(needle) || g.leaderName.toLowerCase().includes(needle)));
   const paging = usePage(shown, query + statusFilter);
+
   if (!groups) return error ? <ErrorNotice message={error} onRetry={reload} /> : <Skeleton kind="lines" />;
 
   return (
@@ -730,7 +760,7 @@ function GroupsTab({ users, groups, error, reload, onDeleted }: {
 
 const EMPTY_USER_FORM = {
   password: "",
-  role: "member" as "admin" | "member",
+  role: "member" as const,
   name: "",
   displayName: "",
   email: "",
@@ -748,11 +778,11 @@ function UserForm({
   onSaved: () => void;
   onCancel: () => void;
 }) {
-  const [form, setForm] = useState(
+  const [form, setForm] = useState<Omit<typeof EMPTY_USER_FORM, "role"> & { role: "admin" | "member" }>(
     initial
       ? {
           password: "",
-          role: initial.role as "admin" | "member",
+          role: initial.role === "admin" ? "admin" : "member",
           name: initial.name,
           displayName: initial.displayName,
           email: initial.email,
@@ -760,10 +790,12 @@ function UserForm({
         }
       : { ...EMPTY_USER_FORM }
   );
+
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ageBand, setAgeBand] = useState<AgeBand>("adult");
   const [birthDate, setBirthDate] = useState("");
+
   const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setForm((f) => ({ ...f, [k]: e.target.value }));
 
@@ -771,6 +803,7 @@ function UserForm({
     e.preventDefault();
     setBusy(true);
     setError(null);
+
     try {
       if (creating) {
         if (ageBand === "under13") return;
@@ -779,6 +812,7 @@ function UserForm({
         const { password: _password, ...rest } = form;
         await AdminUsers.update(initial.id, rest);
       }
+
       onSaved();
     } catch (err) {
       setError(errorText(err, "We couldn't save your changes."));
@@ -826,7 +860,11 @@ function UserForm({
           <Input type="tel" value={form.phone} onChange={set("phone")} maxLength={30} />
         </Field>
       </div>
-      {creating && <AccountAgeFields id="admin-user" label="Their age" ageBand={ageBand} birthDate={birthDate} onAgeBand={(band) => { setAgeBand(band); if (band === "teen") setForm((value) => ({ ...value, role: "member" })); }} onBirthDate={setBirthDate} />}
+      {creating && <AccountAgeFields id="admin-user" label="Their age" ageBand={ageBand} birthDate={birthDate} onAgeBand={(band) => {
+        setAgeBand(band);
+
+        if (band === "teen") setForm((value) => ({ ...value, role: "member" }));
+      }} onBirthDate={setBirthDate} />}
       <FormActions>
         <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy || (creating && ageBand === "under13")}>
           {busy ? "Saving…" : creating ? "Create user" : "Save user"}
@@ -849,6 +887,7 @@ function PasswordReset({ user, onDone }: { user: User; onDone: () => void }) {
     e.preventDefault();
     setBusy(true);
     setError(null);
+
     try {
       await AdminUsers.resetPassword(user.id, password);
       setDone(true);
@@ -887,6 +926,7 @@ function PasswordReset({ user, onDone }: { user: User; onDone: () => void }) {
 }
 
 type UserFilter = "all" | "admin" | "disabled" | "invited" | "email";
+
 const USER_FILTERS: { id: UserFilter; label: string }[] = [
   { id: "all", label: "All" },
   { id: "admin", label: "Admins" },
@@ -895,8 +935,10 @@ const USER_FILTERS: { id: UserFilter; label: string }[] = [
   // Shown only while someone has an email problem (M3.2c).
   { id: "email", label: "Email problems" },
 ];
+
 function matchesUserFilter(u: User, filter: UserFilter): boolean {
   if (filter === "email") return !!u.emailSuppression;
+
   return filter === "all" || (filter === "admin" ? u.role === "admin" : u.status === filter);
 }
 
@@ -929,6 +971,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
     setBusy(true);
     setError(null);
     setFeedStatus("");
+
     try {
       const who = publicName(u);
       const r = await AdminUsers.revokeCalendarFeed(u.id);
@@ -944,6 +987,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
     if (status === "disabled" && !confirm(`Disable ${publicName(u)}? They will be signed out and can't sign in.`)) return;
     setBusy(true);
     setError(null);
+
     try {
       await AdminUsers.update(u.id, { status });
       reload();
@@ -955,17 +999,26 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
   }
 
   async function openContactHistory(u: User) {
-    if (!u.email.trim()) { setError("Refresh the user list, then try opening this person's history again."); return; }
+    if (!u.email.trim()) {
+      setError("Refresh the user list, then try opening this person's history again.");
+
+      return;
+    }
+
     setBusy(true);
     setError(null);
     setFeedStatus("");
+
     try {
       const { people } = await ContactHistory.people({ email: u.email });
       const person = people[0];
+
       if (!person || people.length !== 1) {
         setError("We couldn't find contact access history for that person.");
+
         return;
       }
+
       navigate(`/admin/users/${encodeURIComponent(person.id)}/contact-history`);
     } catch (e) {
       setError(errorText(e, "We couldn't open contact access history."));
@@ -975,22 +1028,32 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
   }
 
   async function copyPersonId(u: User) {
-    if (!u.email.trim()) { setError("Refresh the user list, then try getting this person's ID again."); return; }
+    if (!u.email.trim()) {
+      setError("Refresh the user list, then try getting this person's ID again.");
+
+      return;
+    }
+
     setBusy(true);
     setError(null);
     setFeedStatus("");
+
     try {
       const { people } = await ContactHistory.people({ email: u.email });
       const person = people[0];
+
       if (!person || people.length !== 1) {
         setError("We couldn't find the person ID for that person.");
+
         return;
       }
+
       try {
         await navigator.clipboard?.writeText(person.id);
       } catch {
         // The visible status is also the fallback when clipboard access is unavailable.
       }
+
       setFeedStatus(`Person ID for ${person.name}: ${person.id}`);
     } catch (e) {
       setError(errorText(e, "We couldn't get that person ID."));
@@ -1002,14 +1065,17 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
   // Let Fold email someone again after a bounce or complaint (M3.2c, DEC-113).
   async function clearSuppression(u: User) {
     const who = publicName(u);
+
     // Clearing a complaint restarts optional mail to someone who marked it as spam.
     const ask = u.emailSuppression?.reason === "complaint"
       ? `${who} marked Fold's email as spam. Only do this if they asked for email again. Let Fold email ${who} again?`
       : `Let Fold email ${who} again?`;
+
     if (!confirm(ask)) return;
     setBusy(true);
     setError(null);
     setFeedStatus("");
+
     try {
       await AdminUsers.clearEmailSuppression(u.id);
       setFeedStatus(`Fold will email ${who} again.`);
@@ -1054,9 +1120,9 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
         <div className="mb-4 space-y-3">
           <SearchBox id="admin-user-search" label="Search by name or email" value={query} onChange={setQuery} disabled={editingRow} />
           <div role="group" aria-label="Filter users" className="flex flex-wrap gap-2">
-            {USER_FILTERS.filter((f) => f.id !== "email" || filter === "email" || users.some((u) => u.emailSuppression)).map((f) => (
-              <Chip key={f.id} disabled={editingRow} selected={filter === f.id} onClick={() => setFilter(f.id)}>{f.label}</Chip>
-            ))}
+            {USER_FILTERS.flatMap((f) => f.id !== "email" || filter === "email" || users.some((u) => u.emailSuppression) ? [
+              <Chip key={f.id} disabled={editingRow} selected={filter === f.id} onClick={() => setFilter(f.id)}>{f.label}</Chip>,
+            ] : [])}
           </div>
         </div>
       )}
@@ -1116,7 +1182,11 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                     <DeleteUserPanel
                       target={u}
                       action={leaving.action}
-                      onDone={(done) => { setLeaving(null); if (done) reload(); }}
+                      onDone={(done) => {
+                        setLeaving(null);
+
+                        if (done) reload();
+                      }}
                     />
                   )}
                 </td>
@@ -1201,6 +1271,7 @@ function ChurchTimezone() {
     setBusy(true);
     setError(null);
     setOk(false);
+
     try {
       const r = await Admin.setTimezone(tz.trim());
       invalidateSite({ timezone: r.timezone });
@@ -1214,7 +1285,9 @@ function ChurchTimezone() {
   }
 
   if (siteError) return <div className="mb-6 max-w-xl"><ErrorNotice message={errorText(siteError, "We couldn't load the church time zone.")} onRetry={retry} /></div>;
+
   if (loading) return <div className="mb-6 max-w-xl"><Skeleton kind="lines" count={1} /></div>;
+
   return (
     <Form noValidate onSubmit={save} className="mb-6 max-w-xl space-y-4">
       {guard}
@@ -1256,6 +1329,7 @@ function InviteTab() {
     setBusy(true);
     setError(null);
     setStatus(null);
+
     try {
       await Invitations.create({
         email,
@@ -1325,13 +1399,16 @@ function SelfSignupSetting() {
   const setting = useSavedSetting<"request" | "off">();
   // An unreadable setting is not shown as On or Off.
   const mode = setting.pending ?? site?.selfSignup;
+
   const change = (next: "request" | "off") => setting.change(next, async () => {
     const r = await AdminAccountRequests.setSelfSignup(next);
     invalidateSite({ selfSignup: r.selfSignup });
   });
 
   if (siteError) return <div className="mb-6 max-w-xl"><ErrorNotice message={errorText(siteError, "We couldn't load the self-signup setting.")} onRetry={retry} /></div>;
+
   if (loading) return <div className="mb-6 max-w-xl"><Skeleton kind="lines" count={1} /></div>;
+
   return (
     <div className="mb-6 max-w-xl space-y-2">
       <Choices legend="Self-signup" hint="People ask for an account on /join. Turning this off never removes existing accounts.">
@@ -1404,18 +1481,25 @@ export function AdminPage() {
   // /site failing leaves roomsEnabled unknown; a bookmarked Rooms tab then says so and offers a retry.
   const siteError = siteReadError ? errorText(siteReadError, "We couldn't load the rooms.") : null;
   const roomsShown = roomsEnabled === true || (roomsEnabled === null && requestedTab === "rooms");
-  const tab: AdminTab = requestedTab && ["approvals", "groups", "users", "invite", "settings", "system", ...(roomsShown ? ["rooms"] : [])].includes(requestedTab)
-    ? requestedTab as AdminTab : "approvals";
+
+  const visibleTabs: AdminTab[] = ["approvals", "groups", "users", "invite", "settings", "system"];
+
+  if (roomsShown) visibleTabs.push("rooms");
+  const tab = visibleTabs.find((candidate) => candidate === requestedTab) ?? "approvals";
+
   const [pendingCount, setPendingCount] = useState(0);
   const adminReady = !authLoading && !!user && isAdmin;
+
   // A delete that must wait for a fresh list (history_unavailable) is released
   // only by a load that began after it and worked (lib/deleteReload.ts).
   const usersLoad = useLoad(async () => {
     const started = reloadStarted();
     const { users } = await AdminUsers.list();
     reloadSucceeded(started);
+
     return users;
   }, [], { enabled: adminReady });
+
   // Counts for the Users and Groups chips; unknown (null) until loaded, so a
   // failed load shows no number rather than a wrong one.
   const userCount = usersLoad.data ? usersLoad.data.length : null;
@@ -1428,12 +1512,15 @@ export function AdminPage() {
   const groupsError = groupsLoad.error ? errorText(groupsLoad.error, "We couldn't load the groups.") : null;
   const loadGroups = groupsLoad.reload;
   const groupCount = groups ? groups.length : null;
+
   // Loaded once here like the groups: the Rooms chip counts the list the tab shows.
   // Whether bookings wait for an admin comes with it (M2.1d).
   const roomsLoad = useLoad(async () => {
     const { rooms, needApproval } = await AdminRooms.list();
+
     return { rooms, needApproval: needApproval === true };
   }, [], { enabled: adminReady && roomsEnabled === true });
+
   const rooms = roomsLoad.data?.rooms ?? null;
   const needApproval = roomsLoad.data ? roomsLoad.data.needApproval : null;
   const roomsError = roomsLoad.error ? errorText(roomsLoad.error, "We couldn't load the rooms.") : null;

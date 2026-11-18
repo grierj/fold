@@ -18,6 +18,7 @@ export function EmptyState({
   framed?: boolean;
 }) {
   const Title = level === 1 ? "h1" : level === 2 ? "h2" : "p";
+
   return (
     <div
       className={

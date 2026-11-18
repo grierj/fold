@@ -1,3 +1,4 @@
+import * as schema from "valibot";
 import { expect, test } from "@playwright/test";
 import { apiAs, signIn } from "./helpers";
 
@@ -6,13 +7,14 @@ import { apiAs, signIn } from "./helpers";
 // the same words again.
 test("an admin books a typed place into its room and the date shows the room once", async ({ page, request }) => {
   const admin = await apiAs(request, "grier");
-  const { groups } = (await admin("GET", "/groups")) as { groups: { id: number; name: string }[] };
+  const { groups } = schema.parse(schema.looseObject({ groups: schema.array(schema.looseObject({ id: schema.number(), name: schema.string() })) }), (await admin("GET", "/groups")));
   const group = groups.find((g) => g.name === "Room 201 class")!;
   const day = new Date(Date.now() + 53 * 864e5).toISOString().slice(0, 10);
-  const { event } = (await admin("POST", `/groups/${group.id}/events`, {
+
+  const { event } = schema.parse(schema.looseObject({ event: schema.looseObject({ id: schema.number() }) }), (await admin("POST", `/groups/${group.id}/events`, {
     title: "Typed place night", startsLocal: `${day}T11:00`, durationMinutes: 60, tzid: "America/Boise",
     location: "Fellowship Hall",
-  })) as { event: { id: number } };
+  })));
 
   await signIn(page, "grier");
   await page.goto("/admin?tab=rooms");

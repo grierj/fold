@@ -1,3 +1,4 @@
+import * as schema from "valibot";
 import { expect, test } from "@playwright/test";
 import { apiAs, signIn, fromMore } from "./helpers";
 
@@ -11,11 +12,13 @@ function futureDate(days: number): string {
 test("visibility is chosen at creation and edited inside Edit series", async ({ page, request }) => {
   test.setTimeout(30_000);
   const admin = await apiAs(request, "grier");
-  const { group } = (await admin("POST", "/groups", {
+
+  const { group } = schema.parse(schema.looseObject({ group: schema.looseObject({ id: schema.number() }) }), (await admin("POST", "/groups", {
     name: "Bell choir", description: "", tags: [], location: "Loft", visibility: "private", memberLimit: null,
-  })) as { group: { id: number } };
+  })));
 
   await signIn(page, "grier");
+
   const schedule = async (title: string, days: number, choice?: string) => {
     await page.goto(`/groups/${group.id}/events/new`);
     const vis = (v: string) => page.getByRole("group", { name: "Who can see this event" }).locator(`input[value="${v}"]`);
@@ -25,26 +28,29 @@ test("visibility is chosen at creation and edited inside Edit series", async ({ 
     await page.getByLabel("Title (optional)").fill(title);
     await page.getByLabel("Date", { exact: true }).fill(futureDate(days));
     await page.getByLabel("Start time").fill("19:00");
+
     if (choice) {
       await vis(choice).check();
       await expect(page.getByText("Only leaders will see who signed up")).toBeVisible();
       await page.getByLabel("Reason (optional)").fill("Open rehearsal");
     }
+
     // Choosing "Every week" selects the start date's weekday. Clicking
     // a fixed day here toggled it off whenever that date was a Monday.
     await page.getByRole("button", { name: "Every week" }).click();
     await page.getByRole("button", { name: "Schedule event" }).click();
     await expect(page).toHaveURL(new RegExp(`/groups/${group.id}$`));
   };
+
   await schedule("Rehearsal", 3, "public");
   await schedule("Sectionals", 4);
   await expect(page.getByRole("group", { name: "Who can see this event" })).toHaveCount(0);
 
-  const evs = (await admin("GET", `/groups/${group.id}`)) as {
-    upcomingEvents: { title: string; visibility: string; leaderOpened: boolean }[];
-  };
+  const evs = schema.parse(schema.looseObject({ upcomingEvents: schema.array(schema.looseObject({ title: schema.string(), visibility: schema.string(), leaderOpened: schema.boolean() })) }), (await admin("GET", `/groups/${group.id}`)));
+
   for (const o of evs.upcomingEvents) {
     if (o.title === "Rehearsal") expect([o.visibility, o.leaderOpened]).toEqual(["public", true]);
+
     if (o.title === "Sectionals") expect([o.visibility, o.leaderOpened]).toEqual(["private", false]);
   }
 

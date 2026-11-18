@@ -1,4 +1,7 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { renderWithAuth } from "../test/auth";
+import { stubService } from "../test/service";
+import { Site } from "../api/site";
+import { cleanup, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,8 +9,10 @@ import { ApiError } from "../api/core";
 import { Login } from "./Login";
 
 const login = vi.fn();
-vi.mock("../auth", () => ({ useAuth: () => ({ login, user: null }) }));
-vi.mock("../api/site", async (original) => ({ ...(await original<typeof import("../api/site")>()), Site: { get: vi.fn().mockResolvedValue({ name: "Grace Community Church" }) } }));
+
+const render = renderWithAuth(() => ({ login, user: null }));
+
+stubService(Site, () => ({ get: vi.fn().mockResolvedValue({ name: "Grace Community Church" }) }));
 
 function renderLogin() {
   return render(
@@ -37,22 +42,24 @@ describe("Login", () => {
     expect(screen.queryByText(line)).not.toBeInTheDocument();
     cleanup();
     Object.defineProperty(navigator, "standalone", { value: true, configurable: true });
+
     try {
       renderLogin();
       expect(screen.getByText(line)).toBeInTheDocument();
     } finally {
-      delete (navigator as unknown as Record<string, unknown>).standalone;
+      Reflect.deleteProperty(navigator, "standalone");
     }
   });
 
   it("clears the app icon's count, since nobody is signed in", () => {
     const clear = vi.fn(async () => {});
     Object.assign(navigator, { clearAppBadge: clear });
+
     try {
       renderLogin();
       expect(clear).toHaveBeenCalled();
     } finally {
-      delete (navigator as unknown as Record<string, unknown>).clearAppBadge;
+      Reflect.deleteProperty(navigator, "clearAppBadge");
     }
   });
 

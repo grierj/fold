@@ -1,3 +1,4 @@
+import * as schema from "valibot";
 import { expect, test, type Page } from "@playwright/test";
 import { apiAs, signIn, signOut } from "./helpers";
 
@@ -10,6 +11,7 @@ const dir = process.env.SCREENS_DIR;
 const widths = [390, 768, 1280];
 
 test.use({ locale: "en-US", timezoneId: "America/Boise" });
+
 test.skip(!dir, "set SCREENS_DIR to capture screenshots");
 
 async function shoot(page: Page, name: string) {
@@ -23,12 +25,13 @@ async function shoot(page: Page, name: string) {
 test("capture the main pages", async ({ page, request }) => {
   test.setTimeout(120_000);
   const admin = await apiAs(request, "grier");
-  const { groups } = (await admin("GET", "/groups")) as { groups: { id: number; name: string }[] };
+  const { groups } = schema.parse(schema.looseObject({ groups: schema.array(schema.looseObject({ id: schema.number(), name: schema.string() })) }), (await admin("GET", "/groups")));
   const room = groups.find((g) => g.name === "Room 201 class")!;
-  const { event } = (await admin("POST", `/groups/${room.id}/events`, {
+
+  const { event } = schema.parse(schema.looseObject({ event: schema.looseObject({ id: schema.number() }) }), (await admin("POST", `/groups/${room.id}/events`, {
     title: "Thursday class", startsLocal: "2026-11-19T19:00", durationMinutes: 60, tzid: "America/Boise",
     location: "Room 201", recurrenceRule: "FREQ=WEEKLY;COUNT=3",
-  })) as { event: { id: number } };
+  })));
 
   await page.goto("/");
   await expect(page.getByText("Room 201 class").first()).toBeVisible();
@@ -54,20 +57,24 @@ test("capture the main pages", async ({ page, request }) => {
   await shoot(page, "profile");
   await page.goto("/notifications");
   await shoot(page, "notifications");
+
   for (const tab of ["approvals", "groups", "users", "invite"]) {
     await page.goto(tab === "approvals" ? "/admin" : `/admin?tab=${tab}`);
     await page.waitForLoadState("networkidle");
     await shoot(page, `admin-${tab}`);
   }
+
   await signOut(page);
 });
 
 test("capture household selected answers, metadata editor and long care disclosures", async ({ page, request }) => {
   const { uiPages, open } = await import("./ui-pages");
+
   for (const ui of (await uiPages(request)).filter((p) => ["profile-household", "event", "event-leader"].includes(p.id))) {
     await signIn(page, ui.who!);
     await open(page, ui);
     await shoot(page, ui.id === "profile-household" ? "household-profile" : `household-${ui.id}`);
+
     if (ui.id === "event-leader") {
       await page.getByRole("button", { name: "Show full care notes for Kit" }).click();
       await shoot(page, "household-care-expanded");

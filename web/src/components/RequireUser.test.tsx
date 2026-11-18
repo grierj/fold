@@ -1,16 +1,24 @@
-import { render, screen } from "@testing-library/react";
+import { isObject, isString } from "../lib/wireValues";
+import { renderWithAuth } from "../test/auth";
+import { screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 
-const actor = vi.hoisted(() => ({ user: null as { id: number } | null }));
-vi.mock("../auth", () => ({ useAuth: () => ({ user: actor.user }) }));
+type TestSession = { user: { id: number } | null };
+
+const actor: TestSession = { user: null };
+
+const render = renderWithAuth(() => ({ user: actor.user }));
 
 import { RequireUser } from "./RequireUser";
 
 function Login() {
-  const from = (useLocation().state as { from?: string } | null)?.from;
+  const state: unknown = useLocation().state;
+  const from = isObject(state) && "from" in state && isString(state.from) ? state.from : undefined;
+
   return <p>Log in, then back to {from}</p>;
 }
+
 const mount = () => render(<MemoryRouter initialEntries={["/groups/3/events/new?x=1"]}><Routes>
   <Route path="/groups/:id/events/new" element={<RequireUser><p>The form</p></RequireUser>} />
   <Route path="/login" element={<Login />} />

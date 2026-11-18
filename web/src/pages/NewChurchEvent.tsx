@@ -26,12 +26,15 @@ export function NewChurchEvent() {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+
     if (!f.begin()) return;
+
     try {
       const { event } = await Events.createChurch({
         ...f.body(),
         hosts: hostEmail.trim() ? [hostEmail.trim()] : [],
       });
+
       markSaved();
       navigate(`/events/${event.id}`);
     } catch (err) {
@@ -48,6 +51,7 @@ export function NewChurchEvent() {
       </div>
     );
   }
+
   if (!isAdmin) {
     return (
       <div className="fold-page fold-page-narrow text-text-muted">

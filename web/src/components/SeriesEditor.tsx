@@ -73,6 +73,7 @@ export function SeriesEditor({
   onRoomChanged?: () => void;
 }) {
   const simple = isSimpleWeekly(instance.recurrenceRule);
+
   const when = useWhenState({
     date: instance.startsLocal.slice(0, 10),
     time: instance.startsLocal.slice(11, 16) || "19:00",
@@ -80,11 +81,15 @@ export function SeriesEditor({
     recurring: instance.recurrenceRule !== "",
     days: (() => {
       const picked = bydays(instance.recurrenceRule);
+
       if (picked.length > 0) return picked;
+
       if (isWeekly(instance.recurrenceRule)) return [weekdayCode(instance.startsLocal.slice(0, 10))];
+
       return [];
     })(),
   });
+
   const { date, time, duration, recurring, days } = when;
   const [tzid, setTzid] = useState(instance.tzid);
   const [title, setTitle] = useState(instance.title);
@@ -92,6 +97,7 @@ export function SeriesEditor({
   const [location, setLocation] = useState(instance.location);
   const [rule, setRule] = useState(instance.recurrenceRule);
   const [until, setUntil] = useState(instance.rruleUntil ?? "");
+
   const initial: EventOptionValues = {
     seats: seatsFrom(instance.capacity, instance.waitlistEnabled, instance.guestsAllowed),
     video: {
@@ -104,6 +110,7 @@ export function SeriesEditor({
     reminder: instance.reminderEmailMinutes ?? DEFAULT_REMINDER_MINUTES,
     reminderPush: instance.reminderPush ?? true,
   };
+
   const [options, setOptions] = useState(initial);
   // Open on edit, so what is already set is in view (DEC-95).
   const [moreOpen, setMoreOpen] = useState(true);
@@ -117,19 +124,25 @@ export function SeriesEditor({
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
+
     if (simple && recurring && days.length === 0) {
       setError("Pick at least one day to repeat weekly.");
+
       return;
     }
+
     const problem = validateEventOptions(options);
+
     if (problem) {
       showFieldErrors(root.current, () => {
         setError(problem.message);
         setOptionErrors({ [problem.field]: problem.message });
         setMoreOpen(true);
       });
+
       return;
     }
+
     setOptionErrors({});
     setBusy(true);
     setError(null);
@@ -137,6 +150,7 @@ export function SeriesEditor({
     const { seats, video, childcare, remote, reminder, reminderPush } = options;
     const capTrimmed = seats.capacity.trim();
     const capInitial = initial.seats.capacity;
+
     // Only send capacity fields that changed: on the group page the
     // initial capacity is the date's effective value, and an untouched
     // field must not clobber a per-date override.
@@ -150,17 +164,25 @@ export function SeriesEditor({
       recurrenceRule,
       rruleUntil: until,
     };
+
     if (JSON.stringify(childcare) !== JSON.stringify(initial.childcare)) Object.assign(body, childcareBody(childcare));
+
     if (capTrimmed !== capInitial) body.capacity = capTrimmed === "" ? null : Number(capTrimmed);
+
     if (seats.waitlist !== instance.waitlistEnabled) body.waitlistEnabled = seats.waitlist;
+
     if (seats.guests !== instance.guestsAllowed) body.guestsAllowed = seats.guests;
+
     if (reminder !== initial.reminder) body.reminderEmailMinutes = reminder;
+
     if (reminderPush !== initial.reminderPush) body.reminderPush = reminderPush;
+
     // Same only-when-changed rule as capacity: an untouched remote cap
     // on the group page must not clobber a per-date override.
     if (remote.available !== initial.remote.available || remote.capacity.trim() !== initial.remote.capacity) {
       Object.assign(body, remoteBody(remote));
     }
+
     if (
       video.provider !== initial.video.provider ||
       video.url.trim() !== initial.video.url ||
@@ -168,6 +190,7 @@ export function SeriesEditor({
     ) {
       Object.assign(body, videoBody(video));
     }
+
     try {
       await Events.update(instance.eventId, body);
       markSaved();
@@ -175,6 +198,7 @@ export function SeriesEditor({
     } catch (err) {
       const msg = errorText(err, "We couldn't update the series.");
       const field = optionFieldOfError(err);
+
       if (field) {
         showFieldErrors(root.current, () => {
           setError(msg);
@@ -184,6 +208,7 @@ export function SeriesEditor({
       } else {
         setError(msg);
       }
+
       setBusy(false);
     }
   }

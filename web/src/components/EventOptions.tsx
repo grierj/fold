@@ -18,6 +18,7 @@ function optionsSummary(v: EventOptionValues, visibility?: Visibility, pushOn = 
   const { seats, video, remote, childcare, reminder } = v;
   const cap = seats.capacity.trim();
   const seatText = cap === "" ? "No seat limit" : `${cap} ${cap === "1" ? "seat" : "seats"}${seats.waitlist ? " with waitlist" : ""}`;
+
   const parts = [
     ...(visibility ? [`Visible to: ${VISIBILITY_NAMES[visibility]}`] : []),
     seatText,
@@ -26,6 +27,7 @@ function optionsSummary(v: EventOptionValues, visibility?: Visibility, pushOn = 
     childcare.available ? "Childcare" : "No childcare",
     reminderSummary(reminder, pushOn ? v.reminderPush : undefined),
   ];
+
   return parts.join(" · ");
 }
 
@@ -46,6 +48,7 @@ function MoreOptions({
 }) {
   const regionId = useId();
   const summaryId = useId();
+
   return (
     <div className="border-t border-border pt-4">
       <Button
@@ -72,6 +75,7 @@ function MoreOptions({
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   const id = useId();
+
   return (
     <div role="group" aria-labelledby={id} className="space-y-3 border-t border-border pt-4">
       <h3 id={id} className="text-base font-semibold">
@@ -108,6 +112,7 @@ export function EventOptions({
   // notifications on devices turned off.
   const pushOn = usePushEnabled();
   const set = <K extends keyof EventOptionValues>(key: K) => (next: EventOptionValues[K]) => onChange({ ...values, [key]: next });
+
   return (
     <MoreOptions open={open} onOpenChange={onOpenChange} summary={optionsSummary(values, visibility?.value, pushOn)}>
       {visibility?.field}

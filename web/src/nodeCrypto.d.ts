@@ -8,6 +8,7 @@ declare module "node:crypto" {
     digest(): Uint8Array;
     digest(encoding: "hex"): string;
   }
+
   export function createHash(algorithm: "sha256"): Hash;
   export function randomBytes(size: number): Uint8Array;
 }

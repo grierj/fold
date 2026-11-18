@@ -14,6 +14,7 @@ function setup() {
       <button type="button">Elsewhere</button>
     </>,
   );
+
   return { edit, del, trigger: screen.getByRole("button", { name: "More for Sam" }) };
 }
 

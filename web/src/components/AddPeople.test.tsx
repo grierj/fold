@@ -1,3 +1,5 @@
+import { testInvitation } from "../test/fixtures";
+import { stubService } from "../test/service";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
@@ -8,24 +10,31 @@ import { Invitations } from "../api/invitations";
 import { People } from "../api/people";
 import { AddPeople } from "./AddPeople";
 
-vi.mock("../api/people", async (actual) => ({ ...(await actual<typeof import("../api/people")>()), People: { search: vi.fn() } }));
-vi.mock("../api/groups", async (actual) => ({ ...(await actual<typeof import("../api/groups")>()), Groups: { addMember: vi.fn() } }));
-vi.mock("../api/invitations", async (actual) => ({ ...(await actual<typeof import("../api/invitations")>()), Invitations: { create: vi.fn() } }));
+stubService(People, () => ({ search: vi.fn() }));
+
+stubService(Groups, () => ({ addMember: vi.fn() }));
+
+stubService(Invitations, () => ({ create: vi.fn() }));
 
 const pat = { selectionId: "opaque-pat", displayName: "Pat Lee", teen: false, sharedGroups: [], otherGroups: [] };
 const onAdded = vi.fn();
+
 function panel(over: Partial<React.ComponentProps<typeof AddPeople>> = {}) {
   render(<MemoryRouter><AddPeople groupId={1} groupName="Choir" memberCount={2} memberLimit={null} canSearch onAdded={onAdded} {...over} /></MemoryRouter>);
 }
+
 async function openPanel() { await userEvent.click(screen.getByRole("button", { name: "Add people" })); }
+
 async function pickPat() {
   await userEvent.type(screen.getByRole("combobox", { name: "Find a person by name" }), "Pat");
   await userEvent.click(await screen.findByRole("option"));
 }
+
 async function useEmail(address: string) {
   await userEvent.click(screen.getByRole("button", { name: "Use an email instead" }));
   await userEvent.type(screen.getByLabelText("Email address"), address);
 }
+
 const noAccount = () => new ApiError(404, "user not found", { code: "not_found" });
 
 beforeEach(() => {
@@ -76,7 +85,7 @@ it("switches to one email field and adds an existing account", async () => {
 
 it("offers the invitation when no account uses the email, and sends it to that email", async () => {
   vi.mocked(Groups.addMember).mockRejectedValue(noAccount());
-  vi.mocked(Invitations.create).mockResolvedValue({ invitation: {} } as Awaited<ReturnType<typeof Invitations.create>>);
+  vi.mocked(Invitations.create).mockResolvedValue({ invitation: testInvitation() });
   panel(); await openPanel(); await useEmail("new@example.com");
   await userEvent.click(screen.getByRole("button", { name: "Add member" }));
   expect(await screen.findByText("No account uses that email. Invite them to Fold?")).toBeInTheDocument();
@@ -128,7 +137,7 @@ it("adds nobody when the leader declines the over-limit prompt", async () => {
 
 it("carries the over-limit choice into the invitation for a full group", async () => {
   vi.mocked(Groups.addMember).mockRejectedValue(noAccount());
-  vi.mocked(Invitations.create).mockResolvedValue({ invitation: {} } as Awaited<ReturnType<typeof Invitations.create>>);
+  vi.mocked(Invitations.create).mockResolvedValue({ invitation: testInvitation() });
   panel({ memberCount: 3, memberLimit: 3 }); await openPanel(); await useEmail("new@example.com");
   await userEvent.click(screen.getByRole("button", { name: "Add member" }));
   await userEvent.click(await screen.findByRole("checkbox", { name: /Invite over the limit anyway/ }));

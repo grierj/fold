@@ -33,8 +33,10 @@ export function RejectGroupDialog({ groupName, onReject, onCancel }: {
     const behind = Array.from(document.body.children).filter((el) => el !== overlay.current && !el.hasAttribute("inert"));
     behind.forEach((el) => el.setAttribute("inert", ""));
     panel.current?.querySelector<HTMLElement>("textarea")?.focus();
+
     return () => {
       behind.forEach((el) => el.removeAttribute("inert"));
+
       // The opener may be gone by now (the card leaves the list once rejected);
       // the page then moves focus to its status line instead.
       if (returnTo?.isConnected) returnTo.focus();
@@ -44,14 +46,19 @@ export function RejectGroupDialog({ groupName, onReject, onCancel }: {
   function keyDown(event: React.KeyboardEvent<HTMLDivElement>) {
     if (event.key === "Escape") {
       event.preventDefault();
+
       if (!busy) onCancel();
+
       return;
     }
+
     if (event.key !== "Tab") return;
     const controls = Array.from(panel.current?.querySelectorAll<HTMLElement>("button:not([disabled]), textarea") ?? []);
+
     if (!controls.length) return;
     const first = controls[0];
     const last = controls[controls.length - 1];
+
     if (event.shiftKey && document.activeElement === first) {
       event.preventDefault();
       last.focus();
@@ -65,11 +72,13 @@ export function RejectGroupDialog({ groupName, onReject, onCancel }: {
     setBusy(true);
     setFieldError(null);
     setError(null);
+
     try {
       await onReject(message.trim());
     } catch (e) {
       const code = errorCode(e);
       const text = errorText(e, "We couldn't reject that.");
+
       if (code && FIELD_ERRORS.has(code)) setFieldError(text);
       else setError(text);
       setBusy(false);

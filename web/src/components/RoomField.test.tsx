@@ -1,4 +1,7 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { requiredElement } from "../test/dom";
+import { renderWithAuth } from "../test/auth";
+import { stubService } from "../test/service";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 import { ApiError } from "../api/core";
@@ -9,9 +12,12 @@ import { Form } from "./ui/Form";
 import { RoomField } from "./RoomField";
 
 const actor = { isAdmin: false };
-vi.mock("../auth", () => ({ useAuth: () => actor }));
-vi.mock("../api/site", async (importActual) => ({ ...(await importActual<typeof import("../api/site")>()), Site: { get: vi.fn() } }));
-vi.mock("../api/rooms", async (importActual) => ({ ...(await importActual<typeof import("../api/rooms")>()), DateRooms: { list: vi.fn(), set: vi.fn() } }));
+
+const render = renderWithAuth(() => actor);
+
+stubService(Site, () => ({ get: vi.fn() }));
+
+stubService(DateRooms, () => ({ list: vi.fn(), set: vi.fn() }));
 
 const hall: RoomPickerItem = { id: 1, name: "Fellowship Hall", building: "Main", capacity: 80, features: "", restricted: false, busy: false, tooSmall: false };
 const chapel: RoomPickerItem = { id: 2, name: "Chapel", building: "", capacity: null, features: "", restricted: false, busy: true, tooSmall: false };
@@ -29,15 +35,17 @@ beforeEach(() => {
 // Inside a Form, as in both editors, so nothing here can submit it by accident.
 function show(onChanged = vi.fn()) {
   render(<Form noValidate onSubmit={(e) => e.preventDefault()}><RoomField eventId={7} date="2026-12-01" idPrefix="t" onChanged={onChanged} /></Form>);
+
   return onChanged;
 }
+
 const select = () => screen.findByRole("combobox", { name: /^Room/ });
 
 it("loads the rooms for the date and words each option", async () => {
   show();
   const box = await select();
   expect(DateRooms.list).toHaveBeenCalledWith(7, "2026-12-01");
-  const labels = Array.from((box as HTMLSelectElement).options).map((o) => o.textContent);
+  const labels = Array.from(requiredElement(box, HTMLSelectElement).options).map((o) => o.textContent);
   expect(labels).toEqual([
     "No room",
     "Fellowship Hall · Main (80 seats)",
@@ -281,7 +289,7 @@ it("lists suggested rooms first with why, then every other room once", async () 
   });
   show();
   const box = await select();
-  expect((box as HTMLSelectElement).options[0].textContent).toBe("No room");
+  expect(requiredElement(box, HTMLSelectElement).options[0].textContent).toBe("No room");
   expect(groupsOf(box)).toEqual([
     { label: "Suggested", options: ["Closet · Annex (1 seat) — may be too small — Used by this group 6 times", "Chapel — in use at this time — Used once"] },
     { label: "Other rooms", options: ["Fellowship Hall · Main (80 seats)"] },

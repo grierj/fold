@@ -13,12 +13,14 @@ test("an admin makes a room's calendar link, it serves ICS, and turning it off s
   const make = panel.getByRole("button", { name: "Create calendar link" });
   const remake = panel.getByRole("button", { name: "Make a new link" });
   await expect(make.or(remake)).toBeVisible();
+
   if (await remake.isVisible()) {
     page.once("dialog", (d) => void d.accept());
     await remake.click();
   } else {
     await make.click();
   }
+
   const link = panel.getByRole("textbox", { name: "Calendar link" });
   await expect(link).toHaveValue(/\/cal\/rooms\/\d+\/[A-Za-z0-9_-]+\.ics$/);
   const url = new URL(await link.inputValue());

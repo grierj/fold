@@ -11,6 +11,7 @@ export type RoomView = "day" | "week";
 // it to one date, else the event page (as the calendar's occurrenceLink).
 export function slotLink(slot: RoomSlot): string | null {
   if (slot.reserved || !slot.eventId) return null;
+
   return slot.dateUrl || `/events/${slot.eventId}`;
 }
 
@@ -18,8 +19,11 @@ export function slotLink(slot: RoomSlot): string | null {
 // opened event of a group the viewer can't see.
 export function slotByline(slot: RoomSlot): string {
   if (slot.groupName) return slot.groupName;
+
   if (slot.churchWide) return "Church-wide";
+
   if (slot.hostedBy) return `Hosted by ${slot.hostedBy}`;
+
   return "";
 }
 
@@ -28,24 +32,31 @@ export function slotByline(slot: RoomSlot): string {
 // block's accessible name and its tooltip; the visible words come first.
 export function slotLabel(slot: RoomSlot, zone: string): string {
   const time = formatTimeRange(slot.startsAt, slot.endsAt, zone);
+
   if (slot.reserved) return `${time}, Reserved`;
+
   return [time, slot.title, slotByline(slot), slot.waiting && "Waiting for approval"].filter(Boolean).join(", ");
 }
 
 export function viewDays(from: string, to: string): string[] {
   const out: string[] = [];
+
   for (let d = from; d <= to && out.length < 7; d = addDays(d, 1)) out.push(d);
+
   return out;
 }
 
 export function slotsByDay(slots: RoomSlot[], zone: string): Map<string, RoomSlot[]> {
   const out = new Map<string, RoomSlot[]>();
+
   for (const s of [...slots].sort(byStart)) {
     const d = dayOf(s.startsAt, zone);
     const list = out.get(d);
+
     if (list) list.push(s);
     else out.set(d, [s]);
   }
+
   return out;
 }
 
@@ -60,31 +71,42 @@ export type PlacedSlot = { slot: RoomSlot; start: number; end: number; lane: num
 
 export function placeSlots(slots: RoomSlot[], day: string, zone: string): PlacedSlot[] {
   const placed = slots
-    .map((slot) => ({ slot, start: minuteOfDay(slot.startsAt, day, zone), end: minuteOfDay(slot.endsAt, day, zone), lane: 0, lanes: 1 }))
-    .filter((p) => p.end > p.start)
+    .flatMap((slot) => {
+      const start = minuteOfDay(slot.startsAt, day, zone);
+      const end = minuteOfDay(slot.endsAt, day, zone);
+
+      return end > start ? [{ slot, start, end, lane: 0, lanes: 1 }] : [];
+    })
     .sort((a, b) => a.start - b.start || a.end - b.end);
+
   let cluster: PlacedSlot[] = [];
   let clusterEnd = -1;
   let laneEnds: number[] = [];
+
   const close = () => {
     for (const p of cluster) p.lanes = laneEnds.length;
     cluster = [];
     laneEnds = [];
   };
+
   for (const p of placed) {
     if (p.start >= clusterEnd) close();
     let lane = laneEnds.findIndex((end) => end <= p.start);
+
     if (lane < 0) {
       lane = laneEnds.length;
       laneEnds.push(p.end);
     } else {
       laneEnds[lane] = p.end;
     }
+
     p.lane = lane;
     cluster.push(p);
     clusterEnd = Math.max(clusterEnd, p.end);
   }
+
   close();
+
   return placed;
 }
 
@@ -93,14 +115,16 @@ export function placeSlots(slots: RoomSlot[], day: string, zone: string): Placed
 const DAY_START_HOUR = 7;
 const DAY_END_HOUR = 22;
 
-export function hourRange(rooms: RoomCalendarRoom[], day: string, zone: string): { start: number; end: number } {
+export function hourRange(rooms: RoomCalendarRoom[], day: string, zone: string) {
   let start = DAY_START_HOUR;
   let end = DAY_END_HOUR;
+
   for (const r of rooms) {
     for (const p of placeSlots(r.bookings, day, zone)) {
       start = Math.min(start, Math.floor(p.start / 60));
       end = Math.max(end, Math.ceil(p.end / 60));
     }
   }
+
   return { start, end };
 }

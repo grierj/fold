@@ -14,8 +14,11 @@ export function RoomOptions<R extends { id: number }>({ rooms, suggestions, labe
   const option = (r: R, reason?: string) => (
     <option key={r.id} value={String(r.id)} disabled={disabled?.(r)}>{label(r, reason)}</option>
   );
+
   const groups = suggestedRooms(rooms, suggestions);
+
   if (!groups) return <>{rooms.map((r) => option(r))}</>;
+
   return (
     <>
       <optgroup label={groups.label}>{groups.suggested.map(({ room, reason }) => option(room, reason))}</optgroup>

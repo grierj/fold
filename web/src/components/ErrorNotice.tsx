@@ -12,6 +12,7 @@ export function ErrorNotice({ message, onRetry }: { message: string; onRetry?: (
       </div>
     );
   }
+
   return (
     <div role="alert" className="flex flex-col items-start gap-4 rounded-lg bg-surface p-6 sm:flex-row sm:gap-6">
       <div className="w-16 shrink-0">

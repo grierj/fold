@@ -6,16 +6,18 @@ import type { CalendarOccurrence } from "../../types";
 import { WeekView, weekCountText } from "./WeekView";
 
 const days = weekRange("2026-10-21");
+
 const occ = (eventId: number, date: string): CalendarOccurrence => ({
   eventId, date, startsAt: `${date}T18:00:00Z`, endsAt: `${date}T19:00:00Z`, title: `Event ${eventId}`, location: "",
   churchWide: true, remoteAvailable: false, childcareAvailable: false, myStatus: null, ownScope: false,
 });
+
 const view = (byDay: Map<string, CalendarOccurrence[]>) =>
   render(<MemoryRouter><WeekView days={days} byDay={byDay} today="2026-10-21" /></MemoryRouter>);
 
 it("says in words that an empty day has no events, and lists a busy day's events (DEC-99)", () => {
   const { container } = view(new Map([["2026-10-21", [occ(1, "2026-10-21")]]]));
-  const columns = [...container.querySelectorAll("section[class*='border']")] as HTMLElement[];
+  const columns = [...container.querySelectorAll<HTMLElement>("section[class*='border']")];
   expect(columns).toHaveLength(7);
   const empty = columns.filter((c) => c.hasAttribute("data-empty"));
   expect(empty).toHaveLength(6);

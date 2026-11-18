@@ -1,4 +1,5 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { stubService } from "../test/service";
+import { act, render, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -6,20 +7,22 @@ import { ContactHistory } from "../api/contactHistory";
 import type { ContactHistoryPeopleResponse, ContactHistoryPerson } from "../types";
 import { ContactHistoryPersonPicker } from "./ContactHistoryPersonPicker";
 
-vi.mock("../api/contactHistory", async (actual) => ({ ...(await actual<typeof import("../api/contactHistory")>()), ContactHistory: { people: vi.fn() } }));
+stubService(ContactHistory, () => ({ people: vi.fn() }));
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((done) => { resolve = done; });
+
   return { promise, resolve };
 }
 
 function ControlledPicker({ initialValue = "", onKnown, onFailure }: {
   initialValue?: string;
   onKnown: (person: ContactHistoryPerson) => void;
-  onFailure: (error: unknown) => void;
+  onFailure: (cause: unknown) => void;
 }) {
   const [value, setValue] = useState(initialValue);
+
   return <ContactHistoryPersonPicker value={value} name={undefined} error="" onChange={setValue} onKnown={onKnown} onFailure={onFailure} />;
 }
 
@@ -37,9 +40,9 @@ it("keeps long choices complete while showing a compact selection and full ident
   await screen.findByRole("option", { name: `${selected.name} — ${selected.email}` });
   await userEvent.selectOptions(screen.getByLabelText("Person"), selected.id);
 
-  const select = screen.getByLabelText("Person") as HTMLSelectElement;
+  const select = screen.getByLabelText("Person");
   expect(select).toHaveValue(selected.id);
-  expect(select.selectedOptions[0]).toHaveTextContent("Selected person");
+  expect(within(select).getByRole("option", { selected: true })).toHaveTextContent("Selected person");
   expect(screen.getByRole("option", { name: fullOther })).toBeInTheDocument();
   const fullName = screen.getByText(selected.name, { selector: "span" });
   expect(fullName.closest(".wrap-anywhere")).not.toBeNull();
@@ -52,8 +55,8 @@ it("uses a compact saved-ID option and shows the full retained ID beside it", ()
   vi.mocked(ContactHistory.people).mockResolvedValue({ people: [] });
   render(<ControlledPicker initialValue={id} onKnown={vi.fn()} onFailure={vi.fn()} />);
 
-  const select = screen.getByLabelText("Person") as HTMLSelectElement;
-  expect(select.selectedOptions[0]).toHaveTextContent("Saved person ID");
+  const select = screen.getByLabelText("Person");
+  expect(within(select).getByRole("option", { selected: true })).toHaveTextContent("Saved person ID");
   const identity = screen.getByText(`Saved person ID: ${id}`, { exact: true });
   expect(identity.closest(".wrap-anywhere")).not.toBeNull();
   expect(select).toHaveAccessibleDescription(`Saved person ID: ${id}`);
@@ -64,7 +67,9 @@ it("ignores a late saved-ID lookup after the selected ID changes", async () => {
   const currentLookup = deferred<ContactHistoryPeopleResponse>();
   vi.mocked(ContactHistory.people).mockImplementation(({ id }) => {
     if (id === "9007199254740992") return oldLookup.promise;
+
     if (id === "9007199254740993") return currentLookup.promise;
+
     return Promise.resolve({ people: [] });
   });
   const onKnown = vi.fn();
@@ -87,10 +92,13 @@ it("ignores a late saved-ID lookup after the selected ID changes", async () => {
 it("tells the page when a person is chosen from the list, but not when the ID box is typed in", async () => {
   vi.mocked(ContactHistory.people).mockResolvedValue({ people: [{ id: "353", name: "Harper History", email: "harper@example.com" }] });
   const onPick = vi.fn();
+
   const Wrapper = () => {
     const [value, setValue] = useState("");
+
     return <ContactHistoryPersonPicker value={value} name={undefined} error="" onChange={setValue} onPick={onPick} onKnown={vi.fn()} onFailure={vi.fn()} />;
   };
+
   render(<Wrapper />);
   await screen.findByRole("option", { name: "Harper History — harper@example.com" });
   await userEvent.click(screen.getByText("Look up a deleted account"));

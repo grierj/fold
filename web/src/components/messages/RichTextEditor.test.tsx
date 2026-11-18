@@ -1,3 +1,4 @@
+import { stubService } from "../../test/service";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, describe, expect, it, vi } from "vitest";
@@ -7,16 +8,17 @@ import { Field } from "../ui/Field";
 import { polyfillEditorLayout } from "../../test/editor";
 import { normalizeHref, RichTextEditor, RichTextView, type PictureTarget } from "./RichTextEditor";
 
-vi.mock("../../api/messages", () => ({ Messages: { uploadImage: vi.fn() } }));
+stubService(Messages, () => ({ uploadImage: vi.fn() }));
 
 beforeAll(polyfillEditorLayout);
 
 function setup(value = "<p>Hello there</p>", oneEvent = false) {
-  const onChange = vi.fn();
+  const onChange = vi.fn<(html: string) => void>();
   const onReady = vi.fn();
   render(<Field label="Message" hint="Write it here." error={undefined}><RichTextEditor value={value} onChange={onChange} onReady={onReady} oneEvent={oneEvent} /></Field>);
   const box = screen.getByRole("textbox", { name: "Message" });
-  return { onChange, onReady, box, last: () => onChange.mock.calls[onChange.mock.calls.length - 1]?.[0] as string };
+
+  return { onChange, onReady, box, last: () => onChange.mock.calls[onChange.mock.calls.length - 1]?.[0] };
 }
 
 async function selectAll(box: HTMLElement) {
@@ -34,9 +36,11 @@ describe("RichTextEditor", () => {
 
   it("has named toolbar buttons that show when a format is on", async () => {
     const { box, last } = setup();
+
     for (const name of ["Bold", "Italic", "Underline", "Heading H2", "Subheading H3", "Bulleted list", "Numbered list", "Quote", "Link", "Button"]) {
       expect(screen.getByRole("button", { name })).toBeInTheDocument();
     }
+
     const bold = screen.getByRole("button", { name: "Bold" });
     expect(bold).toHaveAttribute("aria-pressed", "false");
     await selectAll(box);
@@ -53,9 +57,11 @@ describe("RichTextEditor", () => {
   it("names every toolbar button with its visible text in the name (WCAG 2.5.3)", () => {
     setup();
     const toolbar = screen.getByRole("group", { name: "Formatting" });
+
     for (const b of within(toolbar).getAllByRole("button")) {
-      const visible = [...b.childNodes].filter((n) => !(n instanceof Element && n.getAttribute("aria-hidden") === "true"))
-        .map((n) => n.textContent ?? "").join("").replace(/\s+/g, " ").trim().toLowerCase();
+      const visible = [...b.childNodes].flatMap((n) =>
+        n instanceof Element && n.getAttribute("aria-hidden") === "true" ? [] : [n.textContent ?? ""]).join("").replace(/\s+/g, " ").trim().toLowerCase();
+
       const name = (b.getAttribute("aria-label") ?? b.textContent ?? "").toLowerCase();
       expect(name, b.outerHTML).toContain(visible);
     }
@@ -107,9 +113,10 @@ describe("RichTextEditor", () => {
 });
 
 function setupPictures(pictures: PictureTarget | undefined) {
-  const onChange = vi.fn();
+  const onChange = vi.fn<(html: string) => void>();
   render(<Field label="Message"><RichTextEditor value="<p>Hello there</p>" onChange={onChange} oneEvent={false} pictures={pictures} /></Field>);
-  return { last: () => onChange.mock.calls[onChange.mock.calls.length - 1]?.[0] as string };
+
+  return { last: () => onChange.mock.calls[onChange.mock.calls.length - 1]?.[0] };
 }
 
 const picnic = () => new File(["png"], "picnic.png", { type: "image/png" });

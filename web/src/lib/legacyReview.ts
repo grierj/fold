@@ -22,12 +22,14 @@ export const LEGACY_NO_ACCOUNT = "This account no longer exists.";
 // is every other failure, whatever its status, code or body.
 export type LegacyReadFailure = { kind: "locked"; text: string } | { kind: "retry"; text: string };
 
-export function legacyReadFailure(e: unknown): LegacyReadFailure {
+export function legacyReadFailure(cause: unknown): LegacyReadFailure {
   // A gateway page with a 401 or 403 status is not the server's answer.
-  if (e instanceof ApiError && !e.unreadable) {
-    if (e.status === 401) return { kind: "locked", text: ERROR_COPY.signed_out };
-    if (e.status === 403) return { kind: "locked", text: LEGACY_NOT_ALLOWED };
+  if (cause instanceof ApiError && !cause.unreadable) {
+    if (cause.status === 401) return { kind: "locked", text: ERROR_COPY.signed_out };
+
+    if (cause.status === 403) return { kind: "locked", text: LEGACY_NOT_ALLOWED };
   }
+
   // The busy line also covers a malformed answer (ApiError 502 from the client)
   // and a dropped connection: never the wrapper's or the server's own message.
   return { kind: "retry", text: ERROR_COPY.reason_review_busy };
@@ -37,7 +39,8 @@ export function legacyReadFailure(e: unknown): LegacyReadFailure {
 // not a deleted account, so asking again would never help.
 export type LegacyPageFailure = LegacyReadFailure | { kind: "gone"; text: string };
 
-export function legacyPageFailure(e: unknown): LegacyPageFailure {
-  if (e instanceof ApiError && !e.unreadable && e.status === 404) return { kind: "gone", text: LEGACY_NO_ACCOUNT };
-  return legacyReadFailure(e);
+export function legacyPageFailure(cause: unknown): LegacyPageFailure {
+  if (cause instanceof ApiError && !cause.unreadable && cause.status === 404) return { kind: "gone", text: LEGACY_NO_ACCOUNT };
+
+  return legacyReadFailure(cause);
 }
