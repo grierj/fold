@@ -9,9 +9,8 @@
 // proof) are resolved from the repository's web/ directory (QC1_WEB_DIR), where
 // `npm ci` installed them from web/package-lock.json. Nothing is resolved from
 // the directory of this script or from the current directory.
-// Browser: QC1_CHROMIUM names an installed Chromium (the nested runner's Alpine
-// package; Playwright's own download is a glibc build that does not run there).
-// Without it Playwright uses the browser it downloaded itself.
+// Browser: QC1_CHROMIUM names an installed Chromium (browser-prepare.sh sets it to
+// the locked Playwright's own). Without it Playwright uses the browser it downloaded itself.
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import path from "node:path";

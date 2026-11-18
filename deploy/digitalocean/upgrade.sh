@@ -245,6 +245,54 @@ run_backup() {
   "$backup" --deploy-dir "$DEPLOY_DIR" --backup-dir "$BACKUP_DIR"
 }
 
+# service_backed: the container backup service is in charge: Compose defines it and
+# either its cutover finished (the host cron only expires) or it is running anyway
+# (a recovery started it before a cutover finished; the host backup refuses to run
+# beside it, so it is the one producer). An older deployment keeps host production.
+service_backed() {
+  local rc=0 run=0
+  backup_service_defined "$DEPLOY_DIR" || rc=$?
+  [[ "$rc" == 0 ]] || return 1
+  [[ "$(backup_cron_kind "$DEPLOY_DIR")" == expire ]] && return 0
+  backup_service_running "$DEPLOY_DIR" || run=$?
+  [[ "$run" == 0 ]]
+}
+
+# service_backup_export: take a backup through the service, then publish the dump
+# it reported under BACKUP_DIR as the rollback anchor, with its exact name and
+# bytes and its mtime, never replacing a file. The service's dump is kept still by
+# backup.lock while it is copied (a changing source is detected and retried). A
+# same-name file with other bytes refuses here, before any checkout or pin change.
+# Prints the exported path.
+service_backup_export() {
+  local out name="" rc line end=$((SECONDS + ${FOLD_BACKUP_WAIT:-900}))
+  while :; do
+    rc=0
+    archive_deadline $((end - SECONDS > 0 ? end - SECONDS : 1))
+    out="$(archive_compose "$DEPLOY_DIR" exec -T backup /usr/local/bin/backup.sh now 2>/dev/null)" || rc=$?
+    [[ "$rc" == 75 ]] || break
+    (( SECONDS < end )) || die "the backup service stayed busy; nothing was changed. Retry later"
+    sleep 5
+  done
+  (( rc == 0 )) || die "the container backup did not complete (status ${rc}); nothing was changed. Check docker compose logs backup"
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^published\ stamp=[0-9]{8}-[0-9]{4}\ dump=(fold-[0-9]{8}-[0-9]{4}\.dump)\  ]]; then name="${BASH_REMATCH[1]}"; fi
+  done <<<"$out"
+  [[ -n "$name" ]] || die "the container backup did not report its dump; nothing was changed"
+  backup_coord_acquire "$DEPLOY_DIR" 120 maintenance || exit $?
+  [[ ! -e "$DEPLOY_DIR/recovery.lock" && ! -L "$DEPLOY_DIR/recovery.lock" ]] || die "recovery in progress; run $DEPLOY_DIR/restore.sh --status"
+  rc=0
+  archive_export_dump "$DEPLOY_DIR" "$name" "$BACKUP_DIR" || rc=$?
+  backup_coord_release || true
+  case "$rc" in
+    0) ;;
+    3) die "${BACKUP_DIR}/${name} already exists with different bytes than the service's dump; it was not replaced and nothing else was changed" ;;
+    6) die "${BACKUP_DIR}/${name} already exists with the service's bytes but is not a root-owned mode-600 file with one link, so it cannot be the rollback anchor; it was not repaired and nothing else was changed. Move it aside yourself and retry" ;;
+    *) die "the service's dump could not be exported to ${BACKUP_DIR}; nothing else was changed" ;;
+  esac
+  printf '%s/%s' "$BACKUP_DIR" "$name"
+}
+
 newest_dump() {
   local found
   found="$(find "$BACKUP_DIR" -name 'fold-*.dump' -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)"
@@ -366,6 +414,10 @@ run_provision() {
   "${cmd[@]}" || rc=$?
   if (( rc == 76 )); then
     die "deployment completed and smoke passed, but the recovery floor file was not recorded. Keep the current pin and image. Repair storage/permissions, then rerun ${DEPLOY_DIR}/provision.sh with the same release and options to record the floor; do not roll back for this error" 76
+  elif (( rc == 77 )); then
+    die "deployment completed, smoke passed and the recovery floor was recorded, but the backup cutover did not finish; provision.sh confirmed the host backup is in charge (its full cron is installed and the container backup service is stopped). Fix what provision.sh reported, then rerun ${DEPLOY_DIR}/provision.sh with the same release and options; the cutover steps repeat safely. Do not roll back for this error" 77
+  elif (( rc == 78 )); then
+    die "deployment completed, smoke passed and the recovery floor was recorded, but the backup cutover did not finish and provision.sh could NOT confirm any backup is being made (it names what is unknown). Do not assume the host cron makes the backups: check /etc/cron.d/fold-backup and 'docker compose ps backup', run ${DEPLOY_DIR}/backup.sh by hand if the container service is not running, then rerun ${DEPLOY_DIR}/provision.sh with the same release and options; the cutover steps repeat safely. Do not roll back for this error" 78
   elif (( rc != 0 )); then
     die "provisioning did not complete; inspect its diagnostic and current service health. The deployed pin still contributes to the recovery floor, even after failed smoke. --rollback is refused if the previous release is below that floor. Keep the current release and restore data with its restore.sh --dump once installed, or repair and rerun it. Do not lower the floor or change the pin to bypass refusal"
   fi
@@ -397,9 +449,15 @@ forward() {
   else
     current_release
   fi
-  run_backup
   local dump="(newest fold-*.dump)"
-  if (( ! DRY_RUN )); then
+  if (( DRY_RUN )); then
+    run_backup
+    echo "dry-run: when the container backup service is in charge, run its backup now instead and export the dump it reports to ${BACKUP_DIR} with the same name and mtime, never replacing a file; a differing file of that name refuses before any change"
+  elif service_backed; then
+    dump="$(service_backup_export)"
+    echo "upgrade.sh: exported ${dump}"
+  else
+    run_backup
     dump="$(newest_dump)"
   fi
   write_release "$dump"

@@ -4660,7 +4660,6 @@ func checkErasureLedger(t *testing.T, run erasureRun, before, after erasureLedge
 		t.Errorf("%s: access ended at %v, outside the DELETE (%v to %v)", name, regAfter.AccessEndedAt, span.Start, span.End)
 	}
 
-	// Audit.
 	for id, b := range before.Audit {
 		b = erasureFixtureAuditAfter(t, b, run.Subject)
 		a, ok := after.Audit[id]
@@ -4869,7 +4868,6 @@ func checkErasureLedger(t *testing.T, run erasureRun, before, after erasureLedge
 	}
 	facts.NewNotices = len(matched)
 
-	// Deliveries.
 	for id, b := range before.Deliveries {
 		a, kept := after.Deliveries[id]
 		switch {
@@ -4911,7 +4909,6 @@ func checkErasureLedger(t *testing.T, run erasureRun, before, after erasureLedge
 		t.Errorf("%s: unexpected new delivery for notice %d (user %d)", name, id, d.UserID)
 	}
 
-	// Jobs.
 	for id, b := range before.Jobs {
 		if a, ok := after.Jobs[id]; !ok || erasureJSON(t, a) != erasureJSON(t, b) {
 			t.Errorf("%s: job %d (%s) changed or is gone", name, id, b.Kind)
@@ -7832,10 +7829,8 @@ func scaleSplitAt(s, sep string) []string {
 	return append(parts, s[start:])
 }
 
-// scaleSplitAnd splits at the top-level " AND ".
 func scaleSplitAnd(s string) []string { return scaleSplitAt(s, " AND ") }
 
-// scaleSplitOr splits at the top-level " OR ".
 func scaleSplitOr(s string) []string { return scaleSplitAt(s, " OR ") }
 
 // scaleVarUint reads a captured bind value as an id.
@@ -10195,7 +10190,6 @@ func agesRaceLedger(t *testing.T, st agesRaceStep, before, after erasureLedger) 
 	timed := !st.Span.Start.IsZero()
 	inside := func(at time.Time) bool { return !timed || st.Span.has(at) }
 
-	// Audit.
 	for id, b := range before.Audit {
 		b = erasureFixtureAuditAfter(t, b, st.Gone)
 		a, ok := after.Audit[id]
@@ -10356,7 +10350,6 @@ func agesRaceLedger(t *testing.T, st agesRaceStep, before, after erasureLedger) 
 		t.Errorf("%s: expected notice %+v was not written", name, k)
 	}
 
-	// Deliveries.
 	for id, b := range before.Deliveries {
 		a, kept := after.Deliveries[id]
 		switch {
@@ -10400,7 +10393,6 @@ func agesRaceLedger(t *testing.T, st agesRaceStep, before, after erasureLedger) 
 		}
 	}
 
-	// Jobs.
 	for id, b := range before.Jobs {
 		if a, ok := after.Jobs[id]; !ok || erasureJSON(t, a) != erasureJSON(t, b) {
 			t.Errorf("%s: job %d (%s) changed or is gone", name, id, b.Kind)

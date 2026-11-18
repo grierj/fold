@@ -3,10 +3,9 @@
 # what it creates: the shared launch module and response accounting (run with node
 # when it exists), the browser preflight against a FAKE Playwright package (module
 # resolution is real, the browser is not), the lock-file checks on the real
-# web/package-lock.json and on mutated copies, the nested launcher's --qc1 mode
-# against a stub docker, and the runner's preflight and volume-ownership handling
-# against a stub docker and a stub node. No Docker daemon, database or browser is
-# started; nothing here proves a real Chromium launches in a real Alpine runner.
+# web/package-lock.json and on mutated copies, and source guards over browser-prepare.sh
+# and the runner's order of work and volume ownership. No Docker daemon, database or
+# browser is started; nothing here proves a real Chromium launches on a real droplet.
 # shellcheck disable=SC2016 # patterns keep their dollar signs literal.
 set -Eeuo pipefail
 exec </dev/null
@@ -26,7 +25,6 @@ code_of() { local rc=0; "$@" >"$WORK/out" 2>"$WORK/err" || rc=$?; echo "$rc"; }
 
 # --- the lock file: what npm ci installs ------------------------------------------------------------------------
 [[ -z "$(qc1_browser_lock_problems "$ROOT/web/package.json" "$ROOT/web/package-lock.json")" ]]
-printf '%s\n' "$(qc1_browser_apk_packages)" | grep -qx chromium
 lockmut() { # name jq-filter  -> $WORK/lock.<name>.json
   jq -c "$2" "$ROOT/web/package-lock.json" >"$WORK/lock.$1.json"
   qc1_browser_lock_problems "$ROOT/web/package.json" "$WORK/lock.$1.json"
@@ -55,17 +53,17 @@ git -C "$ROOT" check-ignore -q web/node_modules
 
 # --- browser-prepare.sh: the steps, in order, each fatal ------------------------------------------------------------
 BP="$HERE/qc1/browser-prepare.sh"
-for pat in 'qc1_browser_lock_problems "$WEB/package.json" "$WEB/package-lock.json"' 'apk add --no-cache' 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --ignore-scripts --omit=optional --no-audit --no-fund' \
-  'npm ci changed the lock file' 'npm ci left the tree dirty' 'export QC1_CHROMIUM="$CHROMIUM" QC1_NO_SANDBOX=1 FOLD_DRILL_ISOLATED_DAEMON=1' 'node "$HERE/browser-preflight.mjs"' \
+for pat in 'qc1_browser_lock_problems "$WEB/package.json" "$WEB/package-lock.json"' 'FOLD_DRILL_ISOLATED_DAEMON:-}" == 1' 'PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --ignore-scripts --omit=optional --no-audit --no-fund' \
+  'node node_modules/playwright/cli.js install --with-deps chromium' 'npm ci changed the lock file' 'npm ci left the tree dirty' 'export QC1_CHROMIUM="$CHROMIUM" QC1_NO_SANDBOX=1' 'node "$HERE/browser-preflight.mjs"' \
   "jq -e '.ok == true'" 'browser-runtime.json' 'browser.env' 'packageLockSha256'; do
   grep -qF -- "$pat" "$BP" || { echo "browser-prepare.sh lost: $pat" >&2; exit 1; }
 done
-l_lock="$(grep -n 'qc1_browser_lock_problems "\$WEB' "$BP" | head -n 1 | cut -d: -f1)"; l_apk="$(grep -n '^apk add' "$BP" | head -n 1 | cut -d: -f1)"
-l_npm="$(grep -n 'npm ci --ignore-scripts' "$BP" | head -n 1 | cut -d: -f1)"; l_pre="$(grep -n 'browser-preflight.mjs' "$BP" | grep -v '^#' | tail -n 1 | cut -d: -f1)"
-[[ -n "$l_lock" && -n "$l_apk" && -n "$l_npm" && -n "$l_pre" && "$l_lock" -lt "$l_apk" && "$l_apk" -lt "$l_npm" && "$l_npm" -lt "$l_pre" ]]
-if grep -nE 'npm install|npm i |npx playwright install|--force|--legacy-peer-deps|npm update' "$BP"; then echo 'browser-prepare.sh installs without the lock' >&2; exit 1; fi
+l_lock="$(grep -n 'qc1_browser_lock_problems "\$WEB' "$BP" | head -n 1 | cut -d: -f1)"; l_adm="$(grep -n 'FOLD_DRILL_ISOLATED_DAEMON:-}" == 1' "$BP" | head -n 1 | cut -d: -f1)"
+l_npm="$(grep -n 'npm ci --ignore-scripts' "$BP" | head -n 1 | cut -d: -f1)"; l_inst="$(grep -n 'cli.js install --with-deps chromium' "$BP" | head -n 1 | cut -d: -f1)"; l_pre="$(grep -n 'browser-preflight.mjs' "$BP" | grep -v '^#' | tail -n 1 | cut -d: -f1)"
+[[ -n "$l_lock" && -n "$l_adm" && -n "$l_npm" && -n "$l_inst" && -n "$l_pre" && "$l_adm" -lt "$l_lock" && "$l_lock" -lt "$l_npm" && "$l_npm" -lt "$l_inst" && "$l_inst" -lt "$l_pre" ]]
+if grep -nE 'npm install|npm i |npx playwright install|--force|--legacy-peer-deps|npm update|apk ' "$BP"; then echo 'browser-prepare.sh installs without the lock' >&2; exit 1; fi
 # --- the shared launch rules and response accounting (node) ----------------------------------------------------------
-# The restore drill's browser proof loads qc1/browser-launch.cjs by path; restore-drill.sh must name it, and the proof helper must use it only when a runner names a Chromium.
+# The restore drill's browser proof loads qc1/browser-launch.cjs by path; restore-drill.sh must name it, and the proof helper must use it only when a prepared host names a Chromium.
 RDS="$HERE/restore-drill.sh"
 grep -q 'RESTORE_BROWSER_LAUNCH="\$ROOT/deploy/digitalocean/qc1/browser-launch.cjs"' "$RDS"
 grep -q 'restoreLaunchOptions(process.env)' "$HERE/testdata/restore-browser.cjs"
@@ -77,14 +75,14 @@ if command -v node >/dev/null; then
   nodet "$imp
   // the ESM module and the CommonJS file the restore proof loads are one implementation
   for (const k of ['majorOf', 'nodeEngineProblem', 'chromiumMajorDelta', 'launchOptions', 'restoreLaunchOptions']) assert.equal(b[k], cjs[k], k);
-  // launch options: sandbox switches only for the disposable runner, never for a person's own browser
+  // launch options: sandbox switches only for a declared disposable host, never for a person's own browser
   assert.deepEqual(b.launchOptions({}), { headless: true, args: ['--enable-precise-memory-info'] });
   assert.equal(b.launchOptions({ QC1_CHROMIUM: '/usr/bin/chromium' }).executablePath, '/usr/bin/chromium');
   assert.ok(!b.launchOptions({ QC1_NO_SANDBOX: '1' }).args.includes('--no-sandbox'));
   assert.ok(!b.launchOptions({ FOLD_DRILL_ISOLATED_DAEMON: '1' }).args.includes('--no-sandbox'));
   assert.ok(!b.launchOptions({ QC1_NO_SANDBOX: '0', FOLD_DRILL_ISOLATED_DAEMON: '1' }).args.includes('--no-sandbox'));
   assert.deepEqual(b.launchOptions({ QC1_NO_SANDBOX: '1', FOLD_DRILL_ISOLATED_DAEMON: '1' }).args, ['--enable-precise-memory-info', '--no-sandbox', '--disable-dev-shm-usage']);
-  // the restore proof: exactly what it has always launched unless a runner names a Chromium; then the same executable and sandbox rule
+  // the restore proof: exactly what it has always launched unless a prepared host names a Chromium; then the same executable and sandbox rule
   assert.deepEqual(b.restoreLaunchOptions({}), { headless: true });
   assert.deepEqual(b.restoreLaunchOptions({ QC1_NO_SANDBOX: '1', FOLD_DRILL_ISOLATED_DAEMON: '1' }), { headless: true });
   assert.deepEqual(b.restoreLaunchOptions({ FOLD_DRILL_ISOLATED_DAEMON: '1' }), { headless: true });
@@ -128,7 +126,7 @@ if command -v node >/dev/null; then
     cat >"$1/node_modules/$2/index.js" <<'JS'
 const fs = require("node:fs");
 const via = __VIA__;
-module.exports = { chromium: { name: () => "chromium", launch: async function (opts) {
+module.exports = { chromium: { name: () => "chromium", executablePath: () => process.env.FAKE_CHROMIUM_PATH ?? "", launch: async function (opts) {
   const eng = this.name();
   if (process.env.FAKE_OPTS_OUT) fs.writeFileSync(process.env.FAKE_OPTS_OUT + "." + via.replace(/\W/g, "_") + (eng === "firefox" ? ".firefox" : ""), JSON.stringify(opts));
   if (eng === "firefox" && process.env.FAKE_FF_LAUNCH_FAIL) throw new Error("browserType.launch: Failed to launch: Error: spawn firefox ENOENT\nmore");
@@ -180,7 +178,7 @@ JS
   rm -f "$WORK"/opts.json.*; [[ "$(QC1_WEB_DIR="$WORK/web" FAKE_OPTS_OUT="$WORK/opts.json" code_of node "$PF")" == 0 ]]
   [[ "$(cat "$WORK/opts.json.playwright")" == '{"headless":true}' ]]
   jq -e '.args | index("--enable-precise-memory-info") != null' "$WORK/opts.json._playwright_test" >/dev/null
-  # In a runner (sandbox switches on, Chromium named) both launch the same executable with the same switches.
+  # On a prepared host (sandbox switches on, Chromium named) both launch the same executable with the same switches.
   rm -f "$WORK"/opts.json.*
   rc="$(QC1_WEB_DIR="$WORK/web" QC1_CHROMIUM=/usr/bin/chromium QC1_NO_SANDBOX=1 FOLD_DRILL_ISOLATED_DAEMON=1 FAKE_OPTS_OUT="$WORK/opts.json" code_of node "$PF")"
   [[ "$rc" == 0 ]] && jq -e '.sandbox == false' "$WORK/out" >/dev/null
@@ -213,7 +211,7 @@ JS
   [[ "$(QC1_WEB_DIR="$WORK/pkgskew" code_of node "$PF")" == 6 ]]; grep -q 'differ' "$WORK/err"
   mkweb "$WORK/oldnode" 1.64.1 1.64.1 '>=99'
   [[ "$(QC1_WEB_DIR="$WORK/oldnode" code_of node "$PF")" == 3 ]]; grep -q 'older than the engine range' "$WORK/err"
-  # Node against .nvmrc (24): recorded, fatal only when asked, so an older Alpine nodejs does not stop a run Playwright itself accepts.
+  # Node against .nvmrc (24): recorded, fatal only when asked, so a host whose nodejs differs does not stop a run Playwright itself accepts.
   jq -e '.nvmrc == {"value":null,"major":null,"nodeMajor":'"$(node -p 'process.versions.node.split(".")[0]')"',"matches":null}' <<<"$(QC1_WEB_DIR="$WORK/web" node "$PF" 2>/dev/null)" >/dev/null
   mkdir -p "$WORK/nv/web"; cp -r "$WORK/web/." "$WORK/nv/web/"
   printf '999\n' >"$WORK/nv/.nvmrc"
@@ -282,98 +280,7 @@ grep -q "printf '%s\\\\n' \"\$BROWSER_PREFLIGHT\" >\"\$WORK/browser-preflight.js
 # No flag skips it: there is no --no-browser in the drill.
 if sed -n '/^while (( \$# )); do/,/^done/p' "$RDS" | grep -- '--no-browser' >/dev/null; then echo 'restore-drill.sh can skip the browser preflight' >&2; exit 1; fi
 
-# --- the nested launcher, both modes, against a stub docker -------------------------------------------------------------------------
-mkdir "$WORK/stubbin"
-cat >"$WORK/stubbin/docker" <<'STUB'
-#!/usr/bin/env bash
-line=; sep=; for a in "$@"; do line+="$sep${a//$'\n'/\\n}"; sep=" "; done; printf '%s\n' "$line" >>"$STUB_LOG"   # one line per call; a newline inside an argument is written as \n
-[[ $1 != run ]] || : >"$STUB_LOG.argv"; { sep=; for a in "$@"; do printf '%s%q' "$sep" "$a"; sep=" "; done; printf '\n'; } >>"$STUB_LOG.argv"   # the same call with every argument %q-quoted, so that where one ends and the next begins survives (a launch starts with `run`, which starts the file anew)
-case "$1" in
-  info) printf '{"Name":"x","ContainersRunning":0}\n' ;;
-  run) printf 'c%.0s' {1..64}; echo ;;
-  inspect) case "$*" in *NetworkMode*) echo bridge ;; *Mounts*) echo '/var/lib/docker /v' ;; esac ;;
-  exec) case "$*" in *fold-owned-scan*) echo 0 ;; *fold-listener-scan*) echo "checked ipv4 ipv6" ;; *browser-prepare.sh*) exit "${STUB_PREP_RC:-0}" ;; *qc1-measure.sh*) exit "${STUB_QC1_RC:-0}" ;; *restore-drill.sh*) exit "${STUB_DRILL_RC:-0}" ;; esac ;;
-esac
-exit 0
-STUB
-chmod +x "$WORK/stubbin/docker"
-LAUNCH="$WORK/launcher"; mkdir -p "$LAUNCH/deploy/digitalocean"; cp "$HERE/restore-drill-nested.sh" "$LAUNCH/deploy/digitalocean/"
-git init -q "$LAUNCH"; git -C "$LAUNCH" config user.name fixture; git -C "$LAUNCH" config user.email fixture@example.invalid
-git -C "$LAUNCH" config commit.gpgsign false; git -C "$LAUNCH" config core.hooksPath /dev/null
-git -C "$LAUNCH" add -A; git -C "$LAUNCH" commit -qm launcher
-launch() { STUB_LOG="$WORK/stub.log" PATH="$WORK/stubbin:$PATH" bash "$LAUNCH/deploy/digitalocean/restore-drill-nested.sh" "$@"; }
-# WRAP, the supervisor every docker exec runs the workload under, as the runner defines it (WRAP_ARG). The stub's argv file (stub.log.argv) keeps every argument apart, so the check is
-# that WRAP is exactly one argument after bash -c and the workload's words follow it one by one. The supervisor's contract, read from the script itself: it loads the
-# Chromium the preparation found, polls for the stop request and TERMs the workload's group; it does not exec the command in its place.
-WRAP_ARG="$(sed -n "/^WRAP=\$(cat <<'WRAP'\$/,/^WRAP\$/p" "$HERE/restore-drill-nested.sh" | sed '1d;$d')"
-[[ -n "$WRAP_ARG" ]]
-grep -qF 'prep/browser.env' <<<"$WRAP_ARG"; grep -qF 'stop-request' <<<"$WRAP_ARG"; grep -qF 'kill -TERM -- "-$g"' <<<"$WRAP_ARG"
-if grep -qF 'exec "$@"' <<<"$WRAP_ARG"; then echo 'the supervisor execs the command in its place again' >&2; exit 1; fi
-# wrapped_call LOG WORDS...: LOG (the stub's argv file: one call per line, each argument %q-quoted, so no two arguments can read as one) holds a docker exec whose arguments END with
-# bash, -c, the WRAP text as exactly ONE argument, _, bash and then each of WORDS as an argument of its own. The negative case below shows that WRAP and the workload's words
-# joined into one argument are refused.
-WRAP_Q="$(printf '%q' "$WRAP_ARG")"
-wrapped_call() { local log=$1 want="bash -c $WRAP_Q _ bash" a l; shift; for a in "$@"; do want+=" $(printf '%q' "$a")"; done; while IFS= read -r l; do [[ "$l" == "exec "*" $want" ]] && return 0; done <"$log"; return 1; }
-printf 'exec -w /work/fold c bash -c %q\n' "$WRAP_ARG _ bash x y" >"$WORK/joined.argv"
-if wrapped_call "$WORK/joined.argv" x y; then echo 'wrapped_call accepts WRAP and the workload joined into one argument' >&2; exit 1; fi
-printf 'exec -w /work/fold c bash -c %q _ bash x y\n' "$WRAP_ARG" >"$WORK/exact.argv"
-wrapped_call "$WORK/exact.argv" x y
-# In EACH mode the browser is prepared once, after the clone and before the run, in the same container, and the run receives the Chromium the preparation found.
-check_mode() { # mode-name run-script label prepare-env-words run-words
-  local clone_l prep_l run_l run_line
-  clone_l="$(grep -n 'git clone' "$WORK/stub.log" | head -n 1 | cut -d: -f1)"
-  prep_l="$(grep -n 'browser-prepare.sh /work/prep$' "$WORK/stub.log" | head -n 1 | cut -d: -f1)"
-  run_l="$(grep -n -- "$2" "$WORK/stub.log" | head -n 1 | cut -d: -f1)"
-  [[ -n "$clone_l" && -n "$prep_l" && -n "$run_l" && "$clone_l" -lt "$prep_l" && "$prep_l" -lt "$run_l" ]] || { echo "$1: the browser is not prepared between the clone and the run" >&2; cat "$WORK/stub.log" >&2; exit 1; }
-  [[ "$(grep -c 'browser-prepare.sh' "$WORK/stub.log")" == 1 ]] || { echo "$1: the browser is prepared more or less than once" >&2; exit 1; }
-  grep -q "^exec -e FOLD_NESTED_RUN=[0-9a-f]\{12\} $4-w /work/fold c\{64\} bash -c .* _ bash deploy/digitalocean/qc1/browser-prepare.sh /work/prep\$" "$WORK/stub.log" || { echo "$1: the preparation does not run with the environment $4" >&2; cat "$WORK/stub.log" >&2; exit 1; }
-  run_line="$(sed -n "${run_l}p" "$WORK/stub.log")"
-  grep -q -- '-e FOLD_DRILL_ISOLATED_DAEMON=1 -e QC1_NO_SANDBOX=1 -e QC1_WEB_DIR=/work/fold/web -w /work/fold' <<<"$run_line" || { echo "$1: the run does not get the runner switches" >&2; exit 1; }
-  read -ra run_w <<<"$5"   # the run's words, each its own argument after the supervisor's exact one
-  wrapped_call "$WORK/stub.log.argv" deploy/digitalocean/qc1/browser-prepare.sh /work/prep || { echo "$1: the preparation is not under the exact supervisor with its own arguments" >&2; exit 1; }
-  wrapped_call "$WORK/stub.log.argv" "${run_w[@]}" || { echo "$1: the run is not under the exact supervisor with its own arguments" >&2; exit 1; }
-  grep -q "^cp c\{64\}:/work/prep/. $WORK/$3/prep/" "$WORK/stub.log"; grep -q "^cp c\{64\}:/work/out/. $WORK/$3/" "$WORK/stub.log"; grep -qE '^rm -fv c{64}$' "$WORK/stub.log"
-}
-: >"$WORK/stub.log"; launch --out "$WORK/m-drill" -- --keep >"$WORK/l.out" 2>&1; grep -q 'drill exit=0' "$WORK/l.out"
-check_mode drill 'restore-drill.sh --dir /work/out' m-drill '-e QC1_WEB_DIR=/work/fold/web -e QC1_PREPARE_FIREFOX=1 ' 'deploy/digitalocean/restore-drill.sh --dir /work/out --keep'
-if grep -q 'qc1-measure.sh' "$WORK/stub.log"; then echo 'the drill mode measured' >&2; exit 1; fi
-: >"$WORK/stub.log"; launch --out "$WORK/m-qc1" --qc1 -- --sizes 10000 >"$WORK/l.out" 2>&1; grep -q 'qc1 exit=0' "$WORK/l.out"
-check_mode qc1 'qc1-measure.sh --dir /work/out' m-qc1 '-e QC1_WEB_DIR=/work/fold/web ' 'deploy/digitalocean/qc1-measure.sh --dir /work/out --sizes 10000'
-if grep -q 'QC1_PREPARE_FIREFOX' "$WORK/stub.log"; then echo 'the qc1 mode builds the Firefox runtime' >&2; exit 1; fi
-grep -q -- '_ bash deploy/digitalocean/qc1-measure.sh --dir /work/out --sizes 10000$' "$WORK/stub.log"
-if grep -q 'restore-drill.sh' "$WORK/stub.log"; then echo 'the qc1 mode ran the restore drill' >&2; exit 1; fi
-# No mount, host network or socket on the run line in either mode.
-run_line="$(grep '^run ' "$WORK/stub.log")"; [[ "$(grep -c '^run ' "$WORK/stub.log")" == 1 ]]
-if grep -qE -- ' -v |--volume|--mount|--network|--cap-add' <<<"$run_line"; then echo "the runner is given more than it needs: $run_line" >&2; exit 1; fi
-grep -qF -- 'dockerd --host=unix:///var/run/docker.sock' <<<"$run_line"
-# A runtime that cannot be prepared ends EITHER mode before anything runs, with the preparation's exit code and its evidence copied out.
-: >"$WORK/stub.log"; rc=0; STUB_PREP_RC=9 launch --out "$WORK/m-drill-fail" >"$WORK/l2.out" 2>&1 || rc=$?
-[[ "$rc" == 9 ]] && grep -q 'nothing was run (drill)' "$WORK/l2.out"
-if grep -q 'restore-drill.sh' "$WORK/stub.log"; then echo 'the drill ran after a failed browser preparation' >&2; exit 1; fi
-grep -q "^cp c\{64\}:/work/prep/. $WORK/m-drill-fail/prep/" "$WORK/stub.log"; grep -qE '^rm -fv c{64}$' "$WORK/stub.log"
-: >"$WORK/stub.log"; rc=0; STUB_PREP_RC=9 launch --out "$WORK/m-qc1-fail" --qc1 -- --sizes 10000 >"$WORK/l2.out" 2>&1 || rc=$?
-[[ "$rc" == 9 ]] && grep -q 'nothing was run (qc1)' "$WORK/l2.out"
-if grep -q 'qc1-measure.sh' "$WORK/stub.log"; then echo 'the measurement ran after a failed browser preparation' >&2; exit 1; fi
-# Only a QC-1 run may skip the browser, and only by asking; the same word means nothing to the drill's launcher.
-: >"$WORK/stub.log"; launch --out "$WORK/m-qc1-nb" --qc1 -- --no-browser --sizes 10000 >"$WORK/l3.out" 2>&1
-if grep -q 'browser-prepare.sh' "$WORK/stub.log"; then echo 'the browser was prepared although --no-browser was given' >&2; exit 1; fi
-grep -q 'qc1-measure.sh --dir /work/out' "$WORK/stub.log"
-: >"$WORK/stub.log"; launch --out "$WORK/m-drill-nb" -- --no-browser >"$WORK/l3.out" 2>&1
-grep -q 'browser-prepare.sh /work/prep$' "$WORK/stub.log"   # the drill prepares regardless; restore-drill.sh itself rejects the unknown option
-# The run's own failure comes back as the launcher's exit, in both modes.
-: >"$WORK/stub.log"; rc=0; STUB_QC1_RC=4 launch --out "$WORK/m-r1" --qc1 >"$WORK/l4.out" 2>&1 || rc=$?
-[[ "$rc" == 4 ]] && grep -q 'qc1 exit=4' "$WORK/l4.out"
-: >"$WORK/stub.log"; rc=0; STUB_DRILL_RC=5 launch --out "$WORK/m-r2" >"$WORK/l4.out" 2>&1 || rc=$?
-[[ "$rc" == 5 ]] && grep -q 'drill exit=5' "$WORK/l4.out"
-# Structure: one preparation call in the script, before the branch that picks the run, not inside either branch of it.
-LA="$HERE/restore-drill-nested.sh"
-[[ "$(grep -c 'qc1/browser-prepare.sh' <(grep -v '^#' "$LA"))" == 1 ]]
-prep_s="$(grep -n 'bash deploy/digitalocean/qc1/browser-prepare.sh /work/prep' "$LA" | cut -d: -f1)"; branch_s="$(grep -n '^if (( QC1 )); then$' "$LA" | tail -n 1 | cut -d: -f1)"
-[[ -n "$prep_s" && -n "$branch_s" && "$prep_s" -lt "$branch_s" ]]
-grep -q '^WRAP=' "$LA"
-
-# --- Firefox: a glibc binary cannot start on the Alpine runner, so the drill runs it in a Debian container built and launched BEFORE the drill ------------
-# (drill3: `playwright install firefox` downloaded a glibc Firefox into the musl runner; spawn failed with ENOENT, the missing /lib64/ld-linux-x86-64.so.2.)
+# --- Firefox: the drill runs it in a Debian container built and launched BEFORE the drill, so it does not depend on the host's libraries ------------
 FRT="$HERE/qc1/firefox-runtime.sh"; FDF="$HERE/qc1/firefox.Dockerfile"
 # shellcheck source=deploy/digitalocean/qc1/firefox-runtime.sh
 source "$FRT"
@@ -387,7 +294,7 @@ t1="$(firefox_image_tag "$ROOT/web/package-lock.json" "$FDF" node:24-bookworm)"
 [[ "$(firefox_image_tag "$ROOT/web/package-lock.json" "$FDF" node:22-bookworm)" != "$t1" ]]
 jq -c . "$ROOT/web/package-lock.json" >"$WORK/lock.other"; [[ "$(firefox_image_tag "$WORK/lock.other" "$FDF" node:24-bookworm)" != "$t1" ]]
 { cat "$FDF"; echo '# changed'; } >"$WORK/df.other"; [[ "$(firefox_image_tag "$ROOT/web/package-lock.json" "$WORK/df.other" node:24-bookworm)" != "$t1" ]]
-# the run flags: the runner's own network, an init, shared memory; no mount, no privilege, no socket
+# the run flags: the host's network, an init, shared memory; no mount, no privilege, no socket
 [[ "$(firefox_run_flags | tr '\n' ' ')" == '--rm --init --ipc=host --network host ' ]]
 # The Dockerfile: base from the build arg, nothing from the repository but the two package files, installed as locked, Firefox with its system libraries.
 grep -q '^ARG NODE_IMAGE$' "$FDF"; grep -q '^FROM ${NODE_IMAGE}$' "$FDF"
@@ -395,10 +302,10 @@ grep -q '^ARG NODE_IMAGE$' "$FDF"; grep -q '^FROM ${NODE_IMAGE}$' "$FDF"
 grep -q '^COPY package.json package-lock.json ./$' "$FDF"; [[ "$(grep -c '^COPY ' "$FDF")" == 1 ]]
 grep -q 'npm ci --ignore-scripts --omit=optional' "$FDF"; grep -q 'install --with-deps firefox' "$FDF"; grep -q '^ENV PLAYWRIGHT_BROWSERS_PATH=' "$FDF"
 if grep -nE '^ADD |COPY \. |curl|wget|npm install|PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD|--force' "$FDF"; then echo 'firefox.Dockerfile installs without the lock or pulls from outside' >&2; exit 1; fi
-# Nothing tries the musl-bound download any more.
-if grep -nE 'cli\.js install firefox|playwright install firefox' "$HERE/restore-drill-cases.sh" "$HERE/restore-drill.sh"; then echo 'the drill still installs a glibc Firefox on the runner' >&2; exit 1; fi
+# The drill itself never installs a Firefox on the host.
+if grep -nE 'cli\.js install firefox|playwright install firefox' "$HERE/restore-drill-cases.sh" "$HERE/restore-drill.sh"; then echo 'the drill installs a Firefox on the host' >&2; exit 1; fi
 
-# restore-drill.sh refuses a runner whose Firefox preparation was skipped, before a stack exists, and keeps the record.
+# restore-drill.sh refuses a host whose Firefox preparation was skipped, before a stack exists, and keeps the record.
 ffchk_l="$(grep -n 'FIREFOX_RUNTIME="${FOLD_FIREFOX_RUNTIME:-}"' "$RDS" | head -n 1 | cut -d: -f1)"; ffcp_l="$(grep -n 'cp "$FIREFOX_RUNTIME" "$WORK/firefox-runtime.json"' "$RDS" | cut -d: -f1)"
 boot2_l="$(grep -n '^drill_case_begin bootstrap$' "$RDS" | cut -d: -f1)"
 [[ -n "$ffchk_l" && -n "$ffcp_l" && "$ffchk_l" -lt "$boot2_l" && "$boot2_l" -lt "$ffcp_l" ]]
@@ -427,7 +334,7 @@ fp() { env -u FOLD_FIREFOX_IMAGE FPW="$WORK" ROOT="$ROOT" WORK="$WORK/fp/work" P
 printf '{"available":false,"stage":"build","reason":"network unreachable: cdn.playwright.dev"}\n' >"$WORK/fp/work/firefox-runtime.json"
 fp
 grep -q 'R4-6c-V hand check: Firefox' "$WORK/fp/work/hand-checks.txt"; grep -q 'network unreachable: cdn.playwright.dev' "$WORK/fp/work/hand-checks.txt"
-grep -q 'could not be installed in the drill runner' "$WORK/fp/work/hand-checks.txt"; [[ ! -s "$WORK/fp/log" ]]
+grep -q 'could not be installed on the drill host' "$WORK/fp/work/hand-checks.txt"; [[ ! -s "$WORK/fp/log" ]]
 # (b) an image: the proof runs in it with the shared flags, the scratch directory and nothing else mounted; its failure fails the drill
 : >"$WORK/fp/log"; : >"$WORK/fp/work/hand-checks.txt"
 fp FOLD_FIREFOX_IMAGE=fold-firefox-runner:abc123abc123 FP_RC=0
@@ -458,167 +365,17 @@ if command -v node >/dev/null; then
   [[ "$(QC1_WEB_DIR="$WORK/web" QC1_PREFLIGHT_FOR=firefox FAKE_FF_VERSION=150.0 code_of node "$PF")" == 7 ]]; grep -q 'is not the 157.0 this Playwright bundles' "$WORK/err"
   [[ "$(QC1_WEB_DIR="$WORK/web" QC1_PREFLIGHT_FOR=firefox FAKE_NOCOOKIE=1 code_of node "$PF")" == 6 ]]; grep -q 'Secure cookie on localhost' "$WORK/err"
   [[ "$(QC1_WEB_DIR="$WORK/web" QC1_PREFLIGHT_FOR=firefox FAKE_ITEMS=1 code_of node "$PF")" == 6 ]]
-  # the default consumers still do not launch Firefox (the Alpine runner could not)
+  # the default consumers do not launch Firefox
   rm -f "$WORK"/opts.json.*; [[ "$(QC1_WEB_DIR="$WORK/web" FAKE_OPTS_OUT="$WORK/opts.json" code_of node "$PF")" == 0 ]]; [[ ! -e "$WORK/opts.json.playwright.firefox" ]]
-
-  # --- browser-prepare.sh end to end with stub apk/npm/docker/chromium and a fake Playwright (the real script, the real preflight) ----------------
-  PC="$WORK/prepclone"; mkdir -p "$PC/web" "$PC/deploy/digitalocean/qc1"
-  cp "$ROOT/web/package.json" "$ROOT/web/package-lock.json" "$PC/web/"; cp "$ROOT/.nvmrc" "$PC/"; printf 'web/node_modules\n' >"$PC/.gitignore"
-  cp "$HERE"/qc1/{browser-prepare.sh,browser-runtime.sh,browser-preflight.mjs,browser.mjs,browser-launch.cjs,firefox-runtime.sh,firefox.Dockerfile} "$PC/deploy/digitalocean/qc1/"
-  git init -q "$PC"; git -C "$PC" config user.name fixture; git -C "$PC" config user.email fixture@example.invalid; git -C "$PC" config commit.gpgsign false; git -C "$PC" config core.hooksPath /dev/null
-  git -C "$PC" add -A; git -C "$PC" commit -qm prepare
-  mkweb "$WORK/pcweb" 1.64.1 1.64.1 '>=18'; cp -r "$WORK/pcweb/node_modules" "$PC/web/node_modules"
-  mkdir "$WORK/pbin"
-  printf '#!/bin/sh\n[ "$1" = info ] && echo chromium-1.0-r0\nexit 0\n' >"$WORK/pbin/apk"
-  printf '#!/bin/sh\nexit 0\n' >"$WORK/pbin/chromium"
-  printf '#!/bin/sh\n[ "$1" = -v ] && echo 10.0.0\nexit 0\n' >"$WORK/pbin/npm"
-  cat >"$WORK/pbin/docker" <<'STUB'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >>"$STUB_LOG"
-case "$1" in
-  build) echo "step 1/5"; echo "${STUB_BUILD_MSG:-built}"; exit "${STUB_BUILD_RC:-0}" ;;
-  run) exec env QC1_WEB_DIR="$STUB_WEB_DIR" QC1_PREFLIGHT_FOR=firefox node "$STUB_PREFLIGHT" ;;
-  image) echo sha256:feedface; exit 0 ;;
-esac
-exit 0
-STUB
-  chmod +x "$WORK/pbin"/*
-  prep() { # out-dir [env...]
-    local out="$1"; shift
-    : >"$WORK/pstub.log"
-    env PATH="$WORK/pbin:$PATH" STUB_LOG="$WORK/pstub.log" STUB_WEB_DIR="$PC/web" STUB_PREFLIGHT="$PC/deploy/digitalocean/qc1/browser-preflight.mjs" QC1_WEB_DIR="$PC/web" "$@" \
-      bash "$PC/deploy/digitalocean/qc1/browser-prepare.sh" "$out"
-  }
-  # not requested (the QC-1 mode): no Docker call, Chromium only
-  rc=0; prep "$WORK/po1" >"$WORK/p1.out" 2>"$WORK/p1.err" || rc=$?
-  [[ "$rc" == 0 && ! -s "$WORK/pstub.log" ]] || { cat "$WORK/p1.err" >&2; exit 1; }
-  [[ "$(cat "$WORK/po1/browser.env")" == 'QC1_CHROMIUM='* && "$(wc -l <"$WORK/po1/browser.env")" == 1 ]]; jq -e '.firefox == null and .preflight.ok == true' "$WORK/po1/browser-runtime.json" >/dev/null
-  grep -q 'firefox: not requested' "$WORK/p1.out"; [[ ! -e "$WORK/po1/firefox-runtime.json" ]]
-  # requested and built: the image is built, then launched through the shared flags, and recorded
-  rc=0; prep "$WORK/po2" QC1_PREPARE_FIREFOX=1 >"$WORK/p2.out" 2>"$WORK/p2.err" || rc=$?
-  [[ "$rc" == 0 ]] || { cat "$WORK/p2.err" >&2; exit 1; }
-  b_l="$(grep -n '^build ' "$WORK/pstub.log" | head -n 1 | cut -d: -f1)"; r_l="$(grep -n '^run ' "$WORK/pstub.log" | head -n 1 | cut -d: -f1)"; i_l="$(grep -n '^image inspect' "$WORK/pstub.log" | head -n 1 | cut -d: -f1)"
-  [[ -n "$b_l" && -n "$r_l" && -n "$i_l" && "$b_l" -lt "$r_l" && "$r_l" -lt "$i_l" ]]
-  grep -qE "^build --build-arg NODE_IMAGE=node:$(tr -d '[:space:]v' <"$ROOT/.nvmrc")-bookworm -f $PC/deploy/digitalocean/qc1/firefox.Dockerfile -t fold-firefox-runner:[0-9a-f]{12} " "$WORK/pstub.log"
-  grep -qE "^run --rm --init --ipc=host --network host -e QC1_WEB_DIR=/app -e QC1_PREFLIGHT_FOR=firefox -v $PC/deploy/digitalocean/qc1:/qc1:ro fold-firefox-runner:[0-9a-f]{12} node /qc1/browser-preflight.mjs\$" "$WORK/pstub.log"
-  jq -e '.available == true and (.image | test("^fold-firefox-runner:[0-9a-f]{12}$")) and .imageId == "sha256:feedface" and .nodeImage == "node:24-bookworm" and .preflight.ok == true and .preflight.consumers == ["firefox"] and .preflight.firefox == "157.0"' "$WORK/po2/firefox-runtime.json" >/dev/null
-  grep -q "^FOLD_FIREFOX_IMAGE=$(jq -r .image "$WORK/po2/firefox-runtime.json")\$" "$WORK/po2/browser.env"; grep -q "^FOLD_FIREFOX_RUNTIME=$WORK/po2/firefox-runtime.json\$" "$WORK/po2/browser.env"; grep -q '^QC1_CHROMIUM=' "$WORK/po2/browser.env"
-  jq -e '.firefox.available == true' "$WORK/po2/browser-runtime.json" >/dev/null; grep -q 'firefox: ready in fold-firefox-runner:' "$WORK/p2.out"
-  # the image cannot be built (network, registry, apt): an explicit record with the reason, no image variable, no run, preparation still succeeds
-  rc=0; prep "$WORK/po3" QC1_PREPARE_FIREFOX=1 STUB_BUILD_RC=1 STUB_BUILD_MSG='E: Failed to fetch http://deb.debian.org (network unreachable)' >"$WORK/p3.out" 2>"$WORK/p3.err" || rc=$?
-  [[ "$rc" == 0 ]] || { cat "$WORK/p3.err" >&2; exit 1; }
-  jq -e '.available == false and .stage == "build" and (.reason | contains("network unreachable")) and (.handCheck | length > 0)' "$WORK/po3/firefox-runtime.json" >/dev/null
-  grep -q 'WARNING: the Firefox runtime could not be built' "$WORK/p3.err"; grep -q 'network unreachable' "$WORK/p3.err"
-  if grep -q '^run ' "$WORK/pstub.log"; then echo 'Docker ran after a failed build' >&2; exit 1; fi
-  if grep -q '^FOLD_FIREFOX_IMAGE=' "$WORK/po3/browser.env"; then echo 'an unbuilt image was handed on' >&2; exit 1; fi; grep -q "^FOLD_FIREFOX_RUNTIME=$WORK/po3/firefox-runtime.json\$" "$WORK/po3/browser.env"
-  grep -q 'firefox: unavailable, hand check' "$WORK/p3.out"; [[ -s "$WORK/po3/firefox-build.log" ]]
-  # the image builds but Firefox does not start in it: the preparation FAILS before any drill (no browser.env for the launcher to hand on)
-  rc=0; prep "$WORK/po4" QC1_PREPARE_FIREFOX=1 FAKE_FF_LAUNCH_FAIL=1 >"$WORK/p4.out" 2>"$WORK/p4.err" || rc=$?
-  [[ "$rc" == 1 ]]; grep -q 'did not pass its preflight' "$WORK/p4.err"; grep -q 'Firefox did not launch for firefox' "$WORK/p4.err"; [[ ! -e "$WORK/po4/browser.env" ]]
-  # ...and it fails the same way for a Firefox of the wrong version
-  rc=0; prep "$WORK/po5" QC1_PREPARE_FIREFOX=1 FAKE_FF_VERSION=150.0 >"$WORK/p5.out" 2>"$WORK/p5.err" || rc=$?
-  [[ "$rc" == 1 && ! -e "$WORK/po5/browser.env" ]]
 fi
 
 # --- the runner: browser preflight before anything is created -------------------------------------------------------------
-CLONE="$WORK/clone"; mkdir -p "$CLONE/deploy/digitalocean/qc1" "$CLONE/web/src/lib"
-cp "$HERE/qc1-measure.sh" "$HERE/isolation.sh" "$CLONE/deploy/digitalocean/"
-cp "$HERE"/qc1/app-facts.json "$HERE"/qc1/lib.sh "$HERE"/qc1/filler.sql "$HERE"/qc1/legacy.sh "$HERE"/qc1/legacy-markers.sql "$HERE"/qc1/scenario.sql "$HERE"/qc1/panel-measure.mjs "$HERE"/qc1/browser.mjs "$HERE"/qc1/browser-launch.cjs "$HERE"/qc1/browser-preflight.mjs "$HERE"/qc1/response-accounting.mjs "$HERE"/qc1/set-v1.mjs "$HERE"/qc1/panel-core.mjs "$HERE"/qc1/panel-driver.mjs "$HERE"/qc1/page-observer.mjs "$HERE"/qc1/top-statements.sql "$CLONE/deploy/digitalocean/qc1/"; mkdir -p "$CLONE/web/src/lib"; cp "$ROOT/web/src/lib/reasonSetVectors.json" "$CLONE/web/src/lib/"
-git init -q "$CLONE"; git -C "$CLONE" config user.name fixture; git -C "$CLONE" config user.email fixture@example.invalid
-git -C "$CLONE" config commit.gpgsign false; git -C "$CLONE" config core.hooksPath /dev/null
-git -C "$CLONE" add -A; git -C "$CLONE" commit -qm clone
-CLONE_HEAD="$(git -C "$CLONE" rev-parse HEAD)"
-cat >"$WORK/stubbin/docker" <<'STUB'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >>"$STUB_LOG"
-hex() { printf "$1%.0s" {1..64}; echo; }
-case "$1" in
-  info) echo '{"ID":"s","Name":"x","ContainersRunning":0,"SecurityOptions":[],"CgroupVersion":"2"}' ;;
-  image)
-    case "$*" in
-      *"index .Config.Labels"*) echo "$STUB_LABEL" ;;
-      *"json .RepoDigests"*) echo '[]' ;;
-      *"{{.Id}}"*) echo "sha256:$(hex c)" ;;
-      *"{{.Config.Labels"*) echo ;;
-    esac ;;
-  network) case "$2" in create) hex n ;; esac ;;
-  volume)
-    case "$2" in
-      create)
-        for a in "$@"; do case "$a" in fold.qc1.owner=*) printf '%s' "${a#fold.qc1.owner=}" >"$STUB_DIR/token" ;; esac; done
-        printf '%s\n' "${STUB_VOLNAME:-stubvol}" ;;
-      inspect)
-        case "${STUB_VOLMODE:-own}" in
-          own) cat "$STUB_DIR/token"; echo ;;
-          none) echo ;;
-          other) echo 11111111-2222-3333-4444-555555555555 ;;
-        esac ;;
-    esac ;;
-  run)
-    case "$*" in
-      *"--rm"*version*) echo '{"recoveryPolicy":2}' ;;
-      *"-v "*) exit 1 ;;
-      *) hex d ;;
-    esac ;;
-esac
-exit 0
-STUB
-cat >"$WORK/stubbin/node" <<'STUB'
-#!/usr/bin/env bash
-printf 'node %s | QC1_WEB_DIR=%s\n' "$*" "${QC1_WEB_DIR-}" >>"$STUB_NODE_LOG"
-# The body builder's self-test against the shared vectors runs before the preflight; the stub answers it as the real one does.
-case "$*" in *set-v1.mjs*selftest*) echo 'ok 4'; exit 0 ;; esac
-case "${STUB_NODE_MODE:-ok}" in
-  ok) echo '{"ok":true,"chromium":"140.0.7339.0","playwright":"1.64.1"}' ;;
-  notok) echo '{"ok":false}' ;;
-  fail) echo 'browser-preflight: nope' >&2; exit 3 ;;
-esac
-STUB
-chmod +x "$WORK/stubbin/docker" "$WORK/stubbin/node"
-rrun() { STUB_LOG="$WORK/stub.log" STUB_NODE_LOG="$WORK/node.log" STUB_DIR="$WORK" STUB_LABEL="${LABEL:-$CLONE_HEAD}" PATH="$WORK/stubbin:$PATH" bash "$CLONE/deploy/digitalocean/qc1-measure.sh" "$@"; }
-: >"$WORK/stub.log"; : >"$WORK/node.log"
-rc=0; STUB_NODE_MODE=fail rrun --dir "$WORK/pf1" --image qc1-supplied:latest >"$WORK/pf1.out" 2>&1 || rc=$?
-[[ "$rc" == 1 ]] && grep -q 'the browser preflight failed' "$WORK/pf1.out" && [[ ! -e "$WORK/pf1" ]]
-[[ "$(wc -l <"$WORK/stub.log")" == 1 && "$(head -n 1 "$WORK/stub.log")" == info* ]]
-grep -q "node $CLONE/deploy/digitalocean/qc1/browser-preflight.mjs | QC1_WEB_DIR=$CLONE/web" "$WORK/node.log"
-: >"$WORK/stub.log"; rc=0; STUB_NODE_MODE=notok rrun --dir "$WORK/pf2" --image qc1-supplied:latest >"$WORK/pf2.out" 2>&1 || rc=$?
-[[ "$rc" == 1 ]] && grep -q 'the browser preflight did not pass' "$WORK/pf2.out" && [[ ! -e "$WORK/pf2" ]]
-# Passing the preflight, the run goes on to the image checks (a label that is not HEAD stops it there).
-: >"$WORK/stub.log"; rc=0; LABEL=0000000000000000000000000000000000000000 rrun --dir "$WORK/pf3" --image qc1-supplied:latest >"$WORK/pf3.out" 2>&1 || rc=$?
-[[ "$rc" == 1 ]] && grep -q 'is labelled revision' "$WORK/pf3.out"
-# --no-browser never calls the browser tooling (node still runs the body builder's self-test).
-: >"$WORK/node.log"; : >"$WORK/stub.log"; rc=0; LABEL=0000000000000000000000000000000000000000 rrun --dir "$WORK/pf4" --no-browser --image qc1-supplied:latest >"$WORK/pf4.out" 2>&1 || rc=$?
-[[ "$rc" == 1 ]] && ! grep -q "browser-preflight\|panel-measure" "$WORK/node.log"   # node is still the body builder's (set-v1 selftest), never the browser
 # The preflight comes before any directory, image work or container.
 RUNNER="$HERE/qc1-measure.sh"
 pf_line="$(grep -n 'qc1/browser-preflight.mjs' "$RUNNER" | head -n 1 | cut -d: -f1)"; mk_line="$(grep -n '^mkdir -p "\$WORK"$' "$RUNNER" | cut -d: -f1)"; img_line="$(grep -n '^IMAGE_ID=' "$RUNNER" | head -n 1 | cut -d: -f1)"
 [[ "$pf_line" -lt "$mk_line" && "$mk_line" -lt "$img_line" ]]
 
 # --- the runner's volume: unnamed, labelled with a random owner token, verified before it is mounted and before it is removed ----
-vol_run() { : >"$WORK/stub.log"; rc=0; rrun --dir "$1" --no-browser --image qc1-supplied:latest "${@:2}" >"$WORK/vol.out" 2>&1 || rc=$?; }
-vol_run "$WORK/v1"
-# Our volume: created without a name, with a uuid label; inspected before the container that mounts it; removed at the end by its name.
-create_line="$(grep -n '^volume create' "$WORK/stub.log" | head -n 1 | cut -d: -f1)"
-[[ "$(grep -c '^volume create' "$WORK/stub.log")" == 1 ]]
-grep -qE '^volume create --label fold\.qc1\.owner=[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' "$WORK/stub.log"
-inspect_line="$(grep -n '^volume inspect --format {{index .Labels "fold.qc1.owner"}} stubvol$' "$WORK/stub.log" | head -n 1 | cut -d: -f1)"
-mount_line="$(grep -n '^run -d .* -v stubvol:/var/lib/postgresql/data' "$WORK/stub.log" | head -n 1 | cut -d: -f1)"
-[[ -n "$create_line" && -n "$inspect_line" && -n "$mount_line" && "$create_line" -lt "$inspect_line" && "$inspect_line" -lt "$mount_line" ]]
-grep -qx 'volume rm -f stubvol' "$WORK/stub.log"; grep -qE '^network rm n{64}$' "$WORK/stub.log"
-token1="$(cat "$WORK/token")"; [[ "$token1" =~ ^[0-9a-f-]{36}$ ]]
-vol_run "$WORK/v1b"; [[ "$(cat "$WORK/token")" != "$token1" ]]   # a new token every run
-# A volume that was there before (the create returned an existing one): unlabelled, or owned by another run. Refused before it is mounted, never removed.
-for mode in none other; do
-  STUB_VOLMODE=$mode vol_run "$WORK/v2-$mode"
-  [[ "$rc" == 1 ]] && grep -q 'volume ownership check failed' "$WORK/vol.out"
-  if grep -qE '^run -d |^volume rm' "$WORK/stub.log"; then echo "a volume that is not ours was mounted or removed ($mode)" >&2; cat "$WORK/stub.log" >&2; exit 1; fi
-  grep -qE '^network rm n{64}$' "$WORK/stub.log"
-done
-# A name collision is the same case: the daemon returns the same existing name that another run labelled.
-STUB_VOLNAME=the-hosts-pgdata STUB_VOLMODE=other vol_run "$WORK/v3"
-[[ "$rc" == 1 ]]; if grep -qE '^run -d |^volume rm' "$WORK/stub.log"; then echo 'a colliding volume was used or removed' >&2; exit 1; fi
-# --keep leaves the stack, including the volume.
-vol_run "$WORK/v4" --keep; if grep -q '^volume rm\|^network rm' "$WORK/stub.log"; then echo '--keep removed something' >&2; exit 1; fi
 # Cleanup is guarded by the label as well as mounting being: no unconditional volume removal.
 sed -n '/^cleanup() {/,/^}/p' "$RUNNER" | grep 'docker volume inspect --format .{{index .Labels "fold.qc1.owner"}}. "\$VOL"' >/dev/null
 if grep -n 'docker volume rm' "$RUNNER" | grep -v 'fold.qc1.owner' | grep -v '^[0-9]*:      docker volume rm -f "\$VOL"'; then echo 'an unguarded volume removal' >&2; exit 1; fi

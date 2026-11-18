@@ -9,13 +9,14 @@
 # engineering disposition (R4-C06) and says plainly when a run is not complete
 # evidence.
 #
-# Isolation. Run it against a nested (Docker-in-Docker) or rootless daemon that
-# is not running anything else; it refuses a daemon with running containers
-# unless --shared-daemon, and then still touches only what it created, by id:
-# one network, one volume, its own containers. It needs no root, no host
-# cgroup paths and no host process ids: memory is read through the daemon
-# (docker exec), so a nested daemon works. It never prunes, never removes by
-# name or pattern and never uses the host's Compose stack.
+# Isolation. Run it on a disposable host (a droplet created for the run, declared
+# with FOLD_DRILL_ISOLATED_DAEMON=1) with the default local daemon. It refuses an undeclared
+# host, a remote or non-default daemon, a daemon not named for this host and a
+# daemon with running containers unless --shared-daemon, and then still touches
+# only what it created, by id: one network, one volume, its own containers. It
+# needs no root, no host cgroup paths and no host process ids: memory is read
+# through the daemon (docker exec). It never prunes, never removes by name or
+# pattern and never uses the host's Compose stack.
 #
 # Identity. The tree must be clean and the image must be labelled with HEAD's
 # SHA (one is built from `git archive HEAD` when --image is not given). The
@@ -32,7 +33,7 @@
 # --legacy-only (T-292, R4-C06 items 4 and 5): measure ONLY the deleted-accounts review (qc1/legacy.sh) at each size, 9 rows per size, judged by the same qc1_judge and counted by the same
 # qc1_evidence_status (settings.mode legacy-only). It needs --no-browser and refuses --layout, --counts, --dense-counts, --charset multibyte, the next-changed options, the browser fallback and a
 # size below 10,000. It is never FULL and never release evidence; its evidence-status.json says so. Run it as ONE invocation on one head with --sizes 10000,100000,1000000
-# (docs/agents/testing.md): every nested invocation builds its own image in its own anonymous image store, so two invocations cannot share an image id and the same
+# (docs/agents/testing.md): every invocation builds its own image, so two invocations cannot be assumed to share an image id and the same
 # revision alone never establishes the same image. One invocation resolves one image id for every row. Fixtures that forge decision markers run only in the disposable
 # database this script creates (qc1/legacy-markers.sql and its guard).
 #
@@ -77,6 +78,8 @@ source "$HERE/qc1/lib.sh"
 source "$HERE/qc1/legacy.sh"
 # shellcheck source=deploy/digitalocean/isolation.sh
 source "$HERE/isolation.sh"
+# shellcheck source=deploy/digitalocean/checks.sh
+source "$HERE/checks.sh"
 
 WORK="" IMAGE="" SIZES="$QC1_SIZES_DEFAULT" COUNTS="$QC1_COUNTS_DEFAULT" LAYOUT=spread CHARSET=ascii REASON_LEN=200 TARGET_REASON_LEN=1000 DROPLET=2gb KEEP=0
 SECONDS_PER_REASON=10 SITTING_MINUTES=15 SHARED=0 BROWSER=1 DENSE="$QC1_DENSE_COUNTS_DEFAULT" BROWSER_NOSUBTLE=0
@@ -152,6 +155,7 @@ MAX_SIZE="$(printf '%s\n' "${SIZE_LIST[@]}" | sort -n | tail -n 1)"
 
 # --- the daemon: nothing else may be running on it -----------------------------------
 # Checked before anything is created, so a refusal leaves no trace.
+isolation_pin_local || exit 1
 DOCKER_INFO="$(docker info --format '{{json .}}' 2>/dev/null)" || { echo 'qc1: cannot reach a Docker daemon' >&2; exit 1; }
 RUNNING_AT_START="$(jq -r '.ContainersRunning // 0' <<<"$DOCKER_INFO")"
 SOCKET_PROBLEMS="$(isolation_mount_problems /proc/self/mountinfo sockets)"
@@ -159,8 +163,13 @@ if [[ -n "$SOCKET_PROBLEMS" ]]; then
   echo "qc1: this process reaches a host daemon, not a disposable one:" >&2; printf '  - %s\n' "$SOCKET_PROBLEMS" >&2; exit 1
 fi
 if (( RUNNING_AT_START > 0 && ! SHARED )); then
-  echo "qc1: the Docker daemon already runs $RUNNING_AT_START container(s). Point DOCKER_HOST at a disposable nested or rootless daemon, or pass --shared-daemon to accept the noise (results are then not complete evidence)." >&2
+  echo "qc1: the Docker daemon already runs $RUNNING_AT_START container(s). Run it on a fresh disposable host, or pass --shared-daemon to accept the noise (results are then not complete evidence)." >&2
   exit 1
+fi
+[[ "${FOLD_DRILL_ISOLATED_DAEMON:-}" == 1 ]] || { echo 'qc1: this host is not declared disposable: on a droplet created for this run, set FOLD_DRILL_ISOLATED_DAEMON=1' >&2; exit 1; }
+SCOPE_PROBLEMS="$(isolation_daemon_scope_problems "$DOCKER_INFO" "$(hostname)")"
+if [[ -n "$SCOPE_PROBLEMS" ]]; then
+  echo "qc1: this process does not reach the local default daemon:" >&2; printf '  - %s\n' "$SCOPE_PROBLEMS" >&2; exit 1
 fi
 DAEMON_JSON="$(jq -c --argjson running "$RUNNING_AT_START" --argjson shared "$([[ $SHARED == 1 && $RUNNING_AT_START -gt 0 ]] && echo true || echo false)" --arg host "${DOCKER_HOST:-default}" \
   '{id:.ID, serverVersion:.ServerVersion, rootless:((.SecurityOptions // []) | any(test("rootless"))), cgroupVersion:.CgroupVersion, cgroupDriver:.CgroupDriver, ncpu:.NCPU, memTotal:.MemTotal, runningAtStart:$running, sharedDaemon:$shared, dockerHost:$host}' <<<"$DOCKER_INFO")"
@@ -180,7 +189,7 @@ BROWSER_RUNTIME=null
 if (( BROWSER )); then
   command -v node >/dev/null || { echo 'qc1: node is required for the browser measurement (or pass --no-browser)' >&2; exit 1; }
   BROWSER_RUNTIME="$(QC1_WEB_DIR="$ROOT/web" node "$HERE/qc1/browser-preflight.mjs")" \
-    || { echo 'qc1: the browser preflight failed: run npm ci in web/ and point QC1_CHROMIUM at an installed Chromium (restore-drill-nested.sh --qc1 does both), or pass --no-browser' >&2; exit 1; }
+    || { echo 'qc1: the browser preflight failed: run deploy/digitalocean/qc1/browser-prepare.sh and source its browser.env (it runs npm ci in web/ and sets QC1_CHROMIUM), or pass --no-browser' >&2; exit 1; }
   jq -e '.ok == true' <<<"$BROWSER_RUNTIME" >/dev/null || { echo "qc1: the browser preflight did not pass: $BROWSER_RUNTIME" >&2; exit 1; }
 fi
 read -r GATE_CLASS GATE_OBJ <<<"$(qc1_gate_key)"
@@ -190,7 +199,7 @@ exec > >(tee "$WORK/harness.log") 2>&1
 
 JAR="$WORK/cookies" URL=""
 MEASUREMENTS="$WORK/measurements.jsonl"; : >"$MEASUREMENTS"
-SAMPLERS=() CONTAINERS=() NET_ID="" VOL="" APP_CID="" DB_CID="" SIDE_CID="" CURRENT_WORKERS=0 APP_STARTED_MS=0
+SAMPLERS=() CONTAINERS=() NET_ID="" VOL="" APP_CID="" DB_CID="" DB_IMAGE_RAW="" DB_IMAGE_VERIFIED="" SIDE_CID="" CURRENT_WORKERS=0 APP_STARTED_MS=0
 APP_CONTAINERS="[]"
 # 1 from just before the first statement that turns auto_explain (or log_lock_waits) on in the runner's own database until the moment both are proven off in a new session.
 # While it is 1, an exit of any kind (a failure, a signal, --keep) owes the database a reset: ALTER SYSTEM is persistent, so a stack kept for inspection would otherwise go on
@@ -252,7 +261,7 @@ db_settings_json() {
 
 # The environment record. incomplete=true (an aborted run) marks it and records every source that could not be read as null.
 write_environment() { # incomplete(true|false) reason
-  local incomplete="$1" ireason="${2:-}" pg dbImage dbMem calib database
+  local incomplete="$1" ireason="${2:-}" pg dbImage dbImageRaw dbMem calib database
   local IMAGE="${IMAGE:-}" IMAGE_ID="${IMAGE_ID:-}" REVISION="${REVISION:-}" DROPLET="${DROPLET:-}" DB_MEMORY="${DB_MEMORY:-}" APP_MEMORY="${APP_MEMORY:-}" CPUSET="${CPUSET:-}" LAYOUT="${LAYOUT:-}" CHARSET="${CHARSET:-ascii}"
   local PG_IMAGE="${PG_IMAGE:-}" PG_IMAGE_ID="${PG_IMAGE_ID:-}" DB_CID="${DB_CID:-}" FIRST_APP_CID="${FIRST_APP_CID:-}" SIZES="${SIZES:-}" COUNTS="${COUNTS:-}" SETV1_SELFTEST="${SETV1_SELFTEST:-}" DENSE="${DENSE:-}" BROWSER="${BROWSER:-0}"
   local LEGACY_ONLY="${LEGACY_ONLY:-0}" env_LEGACY=null
@@ -264,11 +273,13 @@ write_environment() { # incomplete(true|false) reason
   local -a adl=()
   if declare -p ALL_DELETE_LIST >/dev/null 2>&1; then adl=("${ALL_DELETE_LIST[@]}"); fi
   local -a ALL_DELETE_LIST=("${adl[@]}")
-  pg=""; dbImage=""; dbMem=0; database=null
+  pg=""; dbImage=""; dbImageRaw=""; dbMem=0; database=null
   # An early abort may happen before a database container exists.
   if [[ -n "$DB_CID" ]]; then
     pg="$(fin_psql 'SHOW server_version' || true)"
-    dbImage="$(timeout 15 docker inspect --format '{{.Image}}' "$DB_CID" 2>/dev/null || true)"
+    # Both ids were read and verified (assert_image) when the container started; finalization asks the daemon nothing about the image, so a hung daemon cannot stall it.
+    dbImageRaw="${DB_IMAGE_RAW:-}"
+    dbImage="${DB_IMAGE_VERIFIED:-$dbImageRaw}"
     dbMem="$(jnum "$(timeout 15 docker inspect --format '{{.HostConfig.Memory}}' "$DB_CID" 2>/dev/null || true)")"; [[ "$dbMem" != null ]] || dbMem=0
     database="$(db_settings_json)"
   fi
@@ -287,13 +298,13 @@ write_environment() { # incomplete(true|false) reason
 jq -n --argjson database "$database" --argjson incomplete "$incomplete" --arg ireason "$ireason" --arg image "$IMAGE" --arg imageId "$IMAGE_ID" --arg revision "$REVISION" --argjson level "$env_LEVEL" --arg droplet "$DROPLET" --arg dbMemory "$DB_MEMORY" --arg appMemory "$APP_MEMORY" \
   --arg cpuset "$CPUSET" --arg layout "$LAYOUT" --arg charset "$CHARSET" --argjson reasonLen "$env_REASON_LEN" --argjson maxRequestBytes "$env_MAX_REQUEST_BYTES" \
   --arg pg "$pg" --arg pgImage "$PG_IMAGE" --arg pgImageId "$PG_IMAGE_ID" --argjson pgDigests "$env_PG_REPO_DIGESTS" --argjson appDigests "$env_APP_REPO_DIGESTS" \
-  --arg dbCid "$DB_CID" --arg dbImage "$dbImage" --argjson dbMemLimit "$dbMem" \
+  --arg dbCid "$DB_CID" --arg dbImage "$dbImage" --arg dbImageRaw "$dbImageRaw" --argjson dbMemLimit "$dbMem" \
   --arg appCid "$FIRST_APP_CID" --argjson appContainers "$env_APP_CONTAINERS" --argjson daemon "$env_DAEMON_JSON" --argjson sources "$env_SOURCES" \
   --argjson calibration "$calib" --arg sizes "$SIZES" --arg counts "$COUNTS" \
   --argjson targetLen "$env_TARGET_REASON_LEN" --arg deleteCounts "$(IFS=,; printf "%s" "${ALL_DELETE_LIST[*]}")" --arg setv1Selftest "$SETV1_SELFTEST" --arg dense "$DENSE" --argjson clicks "$QC1_CLICKS_PER_CASE" --argjson ncPresses "$NEXT_CHANGED_PRESSES" --argjson ncRuns "$NEXT_CHANGED_RUNS" --argjson ncOnly "$([[ $NEXT_CHANGED_ONLY == 1 ]] && echo true || echo false)" --argjson ncProfile "$([[ $PROFILE_NEXT_CHANGED == 1 ]] && echo true || echo false)" --argjson spr "$env_SECONDS_PER_REASON" --argjson sit "$env_SITTING_MINUTES" --argjson browser "$([[ $BROWSER == 1 ]] && echo true || echo false)" --argjson browserRuntime "$env_BROWSER_RUNTIME" --argjson legacyOnly "$([[ $LEGACY_ONLY == 1 ]] && echo true || echo false)" --argjson legacy "$env_LEGACY" \
   '{image:$image, imageId:$imageId, revision:$revision, recoveryPolicy:$level, appRepoDigests:$appDigests,
-    appContainerId:$appCid, appImageId:($appContainers[0].imageId), appContainers:$appContainers,
-    postgresImage:$pgImage, postgresImageId:$pgImageId, postgresRepoDigests:$pgDigests, postgresVersion:$pg, dbContainerId:$dbCid, dbImageId:$dbImage,
+    appContainerId:$appCid, appImageId:($appContainers[0].imageId), appImageRawId:($appContainers[0].rawImageId), appContainers:$appContainers,
+    postgresImage:$pgImage, postgresImageId:$pgImageId, postgresRepoDigests:$pgDigests, postgresVersion:$pg, dbContainerId:$dbCid, dbImageId:$dbImage, dbImageRawId:$dbImageRaw,
     limits:{droplet:$droplet, dbMemory:$dbMemory, appMemory:$appMemory, cpuset:$cpuset, dbMemoryLimitBytes:$dbMemLimit, appMemoryLimitBytes:($appContainers[0].memoryLimitBytes)},
     daemon:$daemon, sources:$sources, calibration:$calibration, browserRuntime:$browserRuntime,
     settings:({workers:0, schedulerAppRuns:true, browser:$browser, autovacuum:"off", checkpointTimeout:"1d", maxWalSize:"4GB", appEnv:"dev", layout:$layout, charset:$charset, reasonLen:$reasonLen, targetReasonLen:$targetLen, deleteCounts:$deleteCounts, secondsPerReason:$spr, sittingMinutes:$sit, sizes:$sizes, counts:$counts, denseCounts:$dense, clicksPerCase:$clicks, nextChangedPresses:$ncPresses, nextChangedRuns:$ncRuns, nextChangedOnly:$ncOnly, profileNextChanged:$ncProfile, wire:"set-v1", setV1Selftest:$setv1Selftest} + (if $legacyOnly then {mode:"legacy-only", legacy:$legacy} else {} end)),
@@ -441,6 +452,9 @@ DB_CID="$(docker run -d --network "$NET_ID" --network-alias qc1-db "${CPUSET_ARG
   -c auto_explain.log_analyze=on -c auto_explain.log_buffers=on -c auto_explain.log_wal=on \
   -c auto_explain.log_timing=on -c auto_explain.log_format=text -c auto_explain.log_nested_statements=off)"
 CONTAINERS+=("$DB_CID")
+DB_IMAGE_RAW="$(docker inspect --format '{{.Image}}' "$DB_CID")"
+assert_image "$DB_CID" "$PG_IMAGE_ID" || { echo "qc1: the database container runs $DB_IMAGE_RAW, not $PG_IMAGE_ID" >&2; exit 1; }
+DB_IMAGE_VERIFIED="$PG_IMAGE_ID"
 for ((i=0;i<120;i++)); do docker exec "$DB_CID" pg_isready -U church -d fold >/dev/null 2>&1 && break; sleep 1; done
 sleep 3 # the entrypoint restarts the server once after initdb
 for ((i=0;i<120;i++)); do docker exec "$DB_CID" pg_isready -U church -d fold >/dev/null 2>&1 && break; sleep 1; done
@@ -470,7 +484,7 @@ SETUP_TOKEN="$(printf 'a%.0s' {1..64})"
 # (Re)create the app with FOLD_WORKERS=$1, plus the helper that shares its pid
 # namespace and reads its process memory (distroless images have no shell).
 start_app() { # workers
-  local workers="$1" old_app="$APP_CID" old_side="$SIDE_CID" port image_ran
+  local workers="$1" old_app="$APP_CID" old_side="$SIDE_CID" port image_ran image_raw
   # The scheduler starts with the process, so the moment before it is created bounds it from below.
   APP_STARTED_MS="$(ms)"
   if [[ -n "$old_app" ]]; then
@@ -481,8 +495,9 @@ start_app() { # workers
     -e FOLD_SETUP_TOKEN="$SETUP_TOKEN" -e FOLD_WORKERS="$workers" \
     -e "DATABASE_URL=postgres://church:qc1-disposable@qc1-db:5432/fold?sslmode=disable" "$IMAGE_ID")"
   CONTAINERS+=("$APP_CID")
-  image_ran="$(docker inspect --format '{{.Image}}' "$APP_CID")"
-  [[ "$image_ran" == "$IMAGE_ID" ]] || { echo "qc1: the app container runs $image_ran, not $IMAGE_ID" >&2; exit 1; }
+  image_raw="$(docker inspect --format '{{.Image}}' "$APP_CID")"
+  assert_image "$APP_CID" "$IMAGE_ID" || { echo "qc1: the app container runs $image_raw, not $IMAGE_ID" >&2; exit 1; }
+  image_ran="$IMAGE_ID"
   port="$(docker port "$APP_CID" 8080/tcp | head -n 1 | sed 's/.*://')"
   URL="http://127.0.0.1:$port"
   for ((i=0;i<120;i++)); do curl -fsS "$URL/healthz" >/dev/null 2>&1 && break; sleep 1; done
@@ -490,8 +505,8 @@ start_app() { # workers
   SIDE_CID="$(docker run -d --pid "container:$APP_CID" "${CPUSET_ARGS[@]}" --memory 64m --user 0 --entrypoint sleep "$PG_IMAGE_ID" 86400)"
   CONTAINERS+=("$SIDE_CID")
   CURRENT_WORKERS="$workers"
-  APP_CONTAINERS="$(jq -c --arg id "$APP_CID" --arg img "$image_ran" --argjson w "$workers" --argjson mem "$(docker inspect --format '{{.HostConfig.Memory}}' "$APP_CID")" \
-    '. + [{id:$id, imageId:$img, workers:$w, memoryLimitBytes:$mem}]' <<<"$APP_CONTAINERS")"
+  APP_CONTAINERS="$(jq -c --arg id "$APP_CID" --arg img "$image_ran" --arg raw "$image_raw" --argjson w "$workers" --argjson mem "$(docker inspect --format '{{.HostConfig.Memory}}' "$APP_CID")" \
+    '. + [{id:$id, imageId:$img, rawImageId:$raw, workers:$w, memoryLimitBytes:$mem}]' <<<"$APP_CONTAINERS")"
 }
 start_app 0
 

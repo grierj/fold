@@ -3,7 +3,7 @@
 DEV_COMPOSE := docker compose -f deploy/docker-compose.dev.yml
 DEV_DATABASE_URL := postgres://fold:fold@localhost:5432/fold?sslmode=disable
 
-.PHONY: dev test lint lint-go lint-web devdb e2e lint-sh provision-dry-run compose-smoke deadcode reason-review-scale-test
+.PHONY: dev test lint lint-go lint-web devdb e2e lint-sh provision-dry-run compose-smoke deadcode reason-review-scale-test backup-test
 
 # Start the dev database and wait until it accepts connections.
 devdb:
@@ -19,7 +19,7 @@ dev: devdb
 
 # go test ./... against DATABASE_URL, with the root package split across
 # parallel shards (scripts/go-test.sh); starts the dev database when it is unset.
-test: reason-review-scale-test
+test: reason-review-scale-test backup-test
 	@if [ -z "$$DATABASE_URL" ]; then \
 		$(DEV_COMPOSE) up -d --wait db && \
 		DATABASE_URL="$(DEV_DATABASE_URL)" scripts/go-test.sh; \
@@ -65,13 +65,14 @@ deadcode:
 lint-web:
 	cd web && npx tsc --noEmit && npx knip && npx knip --production
 
-# Shell scripts under deploy/digitalocean, scripts (go-test.sh, compose-smoke.sh) and web/e2e.
-# -x follows source= directives.
+# Shell scripts under deploy/digitalocean, deploy/backup, scripts (go-test.sh,
+# compose-smoke.sh) and web/e2e. -x follows source= directives.
 lint-sh:
 	@command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck is required (apt-get install shellcheck)"; exit 1; }
-	shellcheck -x deploy/digitalocean/*.sh scripts/*.sh web/e2e/*.sh
+	shellcheck -x deploy/digitalocean/*.sh deploy/backup/*.sh scripts/*.sh web/e2e/*.sh
 
-# provision.sh --dry-run inside a fresh Ubuntu container. Needs Docker.
+# provision.sh --dry-run inside a fresh Ubuntu container, then the deploy fixtures
+# (recovery, the host's archive copies and expiry, the drills' pure checks). Needs Docker.
 provision-dry-run:
 	bash deploy/digitalocean/dry-run-test.sh
 
@@ -87,3 +88,11 @@ reason-review-scale-test:
 	bash scripts/reason-review-scale.sh --self-test
 	bash scripts/reason-review-matrix.sh --self-test
 	bash scripts/reason-review-next-changed.sh --self-test
+
+# The fold-backup script's own cases, against stub pg_dump, psql, age and rclone
+# on PATH: no Docker, no database, no network. The second run mutates the
+# script four ways and requires each mutation to make its named case fail.
+# Also a prerequisite of make test.
+backup-test:
+	bash deploy/backup/backup-test.sh
+	bash deploy/backup/backup-test.sh --probes

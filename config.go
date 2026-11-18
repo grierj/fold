@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -67,6 +68,10 @@ type Config struct {
 	PostmarkServerToken         string
 	PostmarkTransactionalStream string
 	PostmarkBroadcastStream     string
+	// BackupDir is the read-only directory holding the backup service's LAST_OK
+	// and status.json (FOLD_BACKUP_DIR, M5.2). Empty means the deployment does
+	// not watch backups (a bare binary, a developer machine).
+	BackupDir string
 }
 
 const minWebhookSecretLen = 24
@@ -115,6 +120,20 @@ func envName() string { return getEnv("APP_ENV", defaultEnv) }
 func envPort() string { return getEnv("PORT", defaultPort) }
 
 func envPushHosts() ([]string, error) { return push.ParseHosts(os.Getenv("FOLD_PUSH_HOSTS")) }
+
+// errBackupDirRelative names the variable and never its value: a relative path
+// would be read from whatever directory the server happens to start in.
+var errBackupDirRelative = errors.New("FOLD_BACKUP_DIR must be an absolute path (Compose sets /backup-status), or unset to turn backup watching off")
+
+// backupDir reads FOLD_BACKUP_DIR. LoadConfig and `fold backup status` call it,
+// so the variable is read and checked in one place.
+func backupDir() (string, error) {
+	dir := os.Getenv("FOLD_BACKUP_DIR")
+	if dir != "" && !filepath.IsAbs(dir) {
+		return "", errBackupDirRelative
+	}
+	return dir, nil
+}
 
 func databaseURL() (string, error) {
 	if v := os.Getenv("DATABASE_URL"); v != "" {
@@ -247,6 +266,11 @@ func LoadConfig() (Config, error) {
 		return Config{}, err
 	}
 
+	backup, err := backupDir()
+	if err != nil {
+		return Config{}, err
+	}
+
 	return Config{
 		Env:                         env,
 		Port:                        envPort(),
@@ -268,6 +292,7 @@ func LoadConfig() (Config, error) {
 		PostmarkServerToken:         os.Getenv("FOLD_POSTMARK_SERVER_TOKEN"),
 		PostmarkTransactionalStream: os.Getenv("FOLD_POSTMARK_TRANSACTIONAL_STREAM"),
 		PostmarkBroadcastStream:     os.Getenv("FOLD_POSTMARK_BROADCAST_STREAM"),
+		BackupDir:                   backup,
 	}, nil
 }
 

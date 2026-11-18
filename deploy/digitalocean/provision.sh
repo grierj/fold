@@ -34,6 +34,12 @@ PIN_SAVE=""
 PIN_SAVE_READY=0
 PIN_ONLY=0
 RECOVERY_NONCE=""
+# The host's original archives, and whether the deployed Compose defines the
+# backup service (set by deploy_stack). Operators may lengthen the two bounds.
+BACKUP_DIR="/var/backups/fold"
+HAS_BACKUP=0
+CUTOVER_END=0
+CUTOVER_WAIT="${FOLD_CUTOVER_WAIT:-600}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=deploy/digitalocean/checks.sh
@@ -122,6 +128,16 @@ Deploy:
 file pulls ghcr.io/grierj/fold:${FOLD_VERSION} (plan C10), so a 1 GB droplet
 with swap can run it. Until the first release is published there is nothing
 to pull: use a 2 GB droplet and --allow-onbox-build.
+
+When the Compose file defines the backup service, the deploy ends by handing the
+nightly backup to it (cutover): backup.env settings and the host timezone are
+copied into an unconfigured .env, the host archives are copied (never moved) into
+a root-only adopted/ folder of the backups volume, the service starts, and only
+after it reports a new LAST_OK does the host cron switch to expiry only. A failure
+before that leaves the host backup in charge (its full cron is reinstalled if an
+earlier cutover had made it expiry only); rerun this script. FOLD_CUTOVER_WAIT
+(default 600) bounds the whole cutover, every Docker observation in it included,
+and FOLD_BACKUP_DOCKER_WAIT (default 60) bounds one observation, in seconds.
 EOF
 }
 
@@ -562,7 +578,7 @@ copy_tree() {
     --exclude .env \
     --exclude backup.env \
     --exclude data \
-    --exclude backup.lock --exclude ops.lock --exclude ops.owner --exclude recovery-policy-floor \
+    --exclude backup.lock --exclude ops.lock --exclude ops.owner --exclude recovery-policy-floor --exclude backup-expiry-pending \
     --exclude deploy-tools --exclude recovery-tools --exclude recovery.lock \
     --exclude deploy/digitalocean --exclude '.recovery-tools.*' --exclude '.old-recovery-tools.*' --exclude '.deploy-tools.*' --exclude '.old-deploy-tools.*' --exclude .deploy-drill \
     -cf - . | tar -C "$stage" -xf -; then
@@ -596,6 +612,7 @@ prune_stale_tree() {
   local stage="$1" dest="$2" keep name rel
   local -a keep_names=(
     .env '.env.*' backup.env data backup.lock ops.lock ops.owner '.ops.owner.*'
+    backup-expiry-pending '.backup-expiry-pending.*'
     recovery.lock '.recovery.lock.*' recovery-deleted.txt '.recovery-deleted.*'
     .recovery-app-pin.yml '.recovery-app-pin.*' recovery-policy-floor
     'recovery-policy-floor.*' '.recovery-policy-floor.*'
@@ -704,7 +721,7 @@ install_runtime_files() {
   if (( DRY_RUN )); then
     echo "dry-run: install backup.sh smoke.sh email-dns.sh upgrade.sh provision.sh checks.sh restore.sh compose.recovery.yml backup.env.example into $DEPLOY_DIR"
     echo "dry-run: install $SCRIPT_DIR/backup.env.example to $DEPLOY_DIR/backup.env.example mode 644"
-    echo "dry-run: initialize $DEPLOY_DIR/backup.lock mode 600 without replacing its inode"
+    echo "dry-run: initialize $DEPLOY_DIR/backup.lock root-owned, group 65532, mode 640 without replacing its inode (the backup service locks it through a read-only bind)"
     echo "dry-run: install $SCRIPT_DIR/deploy-tools-version to $DEPLOY_DIR/deploy-tools-version mode 644"
     return 0
   fi
@@ -798,6 +815,20 @@ ensure_release_pin() {
   echo "release: building on this machine (docker-compose.build.yml, COMPOSE_FILE in .env)"
 }
 
+# The backup service shares this directory's backup.lock and recovery.lock
+# through a read-only bind (docker-compose.yml, FOLD_BACKUP_COORD). Written on
+# every run, a pin-only run included, and byte-stable when unchanged.
+ensure_backup_coord() {
+  local env_file="$DEPLOY_DIR/.env"
+  [[ "$DEPLOY_DIR" =~ ^/[A-Za-z0-9._/@+-]+$ ]] \
+    || die "--deploy-dir may use only letters, digits and . _ / @ + - so Compose can bind it for the backup service"
+  if (( DRY_RUN )) && [[ ! -f "$env_file" ]]; then
+    echo "dry-run: set FOLD_BACKUP_COORD=${DEPLOY_DIR} in ${env_file}"
+    return 0
+  fi
+  set_env_value "$env_file" FOLD_BACKUP_COORD "$DEPLOY_DIR"
+}
+
 write_env() {
   local env_file="$DEPLOY_DIR/.env"
   if [[ -f "$env_file" ]]; then
@@ -814,10 +845,12 @@ write_env() {
     else
       echo "dry-run: chmod 600 $env_file"
     fi
+    ensure_backup_coord
     return 0
   fi
   if (( DRY_RUN )); then
     echo "dry-run: write $env_file mode 600 (DOMAIN=$DOMAIN; SESSION_SECRET and DB_PASSWORD generated; values not shown)"
+    ensure_backup_coord
     return 0
   fi
   local session dbpass
@@ -850,6 +883,7 @@ write_env() {
   if [[ -n "$SMTP_URL" ]]; then
     echo "provision.sh: SMTP settings were written to $env_file. They may also be in your shell history." >&2
   fi
+  ensure_backup_coord
 }
 
 install_smoke_cron() {
@@ -861,12 +895,23 @@ EOF
 }
 
 install_backup_cron() {
-  write_file /etc/cron.d/fold-backup 644 "pg_dump at 02:30 local time" <<EOF
-SHELL=/bin/bash
-PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
-# 02:30 in the droplet timezone (timedatectl). Local dumps plus optional offsite.
-30 2 * * * root ${DEPLOY_DIR}/backup.sh >> /var/log/fold-backup.log 2>&1
-EOF
+  # Once the container service has taken over (cutover), a re-run keeps the
+  # expire-only cron; a deployment whose Compose has no backup service gets the
+  # host's full backup back. The text lives in checks.sh, shared with restore.sh.
+  local rc=0
+  if (( ! DRY_RUN )); then
+    backup_service_defined "$DEPLOY_DIR" || rc=$?
+    if [[ "$rc" == 0 && "$(backup_cron_kind "$DEPLOY_DIR")" == expire ]]; then
+      echo "backup cron: the container service is in charge; keeping the expire-only cron"
+      write_backup_logrotate
+      return 0
+    fi
+  fi
+  backup_cron_text "$DEPLOY_DIR" full | write_file /etc/cron.d/fold-backup 644 "pg_dump at 02:30 local time"
+  write_backup_logrotate
+}
+
+write_backup_logrotate() {
   write_file /etc/logrotate.d/fold-backup 644 "weekly rotate of the backup log" <<'EOF'
 /var/log/fold-backup.log {
   weekly
@@ -965,12 +1010,22 @@ restore_release_pin() {
 
 deploy_stack() {
   local -a cmd=(docker compose --project-directory "$DEPLOY_DIR")
-  local config image actual
+  local config image actual rc=0
+  # The backup service is fetched or built with the app, so arming it after a
+  # recovery never has to. An unreadable Compose file is left to the app checks
+  # below, which stop with their own message.
+  if (( ! DRY_RUN )); then
+    backup_service_defined "$DEPLOY_DIR" || rc=$?
+    [[ "$rc" != 0 ]] || HAS_BACKUP=1
+  fi
   if [[ -n "$IMAGE" ]]; then
-    if (( PIN_ONLY )); then step "${cmd[@]}" pull app; else step "${cmd[@]}" pull; fi
+    if (( PIN_ONLY )); then
+      # A failed backup pull is a pin failure: the saved pin is restored.
+      if (( HAS_BACKUP )); then step "${cmd[@]}" pull app backup; else step "${cmd[@]}" pull app; fi
+    else step "${cmd[@]}" pull; fi
   else
-    (( ! DRY_RUN )) || echo "dry-run: build app before up (previously up --build)"
-    step "${cmd[@]}" build app
+    (( ! DRY_RUN )) || echo "dry-run: build app (and backup, when Compose defines it) before up (previously up --build)"
+    if (( HAS_BACKUP )); then step "${cmd[@]}" build app backup; else step "${cmd[@]}" build app; fi
   fi
   if (( ! DRY_RUN )); then
     config="$("${cmd[@]}" config --format json)" || { restore_release_pin; return 1; }
@@ -987,7 +1042,146 @@ deploy_stack() {
     deploy_drill_pause "$DEPLOY_DIR" before-up
   fi
   (( ! PIN_ONLY )) || return 0
-  step "${cmd[@]}" up -d
+  start_stack
+}
+
+# start_stack: every service except backup, named in full with --no-deps. The
+# backup service starts only after backup_cutover has validated its volume and
+# adopted the host archives, so a failure or a reboot in between leaves it created
+# but not started and the host backup in charge. Without --no-deps an override
+# that makes another service depend on backup would start it here, ahead of the
+# identity check and the adoption. A Compose file without the service, and a disposable drill
+# (which cannot reach the host paths the cutover manages), start everything.
+start_stack() {
+  local -a cmd=(docker compose --project-directory "$DEPLOY_DIR") svc=()
+  if (( DRY_RUN )); then
+    echo "dry-run: docker compose --project-directory $DEPLOY_DIR up -d --no-deps <every service except backup>"
+    return 0
+  fi
+  if (( ! HAS_BACKUP )) || [[ "${DEPLOY_DRILL:-}" == 1 ]]; then
+    # The drill starts the backup service with the rest; the identity rule
+    # applies to that start as it does to the cutover's.
+    if (( HAS_BACKUP )); then
+      backup_identity_check "$DEPLOY_DIR" || die "the backup service identity is not as shipped; no service was started"
+    fi
+    step "${cmd[@]}" up -d
+    return
+  fi
+  mapfile -t svc < <("${cmd[@]}" config --format json | jq -r '.services | keys[] | select(. != "backup")')
+  (( ${#svc[@]} > 0 )) || die "the Compose configuration lists no service besides backup"
+  step "${cmd[@]}" up -d --no-deps "${svc[@]}"
+}
+
+# The cutover's failure exits. The new stack is deployed, smoke passed and the
+# recovery floor is recorded in both; nothing needs undoing, and upgrade.sh reports
+# each apart (a rerun repeats the steps).
+#   77  the host backup is confirmed in charge: the full host cron is installed and
+#       flushed to disk, and the container backup service is stopped and verified
+#       not running, so exactly one producer makes the backups.
+#   78  the host backup could not be confirmed, so the message names what is
+#       unknown. The cron is installed first and the service stopped only after it;
+#       the host backup refuses to run beside a running service, so a service left
+#       running never produces beside it.
+cutover_fail() {
+  local why="$1" cron=0 halted=0 gap
+  if backup_cron_install "$DEPLOY_DIR" full; then
+    cron=1
+    if backup_service_halt "$DEPLOY_DIR"; then halted=1; fi
+  fi
+  if (( cron && halted )); then
+    die "backup cutover stopped: ${why}. The site is up and the host backup is in charge: its full cron is installed and the container backup service is stopped. Fix that, then rerun ${DEPLOY_DIR}/provision.sh; the steps repeat safely" 77
+  fi
+  if (( cron )); then
+    gap="the full host cron is installed, but the container backup service could not be confirmed stopped; the host backup waits while that service runs, so check 'docker compose ps backup' and its logs"
+  else
+    gap="the full host cron could not be installed and flushed to disk, so no scheduler is confirmed and the container backup service was left as it was; check /etc/cron.d/fold-backup and the disk"
+  fi
+  die "backup cutover stopped: ${why}. The site is up, but backups are NOT confirmed: ${gap}. Run ${DEPLOY_DIR}/backup.sh by hand if the service is not running, then rerun ${DEPLOY_DIR}/provision.sh" 78
+}
+
+# cutover_wait_lastok ATTEMPT: wait for a LAST_OK newer than this attempt. A run
+# the service's own loop makes counts; if none appears, ask for one.
+cutover_wait_lastok() {
+  local attempt="$1" ok last_try=$SECONDS left
+  while :; do
+    left=$((CUTOVER_END - SECONDS))
+    (( left > 0 )) || return 1
+    archive_deadline $(( left < 15 ? left : 15 ))
+    ok="$(backup_lastok_epoch "$DEPLOY_DIR" 2>/dev/null)" || ok=""
+    if [[ -n "$ok" ]] && (( ok > attempt )); then return 0; fi
+    if (( SECONDS - last_try >= 20 )); then
+      last_try=$SECONDS
+      left=$((CUTOVER_END - SECONDS))
+      (( left > 0 )) || return 1
+      archive_deadline "$left"
+      archive_compose "$DEPLOY_DIR" exec -T backup /usr/local/bin/backup.sh now >/dev/null 2>&1 || true
+    fi
+    sleep 3
+  done
+}
+
+# backup_cutover: hand the nightly backup to the container service. Order:
+# settings copy, explicit creation of the Compose backup resources (only when the
+# volume is absent), layout validation, adoption of the host archives, start of
+# the service, and only then a LAST_OK newer than this attempt (on a repeat run
+# too: the service may have been recreated) before the host cron becomes
+# expire-only. An I/O or identity failure stops here with the host backup in
+# charge (cutover_fail: exit 77, or 78 when that cannot be confirmed); a stamp refused for a differing copy is reported and its
+# original keeps its normal expiry. Every Docker observation shares the one
+# FOLD_CUTOVER_WAIT budget (ARCHIVE_CAP). Pin-only runs never reach this.
+backup_cutover() {
+  local attempt rc=0 left
+  if (( DRY_RUN )); then
+    echo "dry-run: cutover: copy backup.env settings and the host timezone into an unconfigured .env (backup.env stays unchanged)"
+    echo "dry-run: cutover: create the backup resources with up --no-start --no-deps backup only when the backups volume is absent, then validate the volume layout (root:65532 mode 1770, adopted/ root-only)"
+    echo "dry-run: cutover: copy the host archives into adopted/ without replacing anything (originals unchanged; a stamp whose copy differs is refused whole)"
+    echo "dry-run: cutover: docker compose up -d backup, only after the layout is validated and the archives are adopted"
+    echo "dry-run: cutover: require a LAST_OK newer than this run, then switch the host cron to expire-only at 02:30 local time"
+    echo "dry-run: cutover: a stopped cutover installs the full host cron, flushes it to disk and stops the backup service (exit 77); when either cannot be confirmed it says so (exit 78)"
+    return 0
+  fi
+  if (( ! HAS_BACKUP )); then
+    echo "cutover: this Compose file has no backup service; the host backup stays in charge"
+    return 0
+  fi
+  if [[ "${DEPLOY_DRILL:-}" == 1 ]]; then
+    echo "cutover: skipped in a disposable drill"
+    return 0
+  fi
+  attempt="$(date +%s)"
+  CUTOVER_END=$((SECONDS + CUTOVER_WAIT))
+  ARCHIVE_CAP=$CUTOVER_END
+  echo "cutover: handing the nightly backup to the container service"
+  backup_settings_copy "$DEPLOY_DIR" || cutover_fail "the backup settings were not copied"
+  backup_identity_check "$DEPLOY_DIR" || cutover_fail "the backup service identity is not as shipped"
+  backup_coordination_check "$DEPLOY_DIR" || cutover_fail "the backup service is not coordinated with this directory"
+  archive_deadline "${FOLD_BACKUP_DOCKER_WAIT:-60}"
+  archive_volume_resolve "$DEPLOY_DIR" || rc=$?
+  case "$rc" in
+    0) echo "cutover: the backups volume exists; it is validated, not recreated" ;;
+    3)
+      echo "cutover: creating the backup resources (the backup process is not started)"
+      left=$((CUTOVER_END - SECONDS))
+      archive_deadline "$(( left > 0 ? left : 1 ))"
+      archive_compose "$DEPLOY_DIR" up --no-start --no-deps backup || cutover_fail "the backup resources were not created"
+      rc=0
+      archive_deadline "${FOLD_BACKUP_DOCKER_WAIT:-60}"
+      archive_volume_resolve "$DEPLOY_DIR" || rc=$?
+      [[ "$rc" == 0 ]] || cutover_fail "the created backups volume could not be verified"
+      ;;
+    *) cutover_fail "the backups volume could not be verified (status ${rc})" ;;
+  esac
+  left=$((CUTOVER_END - SECONDS))
+  backup_coord_acquire "$DEPLOY_DIR" "$(( left > 0 ? left : 1 ))" cutover || cutover_fail "backup.lock stayed busy"
+  [[ ! -e "$DEPLOY_DIR/recovery.lock" && ! -L "$DEPLOY_DIR/recovery.lock" ]] || cutover_fail "a recovery is active"
+  archive_layout || cutover_fail "the backups volume layout is not usable"
+  archive_adopt "$BACKUP_DIR" || cutover_fail "the host archives could not be adopted"
+  backup_coord_release
+  left=$((CUTOVER_END - SECONDS))
+  archive_deadline "$(( left > 0 ? left : 1 ))"
+  archive_compose "$DEPLOY_DIR" up -d --no-deps backup || cutover_fail "the backup service did not start"
+  cutover_wait_lastok "$attempt" || cutover_fail "the backup service has not reported a new successful backup"
+  backup_scheduler_select cutover-success "$DEPLOY_DIR" || cutover_fail "the host cron was not switched"
 }
 
 verify_before_up() {
@@ -1138,6 +1332,7 @@ main() {
         die "deployed and smoke passed, but could not record ${DEPLOY_DIR}/recovery-policy-floor. The pinned image still enforces the floor. Keep it locally, repair storage/permissions, then rerun ${DEPLOY_DIR}/provision.sh with the same release and options. Do not roll back for this error" 76
       fi
     fi
+    backup_cutover
   fi
   summarize
 }

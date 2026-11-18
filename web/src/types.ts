@@ -1572,6 +1572,18 @@ export interface AdminJobsResponse {
   deliveries: AdminDeliverySummary;
 }
 
+// GET /admin/backup (M5.2). A field the state or the files cannot vouch for
+// is null, never zero.
+export interface AdminBackupStatus {
+  state: "unwatched" | "missing" | "unreadable" | "stale" | "ok";
+  lastOkAt: string | null;
+  dumpBytes: number | null;
+  uploadsBytes: number | null;
+  offsite: "off" | "uploaded" | null;
+  lastFailedAt: string | null;
+  lastFailedStep: "config" | "uploads" | "dump" | "expire" | "encrypt" | "upload" | null;
+}
+
 export interface AdminRoomsResponse {
   rooms: Room[];
   needApproval: boolean;

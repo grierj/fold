@@ -1,15 +1,9 @@
 #!/usr/bin/env bash
-# The browser runtime of the disposable QC-1 runner: which Alpine packages, and
-# whether web/package-lock.json pins what `npm ci` must install. Sourced by
-# browser-prepare.sh (inside the runner) and by qc1-fixtures.sh (no Docker).
+# The browser runtime of the disposable host: whether web/package-lock.json pins
+# what `npm ci` must install. Sourced by browser-prepare.sh and by qc1-fixtures.sh
+# (no Docker).
 # shellcheck disable=SC2034
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then echo 'source from browser-prepare.sh only' >&2; exit 1; fi
-
-# The nested runner is Alpine (docker:dind). Playwright's own Chromium download
-# is a glibc build that does not run on musl, so the runner installs Alpine's
-# chromium and browser.mjs launches it by path (QC1_CHROMIUM). A font keeps text
-# layout from depending on whatever the image happens to ship.
-qc1_browser_apk_packages() { printf '%s\n' chromium font-dejavu; }
 
 # Problems with the pins `npm ci` will install, one per line; nothing when sound.
 # `npm ci` itself refuses a lock that disagrees with package.json; this adds what

@@ -47,8 +47,9 @@ while (( $# )); do
     *) echo "unknown option $1" >&2; exit 1 ;;
   esac
 done
-# The drill runs provisioners that write /etc/cron.d and /etc/logrotate.d and publishes ports 80 and 443: only inside a throwaway container with its own
-# Docker daemon (restore-drill-nested.sh), and never over an owner's configuration. Checked before anything is created.
+# The drill runs provisioners that write /etc/cron.d and /etc/logrotate.d and publishes ports 80 and 443: only on a disposable host the operator declared
+# (FOLD_DRILL_ISOLATED_DAEMON=1), with an empty local daemon and never over an owner's configuration. Checked before anything is created.
+isolation_pin_local || exit 1
 # shellcheck disable=SC2119 # the function takes optional test inputs, never the drill's arguments
 isolation_require_disposable || exit 1
 [[ "$(id -u)" == 0 ]] || { echo 'restore-drill.sh requires root on a disposable Docker host' >&2; exit 1; }
@@ -61,18 +62,17 @@ LEGACY_REVISION="$(drill_legacy_revision "$ROOT")" || exit 1
 crossing_validate_revisions "$ROOT" "$LANE_REVISION" "$LANDING_REVISION" "$PRIOR_REVISION" "$ARCHIVE_BASE_REVISION" "$REVISION" || exit 1
 crossing_require_clean_head "$ROOT" || exit 1
 # The recovery browser proof (testdata/restore-browser.cjs) drives a real Chromium through web/node_modules/playwright. It is found, launched with the options the
-# proof will use (restoreLaunchOptions, qc1/browser-launch.cjs) and exercised now, before a stack exists, instead of failing hours in. restore-drill-nested.sh installs
-# the runtime (qc1/browser-prepare.sh) and exports QC1_CHROMIUM; this check refuses a runner where that was skipped. No switch skips it: the proof is not optional.
+# proof will use (restoreLaunchOptions, qc1/browser-launch.cjs) and exercised now, before a stack exists, instead of failing hours in. qc1/browser-prepare.sh installs
+# the runtime and writes browser.env (QC1_CHROMIUM, QC1_NO_SANDBOX); this check refuses a host where that was skipped. No switch skips it: the proof is not optional.
 command -v node >/dev/null || { echo 'restore-drill.sh: node is required for the recovery browser proof' >&2; exit 1; }
 BROWSER_PREFLIGHT="$(QC1_PREFLIGHT_FOR=restore QC1_WEB_DIR="$ROOT/web" node "$ROOT/deploy/digitalocean/qc1/browser-preflight.mjs")" \
-  || { echo 'restore-drill.sh: the browser preflight failed: the recovery browser proof cannot run (restore-drill-nested.sh installs the browser runtime; on another machine run npm ci in web/ and install Playwright'"'"'s Chromium)' >&2; exit 1; }
+  || { echo 'restore-drill.sh: the browser preflight failed: the recovery browser proof cannot run (run deploy/digitalocean/qc1/browser-prepare.sh and source its browser.env)' >&2; exit 1; }
 jq -e '.ok == true' <<<"$BROWSER_PREFLIGHT" >/dev/null || { echo "restore-drill.sh: the browser preflight did not pass: $BROWSER_PREFLIGHT" >&2; exit 1; }
-# Firefox (R4-6c-V): Playwright's Firefox is a glibc build that cannot start on this Alpine runner, so the launcher prepared a Debian container for it
-# (qc1/browser-prepare.sh, QC1_PREPARE_FIREFOX=1) and proved it launches. Its record must exist: a runner that skipped the preparation is refused, not
+# Firefox (R4-6c-V): the proof runs in a Debian container that qc1/browser-prepare.sh (QC1_PREPARE_FIREFOX=1) built and proved launches. Its record must exist: a host that skipped the preparation is refused, not
 # silently drilled without Firefox. A recorded BUILD failure is allowed and becomes an explicit first-church hand check in lifecycle_cases.
 FIREFOX_RUNTIME="${FOLD_FIREFOX_RUNTIME:-}"
 if [[ "$MODE" == full ]]; then
-[[ -n "$FIREFOX_RUNTIME" && -f "$FIREFOX_RUNTIME" ]] || { echo 'restore-drill.sh: the Firefox runtime was not prepared (FOLD_FIREFOX_RUNTIME); run the drill through restore-drill-nested.sh' >&2; exit 1; }
+[[ -n "$FIREFOX_RUNTIME" && -f "$FIREFOX_RUNTIME" ]] || { echo 'restore-drill.sh: the Firefox runtime was not prepared (FOLD_FIREFOX_RUNTIME): run deploy/digitalocean/qc1/browser-prepare.sh with QC1_PREPARE_FIREFOX=1 and source its browser.env' >&2; exit 1; }
 jq -e '.available | type == "boolean"' "$FIREFOX_RUNTIME" >/dev/null || { echo "restore-drill.sh: $FIREFOX_RUNTIME is not a Firefox runtime record" >&2; exit 1; }
 if jq -e '.available == true' "$FIREFOX_RUNTIME" >/dev/null; then
   [[ -n "${FOLD_FIREFOX_IMAGE:-}" && "$(docker image inspect --format '{{.Id}}' "$FOLD_FIREFOX_IMAGE" 2>/dev/null)" == "$(jq -er .imageId "$FIREFOX_RUNTIME")" ]] \
@@ -92,12 +92,24 @@ drill_progress_init bootstrap base-proof recovery-interruptions reopen-interrupt
   count_races archive_failures pin_and_abort_cases cleanup_and_tamper_cases concurrency_cases lifecycle_cases \
   legacy_archive_case review_reconciliation_cases review_backup_archive_cases review_cleanup_retry_cases \
   review_orphaned_restore_case review_moving_tag_case \
+  uploads_erasure_cases uploads_interruption_cases backup_exclusion_cases \
   real_binary_refusals real_level_lineage real_same_level_rollback real_current_release_restore real_older_archive_restore final-verification
 else
 drill_progress_init "${CROSSINGS_ONLY_PLAN[@]}"
 fi
 trap 'drill_progress_error "$LINENO" "$BASH_COMMAND" "$?"' ERR
 drill_case_begin bootstrap
+# deploy-drill.sh --prepare-only keeps its stack once it exits 0. Until the main cleanup below takes over, this trap removes it if the run stops first.
+# shellcheck disable=SC2329 # Invoked by the EXIT trap.
+handoff_cleanup() {
+  local rc=$?
+  trap - EXIT
+  if [[ -f "$WORK/site/docker-compose.yml" ]]; then compose_in "$WORK/site" down -v --remove-orphans || rc=1; fi
+  exit "$rc"
+}
+trap handoff_cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 args=(--prepare-only --dir "$WORK")
 [[ -z "$BASE_IMAGE" ]] || args+=(--image "$BASE_IMAGE")
 "$ROOT/deploy/digitalocean/deploy-drill.sh" "${args[@]}"
@@ -147,8 +159,6 @@ cleanup() {
   fi
   # Level-0 lineage sites and the host files their provisioner writes.
   if (( ! KEEP )); then crossing_cleanup_all || rc=1; else crossing_cleanup_host || rc=1; fi
-  # The container-local OS identity the real_* cases presented is put back (and recorded) whether the run passed or failed.
-  [[ -z "${CROSSING_OS_STATE:-}" ]] || isolation_os_restore "$CROSSING_OS_STATE" || rc=1
   if (( ! KEEP )); then compose_in "$DIR" down -v --remove-orphans || rc=1; fi
   drill_emit result "$rc" || rc=1
   echo "restore drill result=$rc artifacts=$WORK retained_stack=$KEEP"
@@ -249,17 +259,21 @@ assert_closed() {
   if port_open "$PUBLIC_PORT"; then echo "public port still open" >&2; return 1; fi
 }
 assert_private() {
-  local id image running
+  local id cid image running
   [[ "$(phase)" == recovering ]]
   for id in $(dc ps -a -q caddy app); do [[ "$(docker inspect --format '{{.State.Running}}' "$id")" == false ]]; done
   id="$(recovery_ids)"; [[ -n "$id" && "$id" != *$'\n'* ]]
   image="$(jq -er .imageId "$DIR/recovery.lock")"
-  [[ "$(docker inspect --format '{{.Image}}|{{.HostConfig.RestartPolicy.Name}}|{{index .Config.Labels "fold.recovery.nonce"}}' "$id")" == "$image|no|$(jq -er .nonce "$DIR/recovery.lock")" ]]
+  assert_image "$id" "$image"
+  [[ "$(docker inspect --format '{{.HostConfig.RestartPolicy.Name}}|{{index .Config.Labels "fold.recovery.nonce"}}' "$id")" == "no|$(jq -er .nonce "$DIR/recovery.lock")" ]]
   docker inspect --format '{{json .Config.Env}}' "$id" | jq -e 'index("FOLD_WORKERS=0")!=null and index("COOKIE_SECURE=true")!=null and index("APP_ENV=prod")!=null' >/dev/null
   docker inspect --format '{{json .HostConfig.PortBindings}}' "$id" | jq -e 'keys==["8080/tcp"] and .["8080/tcp"]==[{HostIp:"127.0.0.1",HostPort:"18080"}]' >/dev/null
   if port_open "$PUBLIC_PORT"; then echo "public port still open" >&2; return 1; fi
   curl -fsS http://localhost:18080/healthz >/dev/null
-  running="$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" --filter "ancestor=$image" | wc -l)"
+  running=0
+  for cid in $(docker ps -q --filter "label=com.docker.compose.project=$PROJECT"); do
+    if assert_image "$cid" "$image"; then running=$((running+1)); fi
+  done
   [[ "$running" == 1 ]]
   if [[ "$(pg fold -c "SELECT to_regclass('drill_sentinel') IS NOT NULL")" == t ]]; then
     [[ "$(pg fold -c 'SELECT value FROM drill_sentinel WHERE id=2')" == archive ]]
@@ -364,7 +378,7 @@ RECOVERY_IMAGE="$(jq -er .imageId "$DIR/recovery.lock")"
 restore --reopen --checked-church-records
 [[ ! -e "$DIR/recovery.lock" && -z "$(recovery_ids)" ]]
 [[ "$(pg postgres -c "SELECT count(*) FROM pg_database WHERE datname='$OLD'")" == 0 ]]
-[[ "$(docker inspect --format '{{.Image}}' "$(dc ps -q app)")" == "$RECOVERY_IMAGE" ]]
+assert_image "$(dc ps -q app)" "$RECOVERY_IMAGE"
 monitor_stop
 for ((i=0;i<90;i++)); do
   [[ "$(pg fold -c "SELECT count(*) FROM jobs WHERE unique_key IN (SELECT key FROM drill_job_keys) AND status<>'done'")" != 0 ]] || break
@@ -584,6 +598,7 @@ drill_case_end
 for drill_family in count_races archive_failures pin_and_abort_cases cleanup_and_tamper_cases concurrency_cases lifecycle_cases \
   legacy_archive_case review_reconciliation_cases review_backup_archive_cases review_cleanup_retry_cases \
   review_orphaned_restore_case review_moving_tag_case \
+  uploads_erasure_cases uploads_interruption_cases backup_exclusion_cases \
   real_binary_refusals real_level_lineage real_same_level_rollback real_current_release_restore real_older_archive_restore; do
   drill_case_begin "$drill_family"
   # A bare call preserves errexit inside the acceptance function. Never put
