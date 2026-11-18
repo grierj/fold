@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"fold/internal/audit"
+	"fold/internal/mail"
 	"fold/internal/notify"
 	"fold/models"
 )
@@ -72,7 +73,7 @@ func newComposeFixture(t *testing.T) composeFixture {
 	if w := loginAPI(t, app, "opted", "password1234").do("PUT", "/api/v1/me/notification-settings", map[string]any{"category": "messages", "off": true}, true); w.Code != http.StatusOK {
 		t.Fatalf("opt out: %d %s", w.Code, w.Body.String())
 	}
-	app.DB.Create(&models.Suppression{Channel: "email", Address: strings.ToLower(f.bouncing.Email), Reason: models.SuppressHardBounce})
+	app.DB.Create(&models.Suppression{Channel: "email", AddressHash: mail.AddressHash(f.bouncing.Email), Reason: models.SuppressHardBounce})
 	return f
 }
 

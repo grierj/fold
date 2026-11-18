@@ -1,7 +1,11 @@
+import AxeBuilder from "@axe-core/playwright";
+import { mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { digestPreimage, encodeChoices } from "../src/lib/reasonSetDigest";
 import { parseRoomLabel } from "../src/lib/roomLabels";
 import { expect, type APIRequestContext, type Locator, type Page } from "@playwright/test";
+// @ts-expect-error plain JS module shared with verify-ui
+import { measure } from "./ui-measure.mjs";
 
 export const PASSWORD = "password1234";
 export const email = (name: string) => `${name}@example.com`;
@@ -217,4 +221,29 @@ export async function deleteAccountKeepingReasons(admin: (method: string, path: 
   const body: Record<string, unknown> = { successors: {}, hostSuccessors: {} };
   if (items.length > 0) body.reasonReview = keepAllReview(items);
   return admin("DELETE", `/admin/users/${userId}`, body);
+}
+
+// One state of a page at the width the test runs at: axe (WCAG 2.2 AA plus heading
+// order, moderate and worse) and the layout measures (no sideways scroll, no clipped
+// select, no target under 24px), then a full-page screenshot when SCREENS_DIR asks for
+// one. It never resizes: a spec that must hold at 390 and 1280 runs its whole scenario
+// once per width (test.use viewport), so actions, answers and recovery all happen at
+// that width. Call it only after the state's own assertions have passed.
+export async function checkState(page: Page, screenshotPrefix: string, state: string) {
+  const width = page.viewportSize()?.width ?? 0;
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await nextFrames(page);
+  const wcag = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]).analyze();
+  const headings = await new AxeBuilder({ page }).withRules(["heading-order"]).analyze();
+  const bad = [...wcag.violations, ...headings.violations].filter((v) => v.impact === "moderate" || v.impact === "serious" || v.impact === "critical");
+  expect(bad.map((v) => `${v.impact} ${v.id}: ${v.nodes.map((n) => n.target.join(" ")).join(", ")}`), `${state} at ${width}px`).toEqual([]);
+  const layout = await page.evaluate(measure);
+  expect(layout.overflow, `${state} at ${width}px: sideways overflow`).toBeLessThanOrEqual(0);
+  expect(layout.clipped, `${state} at ${width}px: clipped select`).toEqual([]);
+  expect(layout.under24, `${state} at ${width}px: targets under 24px`).toEqual([]);
+  const proof = process.env.SCREENS_DIR;
+  if (proof) {
+    mkdirSync(proof, { recursive: true });
+    await page.screenshot({ path: `${proof}/${screenshotPrefix}-${state}-${width}.png`, fullPage: true, animations: "disabled" });
+  }
 }

@@ -1,9 +1,13 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../../api/core";
+import { Messages } from "../../api/messages";
 import { Field } from "../ui/Field";
 import { polyfillEditorLayout } from "../../test/editor";
-import { normalizeHref, RichTextEditor, RichTextView } from "./RichTextEditor";
+import { normalizeHref, RichTextEditor, RichTextView, type PictureTarget } from "./RichTextEditor";
+
+vi.mock("../../api/messages", () => ({ Messages: { uploadImage: vi.fn() } }));
 
 beforeAll(polyfillEditorLayout);
 
@@ -102,6 +106,82 @@ describe("RichTextEditor", () => {
   });
 });
 
+function setupPictures(pictures: PictureTarget | undefined) {
+  const onChange = vi.fn();
+  render(<Field label="Message"><RichTextEditor value="<p>Hello there</p>" onChange={onChange} oneEvent={false} pictures={pictures} /></Field>);
+  return { last: () => onChange.mock.calls[onChange.mock.calls.length - 1]?.[0] as string };
+}
+
+const picnic = () => new File(["png"], "picnic.png", { type: "image/png" });
+const fileInput = () => document.querySelector<HTMLInputElement>('input[type="file"]')!;
+
+describe("RichTextEditor pictures", () => {
+  it("has no Add image button unless the page can add pictures", () => {
+    setupPictures(undefined);
+    expect(screen.queryByRole("button", { name: "Add image" })).toBeNull();
+  });
+
+  it("asks what the picture shows, uploads it to the message and puts it in the body", async () => {
+    const user = userEvent.setup();
+    vi.mocked(Messages.uploadImage).mockResolvedValue({ key: "messages/5/aa.png", url: "/uploads/messages/5/aa.png" });
+    const save = vi.fn();
+    const { last } = setupPictures({ messageId: 5, save });
+    await user.click(screen.getByRole("button", { name: "Add image" }));
+    expect(screen.getByRole("group", { name: "Add a picture" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "What the picture shows" })).toHaveAccessibleDescription(/A few words for people who can't see it/);
+    await user.click(screen.getByRole("button", { name: "Add picture" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Choose a picture first.");
+    await user.upload(fileInput(), picnic());
+    expect(screen.getByText("picnic.png")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Add picture" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Say what the picture shows, in a few words.");
+    expect(Messages.uploadImage).not.toHaveBeenCalled();
+    await user.type(screen.getByRole("textbox", { name: "What the picture shows" }), "  Our picnic table  ");
+    await user.click(screen.getByRole("button", { name: "Add picture" }));
+    await waitFor(() => expect(Messages.uploadImage).toHaveBeenCalledWith(5, expect.any(File)));
+    await waitFor(() => expect(last()).toMatch(/<img[^>]*src="\/uploads\/messages\/5\/aa\.png"[^>]*alt="Our picnic table"/));
+    expect(screen.queryByRole("group", { name: "Add a picture" })).toBeNull();
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("saves a new message as a draft first, and says why when it can't", async () => {
+    const user = userEvent.setup();
+    vi.mocked(Messages.uploadImage).mockResolvedValue({ key: "messages/9/bb.png", url: "/uploads/messages/9/bb.png" });
+    const save = vi.fn().mockResolvedValueOnce({ error: "Choose who this message is for first." }).mockResolvedValueOnce({ id: 9 });
+    const { last } = setupPictures({ messageId: null, save });
+    await user.click(screen.getByRole("button", { name: "Add image" }));
+    await user.upload(fileInput(), picnic());
+    await user.type(screen.getByRole("textbox", { name: "What the picture shows" }), "Table");
+    await user.click(screen.getByRole("button", { name: "Add picture" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Choose who this message is for first.");
+    expect(Messages.uploadImage).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Add picture" }));
+    await waitFor(() => expect(Messages.uploadImage).toHaveBeenCalledWith(9, expect.any(File)));
+    await waitFor(() => expect(last()).toContain('src="/uploads/messages/9/bb.png"'));
+  });
+
+  it("keeps the panel open with the server's refusal in words", async () => {
+    const user = userEvent.setup();
+    vi.mocked(Messages.uploadImage).mockRejectedValue(new ApiError(400, "file too large", { code: "file_too_large" }));
+    const { last } = setupPictures({ messageId: 5, save: vi.fn() });
+    await user.click(screen.getByRole("button", { name: "Add image" }));
+    await user.upload(fileInput(), picnic());
+    await user.type(screen.getByRole("textbox", { name: "What the picture shows" }), "Table{Enter}");
+    expect(await screen.findByRole("alert")).toHaveTextContent("That picture is too big. Please use one under 5 MB.");
+    expect(screen.getByRole("group", { name: "Add a picture" })).toBeInTheDocument();
+    expect(last()).toBeUndefined();
+  });
+
+  it("turns down a file that isn't a JPEG, PNG or GIF before uploading it", async () => {
+    const user = userEvent.setup();
+    setupPictures({ messageId: 5, save: vi.fn() });
+    await user.click(screen.getByRole("button", { name: "Add image" }));
+    fireEvent.change(fileInput(), { target: { files: [new File(["x"], "notes.pdf", { type: "application/pdf" })] } });
+    expect(screen.getByRole("alert")).toHaveTextContent("Choose a JPEG, PNG or GIF picture.");
+    expect(Messages.uploadImage).not.toHaveBeenCalled();
+  });
+});
+
 describe("normalizeHref", () => {
   it("keeps only addresses the server keeps", () => {
     expect(normalizeHref("example.org")).toBe("https://example.org");
@@ -121,6 +201,14 @@ describe("RichTextView", () => {
     expect(container.querySelector("a[href*=\"event_link\"]")).toBeNull();
     expect(container.querySelector('a[href="https://example.org"]')).toHaveTextContent("this");
     expect(screen.getByText(/fill in when it's sent/)).toBeInTheDocument();
+  });
+
+  it("shows the message's own pictures with their description, and no other image", () => {
+    const { container } = render(<RichTextView html={'<img src="/uploads/messages/5/aa.png" alt="Our picnic table"><img src="/uploads/avatars/1/x.png" alt="No"><img src="https://x.test/b.png" alt="No">'} />);
+    const pics = container.querySelectorAll("img");
+    expect(pics).toHaveLength(1);
+    expect(pics[0]).toHaveAttribute("src", "/uploads/messages/5/aa.png");
+    expect(pics[0]).toHaveAttribute("alt", "Our picnic table");
   });
 
   it("draws only the formatting the editor allows", () => {

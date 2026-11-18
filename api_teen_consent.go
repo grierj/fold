@@ -171,11 +171,28 @@ func (a *App) changeTeenConsent(tx *gorm.DB, c *gin.Context, teen, actor *models
 	if err != nil {
 		return err
 	}
-	_, err = notify.Send(tx, notify.Msg{Kind: notify.TeenConsentChanged, To: admins, Actor: &actor.ID,
-		SubjectType: "teen_consent", SubjectID: row.ID, Link: "/admin?tab=users",
-		Vars: notify.Vars{Person: teen.PublicName(), Teen: true, Change: change.Scope + " consent " + change.Status}})
-	if err != nil {
-		return err
+	// Admins review every teen, so they get the Teen badge; an admin who is the
+	// teen does not (DEC-150).
+	var otherAdmins, selfAdmin []uint
+	for _, id := range admins {
+		if id == teen.ID {
+			selfAdmin = append(selfAdmin, id)
+		} else {
+			otherAdmins = append(otherAdmins, id)
+		}
+	}
+	for _, send := range []struct {
+		to   []uint
+		kind string
+	}{{otherAdmins, notify.SubjectTeen}, {selfAdmin, ""}} {
+		if len(send.to) == 0 {
+			continue
+		}
+		if _, err = notify.Send(tx, notify.Msg{Kind: notify.TeenConsentChanged, To: send.to, Actor: &actor.ID,
+			SubjectType: "teen_consent", SubjectID: row.ID, Link: "/admin?tab=users",
+			Vars: notify.Vars{Person: teen.PublicName(), SubjectKind: send.kind, Change: change.Scope + " consent " + change.Status}}); err != nil {
+			return err
+		}
 	}
 	var family []uint
 	if err := tx.Model(&models.GuardianLink{}).
@@ -199,7 +216,7 @@ func (a *App) changeTeenConsent(tx *gorm.DB, c *gin.Context, teen, actor *models
 	}
 	_, err = notify.Send(tx, notify.Msg{Kind: notify.TeenConsentChanged, To: familyOnly, Actor: &actor.ID,
 		SubjectType: "teen_consent", SubjectID: row.ID, Link: "/profile",
-		Vars: notify.Vars{Person: teen.PublicName(), Teen: true, Change: change.Scope + " consent " + change.Status}})
+		Vars: notify.Vars{Person: teen.PublicName(), Change: change.Scope + " consent " + change.Status}})
 	return err
 }
 

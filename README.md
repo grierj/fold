@@ -15,13 +15,14 @@ cp .env.example .env
 docker compose pull && docker compose up -d
 ```
 
-Compose pulls the published image `ghcr.io/grierj/fold:${FOLD_VERSION}`; no Go
-or Node is needed on the server, and a 1 GB machine with swap can run it. Pin
-an exact release and change `FOLD_VERSION` only when you mean to upgrade.
+Compose pulls the matching `ghcr.io/grierj/fold:${FOLD_VERSION}` and
+`ghcr.io/grierj/fold-backup:${FOLD_VERSION}` images; no Go or Node is needed on
+the server. Pin an exact paired release and change `FOLD_VERSION` only when you
+mean to upgrade. An older app tag needs `FOLD_BACKUP_VERSION` set to a published
+backup image version.
 
-**No release is published yet.** Until the first release exists there is
-nothing to pull, so build from this checkout with the developer override
-instead. Set `FOLD_VERSION` to any label (for example `dev`) and run:
+Until a paired release is available, build from this checkout with the developer
+override instead. Set `FOLD_VERSION` to any label (for example `dev`) and run:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
@@ -50,25 +51,42 @@ process remembers that setup finished until it exits.
 
 ## Publishing a release (maintainers)
 
-Push a tag such as `v0.5.0`. The `release` workflow builds `linux/amd64` and
-`linux/arm64`, pushes `ghcr.io/grierj/fold:0.5.0` (and `:0.5` for a final
-release), attests the build, and writes the image digest into the GitHub
-release notes. A published version is never overwritten, with one exception:
-a maintainer's manual run with `first_release` skips the existence check
-(see below). It is for the very first release only, and the run logs a
-warning and records who ran it.
+Push a tag such as `v0.5.0`. The version always comes from the tag, and the tag's
+commit is what gets built. The `release` workflow builds `linux/amd64` and
+`linux/arm64` images of `fold` and `fold-backup` under a staging tag
+(`stage-<version>-<commit>`), boots that exact pair by digest, and only then
+gives it its names: `ghcr.io/grierj/fold:0.5.0` and
+`ghcr.io/grierj/fold-backup:0.5.0`, the full-commit-SHA aliases, an attestation for
+each image. It then writes both digests into the GitHub release notes; that
+release is the mark that the pair is done. A final release ends by moving the
+`:0.5` tags in a last job, which never undoes the release. A published version is never overwritten: an existing exact tag is
+accepted only when it already holds the digest being published. Version tags
+must never move: before promoting and again before the release is written, the
+workflow checks the tag still points at the commit it built, and refuses if not.
+Before the release is written it also checks both images pull with no login.
 
-- **The very first release:** GHCR can answer "denied" instead of "not found"
-  for a package that does not exist yet, and the workflow stops on that
-  rather than guess. If the tag push fails at "Refuse to overwrite a
-  published version", run the workflow by hand (Actions, release, Run
-  workflow) on the tag with `version` and `first_release` set. Tag pushes
-  never skip the check. Then make the package public.
-- **A release that was pushed but not finished** (the SHA alias, attestation
-  or notes failed): use "Re-run failed jobs" on the run, which reuses the
-  pushed digest. If that is no longer possible, run the workflow by hand on
-  the tag `v<version>` with `version` and `finalize_only` set. It looks up
-  the existing digest, smokes that image, and never rebuilds.
+- **A release that stopped part way:** use "Re-run failed jobs" to resume at
+  the failed job, or run the workflow again by hand (Actions, release, Run
+  workflow) with the same tag selected as the ref. A new run reuses available
+  staged images and runs smoke again. A new run on a version whose release
+  already exists refuses to start; if only the last `minor` job failed, use
+  "Re-run failed jobs" and it moves the `:0.5` tags (an older patch never moves
+  them back from a newer released one; a newer patch that has no release yet
+  does not count, and finishing it moves the tags forward again). Delete the two `stage-...` tags to rebuild
+  only before either exact version tag exists. After an exact tag exists, retry
+  with the staged pair; if it is gone, pick a new version.
+- **A fix to the workflow itself** does not reach an existing tag: a run uses the
+  workflow file from the tag's commit, so publish the fix under a new version.
+- **A version published before the backup image existed** (such as `v0.1.0`)
+  cannot be completed; the next release publishes both images.
+- **The first release of the backup image:** the first staging push creates the
+  `fold-backup` package, private at first. The `notes` job fails with the
+  package to open until both `fold` and `fold-backup` are public (GitHub, Package
+  settings, Change visibility); make them public, then "Re-run failed jobs". No
+  release is written before then, so nothing is marked done.
+- **Re-running an older patch** after a newer one of the same minor is released
+  finishes the older exact tags and skips the `:x.y` update. If the newer run's
+  `minor` job failed, use "Re-run failed jobs" on that run to finish it.
 
 ## Upgrade notes
 
@@ -77,8 +95,9 @@ warning and records who ran it.
   it. An older install that built on the box keeps working by adding the
   build override: set `FOLD_VERSION=dev` and run
   `docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build`.
-  Once a release is published, set `FOLD_VERSION` to that exact version and run
-  `docker compose pull && docker compose up -d`.
+  Once a paired release is published, set `FOLD_VERSION` to that exact version,
+  clear any legacy `FOLD_BACKUP_VERSION` override, and run `docker compose pull
+  && docker compose up -d`.
 - **Oct 2026 (PR #44): `SESSION_SECRET` must be at least 32 characters.** An older
   install with a shorter secret will not start. `docker compose logs app` shows
   one line naming the problem and its length (never the value). Fix: run
@@ -87,8 +106,13 @@ warning and records who ran it.
 
 ## Backup
 
-Current backups use commands or the DigitalOcean host-cron helper. A portable
-backup container is planned in M5.2, not installed.
+The Compose backup service runs nightly and can make a backup on demand:
+
+```bash
+docker compose exec backup /usr/local/bin/backup.sh now
+```
+
+You can also make a database dump manually:
 
 ```bash
 docker compose exec -T db pg_dump -U church -Fc fold > fold.dump
@@ -102,10 +126,10 @@ docker run --rm -v fold_uploads:/data:ro -v "$PWD":/backup alpine \
   tar czf /backup/uploads.tgz -C /data .
 ```
 
-For a droplet restore, follow the [interim recovery procedure](docs/DEPLOY-DIGITALOCEAN.md#restoring-a-nightly-dump-interim-notes). It keeps the restored site private while you check the church records and delete accounts again. The uploads archive requires the separate manual step described there.
+For a droplet restore, follow the [recovery procedure](docs/DEPLOY-DIGITALOCEAN.md#restoring-a-nightly-dump-interim-notes). It keeps the restored site private while you check the church records and delete accounts again.
 
-On a droplet, `/opt/fold/backup.sh` does the nightly `pg_dump` and an
-optional encrypted offsite copy. See `docs/DEPLOY-DIGITALOCEAN.md`.
+On a droplet, `/opt/fold/backup.sh` remains available for host backups.
+Encrypted offsite upload is optional and deferred. See `docs/DEPLOY-DIGITALOCEAN.md`.
 
 ## Local development
 

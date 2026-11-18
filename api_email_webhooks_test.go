@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -136,7 +137,7 @@ func TestPostmarkReportsUpdateDeliveriesAndSuppress(t *testing.T) {
 	var sup []models.Suppression
 	app.DB.Find(&sup)
 	if d.Status != models.DeliveryBounced || d.Reason != "hard bounce" || len(sup) != 1 ||
-		sup[0].Address != "root@example.com" || sup[0].Reason != models.SuppressHardBounce || sup[0].Detail != "HardBounce" {
+		sup[0].AddressHash != mail.AddressHash("root@example.com") || sup[0].Reason != models.SuppressHardBounce || sup[0].Detail != "HardBounce" {
 		t.Fatalf("after bounce: %+v %+v", d, sup)
 	}
 
@@ -163,7 +164,7 @@ func TestPostmarkSoftBounceAndComplaint(t *testing.T) {
 	runEmailEvents(t, app)
 	var sup []models.Suppression
 	app.DB.Find(&sup)
-	if len(sup) != 1 || sup[0].Address != "pat@example.com" || sup[0].Reason != models.SuppressComplaint {
+	if len(sup) != 1 || sup[0].AddressHash != mail.AddressHash("pat@example.com") || sup[0].Reason != models.SuppressComplaint {
 		t.Fatalf("suppressions: %+v", sup)
 	}
 	var failed int64
@@ -179,7 +180,7 @@ func TestEmailReportBeforeItsDeliveryRow(t *testing.T) {
 	app := testApp(t)
 	e := providers.Event{Provider: "postmark", Kind: providers.EventBounced, Address: "x@example.com", MessageID: "not-yet",
 		Permanent: true, At: time.Now()}
-	if err := app.applyEmailEvent(context.Background(), e); !errors.Is(err, errDeliveryNotYet) {
+	if err := app.applyEmailEvent(context.Background(), newEmailEventJob(e)); !errors.Is(err, errDeliveryNotYet) {
 		t.Fatalf("a fresh report with no row: %v", err)
 	}
 	var n int64
@@ -188,7 +189,7 @@ func TestEmailReportBeforeItsDeliveryRow(t *testing.T) {
 		t.Fatal("a retried report must leave nothing behind")
 	}
 	e.At = time.Now().Add(-5 * time.Minute)
-	if err := app.applyEmailEvent(context.Background(), e); err != nil {
+	if err := app.applyEmailEvent(context.Background(), newEmailEventJob(e)); err != nil {
 		t.Fatalf("an old report: %v", err)
 	}
 	app.DB.Model(&models.Suppression{}).Count(&n)
@@ -197,17 +198,16 @@ func TestEmailReportBeforeItsDeliveryRow(t *testing.T) {
 	}
 }
 
-// A hard bounce and a complaint each store the address with its hash; a
-// redelivery adds nothing; a legacy NULL-hash open row gets only its hash
-// filled; a cleared row is left alone and a new open row sits beside it; a
-// soft bounce or a delivery stores nothing (R4-S3).
-func TestEmailReportsStoreTheAddressHash(t *testing.T) {
+// A hard bounce and a complaint each store the address's hash and nothing
+// else; a redelivery adds nothing; a cleared row is left alone and a new open
+// row sits beside it; a soft bounce or a delivery stores nothing.
+func TestEmailReportsStoreOnlyTheAddressHash(t *testing.T) {
 	app := testApp(t)
 	ctx := context.Background()
 	old := time.Now().Add(-5 * time.Minute) // past reportGrace: no delivery row is waited for
 	report := func(kind providers.EventKind, permanent bool, address string) error {
-		return app.applyEmailEvent(ctx, providers.Event{Provider: "postmark", Kind: kind, Address: address, MessageID: "m-hash",
-			Permanent: permanent, Detail: "from the report", At: old})
+		return app.applyEmailEvent(ctx, newEmailEventJob(providers.Event{Provider: "postmark", Kind: kind, Address: address, MessageID: "m-hash",
+			Permanent: permanent, Detail: "from the report", At: old}))
 	}
 	count := func() int64 {
 		var n int64
@@ -235,39 +235,19 @@ func TestEmailReportsStoreTheAddressHash(t *testing.T) {
 	}
 	var rows []models.Suppression
 	app.DB.Order("id").Find(&rows)
-	if len(rows) != 2 {
+	if len(rows) != 2 || rows[0].AddressHash != mail.AddressHash("bounce@example.com") || rows[0].Reason != models.SuppressHardBounce ||
+		rows[1].AddressHash != mail.AddressHash("complaint@example.com") || rows[1].Reason != models.SuppressComplaint {
 		t.Fatalf("rows after redelivery: %+v", rows)
 	}
-	for _, r := range rows {
-		if r.AddressHash == nil || *r.AddressHash != mail.StoredAddressHash(r.Address) {
-			t.Errorf("%s: hash %v", r.Address, r.AddressHash)
-		}
-	}
-
-	// A legacy open row (no hash) is filled and changed nowhere else.
-	created := time.Now().Add(-72 * time.Hour).UTC().Truncate(time.Second)
-	if err := app.DB.Create(&models.Suppression{Channel: "email", Address: "legacy@example.com", Reason: models.SuppressHardBounce,
-		Provider: "manual-import", Detail: "kept", CreatedAt: created}).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := report(providers.EventBounced, true, "Legacy@Example.com"); err != nil {
-		t.Fatal(err)
-	}
-	var legacy models.Suppression
-	app.DB.Where("address = ?", "legacy@example.com").First(&legacy)
-	if legacy.AddressHash == nil || *legacy.AddressHash != mail.StoredAddressHash("legacy@example.com") {
-		t.Fatalf("legacy hash not filled: %+v", legacy)
-	}
-	if legacy.Provider != "manual-import" || legacy.Detail != "kept" || !legacy.CreatedAt.Equal(created) || legacy.ClearedAt != nil || legacy.Reason != models.SuppressHardBounce {
-		t.Fatalf("a hash fill changed another column: %+v", legacy)
-	}
-	if count() != 3 {
-		t.Fatalf("rows = %d, want 3", count())
+	// A differently written address of the same mailbox is the same open row.
+	if err := report(providers.EventBounced, true, " Bounce@Example.com "); err != nil || count() != 2 {
+		t.Fatalf("a re-cased report: %v, %d rows, want 2", err, count())
 	}
 
 	// A cleared row stays as it is and a report opens a new row beside it.
+	created := time.Now().Add(-72 * time.Hour).UTC().Truncate(time.Second)
 	cleared := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
-	if err := app.DB.Create(&models.Suppression{Channel: "email", Address: "again@example.com", Reason: models.SuppressHardBounce,
+	if err := app.DB.Create(&models.Suppression{Channel: "email", AddressHash: mail.AddressHash("again@example.com"), Reason: models.SuppressHardBounce,
 		Provider: "postmark", CreatedAt: created, ClearedAt: &cleared}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -275,9 +255,39 @@ func TestEmailReportsStoreTheAddressHash(t *testing.T) {
 		t.Fatal(err)
 	}
 	var again []models.Suppression
-	app.DB.Where("address = ?", "again@example.com").Order("id").Find(&again)
-	if len(again) != 2 || again[0].AddressHash != nil || again[0].ClearedAt == nil || !again[0].ClearedAt.Equal(cleared) ||
-		again[1].ClearedAt != nil || again[1].AddressHash == nil || *again[1].AddressHash != mail.StoredAddressHash("again@example.com") {
+	app.DB.Where("address_hash = ?", mail.AddressHash("again@example.com")).Order("id").Find(&again)
+	if len(again) != 2 || again[0].ClearedAt == nil || !again[0].ClearedAt.Equal(cleared) || again[1].ClearedAt != nil {
 		t.Fatalf("cleared row handling: %+v", again)
+	}
+}
+
+// A queued report carries the address's hash and never the address: the job
+// row outlives the report by 30 days and its error text is shown to admins.
+func TestEmailReportJobsCarryNoAddress(t *testing.T) {
+	app := testApp(t)
+	app.Config.PostmarkWebhookSecret = "s3cret-webhook"
+	const addr = "secret.person@example.com"
+	if code := postWebhook(t, app, webhookUser, "s3cret-webhook", "", postmarkSample(t, "postmark_spam_complaint.json", "m-job", addr)); code != http.StatusOK {
+		t.Fatalf("webhook: %d", code)
+	}
+	var job models.Job
+	if err := app.DB.Where("kind = ?", kindEmailEvent).First(&job).Error; err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ToLower(string(job.Payload)), "secret.person") || strings.Contains(job.LastError, "secret.person") {
+		t.Fatalf("the job holds the address: %s", job.Payload)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(job.Payload), &payload); err != nil || payload["addressHash"] != mail.AddressHash(addr) {
+		t.Fatalf("payload = %s (%v), want addressHash %s", job.Payload, err, mail.AddressHash(addr))
+	}
+	if _, ok := payload["address"]; ok {
+		t.Fatalf("payload still has an address key: %s", job.Payload)
+	}
+	runEmailEvents(t, app)
+	var n int64
+	app.DB.Model(&models.Suppression{}).Where("address_hash = ?", mail.AddressHash(addr)).Count(&n)
+	if n != 1 {
+		t.Fatalf("suppressions for the hash = %d, want 1", n)
 	}
 }

@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
+	"io/fs"
 	"os"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -321,5 +324,126 @@ func TestReasonProbeUsesLimitOne(t *testing.T) {
 	}
 	if !strings.Contains(body, "reasonProbeSQL") || strings.Count(body, "rows.Next()") != 1 {
 		t.Errorf("the probe must run reasonProbeSQL and read at most one row:\n%s", body)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The verification cadence names tests that exist (docs/agents/testing.md,
+// "Reason-review verification cadence").
+// ---------------------------------------------------------------------------
+
+// cadenceRunPattern finds a backticked `-run '^(A\|B)$'` argument. The table
+// escapes the alternation bar for Markdown, so `\|` is read as `|`.
+var cadenceRunPattern = regexp.MustCompile(`-run '\^\(?([^')]*)\)?\$'`)
+
+// cadenceNamedTests returns every test name a -run pattern in doc selects,
+// with the pattern it came from.
+func cadenceNamedTests(doc string) (names []string, patterns int) {
+	for _, m := range cadenceRunPattern.FindAllStringSubmatch(doc, -1) {
+		patterns++
+		for _, name := range strings.Split(strings.ReplaceAll(m[1], `\|`, "|"), "|") {
+			names = append(names, strings.TrimSpace(name))
+		}
+	}
+	return names, patterns
+}
+
+// cadenceProblems reports each name in doc's -run patterns that is not a
+// top-level Test, Fuzz, Benchmark or Example function in known.
+func cadenceProblems(doc string, known map[string]bool) []string {
+	var bad []string
+	names, patterns := cadenceNamedTests(doc)
+	if patterns == 0 {
+		return []string{"no `-run '^(...)$'` pattern found: the guard has nothing to check"}
+	}
+	for _, name := range names {
+		if !known[name] {
+			bad = append(bad, "the cadence names "+name+", which is not a test function in this repository")
+		}
+	}
+	return bad
+}
+
+// repoTestFuncs parses every _test.go file in the repository (the guardkit
+// skip rules, so hidden directories, web/ and testdata are not read) and
+// returns the names of its top-level test functions.
+func repoTestFuncs(t *testing.T) map[string]bool {
+	t.Helper()
+	files := guardkit.Sources{}
+	err := fs.WalkDir(os.DirFS("."), ".", func(p string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if p != "." && (strings.HasPrefix(entry.Name(), ".") || p == "web" || entry.Name() == "testdata" || entry.Name() == "node_modules" || entry.Name() == "vendor") {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(p, "_test.go") {
+			return nil
+		}
+		src, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		files[p] = string(src)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed := files.Parse(0)
+	if len(parsed.Problems) > 0 {
+		t.Fatalf("test files did not parse:\n%s", strings.Join(parsed.Problems, "\n"))
+	}
+	known := map[string]bool{}
+	for _, f := range parsed.Files {
+		for _, decl := range f.AST.Decls {
+			if fd, ok := decl.(*ast.FuncDecl); ok && fd.Recv == nil {
+				known[fd.Name.Name] = true
+			}
+		}
+	}
+	return known
+}
+
+// TestReasonCadenceNamesRealTests fails when a -run pattern in the
+// verification cadence names a Go test that is not there. An unanchored or
+// misspelled pattern matches nothing and passes silently, so the rows would
+// run nothing and say nothing.
+func TestReasonCadenceNamesRealTests(t *testing.T) {
+	doc, err := os.ReadFile("docs/agents/testing.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	section := string(doc)
+	start := strings.Index(section, "### Reason-review verification cadence")
+	end := strings.Index(section, "### Reason-review scale run")
+	if start < 0 || end < start {
+		t.Fatal("testing.md no longer has the cadence section this guard reads")
+	}
+	section = section[start:end]
+	known := repoTestFuncs(t)
+	for _, p := range cadenceProblems(section, known) {
+		t.Error(p)
+	}
+	// The legacy review (T07B-3a, T07B-3b) has a row in the scanner and
+	// transaction lines, so a rename cannot leave it unchecked.
+	names, _ := cadenceNamedTests(section)
+	for _, want := range []string{"TestLegacyScanNoSkip", "TestLegacySaveDecidesEachReason"} {
+		if !slices.Contains(names, want) {
+			t.Errorf("the cadence no longer runs %s", want)
+		}
+	}
+
+	// A misspelling is caught.
+	fixture := "`go test . -run '^(TestReasonScanNoSkip\\|TestReasonScanNoSkp)$'`"
+	got := cadenceProblems(fixture, map[string]bool{"TestReasonScanNoSkip": true})
+	if len(got) != 1 || !strings.Contains(got[0], "TestReasonScanNoSkp") {
+		t.Errorf("a misspelled name was not the one problem reported: %v", got)
+	}
+	if cadenceProblems("`go test . -run '^TestAttemptLifecycle$'`", map[string]bool{"TestAttemptLifecycle": true}) != nil {
+		t.Error("a single anchored name was rejected")
 	}
 }

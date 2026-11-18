@@ -1,4 +1,5 @@
 import type {
+  AdminBackupStatus,
   AdminJobStatusResponse,
   AdminJobsResponse,
   GroupListResponse,
@@ -46,4 +47,9 @@ export const AdminJobs = {
   list: () => api<AdminJobsResponse>("/admin/jobs"),
   retry: (id: Id) => api<AdminJobStatusResponse>(path`/admin/jobs/${id}/retry`, { method: "POST" }),
   dismiss: (id: Id) => api<AdminJobStatusResponse>(path`/admin/jobs/${id}/dismiss`, { method: "POST" }),
+};
+
+export const AdminBackup = {
+  // Always a 200 with a state; a missing or damaged status file is something the page explains.
+  status: () => api<AdminBackupStatus>("/admin/backup"),
 };

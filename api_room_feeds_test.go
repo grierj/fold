@@ -76,7 +76,6 @@ func TestRoomFeedLinks(t *testing.T) {
 	}
 	f.app.DB.Model(&models.Room{}).Where("id = ?", f.hall.ID).Update("active", true)
 
-	// Turning it off.
 	if w := f.admin.do("DELETE", path, nil, true); w.Code != http.StatusOK {
 		t.Fatalf("turn off: %d", w.Code)
 	}

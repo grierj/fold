@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestServeWithoutDatabaseURLExplainsDevDatabase(t *testing.T) {
@@ -64,6 +65,12 @@ func TestVersionJSONReportsRecoveryPolicy(t *testing.T) {
 	}
 	if _, ok := got["version"].(string); !ok {
 		t.Fatalf("version --json lost its version field: %v", got)
+	}
+	// restoreUploads tells the restore tooling this binary has
+	// `restore settle-uploads`; deploy/restore-uploads holds the same integer.
+	uploads, ok := got["restoreUploads"].(float64)
+	if !ok || uploads != 1 || int(uploads) != restoreUploadsLevel {
+		t.Fatalf("restoreUploads = %v, want the integer 1", got["restoreUploads"])
 	}
 }
 
@@ -343,4 +350,116 @@ func TestPushCheckNeedsNothingAndReportsEachHost(t *testing.T) {
 	if code := run([]string{"push", "check"}, &out, &errOut); code != 1 {
 		t.Fatalf("a bad FOLD_PUSH_HOSTS: %d", code)
 	}
+}
+
+// fold backup status needs only FOLD_BACKUP_DIR: no database, no session
+// secret. It pins the exit codes (0 ok; 1 overdue, missing or unreadable; 2
+// bad usage or no directory) and the JSON, and prints no path or file content.
+func TestBackupStatusCommand(t *testing.T) {
+	for _, k := range []string{"APP_ENV", "SESSION_SECRET", "DATABASE_URL"} {
+		t.Setenv(k, "")
+	}
+	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	old := backupNow
+	backupNow = func() time.Time { return now }
+	t.Cleanup(func() { backupNow = old })
+
+	okAt := now.Add(-2 * time.Hour)
+	okFiles := map[string]string{"LAST_OK": stampOf(okAt) + "\n",
+		"status.json": statusFile(lastOKDetails(okAt, "uploaded"), failureDetails(now.Add(-time.Hour), "upload"))}
+	for name, tc := range map[string]struct {
+		files map[string]string
+		code  int
+		state string
+	}{
+		"ok":         {okFiles, 0, backupOK},
+		"stale":      {map[string]string{"LAST_OK": stampOf(now.Add(-40*time.Hour)) + "\n"}, 1, backupStale},
+		"missing":    {map[string]string{}, 1, backupMissing},
+		"unreadable": {map[string]string{"LAST_OK": backupSentinel + "\n"}, 1, backupUnreadable},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := backupDirWith(t, tc.files)
+			t.Setenv("FOLD_BACKUP_DIR", dir)
+			var out, errOut bytes.Buffer
+			if code := run([]string{"backup", "status", "--json"}, &out, &errOut); code != tc.code {
+				t.Fatalf("exit %d, want %d (%s %s)", code, tc.code, out.String(), errOut.String())
+			}
+			var st backupStatusJSON
+			if err := json.Unmarshal(out.Bytes(), &st); err != nil || st.State != tc.state {
+				t.Fatalf("json %q: %v", out.String(), err)
+			}
+			if strings.Count(out.String(), "\n") != 1 {
+				t.Fatalf("want one JSON line, got %q", out.String())
+			}
+			out.Reset()
+			if code := run([]string{"backup", "status"}, &out, &errOut); code != tc.code {
+				t.Fatalf("text exit %d, want %d", code, tc.code)
+			}
+			for _, bad := range []string{dir, "SENTINEL", "LAST_OK", "status.json"} {
+				if strings.Contains(out.String()+errOut.String(), bad) {
+					t.Fatalf("output leaks %q: %q %q", bad, out.String(), errOut.String())
+				}
+			}
+			if out.Len() == 0 {
+				t.Fatal("text output is empty")
+			}
+		})
+	}
+
+	t.Run("json bytes are pinned", func(t *testing.T) {
+		t.Setenv("FOLD_BACKUP_DIR", backupDirWith(t, okFiles))
+		var out bytes.Buffer
+		if code := run([]string{"backup", "status", "--json"}, &out, &out); code != 0 {
+			t.Fatalf("exit %d", code)
+		}
+		want := `{"state":"ok","lastOkAt":"2026-11-15T10:00:00Z","dumpBytes":1234,"uploadsBytes":5678,"offsite":"uploaded",` +
+			`"lastFailedAt":"2026-11-15T11:00:00Z","lastFailedStep":"upload"}` + "\n"
+		if out.String() != want {
+			t.Fatalf("got  %swant %s", out.String(), want)
+		}
+	})
+
+	t.Run("text says what is known", func(t *testing.T) {
+		t.Setenv("FOLD_BACKUP_DIR", backupDirWith(t, okFiles))
+		var out bytes.Buffer
+		run([]string{"backup", "status"}, &out, &out)
+		for _, want := range []string{"ok, last finished 2026-11-15 10:00 UTC", "database 1234 bytes", "offsite copy uploaded", "step upload"} {
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("text %q lacks %q", out.String(), want)
+			}
+		}
+	})
+
+	t.Run("no directory is a usage error", func(t *testing.T) {
+		t.Setenv("FOLD_BACKUP_DIR", "")
+		var out, errOut bytes.Buffer
+		if code := run([]string{"backup", "status"}, &out, &errOut); code != 2 || out.Len() != 0 || !strings.Contains(errOut.String(), "FOLD_BACKUP_DIR") {
+			t.Fatalf("exit/out/err: %q %q", out.String(), errOut.String())
+		}
+	})
+
+	t.Run("a relative directory is refused without its value", func(t *testing.T) {
+		t.Setenv("FOLD_BACKUP_DIR", "relative-SENTINEL/dir")
+		var out, errOut bytes.Buffer
+		if code := run([]string{"backup", "status"}, &out, &errOut); code != 2 || strings.Contains(errOut.String()+out.String(), "SENTINEL") {
+			t.Fatalf("exit/out/err: %q %q", out.String(), errOut.String())
+		}
+	})
+
+	t.Run("bad usage", func(t *testing.T) {
+		t.Setenv("FOLD_BACKUP_DIR", t.TempDir())
+		for _, args := range [][]string{{"backup"}, {"backup", "now"}, {"backup", "status", "extra"}, {"backup", "--json"}} {
+			var out, errOut bytes.Buffer
+			if code := run(args, &out, &errOut); code != 2 || out.Len() != 0 {
+				t.Errorf("%v: exit %d, out %q", args, code, out.String())
+			}
+		}
+	})
+
+	t.Run("usage lists the command", func(t *testing.T) {
+		var out bytes.Buffer
+		if code := run([]string{"help"}, &out, &out); code != 0 || !strings.Contains(out.String(), "backup status") {
+			t.Fatalf("usage lacks backup status: %q", out.String())
+		}
+	})
 }

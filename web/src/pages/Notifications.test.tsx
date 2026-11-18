@@ -148,3 +148,18 @@ describe("when empty", () => {
     expect(screen.queryByRole("link", { name: "See what's coming up" })).not.toBeInTheDocument();
   });
 });
+
+describe("a row about a teen or a child", () => {
+  it("shows the badge as text on the page, and none on an adult's row", async () => {
+    feed([
+      item({ id: 21, title: "Row for teen", subjectKind: "teen" }),
+      item({ id: 22, title: "Row for child", subjectKind: "child" }),
+      item({ id: 23, title: "Row for adult" }),
+    ]);
+    open();
+    const rowOf = async (title: string) => (await screen.findByRole("link", { name: new RegExp(title) })).closest("li")!;
+    expect(within(await rowOf("Row for teen")).getByText("Teen")).toBeInTheDocument();
+    expect(within(await rowOf("Row for child")).getByText("Child")).toBeInTheDocument();
+    expect(within(await rowOf("Row for adult")).queryByText(/^(Teen|Child)$/)).toBeNull();
+  });
+});

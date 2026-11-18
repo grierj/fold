@@ -2,6 +2,7 @@ import type {
   AudienceSummaryResponse,
   ComposeOptions,
   MessageAudience,
+  MessageImageResponse,
   MessageListResponse,
   MessagePreviewResponse,
   MessageReadResponse,
@@ -10,7 +11,7 @@ import type {
   MessageScheduledResponse,
   MessageTestResponse,
 } from "../types";
-import { api, path, query, type Id } from "./core";
+import { api, apiUpload, path, query, type Id } from "./core";
 
 // The composer's API (M3.4, docs/API.md "Messages"). Email only for now;
 // pushAlert adds the companion push (M3.13d2), never instead of the email.
@@ -36,6 +37,8 @@ export const Messages = {
   // scheduledAt absent: send now.
   schedule: (id: Id, scheduledAt?: string) =>
     api<MessageScheduledResponse>(path`/messages/${id}/schedule`, { method: "POST", body: scheduledAt ? { scheduledAt } : {} }),
+  // One picture for the body of a saved draft (DEC-118); the answer's url goes in the editor.
+  uploadImage: (id: Id, file: File) => apiUpload<MessageImageResponse>(path`/messages/${id}/images`, "image", file),
   cancel: (id: Id) => api<MessageResponse>(path`/messages/${id}/cancel`, { method: "POST" }),
   preview: (id: Id) => api<MessagePreviewResponse>(path`/messages/${id}/preview`),
   test: (id: Id) => api<MessageTestResponse>(path`/messages/${id}/test`, { method: "POST" }),

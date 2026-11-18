@@ -37,8 +37,7 @@ export const measure = () => {
     });
   // Controls cut off by an ancestor that hides or scrolls its overflow, or
   // pushed past the viewport's sides. The page itself doesn't scroll
-  // sideways in that case, so the overflow check alone misses it (PR #65
-  // review F1: Admin Users actions inside overflow-hidden at 390).
+  // sideways in that case, so the overflow check alone misses it.
   // A tab bar scrolls sideways inside its own bar on purpose (DEC-99); the
   // active tab is kept in view and a half-shown chip signals there is more.
   // So a tab is exempt only against that scroller (the nearest ancestor of its

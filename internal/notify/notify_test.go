@@ -87,7 +87,7 @@ func TestEveryKindsPushTextIsLockScreenSafe(t *testing.T) {
 		// A teen, a household child, contact details in the free text.
 		{Actor: "Teen Tess", Person: "Kid Kai", Group: "Youth Group", Event: "Lock-in", When: "Fri, Dec 4 · 7:00 PM",
 			Place: "14 Elm Street", Change: "time", Visibility: "public", GroupVis: "private",
-			Note: "Call tess@example.com or 555-123-4567", Count: 3, Teen: true,
+			Note: "Call tess@example.com or 555-123-4567", Count: 3, SubjectKind: SubjectTeen,
 			ManageURL: "https://church.example/guest/manage/secret-token", VideoURL: "https://meet.example/room-9"},
 		// A hidden adult: the caller left the group and place out.
 		{Actor: "Hidden Hal", Person: "Hidden Hal", Event: "Supper", When: "Tue 7pm", Note: "hal@example.com", Change: "place"},
@@ -159,7 +159,7 @@ func TestEveryKindsPushTextIsLockScreenSafe(t *testing.T) {
 	// they can't see is never named (the caller leaves it out).
 	k, _ := Lookup(YourRole)
 	for change, want := range map[string]string{"leader": "You're now a leader of Youth", "member": "You're no longer a leader of Youth"} {
-		if title, _, ok := k.RenderForPush(Vars{Group: "Youth", Change: change, Person: "Hidden Hal", Teen: true}); !ok || title != want {
+		if title, _, ok := k.RenderForPush(Vars{Group: "Youth", Change: change, Person: "Hidden Hal", SubjectKind: SubjectTeen}); !ok || title != want {
 			t.Errorf("your role %s: %q", change, title)
 		}
 	}

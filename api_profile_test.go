@@ -391,7 +391,6 @@ func TestAvatarUploadAndDelete(t *testing.T) {
 		t.Fatalf("me avatarUrl %q != %q", me.User.AvatarURL, resp.AvatarURL)
 	}
 
-	// Delete it.
 	w = c.do("DELETE", "/api/v1/me/avatar", nil, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("avatar delete: %d %s", w.Code, w.Body.String())

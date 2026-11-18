@@ -465,7 +465,6 @@ func jsonEsc(s string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(s, "#u", bs+"u"), "#q", bs+string(rune(34)))
 }
 
-// escapedEnvelopeCases are the envelope cases written with escapes.
 func escapedEnvelopeCases() []struct {
 	name string
 	raw  string

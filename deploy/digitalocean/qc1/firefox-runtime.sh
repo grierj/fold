@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The restore drill's Firefox proof runs in a glibc container inside the disposable
-# runner (see firefox.Dockerfile for why). Sourced by browser-prepare.sh (build and
+# The restore drill's Firefox proof runs in a Debian container on the disposable
+# host (see firefox.Dockerfile for why). Sourced by browser-prepare.sh (build and
 # preflight) and by restore-drill-cases.sh (the proof), so both use the same image
 # and the same docker flags. Nothing here starts Docker by itself.
 
@@ -22,7 +22,7 @@ firefox_image_tag() { # lock-file dockerfile node-image
 }
 
 # The docker flags of every run in this image, one per line. --network host is the
-# RUNNER's network (this daemon is the disposable one), where the recovery instance is
+# host's network (this daemon is the disposable one), where the recovery instance is
 # published on 127.0.0.1; --init reaps the browser's children; --ipc=host gives
 # Firefox the shared memory it needs. Never a bind of an owner's path: callers add only
 # the scratch directories they name.

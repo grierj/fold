@@ -648,3 +648,30 @@ func TestReadPageHiddenSeriesManyGrantsInvalidBeforeValid(t *testing.T) {
 	endSeededAccess(t, app.DB, rows[len(rows)-1].RegistrationID, policy.OccurrenceDeclined, &reader.ID, time.Now().UTC())
 	checkRead(t, "no valid grant", readAs(t, readerC, series), reader, readWant{})
 }
+
+// The read page shows the message's own pictures, by their same-origin
+// address, and nothing else an image tag could load (DEC-118).
+func TestReadPageShowsOwnPictures(t *testing.T) {
+	f := newMessageImageFixture(t)
+	id, url := f.pictureDraft(t, "Our picnic table")
+	if w := f.leader.do("POST", "/api/v1/messages/"+itoa(id)+"/schedule", map[string]any{}, true); w.Code != http.StatusOK {
+		t.Fatalf("schedule: %d %s", w.Code, w.Body.String())
+	}
+	runMessageJobs(t, f.app)
+	teen := loginAPI(t, f.app, "teen", "password1234")
+	var out struct {
+		Message messageReadJSON `json:"message"`
+	}
+	w := teen.do("GET", "/api/v1/messages/"+itoa(id)+"/read", nil, false)
+	decodeJSON(t, w, &out)
+	if w.Code != http.StatusOK || !strings.Contains(out.Message.BodyHTML, `<img src="`+url+`" alt="Our picnic table">`) {
+		t.Fatalf("read: %d %s", w.Code, w.Body.String())
+	}
+	// Whatever the stored body holds, an outside or blank picture never reaches the page.
+	f.app.DB.Model(&models.Message{}).Where("id = ?", id).Update("body_html",
+		`<p>Hi</p><img src="https://evil.example/x.gif" alt="x"><img src="`+url+`" alt=" ">`)
+	decodeJSON(t, teen.do("GET", "/api/v1/messages/"+itoa(id)+"/read", nil, false), &out)
+	if strings.Contains(out.Message.BodyHTML, "<img") {
+		t.Fatalf("read page body: %q", out.Message.BodyHTML)
+	}
+}

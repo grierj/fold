@@ -26,6 +26,18 @@ test("the System tab reports background tasks and email truthfully", async ({ pa
   await expect(page).toHaveURL(/tab=system/);
   await expect(page.getByRole("heading", { name: "Background tasks" })).toBeVisible();
 
+  // The Backups panel says what the server's own answer says, and it never hides the tasks.
+  const backup = (await (await page.request.get("/api/v1/admin/backup")).json()) as { state: string };
+  await expect(page.getByRole("heading", { name: "Backups", level: 2 })).toBeVisible();
+  const words: Record<string, string | RegExp> = {
+    unwatched: "Fold isn't watching backups here.",
+    missing: "Backups are overdue",
+    stale: "Backups are overdue",
+    unreadable: "Fold can't read the backup status",
+    ok: /^Last backup finished/,
+  };
+  await expect(page.getByText(words[backup.state]).first()).toBeVisible();
+
   const quiet = before.jobs.length === 0 && before.deliveries.deferred === 0 && before.deliveries.failed === 0;
   if (quiet) {
     await expect(page.getByText("Nothing needs attention.")).toBeVisible();

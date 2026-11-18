@@ -93,7 +93,7 @@ what is built, and what comes next. Repo: https://github.com/grierj/fold.
 - Multi-tenant SaaS (one database for many churches).
 - Giving, donations, pledges, fund accounting, contribution statements. See 13.3 for the reasons.
 - SQLite or any database other than PostgreSQL (DEC-1, DEC-24).
-- Python, anywhere in the repo or its tooling (DEC-22).
+- Python in the serving stack: the image, compose files, `deploy/`, the binary and the frontend (DEC-22, amended by DEC-151).
 - Accounts for anyone under 13. Younger children exist only as household people with no login
   (DEC-8).
 - Teens as group leaders or event hosts (DEC-18).
@@ -195,6 +195,7 @@ the email work).
 | v1.0 | Hardening, sign-up sheets, attendance, security review (Twilio deferred until demanded, DEC-140) | M6.2, M6.3 + fixes |
 | v1.x and later | Community features | Rest of M6 |
 | Future, on request (not committed) | Render Blueprint, Twilio adapter, S3 adapter, ChMS sync, durable audit log: each re-enters only as a new milestone for a named church (DEC-140) | — |
+| Desired, no milestone | Encrypted offsite backup uploads: finishing and proving them (a producer-only bucket policy, real `age` decryption, B2 and Spaces behaviour). The code that uploads `age`-encrypted pairs exists and is not an acceptance requirement of M5.2 (DEC-152) | — |
 
 ---
 

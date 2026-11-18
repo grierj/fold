@@ -7,6 +7,7 @@ ORIGINAL_ARGS=("$@")
 DIR=/opt/fold
 SOURCE=/root/fold
 DUMP=""
+UPLOADS=""
 IMAGE=""
 COMMIT=""
 MODE=dump
@@ -28,8 +29,8 @@ HEALTH_WAIT=90
 fail() { printf 'restore.sh: %s\n' "$*" >&2; exit 1; }
 usage() {
   cat <<'HELP'
-Usage: restore.sh --dump FILE [--image REF | --commit SHA] [--source-dir /root/fold]
-       restore.sh --resume [--dump SAME_FILE]
+Usage: restore.sh --dump FILE [--uploads FILE] [--image REF | --commit SHA] [--source-dir /root/fold]
+       restore.sh --resume [--dump SAME_FILE] [--uploads SAME_FILE]
        restore.sh --abort | --status
        restore.sh --reopen [--checked-church-records]
        [--deploy-dir /opt/fold] [--dry-run] [--drill] [--reopen-if-none]
@@ -38,7 +39,9 @@ Stops the public site, restores to a new database and swaps the whole database.
 Recovery runs at http://localhost:18080 through an SSH tunnel, workers off.
 Re-delete accounts erased after the backup using the church's records. A known
 zero count permits --reopen-if-none. Otherwise --reopen requires your explicit
---checked-church-records statement. No deleted-account list is saved here.
+--checked-church-records statement. When the comparison succeeds with a nonzero
+count, the ids (and the time each was last deleted) are saved in
+DIR/recovery-deleted.txt, root-only; --reopen refuses until each is deleted again.
 Exit 3 means --reopen-if-none restored the archive but SITE IS CLOSED in
 private recovery. Normal --dump and --resume can finish private recovery with
 exit 0. Once collection is recorded, --resume no longer needs the archive.
@@ -46,6 +49,12 @@ Rejected preflight leaves the installed recovery-tools unchanged. Target image
 checks run from a temporary frozen copy, published only after validation.
 Backup/expiry are suspended until recovery ends; a pre-existing backup may
 hold preflight for at most 120 seconds before anything stops.
+--uploads FILE (uploads-STAMP.tgz, the pair of fold-STAMP.dump) also restores the
+uploads folder: validated and probed before anything stops, staged beside the
+live folder while the site is closed, exchanged after the database swap, and
+settled (photos of accounts erased since the backup are removed) before the
+site reopens. The old folder is removed after the reopened site passes smoke.
+Without --uploads the uploads folder is never touched.
 Never delete recovery.lock, ops.lock or backup.lock to bypass recovery.
 HELP
 }
@@ -56,6 +65,7 @@ while (( $# )); do
     --deploy-dir) value "$@"; DIR="$2"; shift 2 ;;
     --source-dir) value "$@"; SOURCE="$2"; shift 2 ;;
     --dump) value "$@"; DUMP="$2"; shift 2 ;;
+    --uploads) value "$@"; UPLOADS="$2"; shift 2 ;;
     --image) value "$@"; IMAGE="$2"; shift 2 ;;
     --commit) value "$@"; COMMIT="$2"; shift 2 ;;
     --resume|--abort|--status|--reopen)
@@ -86,7 +96,7 @@ fi
 if (( ! DRY )) && [[ "$MODE" != status ]]; then
   ops_lock_acquire "$DIR" "restore-$MODE" || exit $?
 fi
-for name in compose_in dc pg recovery_ids runtime_tools recovery_classify recovery_accepts image_recovery_level commit_recovery_level host_recovery_floor write_recovery_floor backup_coord_acquire backup_coord_release; do
+for name in compose_in dc pg recovery_ids runtime_tools recovery_classify recovery_accepts image_recovery_level commit_recovery_level host_recovery_floor write_recovery_floor backup_coord_acquire backup_coord_release backup_service_defined backup_coordination_check backup_scheduler_select image_restore_uploads commit_restore_uploads assert_image; do
   declare -F "$name" >/dev/null || fail "checks.sh lacks $name; run the current provision.sh --deploy-dir $DIR to install the complete tool set"
 done
 for name in $(runtime_tools); do
@@ -103,9 +113,9 @@ if (( DRILL )); then
   WAIT="${RESTORE_DRILL_WAIT:-120}"
   export RESTORE_DRILL_OPERATION=1
 fi
-case "${RESTORE_DRILL_PAUSE:-}" in ''|after-lock|before-swap|mid-pin|recovering) ;; *) fail 'unknown RESTORE_DRILL_PAUSE point' ;; esac
+case "${RESTORE_DRILL_PAUSE:-}" in ''|after-lock|before-swap|mid-pin|recovering|before-settle|after-settle) ;; *) fail 'unknown RESTORE_DRILL_PAUSE point' ;; esac
 case "${RESTORE_DRILL_FAULT:-}" in
-  ''|after-create|before-swap|swap-ack-lost|after-swap|half|before-pin|mid-pin|after-pin|after-recovery-create|before-collect-drop|after-collect-drop|before-drop|after-drop|after-floor|after-app-start|after-caddy-start|mid-smoke|stop-fails|bad-recovery|after-abort-intent|before-abort-drop|after-abort-drop|after-abort-start|mid-abort-smoke|abort-drop-ack-lost|during-restore) ;;
+  ''|after-create|before-swap|swap-ack-lost|after-swap|half|before-pin|mid-pin|after-pin|after-recovery-create|before-collect-drop|after-collect-drop|before-list-rename|before-drop|after-drop|after-floor|after-app-start|after-caddy-start|mid-smoke|stop-fails|bad-recovery|after-abort-intent|before-abort-drop|after-abort-drop|after-abort-start|mid-abort-smoke|abort-drop-ack-lost|during-restore|during-uploads-stage|after-uploads-stage|after-uploads-exchange|during-uploads-drop|after-uploads-drop|during-settle|before-scheduler|after-scheduler|after-lock-remove) ;;
   *) fail 'unknown RESTORE_DRILL_FAULT point' ;;
 esac
 case "${RESTORE_DRILL_FORCE_TWO_STEP:-0}" in 0|1) ;; *) fail 'RESTORE_DRILL_FORCE_TWO_STEP must be 0 or 1' ;; esac
@@ -117,6 +127,7 @@ fi
 [[ -z "$COMMIT" || "$COMMIT" =~ ^[0-9a-f]{7,40}$ ]] || fail '--commit must be a git SHA'
 if [[ "$MODE" != dump && ( -n "$IMAGE" || -n "$COMMIT" ) ]]; then fail 'resume/abort/reopen/status use the target recorded in recovery.lock'; fi
 if (( REOPEN_NONE )) && [[ "$MODE" != dump ]]; then fail '--reopen-if-none requires --dump'; fi
+[[ -z "$UPLOADS" || "$MODE" == dump || "$MODE" == resume ]] || fail '--uploads is for --dump, or for --resume with the same archive'
 if (( CHECKED )) && [[ "$MODE" != reopen ]]; then fail '--checked-church-records requires --reopen'; fi
 
 pause_at() {
@@ -225,13 +236,28 @@ read_lock() {
   [[ -f "$DIR/recovery.lock" && ! -L "$DIR/recovery.lock" ]] || fail "no regular $DIR/recovery.lock"
   [[ "$(stat -c '%u:%a' "$DIR/recovery.lock")" == 0:600 ]] || fail 'recovery.lock must be root-owned mode 600'
   STATE="$(cat "$DIR/recovery.lock")"
-  jq -e '.format==1 and (.nonce|test("^[0-9a-f]{32}$")) and (.origOid|test("^([0-9]+)?$"))
+  # Format 2 is a lock that carries an uploads restore; a tool set from before it
+  # reads only format 1 and refuses it, so an older tool can never resume it
+  # without the uploads steps.
+  jq -e '(.format==1 or .format==2) and (.nonce|test("^[0-9a-f]{32}$")) and (.origOid|test("^([0-9]+)?$"))
     and (.restoreOid|test("^([0-9]+)?$")) and (.cleanup=="none" or .cleanup=="drop-intent" or .cleanup=="dropped")
     and (.level|type=="number" and .>=0 and .<=999999999 and .==floor)
     and (.count|type=="string" and test("^(unknown|[0-9]+)$"))
     and (.imageId|test("^sha256:[0-9a-f]{64}$"))
-    and (.phase|type=="string") and (.previous.imageId|test("^sha256:[0-9a-f]{64}$"))' <<<"$STATE" >/dev/null || fail 'invalid recovery.lock; retain it for inspection'
+    and (.phase|type=="string") and (.previous.imageId|test("^sha256:[0-9a-f]{64}$"))
+    and ((.deletedList // null)==null or ((.deletedList.sha256|test("^[0-9a-f]{64}$")) and (.deletedList.count|type=="number" and .>0 and .==floor)))
+    and (if .format==1 then has("uploads")|not
+         else (.uploads|type=="object")
+           and (.uploads.state|test("^(preflighted|stage-intent|staged|exchange-intent|exchanged|old-drop-intent|old-dropped|staged-drop-intent|staged-dropped|released)$"))
+           and (.uploads.archiveSha256|test("^[0-9a-f]{64}$")) and (.uploads.image|test("^sha256:[0-9a-f]{64}$"))
+           and (.uploads.volume.name|test("^[A-Za-z0-9][A-Za-z0-9_.-]*$")) and (.uploads.volume.createdAt|type=="string")
+           and (.uploads.liveInode|test("^[0-9]+$")) and (.uploads.stagedInode|test("^([0-9]+)?$")) and (.uploads.oldInode|test("^([0-9]+)?$"))
+         end)' <<<"$STATE" >/dev/null || fail 'invalid recovery.lock; retain it for inspection'
+  if [[ -n "$UPLOADS" ]]; then
+    uploads_on || fail 'this recovery was not started with --uploads; --uploads does not apply'
+  fi
   DUMP="${DUMP:-$(get .dump)}"
+  if uploads_on; then UPLOADS="${UPLOADS:-$(up_val .archive)}"; fi
   SOURCE="$(get .source)"; IMAGE="$(nullable .image)"; COMMIT="$(nullable .commit)"
   R="fold_restore_$(get '.nonce[0:16]')"; P="fold_pre_restore_$(get '.nonce[0:16]')"
 }
@@ -326,6 +352,21 @@ service_running() {
   done <<<"$ids"
   return "$active"
 }
+# --reopen refuses while any listed account is still active. A file that is
+# missing or no longer matches the lock cannot be checked, so the operator's
+# --checked-church-records statement (already required for a count above zero)
+# is what remains.
+deleted_list_gate() {
+  local total remaining
+  total="$(jq -r '.deletedList.count // empty' <<<"$STATE")"
+  [[ -n "$total" ]] || return 0
+  if ! deleted_list_load; then
+    echo "restore.sh: $DIR/recovery-deleted.txt is missing or differs from recovery.lock; relying on --checked-church-records" >&2
+    return 0
+  fi
+  remaining="$(deleted_list_remaining)" && [[ "$remaining" =~ ^[0-9]+$ ]] || fail 'could not compare recovery-deleted.txt with the recovery database; nothing reopened'
+  (( remaining == 0 )) || fail "$remaining of $total accounts in $DIR/recovery-deleted.txt are still active; delete them again, then repeat --reopen --checked-church-records. Nothing reopened"
+}
 workers_count() { pg postgres -c "SELECT count(*) FROM pg_stat_activity WHERE datname='fold' AND backend_type='client backend' AND pid<>pg_backend_pid()"; }
 wait_clients() {
   local db_pred="$1" count end=$((SECONDS+WAIT))
@@ -345,20 +386,46 @@ ports_closed() {
     if port_open "$port"; then echo "port $port still accepting connections" >&2; return 1; fi
   done
 }
+# The container backup service is one of the normal services: while the site is
+# closed it must be stopped too. An unreadable Compose configuration is a
+# failure here, never "no backup service".
 normal_stopped() {
   local service rc
   for service in caddy app; do
     rc=0; service_running "$service" || rc=$?
     [[ "$rc" == 1 ]] || return 1
   done
+  rc=0; backup_service_defined "$DIR" || rc=$?
+  case "$rc" in
+    0) rc=0; service_running backup || rc=$?; [[ "$rc" == 1 ]] || return 1 ;;
+    1) ;;
+    *) return 1 ;;
+  esac
+}
+backup_stop() {
+  local rc=0
+  backup_service_defined "$DIR" || rc=$?
+  case "$rc" in
+    0) dc stop backup ;;
+    1) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+# The normal services, for status: backup is listed only when it is defined.
+normal_services() {
+  local rc=0
+  backup_service_defined "$DIR" || rc=$?
+  if [[ "$rc" == 0 ]]; then echo 'app caddy backup'; else echo 'app caddy'; fi
 }
 # Closing is allowed even when database identities are inconsistent. It never
 # issues SQL writes. Foreign recovery containers are refused, not removed.
+# Uploads helpers of this recovery are removed first, so no killed helper keeps
+# writing while anything else looks at the folders.
 close_site() {
   local previous_phase
   previous_phase="$(get .phase)"
   recovery_nonce_check || return 1
-  if ! dc stop caddy || ! dc stop app || ! remove_recovery || ! normal_stopped || ! ports_closed \
+  if ! reap_uploads_helpers || ! dc stop caddy || ! dc stop app || ! backup_stop || ! remove_recovery || ! normal_stopped || ! ports_closed \
     || ! wait_clients "datname='fold'"; then
     STATE="$(jq --arg phase "$previous_phase" --arg now "$(date -u +%FT%TZ)" '.closeFailed={phase:$phase,time:$now}' <<<"$STATE")"
     store
@@ -375,8 +442,22 @@ reconcile_needed() {
     STATE="$(jq --arg prior "$(get .phase)" --arg at "$(nullable .at)" '.reconcileFrom=$prior | .reconcileAt=$at' <<<"$STATE")"
     record reconcile-needed
   fi
+  if [[ "${1:-}" == uploads ]]; then
+    fail 'the uploads folders do not match the identities recorded in recovery.lock, and no recorded intent explains it. Nothing was exchanged or removed. Retain the lock; inspect --status. --abort is refused'
+  fi
   printf 'restore.sh: reconcile-needed; classification=%s release=%s\n%s\n' "$CLASS" "$RELEASE" "$DBS" >&2
   fail 'database identity or release changed without its recorded intent. No database was written. Retain the lock; inspect names, oids, sizes and ALLOW_CONNECTIONS with --status. --abort is refused'
+}
+# "Still active" is only meaningful once fold is the restored database.
+deleted_list_status() {
+  local total remaining=unknown
+  total="$(jq -r '.deletedList.count // empty' <<<"$STATE")"
+  [[ -n "$total" ]] || return 0
+  case "$1" in
+    quiesce|create-intent|created|collect-*|collected|pin-*|pinned|swap-*|reconcile-needed|abort-*) remaining=n/a ;;
+    *) if deleted_list_load && remaining="$(deleted_list_remaining 2>/dev/null)" && [[ "$remaining" =~ ^[0-9]+$ ]]; then :; else remaining=unknown; fi ;;
+  esac
+  printf 'deleted list: %s listed in %s/recovery-deleted.txt; still active: %s\n' "$total" "$DIR" "$remaining"
 }
 status() {
   local ids id phase w accepted=no
@@ -386,10 +467,16 @@ status() {
   if [[ "$phase" == reconcile-needed ]]; then
     printf 'reconcileFrom=%s recheckAccepted=%s; --resume only rechecks and restores that phase\n' "$(nullable .reconcileFrom)" "$accepted"
   fi
+  deleted_list_status "$phase"
+  if uploads_on; then
+    printf 'uploads: state=%s liveInode=%s stagedInode=%s oldInode=%s\n' "$(up_get .state)" "$(up_get .liveInode)" "$(up_val .stagedInode)" "$(up_val .oldInode)"
+  fi
+  if [[ -n "$(jq -r '.scheduler.state // empty' <<<"$STATE")" ]]; then printf 'scheduler: %s\n' "$(jq -r .scheduler.state <<<"$STATE")"; fi
   printf 'operations holder (informational; observations may be mid-change): %s\n' "$(cat "$DIR/ops.owner" 2>/dev/null || true)"
   printf 'databases: name|oid|bytes|ALLOW_CONNECTIONS\n%s\n' "$DBS"
   dc ps -a
-  for id in $(dc ps -a -q app caddy); do
+  # shellcheck disable=SC2046 # normal_services prints plain service names.
+  for id in $(dc ps -a -q $(normal_services)); do
     docker inspect --format '{{.Id}} {{index .Config.Labels "com.docker.compose.service"}} {{.State.Status}} running={{.State.Running}} restart={{.HostConfig.RestartPolicy.Name}} image={{.Image}}' "$id"
   done
   ids="$(recovery_ids)" || fail 'cannot observe recovery containers; nothing started'
@@ -402,15 +489,341 @@ status() {
   w="$(workers_count)"; echo "W=$w"
   case "$phase" in
     pre-drop-intent|pre-dropped|floor-written|cleanup-failed|abort-start-intent|abort-smoke-intent) ;;
-    *) if service_running app || service_running caddy; then echo 'WARNING: normal services are running in a phase requiring closure; run --resume, or --abort for an abort phase'; fi ;;
+    *) if service_running app || service_running caddy || { [[ " $(normal_services) " == *' backup '* ]] && service_running backup; }; then echo 'WARNING: normal services are running in a phase requiring closure; run --resume, or --abort for an abort phase'; fi ;;
   esac
   [[ "$(jq -r '.closeFailed // empty' <<<"$STATE")" == '' ]] || echo 'close-failed: no recovery instance may start until closure is verified'
+}
+
+# --- Uploads restore (M5.2) ---------------------------------------------------
+# --uploads brings the uploads folder back with the database. Every step is a
+# one-shot container of the deployed backup image (deploy/backup/README.md),
+# driven only from here, labelled with this recovery's full nonce, and removed
+# before any later step looks at the folders: a killed caller can never leave a
+# helper writing while another one reads. A database-only restore (no
+# --uploads) has no `uploads` object in recovery.lock, stays format 1 and never
+# reaches any of these functions.
+#
+# recovery.lock .uploads.state, in order:
+#   preflighted       archive validated and probed; nothing written yet
+#   stage-intent      recorded after the database is collected, before the pin
+#   staged            the receipt-based stage helper finished and was observed
+#   exchange-intent   recorded after the database swap, before the exchange
+#   exchanged         the staged tree is the live tree; the old one is at the
+#                     staging path (oldInode)
+#   old-drop-intent   recorded before the old tree is removed, after smoke
+#   old-dropped       the old tree is gone
+#   released          the helper's receipt and staging folder are gone
+# and, on an abort before the swap: staged-drop-intent, staged-dropped, released.
+# A missing tree counts as removed only under its recorded intent.
+uploads_on() { jq -e 'has("uploads")' <<<"$STATE" >/dev/null 2>&1; }
+up_get() { jq -er ".uploads$1" <<<"$STATE"; }
+up_val() { jq -r ".uploads$1 // empty" <<<"$STATE"; }
+# kv "key=value key=value" key
+kv() { tr ' ' '\n' <<<"$1" | sed -n "s/^$2=//p" | head -n 1; }
+up_set() {
+  local name="$1" extra="${2:-.}"
+  shift $(( $# > 1 ? 2 : 1 ))
+  STATE="$(jq --arg uploadsState "$name" --arg now "$(date -u +%FT%TZ)" "$@" \
+    "$extra | .uploads.state=\$uploadsState | .history += [{phase:.phase,uploads:\$uploadsState,time:\$now,cleanup:.cleanup}]" <<<"$STATE")"
+  store
+  printf 'restore.sh: uploads=%s\n' "$name"
+}
+# Context for the helpers: set from the lock (or, at preflight, by the caller).
+uploads_context() {
+  UP_NONCE="$(get .nonce)"
+  UP_IMAGE="$(up_get .image)"
+  UP_VOLUME="$(up_get .volume.name)"
+  UP_ARCHIVE="$UPLOADS"
+}
+# A command substitution is a fork of this shell: its copies of descriptors 9
+# (ops.lock) and 6 (backup.lock) stay open for as long as it waits on a helper or
+# on the function that waits on one. A caller killed in that time would leave
+# those waiting shells holding both locks, so no --resume or --abort could take
+# them and reap the helper. Every function that runs in such a shell and starts
+# or waits on a helper calls this first. The main shell keeps its own copies.
+release_lock_copies() {
+  [[ "$BASHPID" == "$$" ]] || exec 9>&- 6>&-
+}
+# uploads_helper ROLE DURING SUBCOMMAND [ARGS...]: one helper, as uid 0 with no
+# network, restart no and --rm, labelled for this project and nonce and never
+# with com.docker.compose.* labels. Locks 9 and 6 are closed in the child, so a
+# killed caller does not keep them alive through a helper that outlives it.
+uploads_helper() {
+  local role="$1" during="$2" sub="$3" end helper
+  shift 3
+  release_lock_copies
+  local -a mounts=() cmd
+  case "$role" in
+    validate) mounts=(-v "$UP_VOLUME:/data:ro" -v "$UP_ARCHIVE:/restore/archive.tgz:ro") ;;
+    stage) mounts=(-v "$UP_VOLUME:/data" -v "$UP_ARCHIVE:/restore/archive.tgz:ro") ;;
+    observe) mounts=(-v "$UP_VOLUME:/data:ro") ;;
+    probe|exchange|drop) mounts=(-v "$UP_VOLUME:/data") ;;
+    *) return 1 ;;
+  esac
+  cmd=(docker run --rm --user 0 --network none --restart no --pull never
+    --label "fold.project=$PROJECT" --label "fold.recovery.nonce=$UP_NONCE" --label "fold.uploads.role=$role"
+    "${mounts[@]}" "$UP_IMAGE" "$sub" --nonce "$UP_NONCE" "$@")
+  if [[ -n "$during" && "${RESTORE_DRILL_FAULT:-}" == "$during" ]]; then
+    # Drill only: let the helper run on its own, then kill this caller while
+    # it is still going.
+    "${cmd[@]}" 9>&- 6>&- >/dev/null 2>&1 &
+    helper=$!
+    end=$((SECONDS+60))
+    until [[ -n "$(docker ps -q --filter "label=fold.recovery.nonce=$UP_NONCE" --filter "label=fold.uploads.role=$role")" ]]; do
+      (( SECONDS < end )) || fail "drill: the $role helper never started"
+      sleep 0.2
+    done
+    # SIGKILL of the caller only, as a real crash is. A command substitution is
+    # left running, waiting on its helper, and must hold neither lock; it must
+    # not start a second helper either.
+    kill -KILL "$$"
+    wait "$helper"
+    return
+  fi
+  "${cmd[@]}" 9>&- 6>&-
+}
+uploads_observe() {
+  local out
+  release_lock_copies
+  out="$(uploads_helper observe '' uploads-observe)" || return 1
+  [[ "$out" == 'observe '* ]] || return 1
+  printf '%s\n' "$out"
+}
+# The labelled helpers of this project, every role.
+uploads_helper_ids() { docker ps -aq --filter "label=fold.project=$PROJECT" --filter label=fold.uploads.role; }
+# Remove every helper this recovery started, and confirm none remain. A helper
+# carrying another nonce is refused and nothing is removed: it may be another
+# recovery's, and removing it could hide a writer.
+reap_uploads_helpers() {
+  local ids id found
+  uploads_on || return 0
+  ids="$(uploads_helper_ids)" || return 1
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    if ! found="$(docker inspect --format '{{index .Config.Labels "fold.recovery.nonce"}}' "$id" 2>/dev/null)"; then
+      [[ -z "$(docker ps -aq --filter "id=$id")" ]] || return 1
+      continue
+    fi
+    [[ "$found" == "$(get .nonce)" ]] || { echo "foreign uploads helper $id nonce=$found; nothing removed or started" >&2; return 1; }
+  done <<<"$ids"
+  while IFS= read -r id; do
+    [[ -z "$id" ]] || docker rm -f "$id" >/dev/null 2>&1 || [[ -z "$(docker ps -aq --filter "id=$id")" ]] || return 1
+  done <<<"$ids"
+  ids="$(uploads_helper_ids)" || return 1
+  [[ -z "$ids" ]]
+}
+uploads_volume_check() {
+  local created
+  created="$(docker volume inspect --format '{{.CreatedAt}}' "$UP_VOLUME")" || return 1
+  [[ "$created" == "$(up_val .volume.createdAt)" ]]
+}
+# Every operation on the folders starts here: owned helpers gone, the volume
+# the one recorded.
+uploads_ready() {
+  uploads_context
+  reap_uploads_helpers || fail 'could not remove the uploads helpers of this recovery, or a foreign helper exists; no folder was observed or changed. Inspect docker ps -a, then use --resume'
+  uploads_volume_check || fail 'the uploads volume is not the one recorded in recovery.lock; no folder was changed'
+}
+uploads_pair_check() {
+  local dump_name stamp
+  dump_name="${DUMP##*/}"
+  [[ "$dump_name" =~ ^fold-([0-9]{8}-[0-9]{4})\.dump$ ]] || fail '--uploads needs the database archive named fold-YYYYMMDD-HHMM.dump; nothing stopped'
+  stamp="${BASH_REMATCH[1]}"
+  [[ "${UPLOADS##*/}" == "uploads-$stamp.tgz" ]] || fail "--uploads must be uploads-$stamp.tgz, the pair of ${dump_name}; nothing stopped"
+  [[ -f "$UPLOADS" && -r "$UPLOADS" && ! -L "$UPLOADS" ]] || fail 'the uploads archive must be a readable regular file; nothing stopped'
+  UPLOADS="$(realpath "$UPLOADS")"
+  [[ "$UPLOADS" =~ ^/[A-Za-z0-9._/@+-]+$ ]] || fail 'the uploads archive path may use only letters, digits and . _ / @ + -; nothing stopped'
+}
+# Everything that can be refused is refused here, before recovery.lock exists
+# and before anything stops. Sets UPLOADS_JSON for the lock.
+uploads_preflight() {
+  local nonce="$1" current="$2" target_image="$3" capability config ref bimage vol_key vol_name created ids id running out live members bytes free
+  if [[ -n "$COMMIT" ]]; then capability="$(commit_restore_uploads "$SOURCE" "$COMMIT")"
+  elif [[ -n "$IMAGE" ]]; then capability="$(image_restore_uploads "$target_image")"
+  else capability="$(image_restore_uploads "$(jq -er .imageId <<<"$current")")"; fi
+  (( capability >= 1 )) || fail 'the release this restore will run cannot settle restored uploads (restoreUploads is below 1). Restore with a release that has fold restore settle-uploads, or restore the database alone; nothing stopped'
+  config="$(dc config --format json)" || fail 'cannot read the Compose configuration; nothing stopped'
+  ref="$(jq -er '.services.backup.image' <<<"$config")" || fail 'an uploads restore needs the deployed backup service, and this Compose defines none; nothing stopped'
+  bimage="$(docker image inspect --format '{{.Id}}' "$ref")" || fail "the backup image $ref is not available locally; deploy it first (nothing is pulled here); nothing stopped"
+  [[ "$bimage" =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'cannot identify the backup image; nothing stopped'
+  vol_key="$(jq -er '[.services.app.volumes[]? | select(.target=="/data" and .type=="volume") | .source][0]' <<<"$config")" || fail 'cannot find the app uploads volume; nothing stopped'
+  vol_name="$(jq -er --arg k "$vol_key" '.volumes[$k].name' <<<"$config")" || fail 'cannot name the app uploads volume; nothing stopped'
+  created="$(docker volume inspect --format '{{.CreatedAt}}' "$vol_name")" || fail 'the uploads volume does not exist yet; nothing stopped'
+  # A running helper with no lock is a killed earlier preflight: refuse. An
+  # exited one is only debris.
+  ids="$(uploads_helper_ids)" || fail 'cannot list uploads helpers; nothing stopped'
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    running="$(docker inspect --format '{{.State.Running}}' "$id")" || fail 'cannot inspect an uploads helper; nothing stopped'
+    [[ "$running" != true ]] || fail 'an uploads helper is still running without a recovery lock (a killed earlier restore). Stop and remove it, then retry; nothing stopped'
+    docker rm -f "$id" >/dev/null || fail 'cannot remove an exited uploads helper; nothing stopped'
+  done <<<"$ids"
+  UP_NONCE="$nonce"; UP_IMAGE="$bimage"; UP_VOLUME="$vol_name"; UP_ARCHIVE="$UPLOADS"
+  out="$(uploads_helper validate '' uploads-validate)" || fail 'the uploads archive failed validation or the uploads volume has too little room; nothing stopped'
+  members="$(kv "$out" members)"; bytes="$(kv "$out" uncompressedBytes)"; free="$(kv "$out" freeBytes)"
+  [[ "$members" =~ ^[0-9]+$ && "$bytes" =~ ^[0-9]+$ && "$free" =~ ^[0-9]+$ ]] || fail 'unreadable validation answer; nothing stopped'
+  out="$(uploads_helper probe '' uploads-exchange --probe)" || fail 'the uploads volume cannot exchange folders atomically; nothing stopped'
+  [[ "$out" == 'probe ok' ]] || fail 'the uploads exchange probe did not succeed; nothing stopped'
+  out="$(uploads_observe)" || fail 'cannot observe the live uploads folder; nothing stopped'
+  live="$(kv "$out" live)"
+  [[ "$live" =~ ^[0-9]+$ ]] || fail 'there is no live uploads folder; nothing stopped'
+  printf 'restore.sh: uploads validated (%s members, %s bytes, %s bytes free); exchange probe ok\n' "$members" "$bytes" "$free"
+  UPLOADS_JSON="$(jq -n --arg archive "$UPLOADS" --arg sha "$(sha256sum "$UPLOADS" | cut -d' ' -f1)" --arg image "$bimage" \
+    --arg volume "$vol_name" --arg created "$created" --arg live "$live" \
+    '{archive:$archive,archiveSha256:$sha,image:$image,volume:{name:$volume,createdAt:$created},liveInode:$live,stagedInode:"",oldInode:"",state:"preflighted"}')"
+}
+# After collection, before the pin: the database is in its own database and the
+# site is closed, so the stage helper may write beside the live folder.
+# shellcheck disable=SC2016 # jq variables, passed with --arg.
+uploads_stage() {
+  uploads_on || return 0
+  local state out obs ino files sha
+  state="$(up_get .state)"
+  case "$state" in preflighted|stage-intent) ;; *) return 0 ;; esac
+  uploads_ready
+  sha=""
+  [[ -f "$UPLOADS" && -r "$UPLOADS" ]] && sha="$(sha256sum "$UPLOADS" | cut -d' ' -f1)"
+  [[ "$sha" == "$(up_get .archiveSha256)" ]] || fail 'staging needs the same uploads archive sha256 recorded in recovery.lock; site stays closed. Use --resume --uploads FILE, or --abort'
+  if [[ "$state" == preflighted ]]; then up_set stage-intent; fi
+  obs="$(uploads_observe)" || fail 'cannot observe the uploads folders; site stays closed. Use --resume'
+  [[ "$(kv "$obs" live)" == "$(up_get .liveInode)" ]] || fail 'the live uploads folder is not the one recorded at preflight; nothing staged. Use --abort'
+  out="$(uploads_helper stage during-uploads-stage uploads-stage)" || fail 'staging the uploads failed; site stays closed, lock kept. Use --resume to retry or --abort'
+  fault_at after-uploads-stage
+  ino="$(kv "$out" inode)"; files="$(kv "$out" files)"
+  [[ "$ino" =~ ^[0-9]+$ && "$files" =~ ^[0-9]+$ ]] || fail 'unreadable staging answer; site stays closed. Use --resume'
+  obs="$(uploads_observe)" || fail 'cannot observe the staged uploads; site stays closed. Use --resume'
+  [[ "$(kv "$obs" complete)" == yes && "$(kv "$obs" staged)" == "$ino" && "$(kv "$obs" live)" == "$(up_get .liveInode)" ]] \
+    || fail 'the staged uploads are not complete or not the recorded folders; site stays closed. Use --resume or --abort'
+  up_set staged '.uploads.stagedInode=$ino | .uploads.stagedFiles=($files|tonumber)' --arg ino "$ino" --arg files "$files"
+}
+# After the database swap, before the recovery instance starts: the staged
+# folder becomes the live one. Both identities are observed before and after;
+# either the unchanged pair or the already-exchanged pair is accepted, the
+# recorded intent says which is possible.
+# shellcheck disable=SC2016 # jq variables, passed with --arg.
+uploads_exchange() {
+  uploads_on || return 0
+  local state live staged obs l s out
+  state="$(up_get .state)"
+  case "$state" in staged|exchange-intent) ;; *) return 0 ;; esac
+  uploads_ready
+  live="$(up_get .liveInode)"; staged="$(up_get .stagedInode)"
+  if [[ "$state" == staged ]]; then up_set exchange-intent; fi
+  obs="$(uploads_observe)" || fail 'cannot observe the uploads folders; private recovery not started. Use --resume'
+  l="$(kv "$obs" live)"; s="$(kv "$obs" staged)"
+  if ! { [[ "$l" == "$live" && "$s" == "$staged" ]] || [[ "$l" == "$staged" && "$s" == "$live" ]]; }; then reconcile_needed uploads; fi
+  out="$(uploads_helper exchange '' uploads-exchange --expect-live "$live" --expect-staged "$staged")" || fail 'the uploads exchange failed; site stays closed, lock kept. Use --resume'
+  fault_at after-uploads-exchange
+  sync
+  obs="$(uploads_observe)" || fail 'cannot observe the uploads folders after the exchange; use --resume'
+  [[ "$(kv "$obs" live)" == "$staged" && "$(kv "$obs" staged)" == "$live" && "$(kv "$obs" exchange)" == "done" ]] || reconcile_needed uploads
+  up_set exchanged '.uploads.oldInode=$old' --arg old "$live"
+}
+# Before the closed site reopens: photos of accounts erased since the backup
+# (and of no account) are removed by the restored release itself, in a one-shot
+# worker-free container that carries the recovery label. Repeating it is safe
+# and needs no archive bytes.
+uploads_settle() {
+  uploads_on || return 0
+  local -a cmd
+  local end id
+  case "$(up_get .state)" in exchanged|old-drop-intent|old-dropped|released) ;; *) fail 'the uploads were not exchanged; nothing reopened. Use --resume' ;; esac
+  pause_at before-settle
+  cmd=(docker compose --project-directory "$DIR" -f "$DIR/docker-compose.yml" -f "$DIR/compose.recovery.yml" --profile recovery)
+  if [[ "${RESTORE_DRILL_FAULT:-}" == during-settle ]]; then
+    FOLD_RECOVERY_IMAGE="$(get .imageId)" FOLD_RECOVERY_NONCE="$(get .nonce)" \
+      "${cmd[@]}" run --rm --no-deps -T recovery restore settle-uploads --json 9>&- 6>&- >/dev/null 2>&1 &
+    end=$((SECONDS+90))
+    until id="$(recovery_ids)" && [[ -n "$id" ]]; do
+      (( SECONDS < end )) || fail 'drill: the settle container never started'
+      sleep 0.2
+    done
+    kill -KILL "$$"
+  fi
+  # The command prints counts only and exits 0 only when nothing remains in an
+  # erased or unowned folder and nothing unexpected sits among the photo
+  # folders. Both are checked here too: a zero exit without clear counts is not
+  # clear.
+  local out rc=0
+  out="$(release_lock_copies; FOLD_RECOVERY_IMAGE="$(get .imageId)" FOLD_RECOVERY_NONCE="$(get .nonce)" \
+    "${cmd[@]}" run --rm --no-deps -T recovery restore settle-uploads --json)" || rc=$?
+  printf '%s\n' "$out"
+  (( rc == 0 )) || return 1
+  jq -e '.remaining == 0 and ((.unexpected // 0) == 0)' <<<"$(tail -n 1 <<<"$out")" >/dev/null || return 1
+  pause_at after-settle
+  remove_recovery || return 1
+}
+# After the reopened site passes smoke: the pre-restore folder goes, under its
+# own recorded intent, then the helper's receipt.
+uploads_cleanup() {
+  uploads_on || return 0
+  local state
+  state="$(up_get .state)"
+  case "$state" in
+    released) return 0 ;;
+    exchanged|old-drop-intent|old-dropped) ;;
+    *) echo 'restore.sh: the uploads were not exchanged; the old folder is not removed' >&2; return 1 ;;
+  esac
+  uploads_context
+  reap_uploads_helpers || return 1
+  uploads_volume_check || return 1
+  if [[ "$state" == exchanged ]]; then up_set old-drop-intent; state='old-drop-intent'; fi
+  if [[ "$state" == old-drop-intent ]]; then
+    uploads_helper drop during-uploads-drop uploads-drop --identity "$(up_get .oldInode)" >/dev/null || return 1
+    fault_at after-uploads-drop
+    up_set old-dropped; state='old-dropped'
+  fi
+  uploads_helper drop '' uploads-drop --release >/dev/null || return 1
+  up_set released
+}
+# An abort before the swap: the staged folder (if any) is removed under its own
+# intent and the original live folder must still be the recorded one.
+# shellcheck disable=SC2016 # jq variables, passed with --arg.
+uploads_abort_cleanup() {
+  uploads_on || return 0
+  local state obs live staged recorded
+  state="$(up_get .state)"
+  [[ "$state" != released ]] || return 0
+  case "$state" in preflighted|stage-intent|staged|staged-drop-intent|staged-dropped) ;; *) echo 'restore.sh: the uploads were already exchanged; abort is not allowed' >&2; return 1 ;; esac
+  uploads_context
+  reap_uploads_helpers || return 1
+  uploads_volume_check || return 1
+  obs="$(uploads_observe)" || return 1
+  [[ "$(kv "$obs" live)" == "$(up_get .liveInode)" && "$(kv "$obs" exchange)" != "done" ]] || { echo 'restore.sh: the live uploads folder is not the recorded original; nothing removed' >&2; return 1; }
+  staged="$(kv "$obs" staged)"; recorded="$(up_val .stagedInode)"
+  if [[ "$state" != staged-dropped ]]; then
+    if [[ "$staged" =~ ^[0-9]+$ ]]; then
+      [[ -z "$recorded" || "$recorded" == "$staged" ]] || { echo 'restore.sh: the staged folder is not the recorded one; nothing removed' >&2; return 1; }
+      if [[ "$state" != staged-drop-intent ]]; then up_set staged-drop-intent '.uploads.stagedInode=$ino' --arg ino "$staged"; fi
+      uploads_helper drop during-uploads-drop uploads-drop --identity "$staged" >/dev/null || return 1
+      fault_at after-uploads-drop
+    elif [[ -n "$recorded" && "$state" == staged-drop-intent ]]; then
+      # Gone under the recorded intent: the helper confirms its own receipt.
+      uploads_helper drop '' uploads-drop --identity "$recorded" >/dev/null || return 1
+    elif [[ -n "$recorded" ]]; then
+      # A recorded stage that is missing with no removal ever intended was not
+      # removed by this recovery: keep the lock and the receipt.
+      echo 'restore.sh: the recorded staged uploads folder is missing and no removal of it was recorded; nothing released. Inspect the uploads volume, then retry' >&2
+      return 1
+    else
+      # Nothing is recorded here, but staging may have finished with its
+      # acknowledgement lost: the helper's receipt is the witness, and it
+      # refuses to release a tree it never saw dropped. Asked before the
+      # state says staged-dropped, so a refusal leaves the abort retryable.
+      uploads_helper drop '' uploads-drop --release >/dev/null \
+        || { echo 'restore.sh: the uploads helper would not release its receipt (a staged folder may have vanished); nothing released. Inspect the uploads volume, then retry' >&2; return 1; }
+    fi
+    up_set staged-dropped
+  fi
+  uploads_helper drop '' uploads-drop --release >/dev/null || return 1
+  up_set released
 }
 
 preflight() {
   local original locale space size dump_size current level=0 floor=0 head="" ports extra app_id deployed deployed_level target_image="" image_before=""
   [[ -r "$DUMP" && -f "$DUMP" ]] || fail 'archive must be a readable regular file'
   DUMP="$(realpath "$DUMP")"
+  [[ -z "$UPLOADS" ]] || uploads_pair_check
   dc exec -T db pg_restore -l <"$DUMP" >/dev/null || fail 'unreadable archive; nothing stopped'
   extra="$(pg postgres -c "SELECT datname FROM pg_database WHERE datname ~ '^fold_(pre_)?restore_[0-9a-f]{16}$'")"
   [[ -z "$extra" ]] || fail "leftover nonce databases: $extra. Inspect pg_database names, oids, sizes and datallowconn; inspect each archive before explicitly dropping a verified abandoned database. Nothing stopped"
@@ -424,6 +837,16 @@ preflight() {
   [[ "$space" =~ ^[0-9]+$ && "$size" =~ ^[0-9]+$ ]] || fail 'cannot measure free database space'
   (( space >= 2*size+10*dump_size )) || fail 'not enough free space; need 2 x live database + 10 x archive; nothing stopped'
   if port_open 18080; then fail '127.0.0.1:18080 is busy; nothing stopped'; fi
+  # A backup service in the deployed Compose must share this directory's locks,
+  # or it could back up straight through the restore. An unreadable
+  # configuration is not the same as no service.
+  local backup_rc=0
+  backup_service_defined "$DIR" || backup_rc=$?
+  case "$backup_rc" in
+    0) backup_coordination_check "$DIR" || exit 1 ;;
+    1) [[ -z "$UPLOADS" ]] || fail 'an uploads restore needs the deployed backup service, and this Compose defines none; nothing stopped' ;;
+    *) fail 'cannot read the Compose configuration to look for the backup service; nothing stopped' ;;
+  esac
   # Read the current floor and deployed identity before a target pull can
   # replace a local tag. A changed registry tag must never lower the floor or
   # be recorded as the image that was actually running before recovery.
@@ -433,8 +856,8 @@ preflight() {
   if [[ -n "$app_id" ]]; then
     [[ "$app_id" != *$'\n'* ]] || fail 'cannot identify one deployed app; nothing stopped'
     deployed="$(docker inspect --format '{{.Image}}' "$app_id")" || fail 'cannot inspect deployed image; nothing stopped'
-    [[ "$deployed" == "$(jq -er .imageId <<<"$current")" ]] || fail "the local pin differs from the deployed image $deployed. Recover that exact pinned image before retrying; nothing stopped"
-    deployed_level="$(image_recovery_level "$deployed")"
+    assert_image "$app_id" "$(jq -er .imageId <<<"$current")" || fail "the local pin differs from the deployed image $deployed. Recover that exact pinned image before retrying; nothing stopped"
+    deployed_level="$(image_recovery_level "$(jq -er .imageId <<<"$current")")"
     (( deployed_level<=floor )) || floor="$deployed_level"
   fi
   if [[ -n "$COMMIT" ]]; then
@@ -493,14 +916,19 @@ preflight() {
     expected="$(jq -n --arg versionLine "$version_line" --arg composeFileLine "$compose_line" --arg imageLine "$image_line" --arg imageId "$target_image" --arg sourceHead "${COMMIT:+$COMMIT}" '{versionLine:$versionLine,composeFileLine:$composeFileLine,imageLine:$imageLine,imageId:$imageId,sourceHead:$sourceHead}')"
   fi
   local nonce
+  # The same value labels the uploads helpers and names the probe, so it exists
+  # before the uploads steps run.
   nonce="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+  UPLOADS_JSON=null
+  if [[ -n "$UPLOADS" ]]; then uploads_preflight "$nonce" "$current" "$target_image"; fi
   STATE="$(jq -n --arg nonce "$nonce" --arg dump "$DUMP" --arg hash "$(sha256sum "$DUMP" | cut -d' ' -f1)" \
     --arg start "$(date -u +%FT%TZ)" --arg orig "$original" --arg source "$SOURCE" --arg head "$head" \
     --arg image "$IMAGE" --arg commit "$COMMIT" --arg imageBefore "$image_before" --argjson level "$level" --argjson previous "$current" \
-    --argjson locale "$locale" --argjson ports "$ports" --argjson expected "$expected" \
-    '{format:1,nonce:$nonce,dump:$dump,dumpHash:$hash,start:$start,source:$source,sourceHead:$head,
+    --argjson locale "$locale" --argjson ports "$ports" --argjson expected "$expected" --argjson uploads "$UPLOADS_JSON" \
+    '{format:(if $uploads==null then 1 else 2 end),nonce:$nonce,dump:$dump,dumpHash:$hash,start:$start,source:$source,sourceHead:$head,
       origOid:$orig,restoreOid:"",previous:$previous,target:null,pinExpected:$expected,image:$image,commit:$commit,imageBeforePull:$imageBefore,
-      imageId:$previous.imageId,level:$level,locale:$locale,publicPorts:$ports,count:"unknown",cleanup:"none",phase:"quiesce",at:"",history:[] }')"
+      imageId:$previous.imageId,level:$level,locale:$locale,publicPorts:$ports,count:"unknown",cleanup:"none",phase:"quiesce",at:"",history:[] }
+     + (if $uploads==null then {} else {uploads:$uploads} end)')"
   R="fold_restore_${nonce:0:16}"; P="fold_pre_restore_${nonce:0:16}"
   [[ -z "$STAGED_TOOLS" ]] || publish_tools
   store exclusive
@@ -541,28 +969,93 @@ collect_failed() {
   record collect-failed
   fail 'archive restore failed; original database untouched; services stopped. Run --abort to reopen the original or --resume to retry'
 }
+# recovery-deleted.txt (owner decision Q5, inventory 11): one "<id> <time>" line per
+# account that is deleted in the live database and active in the archive, root-only.
+# The time is the newest user.deleted audit row, for display; it never selects an id.
+# No names, addresses or audit metadata are written. The caller holds the operations lock.
+# Also removes a temp file a kill left between its write and the rename; it holds ids and times.
+deleted_list_drop() { rm -f -- "$DIR/recovery-deleted.txt" "$DIR"/.recovery-deleted.* && sync -f "$DIR"; }
+deleted_list_write() {
+  local tmp
+  tmp="$(mktemp "$DIR/.recovery-deleted.XXXXXX")" || return 1
+  if ! { printf '%s\n' "$1" >"$tmp" && chmod 600 "$tmp" && chown 0:0 "$tmp" && sync -f "$tmp" && fault_at before-list-rename \
+    && mv -f "$tmp" "$DIR/recovery-deleted.txt" && sync -f "$DIR"; }; then
+    rm -f "$tmp"; return 1
+  fi
+}
+# Times come from the quiesced live database after the ids are fixed; a failed
+# read only makes a time "unknown".
+deleted_list_times() {
+  local sql
+  sql="$(cat <<'SQL'
+COPY (SELECT l.id, COALESCE(to_char(max(a.at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), 'unknown')
+  FROM listed l LEFT JOIN audit_logs a ON a.action = 'user.deleted' AND a.target_type = 'user' AND a.target_id = l.id
+  GROUP BY l.id ORDER BY l.id) TO STDOUT;
+SQL
+)"
+  {
+    printf 'BEGIN;\nCREATE TEMP TABLE listed(id bigint PRIMARY KEY);\nCOPY listed FROM STDIN;\n%s\n\\.\n%s\nCOMMIT;\n' "$1" "$sql"
+  } | pg fold -q
+}
+deleted_list_rows() {
+  # shellcheck disable=SC2016 # awk program.
+  awk -F'\t' 'NR==FNR { if ($2 ~ /^[0-9-]+T[0-9:]+Z$/) t[$1]=$2; next } { print $1 " " (($1 in t) ? t[$1] : "unknown") }' \
+    <(printf '%s\n' "$2") <(printf '%s\n' "$1")
+}
+# Sets LISTED to the ids when the file is the one the lock hashed at collection.
+deleted_list_load() {
+  local hash file
+  hash="$(jq -r '.deletedList.sha256 // empty' <<<"$STATE")"
+  file="$DIR/recovery-deleted.txt"
+  [[ -n "$hash" && -f "$file" && ! -L "$file" && "$(stat -c '%u:%a' "$file")" == 0:600 \
+    && "$(sha256sum "$file" | cut -d' ' -f1)" == "$hash" ]] || return 1
+  LISTED="$(awk '{print $1}' "$file")"
+  [[ -n "$LISTED" ]] && ! grep -Evq '^[0-9]+$' <<<"$LISTED" \
+    && [[ "$(grep -c '' <<<"$LISTED")" == "$(jq -r '.deletedList.count' <<<"$STATE")" ]]
+}
+# Prints how many listed ids are still active in the current fold database.
+deleted_list_remaining() {
+  printf 'BEGIN;\nCREATE TEMP TABLE listed(id bigint PRIMARY KEY);\nCOPY listed FROM STDIN;\n%s\n\\.\nSELECT count(*) FROM users u JOIN listed l USING(id) WHERE u.deleted_at IS NULL;\nCOMMIT;\n' "$LISTED" | pg fold -q
+}
 collect() {
-  local count
+  local count=unknown ids="" times="" hash
   # A killed docker exec client can leave pg_restore or the count COPY alive
   # in Postgres. Never restore into or drop R while that backend still owns it.
   wait_clients "datname IN ('fold','$R')" || fail 'restore database clients have not drained; phase kept, no restore or drop sent. Wait, then --resume'
+  # A retry never keeps a file from an earlier attempt or an earlier recovery.
+  deleted_list_drop || fail 'could not remove an old recovery-deleted.txt; phase kept, nothing restored. Wait, then --resume'
   if ! dc exec -T db pg_restore -U church -d "$R" --no-owner --no-acl --single-transaction --exit-on-error <"$DUMP"; then collect_failed; fi
   # Fold's user deletion is soft deletion (apiAdminDeleteUser tx.Delete(u),
   # User embeds gorm.DeletedAt). No production path hard-deletes users.
-  # One stream, no ids on disk. Selection never uses audit timestamp.
-  count=unknown
+  # One stream; the live read is one statement, so one snapshot. Selection
+  # never uses audit timestamp.
   if [[ -n "$(get .origOid)" ]]; then
-    if ! count="$(
+    if ids="$(
       set -o pipefail
       {
         printf 'BEGIN;\nCREATE TEMP TABLE erased_ids(id bigint PRIMARY KEY);\nCOPY erased_ids FROM STDIN;\n'
         pg fold -c 'COPY (SELECT id FROM users WHERE deleted_at IS NOT NULL) TO STDOUT' || exit 1
-        printf '\\.\nSELECT count(*) FROM users u JOIN erased_ids e USING(id) WHERE u.deleted_at IS NULL;\nCOMMIT;\n'
+        printf '\\.\nCOPY (SELECT u.id FROM users u JOIN erased_ids e USING(id) WHERE u.deleted_at IS NULL ORDER BY u.id) TO STDOUT;\nCOMMIT;\n'
       } | pg "$R" -q
-    )"; then count=unknown; fi
+    )"; then
+      if [[ -z "$ids" ]]; then count=0
+      elif ! grep -Evq '^[0-9]+$' <<<"$ids"; then count="$(grep -c '' <<<"$ids")"
+      fi
+    fi
   fi
   [[ "$count" == unknown || "$count" =~ ^[0-9]+$ ]] || count=unknown
-  STATE="$(jq --arg count "$count" '.count=$count' <<<"$STATE")"
+  STATE="$(jq --arg count "$count" '.count=$count | .deletedList=null' <<<"$STATE")"
+  # An unknown or zero count writes no file. The hash is in the lock before collected.
+  if [[ "$count" != unknown && "$count" != 0 ]]; then
+    times="$(deleted_list_times "$ids" 2>/dev/null)" || times=""
+    if deleted_list_write "$(deleted_list_rows "$ids" "$times")"; then
+      hash="$(sha256sum "$DIR/recovery-deleted.txt" | cut -d' ' -f1)"
+      STATE="$(jq --arg hash "$hash" --argjson n "$count" '.deletedList={sha256:$hash,count:$n}' <<<"$STATE")"
+    else
+      rm -f "$DIR"/.recovery-deleted.* "$DIR/recovery-deleted.txt"
+      echo 'restore.sh: could not write recovery-deleted.txt; the count still requires --checked-church-records' >&2
+    fi
+  fi
   record collected
 }
 pin() {
@@ -644,9 +1137,6 @@ health() {
   done
   return 1
 }
-assert_image() {
-  [[ "$(docker inspect --format '{{.Image}}' "$1")" == "$2" ]]
-}
 recovery_start() {
   local ids id count=0 reuse="" image nonce
   normal_stopped || fail 'service exclusion: app and caddy must be stopped; nothing started'
@@ -685,6 +1175,19 @@ recovery_start() {
   record recovering
   pause_at recovering
   printf 'Accounts this archive would revive: %s\n' "$(get .count)"
+  if [[ -n "$(jq -r '.deletedList.count // empty' <<<"$STATE")" ]]; then
+    cat <<HELP
+Checklist:
+  1. Open a private tunnel: ssh -N -L 18080:127.0.0.1:18080 <admin>@<droplet>
+  2. Open http://localhost:18080 in Chrome or Firefox and sign in as admin.
+  3. Delete again each account in $DIR/recovery-deleted.txt (root-only: one id and
+     the time it was last deleted per line, no names). Check the church's records too.
+  4. $DIR/restore.sh --status shows how many listed accounts are still active.
+  5. Run $DIR/restore.sh --reopen --checked-church-records; it refuses while any
+     listed account is still active, and keeps the file until the site reopens.
+HELP
+    return
+  fi
   cat <<HELP
 Open a private tunnel: ssh -N -L 18080:127.0.0.1:18080 <admin>@<droplet>
 Open http://localhost:18080 in Chrome or Firefox, sign in as admin, and delete
@@ -715,7 +1218,7 @@ write_app_pin() {
   tmp="$(mktemp "$DIR/.recovery-app-pin.XXXXXX")" || return 1
   # shellcheck disable=SC2016 # Compose resolves this explicit image-id override.
   if ! { printf 'services:\n  app:\n    image: ${FOLD_RECOVERY_IMAGE:?}\n    pull_policy: never\n' >"$tmp" \
-    && chmod 600 "$tmp" && chown 0:0 "$tmp" && sync -f "$tmp" \
+    && chmod 600 "$tmp" && chown 0:0 "$tmp" && sync -f "$tmp" && fault_at before-list-rename \
     && mv -f "$tmp" "$DIR/.recovery-app-pin.yml" && sync -f "$DIR"; }; then
     rm -f "$tmp"; return 1
   fi
@@ -734,6 +1237,13 @@ finish_reopen() {
   write_app_pin
   record reopen-intent
   remove_recovery || reopen_failed
+  # Nothing public runs here: app and caddy are stopped and the recovery
+  # instance is gone. A failure keeps the site closed and --resume returns to
+  # private recovery.
+  if uploads_on; then
+    uploads_settle || reopen_failed
+    remove_recovery || reopen_failed
+  fi
   record app-start-intent
   start_normal "$(get .imageId)" || reopen_failed
   fault_at after-app-start
@@ -769,6 +1279,16 @@ resume_cleanup() {
   finish_cleanup
 }
 
+# Arm the one scheduler the deployed (possibly pinned) Compose calls for, after
+# the site has passed smoke and its cleanup, while recovery.lock still exists. A
+# backup never works under that lock, so arming early cannot race the restore.
+scheduler_arm() {
+  fault_at before-scheduler
+  backup_scheduler_select recovery "$DIR" || return 1
+  STATE="$(jq --arg now "$(date -u +%FT%TZ)" '.scheduler={state:"armed",time:$now} | .history += [{phase:.phase,scheduler:"armed",time:$now,cleanup:.cleanup}]' <<<"$STATE")"
+  store
+  fault_at after-scheduler
+}
 finish_cleanup() {
   local cleanup
   cleanup="$(get .cleanup)"
@@ -782,11 +1302,21 @@ finish_cleanup() {
     fault_at after-drop
     STATE="$(jq '.cleanup="dropped"' <<<"$STATE")"; record pre-dropped
   fi
+  # The pre-restore uploads folder goes after the pre-restore database, under
+  # its own recorded intent. A failure keeps the lock and retries from here.
+  if ! uploads_cleanup; then record cleanup-failed uploads; fail 'cleanup-failed at uploads; site open, lock kept. Use --resume'; fi
   if ! write_recovery_floor "$DIR" "$(get .level)"; then record cleanup-failed floor; fail 'cleanup-failed at floor; site open, lock kept. Use --resume'; fi
   record floor-written
   fault_at after-floor
   remove_stale_pin_saves "$DIR" || fail 'cannot remove stale pin snapshots; keep the lock and retry --resume'
+  # The site is open and every gate has passed. A scheduler that cannot be armed
+  # keeps the lock, and --resume repeats this step.
+  if ! scheduler_arm; then record cleanup-failed scheduler; fail 'cleanup-failed at scheduler; site open, lock kept. Use --resume'; fi
   remove_lock
+  fault_at after-lock-remove
+  # Only now: a failed reopen, --resume and --status all still need the list.
+  # A kill before this line leaves an orphan, which the next collect removes.
+  deleted_list_drop || echo 'restore.sh: recovery lock removed, but recovery-deleted.txt could not be; delete it by hand' >&2
   echo 'restore.sh: reopened; recovery lock removed after smoke, database cleanup and monotone floor write'
 }
 abort_failed() {
@@ -829,6 +1359,10 @@ abort_continue() {
     fault_at after-abort-drop
     record abort-dropped
   fi
+  # Before the original site reopens, no owned helper may run and only the
+  # recorded staging folder goes. The live uploads were never replaced here:
+  # an abort is refused once the database has been swapped.
+  uploads_abort_cleanup || abort_failed uploads
   remove_recovery || abort_failed start
   write_app_pin
   record abort-start-intent
@@ -838,7 +1372,11 @@ abort_continue() {
   record abort-smoke-intent
   smoke || abort_failed smoke
   remove_stale_pin_saves "$DIR" || fail 'cannot remove stale pin snapshots; keep the lock and retry --abort'
+  # The original site is open and smoke passed. The phase stays abort-smoke-intent
+  # on failure, so --abort repeats the service checks and this step.
+  if ! scheduler_arm; then fail 'the backup scheduler could not be armed; the original site is open and the lock is kept. Use --abort to retry'; fi
   remove_lock
+  fault_at after-lock-remove
   echo 'restore.sh: abort complete; original database and release reopened'
 }
 resume() {
@@ -873,14 +1411,15 @@ resume() {
         drop_exact "$R" "$roid" || fail 'unrecorded create cleanup failed; use --resume'
         record collect-failed
       fi
-      create_database; collect; pin; swap ;;
-    created) collect; pin; swap ;;
+      create_database; collect; uploads_stage; pin; swap ;;
+    created) collect; uploads_stage; pin; swap ;;
     collect-drop-intent)
       if [[ "$CLASS" == B ]]; then drop_exact "$R" "$(get .restoreOid)" || fail 'restore database drop unconfirmed; use --resume'; fi
       record collect-failed
-      create_database; collect; pin; swap ;;
-    collect-failed) create_database; collect; pin; swap ;;
+      create_database; collect; uploads_stage; pin; swap ;;
+    collect-failed) create_database; collect; uploads_stage; pin; swap ;;
     collected|pin-intent|pin-failed|pinned|swap-failed)
+      uploads_stage
       if [[ "$RELEASE" == target ]]; then
         [[ "$(image_recovery_level "$(jq -er .imageId <<<"$OBSERVED_RELEASE")")" == "$(get .level)" ]] || fail 'observed target image level changed'
         floor="$(host_recovery_floor "$DIR")" || fail 'cannot observe recovery floor'
@@ -901,6 +1440,7 @@ resume() {
   esac
   cleanup="$(get .cleanup)"
   if [[ "$cleanup" == drop-intent && "$CLASS" == C ]]; then STATE="$(jq '.cleanup="dropped"' <<<"$STATE")"; store; fi
+  uploads_exchange
   recovery_start
 }
 
@@ -910,9 +1450,13 @@ if (( DRY )); then
   if [[ -n "$COMMIT" ]]; then dry_run_recovery_check "$DIR" build "$SOURCE" "$COMMIT"; fi
   if [[ "$MODE" == dump ]]; then
     [[ -n "$DUMP" ]] || fail '--dump FILE is required'
-    echo 'dry-run: durable quiesce -> create-intent -> single-transaction pg_restore to fold_restore_<nonce> -> snapshot-safe deleted-id pipe and count -> optional nonce-scoped pin-only -> whole database swap -> labelled restart-no recovery with FOLD_WORKERS=0'
+    echo 'dry-run: durable quiesce -> create-intent -> single-transaction pg_restore to fold_restore_<nonce> -> snapshot-safe deleted-id pipe, count and (for a nonzero count) a root-only recovery-deleted.txt hashed in recovery.lock -> optional nonce-scoped pin-only -> whole database swap -> labelled restart-no recovery with FOLD_WORKERS=0'
   else echo 'dry-run: observe recovery.lock, database names/oids, release values and labelled services before choosing any action'; fi
-  echo 'dry-run: --reopen requires recovering and, for nonzero or unknown count, --checked-church-records; smoke, exact-oid old database drop, monotone floor, lock removed last'
+  if [[ -n "$UPLOADS" ]]; then
+    echo 'dry-run: --uploads: validate the archive read-only and probe an atomic folder exchange before recovery.lock (format 2); stage beside the live folder after collection with the site closed; exchange after the database swap; settle (erased and unowned photos removed) before reopen; drop the old folder after smoke'
+  else echo 'dry-run: no --uploads: recovery.lock stays format 1 and the uploads folder is never touched'; fi
+  echo 'dry-run: the backup service stops while closed; once reopened or aborted and smoke passed, the scheduler (backup service, or the guarded host cron) is armed before recovery.lock is removed'
+  echo 'dry-run: --reopen requires recovering, refuses while a listed recovery-deleted.txt account is active and, for nonzero or unknown count, --checked-church-records; smoke, exact-oid old database drop, monotone floor, lock removed last'
   exit 0
 fi
 if [[ "$MODE" == dump ]]; then
@@ -940,7 +1484,7 @@ if [[ "$MODE" == dump ]]; then
   [[ -n "$DUMP" ]] || fail '--dump FILE is required'
   preflight
   close_site || exit 1
-  create_database; collect; pin; swap; recovery_start
+  create_database; collect; uploads_stage; pin; swap; uploads_exchange; recovery_start
   if (( REOPEN_NONE )); then
     if [[ "$(get .count)" == 0 ]]; then finish_reopen
     else
@@ -975,6 +1519,14 @@ if [[ "$MODE" == resume ]]; then
     quiesce|create-intent|created|collect-drop-intent|collect-failed)
       [[ -f "$DUMP" && -r "$DUMP" && "$(sha256sum "$DUMP" | cut -d' ' -f1)" == "$(get .dumpHash)" ]] || fail 'resume requires the same archive sha256 recorded in recovery.lock' ;;
   esac
+  # Until the uploads are staged they need their archive's bytes; once staged,
+  # nothing does, so a later resume works after the archive is gone.
+  if uploads_on; then
+    case "$(up_get .state)" in
+      preflighted|stage-intent)
+        [[ -f "$UPLOADS" && -r "$UPLOADS" && "$(sha256sum "$UPLOADS" | cut -d' ' -f1)" == "$(up_get .archiveSha256)" ]] || fail 'resume requires the same uploads archive sha256 recorded in recovery.lock' ;;
+    esac
+  fi
   resume
 elif [[ "$MODE" == abort ]]; then
   case "$(get .phase)" in
@@ -987,6 +1539,7 @@ elif [[ "$MODE" == reopen ]]; then
   [[ "$(get .phase)" == recovering ]] || fail '--reopen requires recovering; interrupted reopens must use --resume first'
   echo "Accounts this archive would revive: $(get .count)"
   [[ "$(get .count)" == 0 || "$CHECKED" == 1 ]] || fail 'nonzero or unknown count requires --checked-church-records after repeating all post-backup erasures'
+  deleted_list_gate
   normal_stopped || fail 'service exclusion: normal services running; use --resume to close first'
   finish_reopen
 fi

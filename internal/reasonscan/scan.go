@@ -32,7 +32,6 @@ type Row struct {
 type Rows interface {
 	// Next advances to the next row; false at the end or on an error.
 	Next() bool
-	// Scan returns the current row.
 	Scan() (Row, error)
 	// Err is the error that ended iteration, if any.
 	Err() error

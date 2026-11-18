@@ -150,6 +150,8 @@ export interface Notification {
   read: boolean;
   archived: boolean;
   waiting: boolean;
+  /** Who the row is about when they are a teen or a child; never set on their own bell. */
+  subjectKind?: "teen" | "child";
   resolution?: NotificationResolution;
 }
 
@@ -1570,6 +1572,18 @@ export interface AdminJobsResponse {
   deliveries: AdminDeliverySummary;
 }
 
+// GET /admin/backup (M5.2). A field the state or the files cannot vouch for
+// is null, never zero.
+export interface AdminBackupStatus {
+  state: "unwatched" | "missing" | "unreadable" | "stale" | "ok";
+  lastOkAt: string | null;
+  dumpBytes: number | null;
+  uploadsBytes: number | null;
+  offsite: "off" | "uploaded" | null;
+  lastFailedAt: string | null;
+  lastFailedStep: "config" | "uploads" | "dump" | "expire" | "encrypt" | "upload" | null;
+}
+
 export interface AdminRoomsResponse {
   rooms: Room[];
   needApproval: boolean;
@@ -1841,6 +1855,11 @@ export interface InvitationResponse {
 
 export interface CoverUploadResponse {
   imageUrl: string;
+}
+
+export interface MessageImageResponse {
+  key: string;
+  url: string;
 }
 
 export interface AvatarUploadResponse {

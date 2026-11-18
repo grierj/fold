@@ -112,7 +112,7 @@ func notifyOccurrences(tx *gorm.DB, actor uint, occIDs []uint, kind string) erro
 
 // notifyRegistrationCancelled tells someone who can no longer see an event
 // that their registrations were cancelled. It names neither the group nor
-// the place and links nowhere private (PR #41). ev.Title is the title the
+// the place and links nowhere private. ev.Title is the title the
 // person knew the cancelled dates by, a date's own title included. date is
 // the calendar day of the one date cancelled, or "" for a series change: it is
 // joined to the title the person sees, and kept out of the plain title stored

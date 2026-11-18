@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -20,11 +21,21 @@ import (
 const (
 	KindAvatars = "avatars"
 	KindCovers  = "covers"
+	// KindMessages holds the pictures in one announcement; the owner is the
+	// message id and a name is "<32 hex>.<jpg|png|gif>" (messageImageName).
+	KindMessages = "messages"
 )
+
+// messageImageName is the one shape of file name a message folder holds.
+var messageImageName = regexp.MustCompile(`^[0-9a-f]{32}\.(jpg|png|gif)$`)
 
 // CleanBatch is the most entries one CleanOwner call looks at. Every Store
 // implementation shares it, so callers can rely on one number.
 const CleanBatch = 256
+
+// PruneLimit is the most entries one PruneOwner call looks at. A message has
+// no picture count limit (Grier, Nov 14 2026), so this only bounds memory.
+const PruneLimit = 10000
 
 // Fixed-text errors. Every Store method returns one of these values itself
 // (or a context error, or an error from a caller's own callback), never a
@@ -62,6 +73,15 @@ func AvatarOwner(id uint) (Owner, error) {
 		return Owner{}, ErrInvalidOwner
 	}
 	return Owner{kind: KindAvatars, id: uint64(id)}, nil
+}
+
+// MessageOwner returns the owner for a message's picture folder. Id 0 is
+// refused.
+func MessageOwner(id uint) (Owner, error) {
+	if id == 0 {
+		return Owner{}, ErrInvalidOwner
+	}
+	return Owner{kind: KindMessages, id: uint64(id)}, nil
 }
 
 // OwnerEntries is what ScanOwners reports for one owner folder. Keys lists
@@ -122,6 +142,14 @@ type Store interface {
 	// keep key is the caller's job: the store keeps exactly the key it is
 	// given and knows nothing about account status.
 	CleanOwner(ctx context.Context, owner Owner, keep string) error
+	// PruneOwner removes a message owner's objects whose exact key is not in
+	// keep, looking at most PruneLimit entries per call, and returns
+	// ErrMoreRemain when more may remain. It rejects any owner that is not a
+	// message owner with ErrInvalidOwner. Nothing in keep outside the owner's
+	// namespace is touched. A missing namespace is success, and so is an empty
+	// keep, which also removes the owner's folder. When ctx ends it stops before
+	// the next removal and returns ctx.Err().
+	PruneOwner(ctx context.Context, owner Owner, keep map[string]bool) error
 	// ScanOwners streams the owners of one kind (only KindAvatars) once per
 	// canonical numeric owner name, and lists at most maxNames (1 to 1000)
 	// entries for each. A non-nil error from fn stops the scan and is
@@ -131,7 +159,7 @@ type Store interface {
 }
 
 // NewKey builds a namespaced storage key: "<kind>/<owner>/<id>.<ext>".
-// kind is KindAvatars or KindCovers. The id is a random hex string so keys
+// kind is KindAvatars, KindCovers or KindMessages. The id is a random hex string so keys
 // are unguessable.
 func NewKey(kind, owner, id, ext string) string {
 	return fmt.Sprintf("%s/%s/%s.%s", kind, owner, id, ext)
@@ -180,7 +208,7 @@ func ParseKey(key string) (kind string, owner uint64, name string, err error) {
 	if len(parts) != 3 {
 		return "", 0, "", ErrInvalidKey
 	}
-	if parts[0] != KindAvatars && parts[0] != KindCovers {
+	if parts[0] != KindAvatars && parts[0] != KindCovers && parts[0] != KindMessages {
 		return "", 0, "", ErrInvalidKey
 	}
 	id, ok := parseOwnerName(parts[1])
@@ -189,6 +217,9 @@ func ParseKey(key string) (kind string, owner uint64, name string, err error) {
 	}
 	n := parts[2]
 	if n == "" || len(n) > 255 || n[0] == '.' || strings.ContainsAny(n, "/\\") {
+		return "", 0, "", ErrInvalidKey
+	}
+	if parts[0] == KindMessages && !messageImageName.MatchString(n) {
 		return "", 0, "", ErrInvalidKey
 	}
 	return parts[0], id, n, nil
@@ -520,10 +551,6 @@ func (s *LocalStore) Open(key string) (*os.File, error) {
 
 // CleanOwner removes the avatar owner's files except the exact keep key, at
 // most CleanBatch entries per call. See Store.CleanOwner for the contract.
-//
-// Nothing is recursive: a real directory inside the owner folder is left
-// untouched and reported as ErrUnexpectedEntry; anything else (files, temp
-// remnants, symlinks, FIFOs) is unlinked without following it.
 func (s *LocalStore) CleanOwner(ctx context.Context, owner Owner, keep string) error {
 	if owner.kind != KindAvatars || owner.id == 0 {
 		return ErrInvalidOwner
@@ -534,6 +561,28 @@ func (s *LocalStore) CleanOwner(ctx context.Context, owner Owner, keep string) e
 			keepName = n
 		}
 	}
+	return s.cleanOwner(ctx, owner, CleanBatch, func(name string) bool { return keepName != "" && name == keepName }, keepName != "")
+}
+
+// PruneOwner removes a message owner's files whose key is not in keep, up to
+// PruneLimit entries per call. See Store.PruneOwner for the contract.
+func (s *LocalStore) PruneOwner(ctx context.Context, owner Owner, keep map[string]bool) error {
+	if owner.kind != KindMessages || owner.id == 0 {
+		return ErrInvalidOwner
+	}
+	prefix := KindMessages + "/" + strconv.FormatUint(owner.id, 10) + "/"
+	return s.cleanOwner(ctx, owner, PruneLimit, func(name string) bool { return keep[prefix+name] }, false)
+}
+
+// cleanOwner is the one removal loop behind CleanOwner and PruneOwner. kept
+// says which names stay; keepFolder keeps the (possibly empty) owner folder
+// even when nothing is kept. The folder is removed only when it ends up empty
+// and the call examined every entry.
+//
+// Nothing is recursive: a real directory inside the owner folder is left
+// untouched and reported as ErrUnexpectedEntry; anything else (files, temp
+// remnants, symlinks, FIFOs) is unlinked without following it.
+func (s *LocalStore) cleanOwner(ctx context.Context, owner Owner, limit int, kept func(name string) bool, keepFolder bool) error {
 	root, err := os.OpenRoot(s.Dir)
 	if err != nil {
 		return ErrCleanupIncomplete
@@ -556,7 +605,7 @@ func (s *LocalStore) CleanOwner(ctx context.Context, owner Owner, keep string) e
 	if err != nil {
 		return ErrCleanupIncomplete
 	}
-	entries, more, err := readDirUpTo(dir, CleanBatch)
+	entries, more, err := readDirUpTo(dir, limit)
 	dir.Close()
 	if err != nil {
 		return ErrCleanupIncomplete
@@ -568,7 +617,8 @@ func (s *LocalStore) CleanOwner(ctx context.Context, owner Owner, keep string) e
 			return err
 		}
 		name := e.Name()
-		if keepName != "" && name == keepName {
+		if kept(name) {
+			keepFolder = true
 			continue
 		}
 		// Never trust the DirEntry type bits: they can be unknown.
@@ -594,7 +644,7 @@ func (s *LocalStore) CleanOwner(ctx context.Context, owner Owner, keep string) e
 		return ErrCleanupIncomplete
 	case more:
 		return ErrMoreRemain
-	case keepName != "":
+	case keepFolder:
 		return nil
 	}
 	if err := ctx.Err(); err != nil {
