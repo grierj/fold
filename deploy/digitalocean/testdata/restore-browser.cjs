@@ -6,7 +6,7 @@ const path = require('node:path');
 process.umask(0o077);
 // Wording the panel (web/src/components/DeleteUserPanel.tsx) shows. A copy
 // change must update these deliberately; the drill never matches on loose text.
-const REACH_LEAD = 'Some traces can remain after a delete, so you know what to expect:';
+const REACH_LEAD = "A delete doesn't reach everything. Here is what can remain, so you know what to expect:";
 const APPLIED = 'The account was deleted.';
 const ERASURE_KEYS = ['householdsKept', 'householdsScrubbed', 'peopleAnonymized', 'guardianLinksRevoked', 'activityEntriesKept'];
 
@@ -73,7 +73,7 @@ async function runPrivateBrowser(options) {
     // The panel states what a delete does not reach before the press, and the
     // 390px screenshot is taken with that text on screen.
     await row.getByText(REACH_LEAD, { exact: true }).waitFor({ state: 'visible' });
-    for (const label of ['Backups.', 'Email and notifications.', 'Activity log.']) await row.getByText(label, { exact: true }).waitFor({ state: 'visible' });
+    for (const label of ['Backups.', 'Email, notifications and logs.', 'Activity log.']) await row.getByText(label, { exact: true }).waitFor({ state: 'visible' });
     await page.screenshot({ path: screenshot, fullPage: true });
     stage = 'delete';
     // One real press: the panel mints an attempt id, then sends the DELETE with
@@ -128,7 +128,7 @@ async function runPrivateBrowser(options) {
 module.exports = { runPrivateBrowser };
 if (require.main === module) {
   const pw = createRequire(process.env.RESTORE_WEB_PACKAGE)('playwright');
-  // A disposable runner names its own Chromium (QC1_CHROMIUM) and sets the sandbox switches it needs; the launch rules live in qc1/browser-launch.cjs, which
+  // A prepared disposable host names its Chromium (QC1_CHROMIUM) and sets the sandbox switches it needs; the launch rules live in qc1/browser-launch.cjs, which
   // restore-drill.sh points RESTORE_BROWSER_LAUNCH at (this file is copied out of the repository). Without them the launch is exactly { headless: true }.
   const launchOptions = process.env.RESTORE_BROWSER_LAUNCH && process.env.QC1_CHROMIUM && process.env.RESTORE_BROWSER !== 'firefox' ? require(process.env.RESTORE_BROWSER_LAUNCH).restoreLaunchOptions(process.env) : { headless: true };
   runPrivateBrowser({ engine: process.env.RESTORE_BROWSER === 'firefox' ? pw.firefox : pw.chromium, targetId: Number(process.env.RESTORE_TARGET_ID), artifacts: process.env.RESTORE_BROWSER_ARTIFACTS, screenshot: process.env.RESTORE_SCREENSHOT, cookieProof: process.env.RESTORE_BROWSER_PROOF, launchOptions }).catch(error => { console.error(error); process.exitCode = 1; });

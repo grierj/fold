@@ -35,7 +35,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// restoreFenceFloor is the floor, for tests.
 func (a *App) restoreFenceFloor() int64 { return a.fence.floor.Load() }
 
 // fenceTurnWaiters is how many callers wait for the fence turn: a test seam.
@@ -73,6 +72,45 @@ func TestRecoveryPolicyFileMatchesConstant(t *testing.T) {
 		}
 	}
 	if recoveryPolicyMismatch("2\n", 2) != nil || recoveryPolicyMismatch(" 2 \n", 2) != nil {
+		t.Error("the mismatch check refused a file that equals the constant")
+	}
+}
+
+// deploy/restore-uploads holds the integer `fold version --json` reports as
+// restoreUploads; restore.sh refuses to bring uploads into a target without it.
+func restoreUploadsMismatch(file string, level int) error {
+	got, err := strconv.Atoi(strings.TrimSpace(file))
+	if err != nil {
+		return fmt.Errorf("deploy/restore-uploads holds %q, want an integer: %w", file, err)
+	}
+	if got != level {
+		return fmt.Errorf("deploy/restore-uploads holds %d but restoreUploadsLevel is %d: change both together", got, level)
+	}
+	return nil
+}
+
+func TestRestoreUploadsFileMatchesConstant(t *testing.T) {
+	b, err := os.ReadFile("deploy/restore-uploads")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreUploadsMismatch(string(b), restoreUploadsLevel); err != nil {
+		t.Error(err)
+	}
+	if string(b) != "1\n" || restoreUploadsLevel != 1 {
+		t.Errorf("deploy/restore-uploads = %q and level %d, want a one-line 1 for both", b, restoreUploadsLevel)
+	}
+	for _, tc := range []struct {
+		file  string
+		level int
+	}{
+		{"0\n", 1}, {"1\n", 2}, {"2\n", 1}, {"one", 1}, {"", 1}, {"1.0\n", 1},
+	} {
+		if restoreUploadsMismatch(tc.file, tc.level) == nil {
+			t.Errorf("the mismatch check accepted file %q with level %d", tc.file, tc.level)
+		}
+	}
+	if restoreUploadsMismatch("1\n", 1) != nil || restoreUploadsMismatch(" 1 \n", 1) != nil {
 		t.Error("the mismatch check refused a file that equals the constant")
 	}
 }

@@ -31,7 +31,10 @@ SaaS operator) must be able to run it with `docker compose up`. The shipped arti
 - **PostgreSQL only**, everywhere: production, development, tests (`DATABASE_URL`, DEC-1, DEC-24).
   Use Postgres features freely. `CGO_ENABLED=0`; keep it that way.
 - Schema: versioned **goose** SQL files in `migrations/`, embedded in the binary and run on start
-  under an advisory lock. They are the source of truth; GORM models must match them.
+  under an advisory lock. They are the source of truth; GORM models must match them. The chain is
+  the baseline plus numbered files; `v0.1.0` is tagged, so the DEC-138 baseline-edit window is closed and
+  a file a tagged release holds is never edited. `00008` is the first contract file: `suppressions` stores
+  `address_hash` and no address (PLAN 10.1).
 - **React + Vite + Tailwind** SPA in `web/` (Node major in `.nvmrc`); `web/dist/` is embedded into
   the binary. Release runs `npm run build` before `go build`.
 
@@ -79,11 +82,13 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
 
 Each line names the one place a rule is decided. Use it; never write a second copy.
 
-**Comments** say why: the constraint, the decision behind it (`DEC-n`, a PLAN section), the hazard
-a reader would miss, or what a guard cannot see. Never write a comment that restates what the code
-plainly does, narrates history ("was X, now Y", PR numbers, slice ids as status), or records a
-status that goes stale. When you touch code with such a comment, delete or fix it. A comment that
-cites the plan names a real section or decision; check it still exists.
+**Comments** are only for necessary communication that can't be found elsewhere: the constraint,
+the decision behind it (`DEC-n`, a PLAN section), the hazard a reader would miss, or what a guard
+cannot see. Remove a comment that merely describes the code immediately below, restates a name,
+narrates history ("was X, now Y", PR numbers, slice ids as status) or records a status that goes
+stale, in code you touch too. Directives and guard markers (`//go:embed`, `// group-ok:`,
+`owned:`/`shared:`, `shellcheck`, `@public`) stay. A comment that cites the plan names a real
+section or decision; check it still exists.
 
 **API and errors**
 - API: `/api/v1/...`, camelCase JSON. Authenticated endpoints return 401 JSON, never a redirect
@@ -255,7 +260,8 @@ One-off pages outside the standard presentation layer, such as the server-render
 (`templates/setup.html`), don't have to match the React components.
 
 Docs say "recommended", never "supported" (a line that must quote the word ends with
-`wording-ok:`). No Python: tooling is shell or Go.
+`wording-ok:`). No Python in the serving stack (DEC-151): the Dockerfile, compose files, `deploy/`,
+the binary and the frontend never run or ship it. Developer tooling (scripts, verify, CI) may use it.
 
 ## Development
 
@@ -364,12 +370,13 @@ tests in that area's `docs/agents/` file.
 | The entry JS chunk stays under its gzip budget; rarely needed libraries load with `import()` | `npm run bundle-size` (in CI) |
 | Seat counts never overrun under concurrent registration | `TestConcurrentGoingRespectsCapacity` |
 | Secrets in URLs never reach the access log | `TestAccessLogKeepsSecretsOut` |
+| A deletion leaves only the residue the PLAN names: every sentinel of the erased person in any text, JSON or byte column or blob must match an enabled rule in `erasure_residue.go` (a rule with no PLAN disposition accepts nothing); another person's and the church's values stay byte for byte; opt-out and suppression hashes are checked apart | `TestErasureLeavesOnlyTheNamedResidue` (its mutation map), `TestErasureResidueRefusesWhatThePlanDoesNotName`, `TestErasureResidueRulesNameRealPlaces` |
 | Tests sit next to their code | `TestTestFilesSitNextToTheirSource` |
 | Source guards read the whole production tree, not a directory glob | `internal/guardkit` tests, `TestContactRequestTextGuardReadsTheRealTree` |
 | Schema changes are new goose files; models match them | `migrations/migrations_test.go`, `TestBaselineFileShape` (see `docs/agents/migrations.md`) |
 | Work reaches master only through a PR with `test`, `web` and `provision` green on a head containing master's tip | GitHub ruleset on `master` (no bypass actors); `scripts/merge-rules-check.sh` in CI (`TestCIRunsTheMergeRulesCheck`, `TestMergeRulesCheckScript`) |
 | `go vet`, `gofmt` and staticcheck are clean | `make lint` in CI |
-| No Python | `TestNoPython` |
+| No Python in the serving stack (DEC-151) | `TestNoPythonInServingStack`, `TestPythonGuardScopesToServingStack` |
 | Docs say "recommended", never "supported" | `TestDocsSayRecommendedNotSupported` |
 | One Node version: `.nvmrc` | `TestNodeVersionComesFromNvmrc` |
 | A build never deletes `web/dist/README.txt` | `keep-dist-readme` plugin in `web/vite.config.ts` |

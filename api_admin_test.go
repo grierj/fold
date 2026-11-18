@@ -106,7 +106,6 @@ func TestAdminUserCRUD(t *testing.T) {
 		t.Fatalf("member list users: got %d, want 403", w.Code)
 	}
 
-	// Create.
 	w = admin.do("POST", "/api/v1/admin/users", map[string]string{"ageBand": "adult",
 		"email": "Newbie@Example.com", "name": "Newbie", "password": "password1234", "role": "member",
 		"displayName": "Newbie",
@@ -138,7 +137,6 @@ func TestAdminUserCRUD(t *testing.T) {
 		t.Fatalf("short password: got %d, want 400", w.Code)
 	}
 
-	// List includes the new user.
 	w = admin.do("GET", "/api/v1/admin/users", nil, false)
 	var list struct {
 		Users []userJSON `json:"users"`
@@ -148,7 +146,6 @@ func TestAdminUserCRUD(t *testing.T) {
 		t.Fatalf("list users: got %d, want 3", len(list.Users))
 	}
 
-	// Update profile + promote.
 	uid := created.User.ID
 	w = admin.do("PUT", "/api/v1/admin/users/"+itoa(uid), map[string]string{
 		"displayName": "Newbie Renamed", "role": "admin", "email": "n@example.org",
@@ -175,7 +172,6 @@ func TestAdminUserCRUD(t *testing.T) {
 		t.Fatalf("delete self: got %d, want 400", w.Code)
 	}
 
-	// Delete the new user.
 	w = admin.do("DELETE", "/api/v1/admin/users/"+itoa(uid), nil, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("delete user: %d %s", w.Code, w.Body.String())
@@ -370,7 +366,6 @@ func TestAdminGroupMembers(t *testing.T) {
 	admin := loginAPI(t, app, "admin", "password1234")
 	membersPath := "/api/v1/admin/groups/" + itoa(g.ID) + "/members"
 
-	// Add a member.
 	w := admin.do("POST", membersPath, map[string]interface{}{
 		"userId": other.ID, "role": "member",
 	}, true)

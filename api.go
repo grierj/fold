@@ -265,6 +265,7 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.POST("/admin/rooms/locations/match", a.roomsOn(), a.apiAuth(), a.roomManager(), a.apiAdminMatchLocation)
 	// The System page (M3.1b): dead background jobs, for admins.
 	v1.GET("/admin/jobs", a.apiAuth(), a.jobManager(), a.apiAdminDeadJobs)
+	v1.GET("/admin/backup", a.apiAuth(), a.backupViewer(), a.apiAdminBackup)
 	v1.POST("/admin/jobs/:id/retry", a.apiAuth(), a.jobManager(), a.apiAdminRetryJob)
 	v1.POST("/admin/jobs/:id/dismiss", a.apiAuth(), a.jobManager(), a.apiAdminDismissJob)
 	// Room feeds (M2.2b): an admin makes, replaces or turns off a room's link.

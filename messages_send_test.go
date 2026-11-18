@@ -269,14 +269,14 @@ func TestMessagePipelineRecordsReports(t *testing.T) {
 	id := f.scheduleNow(t, f.leader, "Report", "<p>Hi</p>", map[string]any{"type": "group", "groupId": f.group.ID})
 	runMessageJobs(t, f.app)
 	row := recipientsOf(t, f.app, id)[f.teen.Email]
-	if err := f.app.applyEmailEvent(context.Background(), providers.Event{Kind: providers.EventDelivered, MessageID: row.ProviderMessageID, At: time.Now()}); err != nil {
+	if err := f.app.applyEmailEvent(context.Background(), newEmailEventJob(providers.Event{Kind: providers.EventDelivered, MessageID: row.ProviderMessageID, At: time.Now()})); err != nil {
 		t.Fatal(err)
 	}
 	if got := recipientsOf(t, f.app, id)[f.teen.Email]; got.Status != models.RecipientDelivered {
 		t.Fatalf("delivered: %+v", got)
 	}
-	if err := f.app.applyEmailEvent(context.Background(), providers.Event{Kind: providers.EventBounced, Permanent: true, MessageID: row.ProviderMessageID,
-		Address: f.teen.Email, At: time.Now()}); err != nil && !errors.Is(err, errDeliveryNotYet) {
+	if err := f.app.applyEmailEvent(context.Background(), newEmailEventJob(providers.Event{Kind: providers.EventBounced, Permanent: true, MessageID: row.ProviderMessageID,
+		Address: f.teen.Email, At: time.Now()})); err != nil && !errors.Is(err, errDeliveryNotYet) {
 		t.Fatal(err)
 	}
 	if got := recipientsOf(t, f.app, id)[f.teen.Email]; got.Status != models.RecipientBounced || got.Reason != "hard bounce" {
@@ -522,21 +522,21 @@ func TestMessageRetryReadsHashedAndLegacySuppressionsAtSendTime(t *testing.T) {
 // first gives the complaint label, hard bounce first the bounce one.
 func TestBatchSuppressionsReadsInChunks(t *testing.T) {
 	app := testApp(t)
-	suppressHashed(t, app, "hashed@example.com", models.SuppressHardBounce)
+	suppress(t, app, "hashed@example.com", models.SuppressHardBounce)
 	suppress(t, app, "legacy@example.com", models.SuppressComplaint)
-	suppressHashed(t, app, "complaintfirst@example.com", models.SuppressComplaint)
-	suppressHashed(t, app, "complaintfirst@example.com", models.SuppressHardBounce)
+	suppress(t, app, "complaintfirst@example.com", models.SuppressComplaint)
+	suppress(t, app, "complaintfirst@example.com", models.SuppressHardBounce)
 	suppress(t, app, "bouncefirst@example.com", models.SuppressHardBounce)
 	suppress(t, app, "bouncefirst@example.com", models.SuppressComplaint)
 	// Matches in every chunk (500, 500 and 201 distinct inputs), on both sides
 	// of the 500/501 and 1000/1001 boundaries, hashed and legacy: a lookup
 	// that discarded or repeated the results of any read fails the complete
 	// map below.
-	suppress(t, app, "first-legacy@example.com", models.SuppressManual)            // input 0, chunk 1
-	suppressHashed(t, app, "last1-hashed@example.com", models.SuppressManual)      // input 499, chunk 1
-	suppressHashed(t, app, "first2-hashed@example.com", models.SuppressHardBounce) // input 500, chunk 2
-	suppress(t, app, "last2-legacy@example.com", models.SuppressComplaint)         // input 999, chunk 2
-	suppress(t, app, "first3-legacy@example.com", models.SuppressHardBounce)       // input 1000, chunk 3
+	suppress(t, app, "first-legacy@example.com", models.SuppressManual)      // input 0, chunk 1
+	suppress(t, app, "last1-hashed@example.com", models.SuppressManual)      // input 499, chunk 1
+	suppress(t, app, "first2-hashed@example.com", models.SuppressHardBounce) // input 500, chunk 2
+	suppress(t, app, "last2-legacy@example.com", models.SuppressComplaint)   // input 999, chunk 2
+	suppress(t, app, "first3-legacy@example.com", models.SuppressHardBounce) // input 1000, chunk 3
 
 	placed := map[int]string{
 		0:    "First-Legacy@example.com",

@@ -105,7 +105,24 @@ export async function uiPages(request: APIRequestContext): Promise<UIPage[]> {
       prepare: async (p) => { await expect(p.getByRole("link", { name: `Deleted account · ref ${legacy}`, exact: true })).toBeVisible(); } },
     { id: "admin-deleted-reasons-account", who: "grier", path: `/admin/deleted-reasons?account=${legacy}`, ready: heading(`Deleted account · ref ${legacy}`),
       prepare: async (p) => { await expect(p.getByRole("list", { name: "Contact-request reasons" }).getByRole("listitem")).toHaveCount(3); } },
-    { id: "admin-system", who: "grier", path: "/admin?tab=system", ready: (p) => p.getByRole("heading", { name: "Background tasks", level: 2 }) },
+    // The Backups panel loads on its own, so it is scanned only once its answer is in.
+    { id: "admin-system", who: "grier", path: "/admin?tab=system", ready: (p) => p.getByRole("heading", { name: "Background tasks", level: 2 }),
+      prepare: async (p) => {
+        await expect(p.getByRole("heading", { name: "Backups", level: 2 })).toBeVisible();
+        await expect(p.getByText("Loading backup status…")).toHaveCount(0);
+        await expect(p.getByText("For whoever runs Fold")).toBeVisible();
+      } },
+    // The overdue panel with a newer failure, answered by a stub of a 40-hour-old status; the real route is exercised by system.spec.ts.
+    { id: "admin-system-overdue", who: "grier", path: "/admin?tab=system", ready: (p) => p.getByRole("heading", { name: "Background tasks", level: 2 }),
+      prepare: async (p) => {
+        await p.route("**/api/v1/admin/backup", (route) => route.fulfill({ json: {
+          state: "stale", lastOkAt: new Date(Date.now() - 40 * 36e5).toISOString(), dumpBytes: 52_428_800, uploadsBytes: 1_288_490_188, offsite: "uploaded",
+          lastFailedAt: new Date(Date.now() - 2 * 36e5).toISOString(), lastFailedStep: "upload",
+        } }));
+        await p.reload();
+        await expect(p.getByRole("heading", { name: "Backups are overdue" })).toBeVisible();
+        await expect(p.getByRole("heading", { name: "The last backup try didn't finish" })).toBeVisible();
+      } },
     // Both the catalog and the match section (the seed types "Room 201" on its dates) are loaded before it is scanned.
     { id: "admin-rooms", who: "grier", path: "/admin?tab=rooms",
       ready: (p) => p.getByRole("button", { name: /^(Pick a room|Book \d+ dates? in )/ }).first(),

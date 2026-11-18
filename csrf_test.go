@@ -15,12 +15,10 @@ func TestAPICSRFRequired(t *testing.T) {
 	newTestUser(t, app, "bob", "secret123", models.RoleMember)
 	c := loginAPI(t, app, "bob", "secret123")
 
-	// POST without the CSRF header → 403
 	w := c.do("POST", "/api/v1/groups", map[string]any{"name": "X"}, false)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("missing csrf: got %d", w.Code)
 	}
-	// with token → not a CSRF rejection
 	w = c.do("POST", "/api/v1/groups", map[string]any{"name": "X"}, true)
 	if w.Code == http.StatusForbidden {
 		t.Fatalf("valid csrf rejected: %d", w.Code)

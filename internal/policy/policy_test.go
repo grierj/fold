@@ -1236,6 +1236,22 @@ func TestCanManageJobs(t *testing.T) {
 	}
 }
 
+func TestCanSeeBackupStatus(t *testing.T) {
+	for name, tc := range map[string]struct {
+		p    *Person
+		want bool
+	}{
+		"nobody": {nil, false},
+		"member": {&Person{ID: 1}, false},
+		"teen":   {&Person{ID: 2, Teen: true}, false},
+		"admin":  {&Person{ID: 3, Admin: true}, true},
+	} {
+		if got := CanSeeBackupStatus(tc.p); got != tc.want {
+			t.Errorf("%s: got %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
 func TestCanClearSuppression(t *testing.T) {
 	if CanClearSuppression(nil) || CanClearSuppression(&Person{ID: 1}) || !CanClearSuppression(&Person{ID: 2, Admin: true}) {
 		t.Fatal("only admins clear an email suppression")

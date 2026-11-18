@@ -3,8 +3,9 @@
 #
 # Default: build ghcr.io/grierj/fold:ci from this checkout and start it with
 # docker-compose.yml plus deploy/compose.ci.yml.
-# Release: --image REF pulls that ref (tag or name@digest), tags it as :ci,
-# and smokes the same files so the published image is the one that boots.
+# Release: --image REF --backup-image REF pull those refs (tag or name@digest),
+# tag them as :ci, and smoke the same files so the published pair is the one
+# that boots. The two options come together.
 #
 # CI uses the shipped 172.30.0.0/24 network and exits if that subnet is
 # already taken, unless --local-subnet or a non-empty FOLD_SMOKE_SUBNET is
@@ -33,8 +34,10 @@ done
 
 project=fold-smoke
 image_local=ghcr.io/grierj/fold:ci
+backup_image_local=ghcr.io/grierj/fold-backup:ci
 base_url=http://127.0.0.1:18080
 image_ref=
+backup_image_ref=
 tmp=
 env_file=
 started=0
@@ -45,9 +48,10 @@ shipped_subnets=()
 caddy_image=
 
 usage() {
-  echo "usage: scripts/compose-smoke.sh [--image REF] [--local-subnet]" >&2
-  echo "  default        build ${image_local} from this checkout (FOLD_VERSION=ci)" >&2
-  echo "  --image        pull REF and smoke that image instead of building" >&2
+  echo "usage: scripts/compose-smoke.sh [--image REF --backup-image REF] [--local-subnet]" >&2
+  echo "  default        build ${image_local} and ${backup_image_local} from this checkout (FOLD_VERSION=ci)" >&2
+  echo "  --image        pull REF and smoke that app image instead of building (needs --backup-image)" >&2
+  echo "  --backup-image pull REF and smoke that backup image instead of building (needs --image)" >&2
   echo "  --local-subnet use deploy/compose.smoke-local.yml instead of the shipped subnet" >&2
   echo "                 (also when FOLD_SMOKE_SUBNET is set, or off CI when that subnet is taken)" >&2
 }
@@ -256,6 +260,15 @@ while [[ $# -gt 0 ]]; do
       image_ref=$2
       shift 2
       ;;
+    --backup-image)
+      if [[ $# -lt 2 || -z "${2:-}" || "$2" == --* ]]; then
+        echo "compose-smoke: --backup-image needs a ref" >&2
+        usage
+        exit 2
+      fi
+      backup_image_ref=$2
+      shift 2
+      ;;
     --local-subnet)
       local_subnet_flag=1
       shift
@@ -272,14 +285,19 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -n "$image_ref" ]]; then
-  case "$image_ref" in
+if [[ -n "$image_ref" && -z "$backup_image_ref" ]] || [[ -z "$image_ref" && -n "$backup_image_ref" ]]; then
+  echo "compose-smoke: --image and --backup-image go together" >&2
+  usage
+  exit 2
+fi
+for ref in "$image_ref" "$backup_image_ref"; do
+  case "$ref" in
     *[![:alnum:]@:/._-]*)
-      echo "compose-smoke: --image ref has unexpected characters" >&2
+      echo "compose-smoke: an image ref has unexpected characters" >&2
       exit 2
       ;;
   esac
-fi
+done
 
 command -v docker >/dev/null 2>&1 || { echo "compose-smoke: docker is required" >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || { echo "compose-smoke: curl is required" >&2; exit 1; }
@@ -361,16 +379,25 @@ echo "compose-smoke: ok caddy validate (${caddy_image})"
 
 refuse_existing_project
 
-if [[ -n "$image_ref" ]]; then
-  echo "compose-smoke: pulling ${image_ref}"
-  run_clean docker pull "$image_ref"
-  if ! run_clean docker tag "$image_ref" "$image_local"; then
-    image_id=$(run_clean docker image inspect --format '{{.Id}}' "$image_ref")
-    run_clean docker tag "$image_id" "$image_local"
+# Pull a ref and tag it as the local :ci name Compose will not pull.
+pull_and_tag() {
+  local ref=$1 local_name=$2 image_id
+  echo "compose-smoke: pulling ${ref}"
+  run_clean docker pull "$ref"
+  if ! run_clean docker tag "$ref" "$local_name"; then
+    image_id=$(run_clean docker image inspect --format '{{.Id}}' "$ref")
+    run_clean docker tag "$image_id" "$local_name"
   fi
+}
+
+if [[ -n "$image_ref" ]]; then
+  pull_and_tag "$image_ref" "$image_local"
+  pull_and_tag "$backup_image_ref" "$backup_image_local"
 else
   echo "compose-smoke: building ${image_local}"
   run_clean docker build --build-arg FOLD_VERSION=ci -t "$image_local" "$root"
+  echo "compose-smoke: building ${backup_image_local}"
+  run_clean docker build -t "$backup_image_local" "$root/deploy/backup"
 fi
 
 # Check again after the build. The down trap is still unarmed, so a project

@@ -1,7 +1,7 @@
 // Makes the Home Screen and manifest icons (M3.13c1) from the one source,
 // public/assets/brand/fold-icon-1.svg, by rendering it in Playwright's
 // Chromium at each size: `npm run icons` in web/, then commit the PNGs.
-// Run it again only when the SVG changes. No Python, no image library.
+// Run it again only when the SVG changes. No image library.
 //
 // - fold-icon-192.png, fold-icon-512.png: the icon as drawn (rounded
 //   corners, transparent outside), "any" purpose in the manifest.

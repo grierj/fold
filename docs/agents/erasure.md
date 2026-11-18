@@ -43,6 +43,33 @@ are in `docs/plan/M7.4-ERASURE-INVENTORY.md` (section numbers below point there)
   reviewed new work: it is 2 now (step 5 and S5), and a bump runs the whole pipeline once, under the
   exclusive contact gate, for every tombstone with an older or no marker.
 
+## Residue proof (`erasure_residue.go`, R4-6d-V)
+
+`TestErasureLeavesOnlyTheNamedResidue` is the one proof of what a deletion leaves. It seeds sentinels for the
+erased person (U), another living person (L) and the church (C) in six scenarios (adult, teen, guardian,
+guest, converted person, legacy tombstone), runs the real `DELETE /admin/users/:id`, the tombstone sweep
+through the job runner and `avatar.cleanup`, then scans every table (text, JSON and `bytea` columns) and every
+file in the blob store.
+
+- **The rules are data, in `erasure_residue.go`.** `erasureResidueRules` says where a U sentinel `MAY` stay
+  (nothing requires it) or `MUST` stay byte for byte (L and C values, and U values safeguarding or an admin's
+  Keep requires). A U sentinel is accepted only by the rule its seed names, only at that rule's table, column
+  and JSON key (and `Where` row), and only while the rule is **enabled**: every PLAN anchor in `Plan` must
+  still match its document. A rule whose disposition is missing accepts nothing, so residue with no
+  authorized disposition fails the test (S1, DEC-148). Today `O-16` (names in other people's notices) and
+  `RETAIN_ESSENTIAL` (no action uses it) are disabled, and a U sentinel in a message's text has no rule at
+  all (RS-11, O-8 is Proposed), so the world seeds none there.
+- **Add or enable a rule by changing the PLAN first.** Settle the disposition in the inventory or
+  `decisions.md`, put its anchor in the rule, seed a sentinel that names the rule, and add its row to the
+  mutation map. Never widen a rule's place or edit an anchor to make a failure pass.
+- **The mutation map** (`residueMutations`) puts a stage's pre-erasure sentinels back into what the scan saw, or
+  takes a retention away, and requires the proof to fail on exactly the places listed. It edits the scan, not
+  the production code, so it shows the check is not vacuous; the stage itself is proved by its own tests.
+- **Opt-out and suppression** are hash-only and checked by row, apart from the scan (`residueHashStage`), so a
+  retained plaintext address or a missing address-level opt-out cannot hide in a list of what may stay (RS-8).
+- **What it does not prove:** copies outside Fold (O-12), unknown historical audit shapes (IR-4 beyond the
+  seeded row), a sentinel in a column no scenario seeds, or that the dialog tells every row (11.1).
+
 ## Contact-request text
 
 `contact_requests` text is immutable except for the trigger-licensed blanks:
@@ -162,6 +189,10 @@ are in `docs/plan/M7.4-ERASURE-INVENTORY.md` (section numbers below point there)
   `TestWebErrorCopyCoversEveryCode`.
 
 ## Restore barrier
+
+An uploads restore runs `fold restore settle-uploads` before reopening to empty
+erased and unowned avatar folders. The fenced procedure and recovery from an
+incomplete settlement are in `docs/agents/deploy.md` and `docs/API.md`.
 
 The barrier and the recovery level ship together. The binary's `recoveryPolicyLevel`
 (`restore_fence.go`) equals `deploy/recovery-policy` (`TestRecoveryPolicyFileMatchesConstant`)

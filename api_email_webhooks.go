@@ -70,7 +70,7 @@ func (a *App) postmarkEmailHook(c *gin.Context) {
 		return
 	}
 	for _, e := range evs {
-		if _, err := emailEventType.Enqueue(a.DB, e, time.Now(), e.Key); err != nil {
+		if _, err := emailEventType.Enqueue(a.DB, newEmailEventJob(e), time.Now(), e.Key); err != nil {
 			// Postmark retries a failed delivery, so nothing is lost.
 			log.Printf("email webhook: queue: %v", err)
 			c.Status(http.StatusInternalServerError)
@@ -83,12 +83,33 @@ func (a *App) postmarkEmailHook(c *gin.Context) {
 func (a *App) eventKinds() []jobs.Kind {
 	return []jobs.Kind{{Type: emailEventType, Label: "Recording an email delivery report",
 		Run: func(ctx context.Context, payload json.RawMessage) error {
-			var e providers.Event
+			var e emailEventJob
 			if err := json.Unmarshal(payload, &e); err != nil {
 				return err
 			}
 			return a.applyEmailEvent(ctx, e)
 		}}}
+}
+
+// emailEventJob is a provider report as the job stores it: the providers.Event
+// with its address replaced by mail.AddressHash(address). The queue keeps
+// finished jobs 30 days and a failed one's error text, so the job must never
+// carry the address (PLAN 10.1); a report is only ever matched to
+// a suppression by hash.
+type emailEventJob struct {
+	Provider    string              `json:"provider"`
+	Kind        providers.EventKind `json:"kind"`
+	AddressHash string              `json:"addressHash"`
+	MessageID   string              `json:"messageId"`
+	Permanent   bool                `json:"permanent"`
+	Detail      string              `json:"detail"`
+	At          time.Time           `json:"at"`
+	Key         string              `json:"key"`
+}
+
+func newEmailEventJob(e providers.Event) emailEventJob {
+	return emailEventJob{Provider: e.Provider, Kind: e.Kind, AddressHash: mail.AddressHash(e.Address), MessageID: e.MessageID,
+		Permanent: e.Permanent, Detail: e.Detail, At: e.At, Key: e.Key}
 }
 
 // errDeliveryNotYet: a report came in before the send that it is about
@@ -101,7 +122,7 @@ const reportGrace = 2 * time.Minute
 
 // applyEmailEvent records one report. It is safe to run twice: each update
 // only moves a delivery forward, and a suppression is added once.
-func (a *App) applyEmailEvent(ctx context.Context, e providers.Event) error {
+func (a *App) applyEmailEvent(ctx context.Context, e emailEventJob) error {
 	return a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// The report is about a notification's email or an announcement's
 		// (M3.5); each table moves its row forward the same way.
@@ -159,13 +180,11 @@ func (a *App) applyEmailEvent(ctx context.Context, e providers.Event) error {
 		if e.Kind == providers.EventComplained {
 			why = models.SuppressComplaint
 		}
-		// The address is stored with its hash. A legacy open row whose hash is
-		// still NULL gets only the hash filled in; every other column stays.
-		addr := mail.NormalizeAddress(e.Address)
-		return tx.Exec(`INSERT INTO suppressions (channel, address, address_hash, reason, provider, detail) VALUES ('email', ?, ?, ?, ?, ?)
-			ON CONFLICT (channel, address, reason) WHERE cleared_at IS NULL
-			DO UPDATE SET address_hash = EXCLUDED.address_hash WHERE suppressions.address_hash IS NULL`,
-			addr, mail.StoredAddressHash(addr), why, e.Provider, e.Detail).Error
+		// Only the hash is stored (PLAN 10.1); a second open report for the
+		// same address and reason changes nothing.
+		return tx.Exec(`INSERT INTO suppressions (channel, address_hash, reason, provider, detail) VALUES ('email', ?, ?, ?, ?)
+			ON CONFLICT (channel, address_hash, reason) WHERE cleared_at IS NULL DO NOTHING`,
+			e.AddressHash, why, e.Provider, e.Detail).Error
 	})
 }
 

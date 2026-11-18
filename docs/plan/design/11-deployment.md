@@ -276,14 +276,14 @@ database. To restore, follow the
 [interim recovery procedure](../../DEPLOY-DIGITALOCEAN.md#restoring-a-nightly-dump-interim-notes)
 (`restore.sh`, rules in [`docs/agents/deploy.md`](../../agents/deploy.md)).
 
-**Planned (M5.2):** a portable Compose design.
+**M5.2 (in progress):** a portable Compose design.
 
 - A `backup` service with the same nightly dump, uploads tar (skipped if storage is ever S3) and
   retention, writing `/backups/LAST_OK` to the `backups` volume.
 - On demand: `docker compose exec backup backup.sh now`.
-- Optional offsite copies, encrypted with `age` as today.
-- CI runs a restore test on every release: seed data, back up, restore into a fresh database, and
-  compare row counts and a sample API response.
+- Optional offsite copies, encrypted with `age` as today. Finishing and proving them is a desired capability with no milestone, and M5.2 does not require it (DEC-152).
+- A release CI restore test is still outstanding: seed data, back up, restore into a fresh database,
+  and compare row counts and a sample API response. The existing release workflow runs Compose smoke.
 - The Admin > System page shows the last backup time, size, and offsite status (read from the
   `backups` volume), and warns when the last backup is older than 36 hours.
 

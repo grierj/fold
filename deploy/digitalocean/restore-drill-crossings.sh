@@ -110,8 +110,8 @@ CROSSING_PREFLIGHT_BASE=8c07c85265c0f43ab8350cd945efdc14363c21bd
 CROSSING_LANE_DEFAULT="$CROSSING_PREFLIGHT_BASE"
 # T07B-1-V's landing: "Integrate tracked deletion outcomes", level 1, no restore.sh.
 CROSSING_LANDING_DEFAULT=d400b7755f4564c60524167105f31e33bed9b51b
-# T07B-2b's landing: "Integrate reason-review API", level 2, the candidate's schema.
-CROSSING_PRIOR_DEFAULT=6927e896065d172fb1214181cd80fbd554a86eeb
+# T306: "contract suppressions to hash-only (R4-SC)", level 2, the candidate's schema.
+CROSSING_PRIOR_DEFAULT=52e60ff0fd1a90f39d8ae4a887ed555b8efd7dfa
 # ARCH_SHA: the first parent of T07B-2a-V's landing merge a1198e6 (level 0,
 # migrations 00001-00006, no reason-review file).
 CROSSING_ARCHIVE_DEFAULT=89899794046c4f2cd8a59f0fe6d0184a1d825afd
@@ -460,27 +460,22 @@ crossing_function_defs() { # database -> prints the definitions, ordered
   pg "$1" -c "SELECT pg_get_functiondef(oid) FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname IN ($CROSSING_REASON_FUNCTIONS) ORDER BY proname"
 }
 
-# The nested runner is Alpine, and provision.sh's check_os (every revision's copy) refuses it without --allow-os, which upgrade.sh never forwards. The
-# container presents a Ubuntu 24.04 /etc/os-release for the real_* cases (isolation_os_standin, container-local, saved and restored at exit, only after the
-# isolation guard). Before any image is built, EACH revision's own check_os is run against it, so a provisioner that would still refuse stops the run
-# now. The stand-in changes only what check_os sees: the recovery-level refusals under test come from require_recovery_level / check_target_level, which the
-# trace assertions name, and run before any provisioning. It is recorded as a deviation in the evidence.
-crossing_os_standin() { # crossing-dir [os-release-path] [mountinfo]; the last two are for fixtures
-  local cdir="$1" osfile="${2:-/etc/os-release}" mountinfo="${3:-/proc/self/mountinfo}" rev tmp
-  CROSSING_OS_STATE="$cdir/os-release-standin.json"
-  isolation_os_standin "$CROSSING_OS_STATE" "$osfile" "$mountinfo" || return 1
+# provision.sh's check_os (every revision's copy) accepts only Ubuntu 24.04 or 26.04 without --allow-os, which upgrade.sh never forwards. Before any image is
+# built, EACH revision's own check_os is run against this host's real /etc/os-release, so a provisioner that would refuse the host stops the run now. Nothing is
+# replaced: the real identity is recorded with applied:false in os-release.json.
+crossing_check_os() { # crossing-dir
+  local cdir="$1" osfile="/etc/os-release" rev tmp oid over
+  read -r oid over <<<"$(isolation_os_identity "$osfile")"
   tmp="$(mktemp)"
   for rev in "$REVISION" "$LANE_REVISION" "$LANDING_REVISION" "$PRIOR_REVISION" "$ARCHIVE_BASE_REVISION"; do
     git -C "$ROOT" show "$rev:deploy/digitalocean/provision.sh" >"$tmp" || { rm -f "$tmp"; return 1; }
-    isolation_check_os_accepts "$tmp" "$osfile" || { rm -f "$tmp"; echo "crossing: the provisioner of $rev would still refuse this container's OS ($(isolation_os_identity "$osfile"))" >&2; return 1; }
-    crossing_emit tools.jsonl --arg rev "$rev" '{label:"environment", file:"provision.sh", revision:$rev, checkOsAcceptsStandIn:true}'
+    isolation_check_os_accepts "$tmp" "$osfile" || { rm -f "$tmp"; echo "crossing: the provisioner of $rev refuses this host's OS (${oid:-unknown} ${over:-unknown}); run the drill on Ubuntu 24.04 or 26.04" >&2; return 1; }
+    crossing_emit tools.jsonl --arg rev "$rev" '{label:"environment", file:"provision.sh", revision:$rev, checkOsAcceptsHost:true}'
   done
   rm -f "$tmp"
-  crossing_emit tools.jsonl --argjson applied "$(jq '.applied' "$CROSSING_OS_STATE")" \
-    '{label:"environment", file:"/etc/os-release", replacedByDrill:$applied, standIn:"container-local Ubuntu 24.04, saved first and restored at exit"}'
-  if [[ "$(jq -r '.applied' "$CROSSING_OS_STATE")" == true ]]; then
-    printf '%s\n' 'DEVIATION real_* cases: this disposable Alpine container presents a container-local Ubuntu 24.04 /etc/os-release (restored at exit; see crossings/os-release-standin.json) because provision.sh check_os refuses Alpine and upgrade.sh never forwards --allow-os. No script is changed, no --allow-os is used for it, and nothing outside the container is touched.' >>"$WORK/deviations.txt"
-  fi
+  jq -n --arg path "$osfile" --arg id "${oid:-}" --arg version "${over:-}" \
+    '{applied:false, path:$path, reason:"the host runs a supported Ubuntu; nothing was replaced", original:{id:$id, versionId:$version}}' >"$cdir/os-release.json"
+  crossing_emit tools.jsonl --arg id "${oid:-}" --arg version "${over:-}" '{label:"environment", file:"/etc/os-release", replacedByDrill:false, id:$id, versionId:$version}'
 }
 
 # Everything expensive or global happens once, in the first crossing case.
@@ -510,7 +505,7 @@ crossing_prepare() {
     >"$cdir/revisions.json"
   jq -e '.laneBaseIsPreflightBase' "$cdir/revisions.json" >/dev/null \
     || echo 'crossing: note: LANE_BASE differs from the recorded preflight base (recorded in revisions.json)' >&2
-  crossing_os_standin "$cdir" || return 1
+  crossing_check_os "$cdir" || return 1
   CROSSING_RUN="$(isolation_run_id)"
   CROSSING_HOST_BEFORE=()
   for f in "${CROSSING_HOST_FILES[@]}"; do [[ ! -e "$f" ]] || CROSSING_HOST_BEFORE+=("$f"); done
@@ -890,7 +885,7 @@ crossing_binary_sha() { # container or image-container id
 
 # origin: 0 (LANE_BASE) or 1 (the landing); mode: image or build.
 crossing_lineage_site() {
-  local origin="$1" mode="$2" cdir trace rc=0 json cid image_id built_id origin_json deployed kind cand_bin img_bin f i
+  local origin="$1" mode="$2" cdir trace rc=0 json cid built_id origin_json deployed kind cand_bin img_bin f i
   local origin_rev origin_tools origin_img origin_tag target
   local -a prov args ups names
   cdir="$(crossing_dir)"
@@ -942,9 +937,8 @@ crossing_lineage_site() {
     [[ "$(git -C "$CX_SOURCE" rev-parse HEAD)" == "$REVISION" ]]
     crossing_assert_deployed dev
     cid="$(crossing_cdc ps -q app)"
-    image_id="$(docker inspect --format '{{.Image}}' "$cid")"
     built_id="$(docker image inspect --format '{{.Id}}' ghcr.io/grierj/fold:dev)"
-    [[ "$image_id" == "$built_id" ]] || { echo 'crossing: the running app is not the image built from the head Dockerfile' >&2; return 1; }
+    assert_image "$cid" "$built_id" || { echo 'crossing: the running app is not the image built from the head Dockerfile' >&2; return 1; }
     img_bin="$(crossing_binary_sha "$cid")"
     cid="$(docker create "$CROSSING_CAND_IMG")"
     cand_bin="$(crossing_binary_sha "$cid")"
@@ -1041,8 +1035,8 @@ real_same_level_rollback() {
   [[ "$(jq -er .phase "$DIR/recovery.lock")" == recovering && "$(jq -er .count "$DIR/recovery.lock")" == 0 ]]
   rid="$(recovery_ids)"
   [[ -n "$rid" && "$rid" != *$'\n'* ]]
-  recovery_image="$(docker inspect --format '{{.Image}}' "$rid")"
-  [[ "$recovery_image" == "$(jq -er .imageId "$DIR/recovery.lock")" ]]
+  recovery_image="$(jq -er .imageId "$DIR/recovery.lock")"
+  assert_image "$rid" "$recovery_image"
   [[ "$recovery_image" == "$(docker image inspect --format '{{.Id}}' "$CROSSING_PRIOR_IMG")" ]]
   [[ "$(jq -er .level "$DIR/recovery.lock")" == 2 ]]
   rjson="$(docker exec "$rid" /fold version --json)"
@@ -1056,7 +1050,7 @@ real_same_level_rollback() {
   wait_public
   aid="$(dc ps -q app)"
   [[ -n "$aid" && "$aid" != *$'\n'* ]]
-  [[ "$(docker inspect --format '{{.Image}}' "$aid")" == "$recovery_image" ]]
+  assert_image "$aid" "$recovery_image"
   ajson="$(dc exec -T app /fold version --json)"
   jq -e --arg v "$CROSSING_PRIOR_TAG" '.version == $v and .recoveryPolicy == 2' <<<"$ajson" >/dev/null \
     || { echo "crossing: the reopened app is not the prior image at level 2: $ajson" >&2; return 1; }
@@ -1306,6 +1300,10 @@ real_current_release_restore() {
   crossing_applied_exactly "$status" "$t4" "$cdir/panel-$t4.json" "$out" \
     || { echo "crossing: the fresh press after reload answered $status in recovery: $(cat "$out")" >&2; return 1; }
   sh_fresh=applied
+  # t3 was deleted live after the dump, so recovery lists it (T307): the operator deletes it again, through its panel.
+  status="$(crossing_press "$t3" "$cdir/panel-$t3.json" "$out")"
+  crossing_applied_exactly "$status" "$t3" "$cdir/panel-$t3.json" "$out" \
+    || { echo "crossing: deleting the listed account again answered $status in recovery: $(cat "$out")" >&2; return 1; }
   restore --reopen --checked-church-records
   wait_public; URL="$(public_url)"; login
   crossing_emit cases.jsonl --arg acceptance A-current-release-restore --argjson level "$level" --arg image "$CROSSING_CAND_IMG" \
@@ -1365,7 +1363,7 @@ ARCHIVE
   archive_id="$(dc -f "$DIR/docker-compose.yml" -f "$archive_yml" --profile archive ps -q archive)"
   for ((i=0;i<90;i++)); do docker exec "$archive_id" /fold healthcheck >/dev/null 2>&1 && break; sleep 1; done
   docker exec "$archive_id" /fold healthcheck
-  [[ "$(docker inspect --format '{{.Image}}' "$archive_id")" == "$(docker image inspect --format '{{.Id}}' "$image")" ]]
+  assert_image "$archive_id" "$(docker image inspect --format '{{.Id}}' "$image")"
   ajson="$(docker exec "$archive_id" /fold version --json)"
   jq -e --argjson l "$archive_level" '((.recoveryPolicy // 0) == $l)' <<<"$ajson" >/dev/null \
     || { echo "crossing: the archive image does not report level $archive_level: $ajson" >&2; return 1; }
@@ -1471,18 +1469,17 @@ ARCHIVE
   done
   after_sha="$(crossing_function_defs fold | sha256sum | cut -d' ' -f1)"
   [[ "$after_sha" == "$candidate_sha" ]] || { echo "crossing: the trigger functions after the recovery boot are not the candidate's" >&2; return 1; }
-  [[ "$(docker inspect --format '{{.Image}}' "$rid")" == "$(docker image inspect --format '{{.Id}}' "$CROSSING_CAND_IMG")" ]]
+  assert_image "$rid" "$(docker image inspect --format '{{.Id}}' "$CROSSING_CAND_IMG")"
   drill_step "archive-$id/reopen-review-and-delete"
-  restore --reopen --checked-church-records
-  DB_DUMP="$original_dump"
-  wait_public
-  URL="$(public_url)"; login
+  # The archive lists $a_member as deleted after it was taken (T307), so the operator deletes it again in private recovery, which runs the candidate,
+  # and only then reopens: reopen refuses while a listed account is active.
+  URL=http://localhost:18080; login
   fence_before="$(pg fold -c "SELECT value::bigint FROM settings WHERE key='restore_fence'")"
   [[ "$fence_before" =~ ^[0-9]+$ ]]
-  # The reopened app serves the review route over the archive's own rows.
+  # The recovery app serves the review route over the archive's own rows.
   page="$(api POST "/admin/users/$a_member/erasure-reasons/page" '{"after":null}')"
   jq -e '.reviewRequired == true and (.items | length) == 2 and .next == null and (.items | all(.reviewHash | test("^[0-9a-f]{64}$")))' <<<"$page" >/dev/null \
-    || { echo "crossing: the reopened app did not serve the two-item review: $page" >&2; return 1; }
+    || { echo "crossing: the recovery app did not serve the two-item review: $page" >&2; return 1; }
   first="$(jq -er '.items[0].requestId' <<<"$page")"
   kept="$(jq -er '.items[1].requestId' <<<"$page")"
   body="$(crossing_set_body "$(jq -c '.items' <<<"$page")" "")"
@@ -1496,10 +1493,14 @@ ARCHIVE
   [[ "$(pg fold -c "SELECT count(*) FROM audit_logs WHERE action IN ('add.reason_kept','add.reason_removed') AND target_id IN ($first,$kept)")" == 2 ]]
   fence_after="$(pg fold -c "SELECT value::bigint FROM settings WHERE key='restore_fence'")"
   (( fence_after > fence_before )) || { echo "crossing: the delete did not advance the restore fence ($fence_before -> $fence_after)" >&2; return 1; }
+  restore --reopen --checked-church-records
+  DB_DUMP="$original_dump"
+  wait_public
+  URL="$(public_url)"; login
   ajson="$(dc exec -T app /fold version --json)"
   jq -e --arg v "$CROSSING_CAND_TAG" --argjson l "$CROSSING_CANDIDATE_LEVEL" '.version == $v and .recoveryPolicy == $l' <<<"$ajson" >/dev/null \
     || { echo "crossing: the reopened app is not the committed head at level $CROSSING_CANDIDATE_LEVEL" >&2; return 1; }
-  [[ "$(docker inspect --format '{{.Image}}' "$(dc ps -q app)")" == "$(docker image inspect --format '{{.Id}}' "$CROSSING_CAND_IMG")" ]]
+  assert_image "$(dc ps -q app)" "$(docker image inspect --format '{{.Id}}' "$CROSSING_CAND_IMG")"
   status="served"
   crossing_emit cases.jsonl --arg acceptance A-older-archive --slurpfile record "$cdir/older-archive-$id.json" \
     --argjson before "$fence_before" --argjson after "$fence_after" --arg review "$status" \
@@ -1523,7 +1524,7 @@ assert_crossing_evidence() {
   crossing_evidence_complete "$cdir/cases.jsonl" "$cdir/images.jsonl" || return 1
   [[ -s "$cdir/revisions.json" && -s "$cdir/older-archive-lane-base.json" && -s "$cdir/older-archive-reason-review.json" ]]
   [[ -s "$cdir/lineage-l0-build-binary.json" && -s "$cdir/lineage-l1-build-binary.json" ]]
-  jq -e '.applied != null and .path == "/etc/os-release"' "$cdir/os-release-standin.json" >/dev/null
+  jq -e '.applied == false and .path == "/etc/os-release" and (.original.id | length > 0)' "$cdir/os-release.json" >/dev/null
 }
 
 # ---------------------------------------------------------------------------
@@ -1553,6 +1554,7 @@ CROSSINGS_ONLY_PLAN=(bootstrap base-prerequisites "${CROSSINGS_ONLY_FAMILIES[@]}
 DRILL_FULL_PLAN_NAMES=(bootstrap base-proof recovery-interruptions reopen-interruptions abort-interruptions tamper accidental-app-reuse abort-ack-loss operations-lock recovery-configuration
   count_races archive_failures pin_and_abort_cases cleanup_and_tamper_cases concurrency_cases lifecycle_cases legacy_archive_case review_reconciliation_cases
   review_backup_archive_cases review_cleanup_retry_cases review_orphaned_restore_case review_moving_tag_case
+  uploads_erasure_cases uploads_interruption_cases backup_exclusion_cases
   real_binary_refusals real_level_lineage real_same_level_rollback real_current_release_restore real_older_archive_restore final-verification)
 
 drill_mode_banner() {

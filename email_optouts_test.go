@@ -351,10 +351,10 @@ func TestEmailWebhooksLeaveChoicesUntouched(t *testing.T) {
 	consentTestSeed(t, app, u, models.ConsentEmail, "category:events", models.ConsentOptedOut)
 	before, records := consentTestRows(t, app, u.ID), retainedEmailChoices(t, app)
 	for _, kind := range []providers.EventKind{providers.EventBounced, providers.EventComplained, providers.EventDelivered} {
-		err := app.applyEmailEvent(context.Background(), providers.Event{
+		err := app.applyEmailEvent(context.Background(), newEmailEventJob(providers.Event{
 			Provider: "postmark", Kind: kind, Address: u.Email, MessageID: string(kind),
 			Permanent: kind != providers.EventDelivered, At: time.Now().Add(-5 * time.Minute),
-		})
+		}))
 		if err != nil {
 			t.Fatal(err)
 		}

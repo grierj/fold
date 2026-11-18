@@ -20,7 +20,10 @@ test("logout clears the session's data, including through back", async ({ page }
   const before = await session();
 
   await signOut(page);
-  await expect(page.locator("#groups").getByRole("status")).toHaveText(/\d+ groups?$/);
+  // The first load renders two live regions (the count line plus the
+  // skeleton's label), which fails an unscoped status locator in strict
+  // mode. Scope to the count line, whose text settles on the assertion.
+  await expect(page.locator("#groups p[role='status']")).toHaveText(/\d+ groups?$/);
   for (const text of ["Members-only circle", "Invite-only circle", "Sam Member", "Log out"]) {
     await expect(page.getByText(text)).toHaveCount(0);
   }

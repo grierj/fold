@@ -348,7 +348,6 @@ func TestAudienceLeavesOutTheDefaultPort(t *testing.T) {
 	}
 }
 
-// A client reuses its connection across sends.
 func TestClientReusesItsConnection(t *testing.T) {
 	f := newFakeService(t)
 	f.small.Store(true)

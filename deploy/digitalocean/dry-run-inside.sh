@@ -46,6 +46,10 @@ needles=(
   'values not shown'
   'smoke.sh'
   '5432'
+  'up -d --no-deps <every service except backup>'
+  'cutover: copy backup.env settings'
+  'adopted/'
+  'expire-only'
 )
 for needle in "${needles[@]}"; do
   grep -qF -- "$needle" <<<"$out" || {
@@ -53,6 +57,22 @@ for needle in "${needles[@]}"; do
     exit 1
   }
 done
+
+# The cutover is announced in order: the volume is created and validated, the
+# archives are adopted, and only then does the backup service start.
+create_line="$(grep -n 'create the backup resources' <<<"$out" | head -n 1 | cut -d: -f1)"
+adopt_line="$(grep -n 'copy the host archives' <<<"$out" | head -n 1 | cut -d: -f1)"
+start_line="$(grep -n 'docker compose up -d backup' <<<"$out" | head -n 1 | cut -d: -f1)"
+cron_line="$(grep -n 'switch the host cron to expire-only' <<<"$out" | head -n 1 | cut -d: -f1)"
+[[ -n "$create_line" && -n "$adopt_line" && -n "$start_line" && -n "$cron_line" ]]
+(( create_line < adopt_line && adopt_line < start_line && start_line < cron_line )) || {
+  echo "the dry-run cutover plan is out of order" >&2
+  exit 1
+}
+if grep -qE 'up -d$' <<<"$out"; then
+  echo "dry-run plans a single full-stack up" >&2
+  exit 1
+fi
 
 [[ ! -d /opt/fold ]]
 [[ ! -e /etc/ssh/sshd_config.d/00-fold-hardening.conf ]]
@@ -132,6 +152,15 @@ fi
 grep -qF -- 'dry-run:' <<<"$sec_out"
 grep -qF -- 'example-fold-backups' <<<"$sec_out"
 grep -qF -- 'offsite:' <<<"$sec_out"
+grep -qF -- 'no-replace link' <<<"$sec_out"
+# The offsite key is one folder per run, and the plan never reads the bucket.
+grep -qE -- 's3://example-fold-backups/fold/[0-9]{8}-[0-9]{4}-<run id: 32 random hex characters>/fold-[0-9]{8}-[0-9]{4}\.dump\.age' <<<"$sec_out"
+grep -qE -- 's3://example-fold-backups/fold/[0-9]{8}-[0-9]{4}-<run id: 32 random hex characters>/uploads-[0-9]{8}-[0-9]{4}\.tgz\.age' <<<"$sec_out"
+grep -qF -- 'docker volume inspect' <<<"$sec_out"
+if grep -qE -- 's3api|list-objects|s3 ls' <<<"$sec_out"; then
+  echo "backup dry-run plans a read of the bucket" >&2
+  exit 1
+fi
 
 set +e
 local_out="$(bash deploy/digitalocean/backup.sh --dry-run \
@@ -141,6 +170,15 @@ status=$?
 set -e
 [[ "$status" -eq 0 ]]
 grep -qF -- 'offsite not configured' <<<"$local_out"
+
+exp_out="$(bash deploy/digitalocean/backup.sh --dry-run --expire-only \
+  --deploy-dir /opt/fold --env-file deploy/digitalocean/backup.env.example 2>&1)"
+grep -qF -- 'backup-expiry-pending' <<<"$exp_out"
+grep -qF -- 'adopted copies' <<<"$exp_out"
+if grep -qF -- 'pg_dump' <<<"$exp_out"; then
+  echo "an expire-only dry-run planned a dump" >&2
+  exit 1
+fi
 
 # Still nothing created by the backup dry-run.
 [[ ! -d /var/backups/fold ]]

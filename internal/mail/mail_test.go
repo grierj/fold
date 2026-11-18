@@ -27,7 +27,6 @@ import (
 
 func TestMain(m *testing.M) { os.Exit(testdb.Main(m)) }
 
-// TestDevOutboxStoresMail: the dev/test sender stores mail in the database.
 func TestDevOutboxStoresMail(t *testing.T) {
 	db := testdb.Shared(t)
 	outbox := NewDevOutbox(db, "Fold <noreply@example.com>")
