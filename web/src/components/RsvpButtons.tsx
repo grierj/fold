@@ -639,9 +639,9 @@ function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFee
 
   const controls = (name: string, d: Answer, change: (patch: Partial<Answer>) => void, child = false) => <div className="space-y-3 mt-2">
     <Field label={"Answer for " + name}><Select value={d.status} disabled={disabled} onChange={(e) => {
-      const status = e.target.value;
+      const status = OPTIONS.find((option) => option === e.currentTarget.value);
 
-      if (status === "going" || status === "maybe") change({ status });
+      if (status) change({ status });
     }}>
       {OPTIONS.map((value) => <option key={value} value={value}>{registrationStatusLabel(value)}</option>)}
     </Select></Field>

@@ -825,6 +825,20 @@ describe("named household answers", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Kit: going remotely");
   });
 
+  it("saves Can't go from a household member's answer menu", async () => {
+    vi.mocked(Events.register).mockResolvedValue({ registration: null, people: [] });
+    family();
+    await userEvent.click(screen.getByRole("checkbox", { name: "Mary" }));
+    const answer = screen.getByLabelText("Answer for Mary");
+    await userEvent.selectOptions(answer, within(answer).getByRole("option", { name: "Can't go" }));
+    expect(answer).toHaveValue("declined");
+    await userEvent.click(screen.getByRole("button", { name: "Save answers" }));
+    expect(Events.register).toHaveBeenCalledWith(7, {
+      date: "2026-12-01",
+      people: [{ personId: 18, status: "declined", attendanceMode: "in_person", childcareRequested: false }],
+    });
+  });
+
   it("ties a bad childcare count to its field and focuses it (PR 110 M2)", async () => {
     family();
     await userEvent.click(screen.getByRole("checkbox", { name: "Me" }));
