@@ -160,7 +160,8 @@ milestones M8.1–M8.8, and states each item's end goal in specific user-visible
 DEC-153 (Nov 18, 2026, in [`decisions.md`](decisions.md)) rescinds DEC-145: the
 surface freeze is lifted in full, the initial deployment capability being
 sufficient to allow future work on product surface; DEC-145's R7/R8 rejections
-stand, and DEC-141's separate freeze is unchanged.
+stand. DEC-153 also lifts every other freeze gated on a first church going
+live, DEC-141's rooms/contact freeze included.
 
 ### 14.1 Rules for every milestone
 

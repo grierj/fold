@@ -177,7 +177,7 @@ milestones until a first church is live (DEC-145) — that freeze was rescinded 
   contract guard (`TestWebTypesMatchGoJSON`) shrinks to auto-discovery.
 - Brief: [`R15-R16-frontend.md`](../briefs/audit-2026-11/R15-R16-frontend.md) (R16).
 
-**M7.11 Contact locks inside the freeze (R19, DEC-141)**
+**M7.11 Contact locks (R19, DEC-141; freeze lifted by DEC-153)**
 - Not started. Re-scope before starting: R19 was written before M7.4, and account erasure now
   depends on the contact gate (`fencedContactMutation`, the restore ticket's turn and
   `eraseTombstoneOnce` run under it; `docs/agents/erasure.md`). The re-scoped milestone keeps

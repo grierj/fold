@@ -86,7 +86,7 @@ narratives and follow-up lists, is kept in
 | M7.8 People and own-data export | Not started | |
 | M7.9 Frontend speed and discoverability | Not started | |
 | M7.10 Generated web types | Not started | |
-| M7.11 Contact locks inside the freeze | Not started | |
+| M7.11 Contact locks (freeze lifted by DEC-153) | Not started | |
 | M7.12 Cut execution and maintenance tax | In progress: the guard tiers and the UI ratchet down to zero remain | #316, #317, #326 |
 | M8.1 EventDate 3-second test (Phase 8 balance pass) | Not started; end goal in phase-8.md, brief needed for the visual end-state; R15-1 lazy slice lands with or before it | |
 | M8.2 Guest and token flows feel account-free (Phase 8) | Not started; closes the audit index's named token-page a11y/390px gap for /invite, /set-password, /guest/* | |

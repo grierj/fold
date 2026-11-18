@@ -33,8 +33,11 @@ product surface until a first church is live" freeze is lifted in full —
 the initial deployment capability is sufficient, in Grier's judgement, to
 allow future work on product surface. M8.6, this phase's one new surface,
 therefore needs no further permission, only its brief. DEC-153 does not
-reopen DEC-145's R7/R8 rejections, and DEC-141's separate freeze (room
-suggestions, direct-contact machinery) stands unchanged. Every other item
+reopen DEC-145's R7/R8 rejections. It also lifts every other freeze
+gated on a first church going live — in particular DEC-141's: room
+suggestions and the direct-contact machinery are unfrozen, so expansion
+there is permitted again through a milestone and a brief (M8.8's
+explainer is presentation only either way). Every other item
 in this phase is a change to existing surface, a promotion of an already
 approved milestone, or presentation of already-built behaviour. The
 candidates in "Not promoted" below stay out — for the reasons given
@@ -266,8 +269,9 @@ at a glance, by label and by treatment:
 - A leader or admin can remove a discussion post, and the removal is
   audited. Contact privacy and teen rules apply in discussion exactly
   as everywhere else in Fold: no contact details are exposed by
-  posting, hidden stays hidden, teens are badged, and discussion is
-  not a route around DEC-141's contact freeze.
+  posting, hidden stays hidden, and teens are badged. (DEC-141's
+  freeze is lifted by DEC-153, but discussion still adds no contact
+  purpose or field — it is a group stream, not a contact channel.)
 
 Deliberately not in the end goal: per-person "Read by" receipts on
 announcements (a leader sees the send pipeline's delivery counts, not
@@ -318,7 +322,9 @@ differentiators, one short plain-language sentence names it:
 - Where a leader is offered a suggested room: one line saying why that
   room is suggested, in terms of the group's own past use. This
   explains the existing suggestion; it does not expand what is
-  suggested (DEC-141's freeze on room-suggestion expansion stands).
+  suggested. (DEC-141's freeze on room-suggestion expansion is lifted
+  by DEC-153; expanding the suggestion itself is still not this
+  milestone — it would need its own milestone and brief.)
 - On the per-date and series RSVP states (with M8.1): that answering
   for the whole series, and undoing it, is something Fold does and
   the sentence a member sees says so plainly.
@@ -342,7 +348,7 @@ phase, each for its stated reason:
 | Candidate | Why it stays out |
 |---|---|
 | "Read by" receipts on announcements | Conflicts with Fold's privacy posture; leaders get delivery counts (M8.6), not per-person open tracking. Revisit only with production evidence leaders need more. |
-| Per-date event chat | Adjacent to DEC-141's contact freeze and a new moderation load. M8.6's discussion is group-level; per-date threads need their own DEC and brief. |
+| Per-date event chat | A new moderation load, and M8.6's discussion is group-level by design. Per-date threads need their own milestone and brief. (DEC-141's freeze no longer bars them — DEC-153 lifted it — the moderation question is the reason.) |
 | Directory ordering by participation | Built on attendance data (M8.4) that does not exist yet and is sensitive; R10's manager-only precedent governs any later use. |
 | Icebreaker / introduction prompts on join | The account-request flow is safeguarding-adjacent and teen rules apply; not worth the risk for a nicety. |
 | Stranger discovery / open signup | Rejected with R8; DEC-4 and DEC-76 still govern. Not a gap. |
