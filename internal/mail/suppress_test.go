@@ -25,10 +25,10 @@ func TestSuppressionsStopMail(t *testing.T) {
 	s := WithSuppressions(db, NewDevOutbox(db, "Fold <noreply@example.com>"))
 	now := time.Now()
 	for _, row := range []models.Suppression{
-		{Channel: "email", Address: "gone@example.com", Reason: models.SuppressHardBounce},
-		{Channel: "email", Address: "manual@example.com", Reason: models.SuppressManual},
-		{Channel: "email", Address: "spam@example.com", Reason: models.SuppressComplaint},
-		{Channel: "email", Address: "cleared@example.com", Reason: models.SuppressHardBounce, ClearedAt: &now},
+		hashedRow("gone@example.com", models.SuppressHardBounce),
+		hashedRow("manual@example.com", models.SuppressManual),
+		hashedRow("spam@example.com", models.SuppressComplaint),
+		{Channel: "email", AddressHash: AddressHash("cleared@example.com"), Reason: models.SuppressHardBounce, ClearedAt: &now},
 	} {
 		if err := db.Create(&row).Error; err != nil {
 			t.Fatal(err)
@@ -123,18 +123,16 @@ func TestAddressHash(t *testing.T) {
 	}
 }
 
-// hashedRow is a suppression written the way the R4-S binary writes it, with
-// the address hash beside the address.
+// hashedRow is a suppression as the webhook writes it: the hash of the
+// address's own bytes and nothing else.
 func hashedRow(address, reason string) models.Suppression {
-	h := StoredAddressHash(address)
-	return models.Suppression{Channel: "email", Address: address, AddressHash: &h, Reason: reason}
+	return models.Suppression{Channel: "email", AddressHash: StoredAddressHash(address), Reason: reason}
 }
 
-// A hashed row and a legacy NULL-hash row both block (the hash arm and the
-// address arm), a cleared row blocks nothing, and a complaint still lets
-// required mail through (DEC-112). Because the address arm requires a NULL
-// hash, finding the hashed row proves the hash arm is used.
-func TestSuppressingMatchesHashedAndLegacyRows(t *testing.T) {
+// A hashed row blocks whatever case or padding the send's address has, a
+// cleared row blocks nothing, and a complaint still lets required mail
+// through (DEC-112).
+func TestSuppressingMatchesHashedRows(t *testing.T) {
 	db := testdb.Shared(t)
 	s := WithSuppressions(db, NewDevOutbox(db, "Fold <noreply@example.com>"))
 	now := time.Now()
@@ -142,9 +140,7 @@ func TestSuppressingMatchesHashedAndLegacyRows(t *testing.T) {
 	hashedCleared.ClearedAt = &now
 	for _, row := range []models.Suppression{
 		hashedRow("hashed@example.com", models.SuppressHardBounce),
-		{Channel: "email", Address: "legacy@example.com", Reason: models.SuppressHardBounce},
 		hashedRow("spam-hashed@example.com", models.SuppressComplaint),
-		{Channel: "email", Address: "spam-legacy@example.com", Reason: models.SuppressComplaint},
 		hashedCleared,
 	} {
 		if err := db.Create(&row).Error; err != nil {
@@ -159,11 +155,8 @@ func TestSuppressingMatchesHashedAndLegacyRows(t *testing.T) {
 	}{
 		{" Hashed@Example.com ", false, false},
 		{"hashed@example.com", true, false},
-		{"LEGACY@example.com", false, false},
 		{"spam-hashed@example.com", false, true},
 		{"spam-hashed@example.com", true, false},
-		{"spam-legacy@example.com", false, true},
-		{"spam-legacy@example.com", true, false},
 		{"cleared-hashed@example.com", false, true},
 	} {
 		_, err := s.SendEmail(ctx, providers.EmailMessage{To: tc.to, Subject: "s", Text: "t", Optional: tc.optional})
@@ -183,8 +176,7 @@ func (c *countingAdapter) SendEmail(_ context.Context, m Message) (string, error
 }
 
 // With a complaint and a hard bounce both open, in either insert order and
-// whether the rows are hashed or legacy NULL-hash rows: required mail is
-// refused with hard_bounce, and so is optional mail: the strongest reason
+// required mail is refused with hard_bounce, and so is optional mail: the strongest reason
 // stands for the address whichever row is older (StrongestReason). Nothing
 // reaches the inner sender when refused, and a cleared companion row changes
 // nothing.
@@ -195,26 +187,21 @@ func TestSuppressingBothReasonsInEitherOrder(t *testing.T) {
 	now := time.Now()
 	type pair struct {
 		address       string
-		hashed        bool
 		first, second string
 	}
 	for _, p := range []pair{
-		{"hashed-complaint-first@example.com", true, models.SuppressComplaint, models.SuppressHardBounce},
-		{"hashed-bounce-first@example.com", true, models.SuppressHardBounce, models.SuppressComplaint},
-		{"legacy-complaint-first@example.com", false, models.SuppressComplaint, models.SuppressHardBounce},
-		{"legacy-bounce-first@example.com", false, models.SuppressHardBounce, models.SuppressComplaint},
+		{"complaint-first@example.com", models.SuppressComplaint, models.SuppressHardBounce},
+		{"bounce-first@example.com", models.SuppressHardBounce, models.SuppressComplaint},
 	} {
 		for _, reason := range []string{p.first, p.second} {
-			row := models.Suppression{Channel: "email", Address: p.address, Reason: reason}
-			if p.hashed {
-				row = hashedRow(p.address, reason)
-			}
+			row := hashedRow(p.address, reason)
 			if err := db.Create(&row).Error; err != nil {
 				t.Fatal(err)
 			}
 		}
 		// A cleared row beside the open pair changes nothing.
-		cleared := models.Suppression{Channel: "email", Address: p.address, Reason: models.SuppressManual, ClearedAt: &now}
+		cleared := hashedRow(p.address, models.SuppressManual)
+		cleared.ClearedAt = &now
 		if err := db.Create(&cleared).Error; err != nil {
 			t.Fatal(err)
 		}
@@ -230,20 +217,16 @@ func TestSuppressingBothReasonsInEitherOrder(t *testing.T) {
 	if len(inner.sent) != 0 {
 		t.Fatalf("refused mail reached the sender: %v", inner.sent)
 	}
-	// A complaint alone still lets required mail through, hashed or legacy.
-	for _, row := range []models.Suppression{
-		hashedRow("complaint-hashed@example.com", models.SuppressComplaint),
-		{Channel: "email", Address: "complaint-legacy@example.com", Reason: models.SuppressComplaint},
-	} {
-		if err := db.Create(&row).Error; err != nil {
-			t.Fatal(err)
-		}
-		if _, err := s.SendEmail(context.Background(), providers.EmailMessage{To: row.Address, Subject: "s", Text: "t"}); err != nil {
-			t.Errorf("%s: required mail refused: %v", row.Address, err)
-		}
+	// A complaint alone still lets required mail through.
+	row := hashedRow("complaint-only@example.com", models.SuppressComplaint)
+	if err := db.Create(&row).Error; err != nil {
+		t.Fatal(err)
 	}
-	if len(inner.sent) != 2 {
-		t.Fatalf("required mail past a complaint made %d sends, want 2", len(inner.sent))
+	if _, err := s.SendEmail(context.Background(), providers.EmailMessage{To: "complaint-only@example.com", Subject: "s", Text: "t"}); err != nil {
+		t.Errorf("required mail refused: %v", err)
+	}
+	if len(inner.sent) != 1 {
+		t.Fatalf("required mail past a complaint made %d sends, want 1", len(inner.sent))
 	}
 }
 
@@ -281,10 +264,10 @@ func TestOpenSuppressionReasons(t *testing.T) {
 	for _, row := range []models.Suppression{
 		hashedRow("both@example.com", models.SuppressComplaint),
 		hashedRow("both@example.com", models.SuppressHardBounce),
-		{Channel: "email", Address: "legacy-both@example.com", Reason: models.SuppressHardBounce},
-		{Channel: "email", Address: "legacy-both@example.com", Reason: models.SuppressComplaint},
+		hashedRow("other-both@example.com", models.SuppressHardBounce),
+		hashedRow("other-both@example.com", models.SuppressComplaint),
 		hashedRow("one@example.com", models.SuppressManual),
-		{Channel: "email", Address: "legacy@example.com", Reason: models.SuppressHardBounce},
+		hashedRow("lone@example.com", models.SuppressHardBounce),
 		hashedCleared,
 		hashedRow("åsa@example.com", models.SuppressHardBounce),
 		hashedRow("padded@example.com\u00a0", models.SuppressHardBounce), // a stored U+00A0 is its own value, no input normalizes to it
@@ -296,19 +279,19 @@ func TestOpenSuppressionReasons(t *testing.T) {
 	reads := readCounter(t, db)
 
 	got, err := OpenSuppressionReasons(db, []string{
-		" Both@Example.COM", "both@example.com", "", "   ", "LEGACY-BOTH@example.com", "One@example.com",
-		"\tlegacy@example.com\n", "cleared@example.com", "ÅSA@example.com", "absent@example.com",
+		" Both@Example.COM", "both@example.com", "", "   ", "OTHER-BOTH@example.com", "One@example.com",
+		"\tlone@example.com\n", "cleared@example.com", "ÅSA@example.com", "absent@example.com",
 		"padded@example.com", "padded@example.com\u00a0",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := map[string][]string{
-		"both@example.com":        {models.SuppressComplaint, models.SuppressHardBounce},
-		"legacy-both@example.com": {models.SuppressHardBounce, models.SuppressComplaint},
-		"one@example.com":         {models.SuppressManual},
-		"legacy@example.com":      {models.SuppressHardBounce},
-		"åsa@example.com":         {models.SuppressHardBounce},
+		"both@example.com":       {models.SuppressComplaint, models.SuppressHardBounce},
+		"other-both@example.com": {models.SuppressHardBounce, models.SuppressComplaint},
+		"one@example.com":        {models.SuppressManual},
+		"lone@example.com":       {models.SuppressHardBounce},
+		"åsa@example.com":        {models.SuppressHardBounce},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("OpenSuppressionReasons = %v, want %v", got, want)
@@ -329,12 +312,12 @@ func TestOpenSuppressionReasons(t *testing.T) {
 	}
 
 	// More than one chunk: 1,204 distinct addresses make three reads (500, 500
-	// and 204). Hashed and legacy rows sit in every chunk, at its first and
+	// and 204). Rows sit in every chunk, at its first and
 	// last slots (indexes 0 and 499, 500 and 999, 1000 and 1203), so a lookup
 	// that dropped or repeated the results of any one read fails on the
 	// complete map.
 	for _, row := range []models.Suppression{
-		{Channel: "email", Address: "chunk499@example.com", Reason: models.SuppressHardBounce},
+		hashedRow("chunk499@example.com", models.SuppressHardBounce),
 		hashedRow("chunk999@example.com", models.SuppressManual),
 	} {
 		if err := db.Create(&row).Error; err != nil {
@@ -342,12 +325,12 @@ func TestOpenSuppressionReasons(t *testing.T) {
 		}
 	}
 	placed := map[int]string{
-		0:    " BOTH@example.com ",      // hashed, chunk 1
-		499:  "chunk499@example.com",    // legacy, chunk 1
-		500:  "legacy-both@example.com", // legacy, chunk 2
-		999:  "chunk999@example.com",    // hashed, chunk 2
-		1000: "one@example.com",         // hashed, chunk 3
-		1203: "legacy@example.com",      // legacy, chunk 3
+		0:    " BOTH@example.com ",     // chunk 1
+		499:  "chunk499@example.com",   // chunk 1
+		500:  "other-both@example.com", // chunk 2
+		999:  "chunk999@example.com",   // chunk 2
+		1000: "one@example.com",        // chunk 3
+		1203: "lone@example.com",       // chunk 3
 	}
 	many := make([]string, 1204)
 	for i := range many {
@@ -366,12 +349,12 @@ func TestOpenSuppressionReasons(t *testing.T) {
 		t.Fatalf("1,204 distinct inputs made %d reads, want 3", n)
 	}
 	wantMany := map[string][]string{
-		"both@example.com":        {models.SuppressComplaint, models.SuppressHardBounce},
-		"chunk499@example.com":    {models.SuppressHardBounce},
-		"legacy-both@example.com": {models.SuppressHardBounce, models.SuppressComplaint},
-		"chunk999@example.com":    {models.SuppressManual},
-		"one@example.com":         {models.SuppressManual},
-		"legacy@example.com":      {models.SuppressHardBounce},
+		"both@example.com":       {models.SuppressComplaint, models.SuppressHardBounce},
+		"chunk499@example.com":   {models.SuppressHardBounce},
+		"other-both@example.com": {models.SuppressHardBounce, models.SuppressComplaint},
+		"chunk999@example.com":   {models.SuppressManual},
+		"one@example.com":        {models.SuppressManual},
+		"lone@example.com":       {models.SuppressHardBounce},
 	}
 	if !reflect.DeepEqual(got, wantMany) {
 		t.Fatalf("chunked lookup = %v, want %v", got, wantMany)

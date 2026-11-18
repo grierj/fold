@@ -6,7 +6,7 @@ Reconciled 2026-10-25 with DEC-40: **one-way ChMS → Fold only; no write-back**
 
 Context from `PLAN.md` that shapes this note:
 
-- Fold is Go + Gin + GORM + PostgreSQL 16, one binary and single-tenant. `go.mod` owns the toolchain; no Python (3.2).
+- Fold is Go + Gin + GORM + PostgreSQL 16, one binary and single-tenant. `go.mod` owns the toolchain; no Python in the serving stack, DEC-151 (3.2).
 - The future provider architecture uses small interfaces, encrypted ProviderConfig secrets, contract tests and authenticated webhooks (5.6, C8, C17). This is not installed ChMS infrastructure.
 - One email = one `User` account (DEC-23). Shared emails become `adult` `HouseholdPerson` rows. No accounts under 13; children are `HouseholdPerson(kind=child)`; teens 13–17 need `TeenConsent`; every guardian link to a minor needs an admin to confirm it with a `check_note` (DEC-8, DEC-32). Leaders never see teen email/phone (DEC-31). Imported phones are never SMS-opted-in (10.4).
 - ChurchTrac CSV import is already "Later" and blocked on a real sample export (DEC-15, M6.11; the sample-import prerequisite to M6.15). People CSV import is M4.5.

@@ -323,6 +323,41 @@ for count in 0 2 unknown; do
   fi
   [[ ! -e "$DIR/recovery.lock" ]]
 done
+# Q5: recovery-deleted.txt is the saved list of accounts to delete again. Its
+# ids and times, mode, hash and life cycle all come from the installed command.
+listed() {
+  local n="$1" rows="" i
+  for ((i=1; i<=n; i++)); do rows+="$i 2026-11-14T10:00:00Z"$'\n'; done
+  printf '%s' "$rows" >"$DIR/recovery-deleted.txt"; chmod 600 "$DIR/recovery-deleted.txt"
+  change_state --arg h "$(sha256sum "$DIR/recovery-deleted.txt" | cut -d' ' -f1)" --argjson n "$n" '.deletedList={sha256:$h,count:$n}'
+}
+seed recovering A; listed 2; change_model '.remaining=2'
+rejected '2 of 2 accounts' run_restore --reopen --checked-church-records
+phase_is recovering; [[ -f "$DIR/recovery-deleted.txt" ]]
+run_restore --status >"$WORK/out"; grep -q 'deleted list: 2 listed.*still active: 2' "$WORK/out"
+change_model '.remaining=1'
+rejected '1 of 2 accounts' run_restore --reopen --checked-church-records
+phase_is recovering
+change_model '.remaining=0'
+run_restore --status >"$WORK/out"; grep -q 'still active: 0' "$WORK/out"
+run_restore --reopen --checked-church-records >"$WORK/out" 2>&1
+[[ ! -e "$DIR/recovery.lock" && ! -e "$DIR/recovery-deleted.txt" ]]
+# A failed reopen keeps the list, --resume reuses it, and only the reopen that
+# removes the lock removes the file.
+seed recovering A; listed 2; change_model '.remaining=0'
+before_hash="$(sha256sum "$DIR/recovery-deleted.txt" | cut -d' ' -f1)"
+rejected reopen-failed env RESTORE_FIXTURE_SMOKE_FAIL=1 "$DIR/recovery-tools/restore.sh" --deploy-dir "$DIR" --drill --reopen --checked-church-records
+phase_is reopen-failed; [[ -f "$DIR/recovery-deleted.txt" ]]
+run_restore --resume >"$WORK/out" 2>&1; phase_is recovering
+[[ "$(sha256sum "$DIR/recovery-deleted.txt" | cut -d' ' -f1)" == "$before_hash" ]]
+run_restore --reopen --checked-church-records >"$WORK/out" 2>&1
+[[ ! -e "$DIR/recovery.lock" && ! -e "$DIR/recovery-deleted.txt" ]]
+# A file that no longer matches the lock cannot be checked: the operator's own
+# statement is what remains, and it says so.
+seed recovering A; listed 2; change_model '.remaining=2'
+printf '3 2026-11-14T10:00:00Z\n' >>"$DIR/recovery-deleted.txt"
+run_restore --reopen --checked-church-records >"$WORK/out" 2>&1
+grep -q 'differs from recovery.lock' "$WORK/out"; [[ ! -e "$DIR/recovery.lock" ]]
 seed pre-drop-intent C drop-intent
 rejected reopen-failed env RESTORE_FIXTURE_SMOKE_FAIL=1 "$DIR/recovery-tools/restore.sh" --deploy-dir "$DIR" --drill --resume
 [[ "$(jq -er .cleanup "$DIR/recovery.lock")" == drop-intent ]]
@@ -407,7 +442,47 @@ for count in 0 2 unknown; do
   env "${env_args[@]}" "$DIR/recovery-tools/restore.sh" --deploy-dir "$DIR" --drill --dump "$ARCHIVE" --reopen-if-none >"$WORK/out" 2>&1 || rc=$?
   if [[ "$count" == 0 ]]; then [[ "$rc" == 0 && ! -e "$DIR/recovery.lock" ]]
   else [[ "$rc" == 3 ]]; grep -q 'SITE IS CLOSED' "$WORK/out"; phase_is recovering; fi
+  # Only a known nonzero count saves a list: a zero or unknown count writes none.
+  if [[ "$count" == 2 ]]; then
+    [[ "$(stat -c '%u:%a' "$DIR/recovery-deleted.txt")" == 0:600 ]]
+    [[ "$(cat "$DIR/recovery-deleted.txt")" == $'1 2026-11-14T10:00:00Z\n2 2026-11-14T10:00:00Z' ]]
+    [[ "$(jq -er .deletedList.sha256 "$DIR/recovery.lock")" == "$(sha256sum "$DIR/recovery-deleted.txt" | cut -d' ' -f1)" ]]
+    [[ "$(jq -er .deletedList.count "$DIR/recovery.lock")" == 2 ]]
+    # The hash was recorded in the same write that recorded collected.
+    [[ "$(jq -er '[.history[]|.phase]|index("collected")' "$DIR/recovery.lock")" != null ]]
+  else [[ ! -e "$DIR/recovery-deleted.txt" ]]
+    if [[ -f "$DIR/recovery.lock" ]]; then [[ "$(jq -r '.deletedList // "none"' "$DIR/recovery.lock")" == none ]]; fi
+  fi
 done
+# A failed time lookup keeps the ids and shows "unknown"; an old file never
+# survives into a collection that finds nothing to list.
+seed quiesce Q; rm "$DIR/recovery.lock"
+change_model '.app.running=true | .caddy.running=true'
+printf '9 2026-01-01T00:00:00Z\n' >"$DIR/recovery-deleted.txt"; chmod 600 "$DIR/recovery-deleted.txt"
+env RESTORE_FIXTURE_TIMES_FAIL=1 "$DIR/recovery-tools/restore.sh" --deploy-dir "$DIR" --drill --dump "$ARCHIVE" >"$WORK/out" 2>&1
+[[ "$(cat "$DIR/recovery-deleted.txt")" == $'1 unknown\n2 unknown' ]]
+seed quiesce Q; rm "$DIR/recovery.lock"
+change_model '.count=0 | .app.running=true | .caddy.running=true'
+printf '9 2026-01-01T00:00:00Z\n' >"$DIR/recovery-deleted.txt"; chmod 600 "$DIR/recovery-deleted.txt"
+"$DIR/recovery-tools/restore.sh" --deploy-dir "$DIR" --drill --dump "$ARCHIVE" >"$WORK/out" 2>&1
+[[ ! -e "$DIR/recovery-deleted.txt" ]]
+# A kill after the temp list is written and before the rename leaves a
+# .recovery-deleted.* file with ids and times. The retry and the final cleanup
+# each remove every such file, not only recovery-deleted.txt.
+seed quiesce Q; rm "$DIR/recovery.lock"
+change_model '.app.running=true | .caddy.running=true'
+rc=0
+env RESTORE_DRILL_FAULT=before-list-rename "$DIR/recovery-tools/restore.sh" --deploy-dir "$DIR" --drill --dump "$ARCHIVE" >"$WORK/out" 2>&1 || rc=$?
+[[ "$rc" == 137 ]]
+compgen -G "$DIR/.recovery-deleted.*" >/dev/null; [[ ! -e "$DIR/recovery-deleted.txt" ]]
+run_restore --resume >"$WORK/out" 2>&1 || true
+[[ "$(cat "$DIR/recovery-deleted.txt")" == $'1 2026-11-14T10:00:00Z\n2 2026-11-14T10:00:00Z' ]]
+[[ -z "$(compgen -G "$DIR/.recovery-deleted.*")" ]]
+printf '5 2026-01-01T00:00:00Z\n' >"$DIR/.recovery-deleted.stray"
+change_model '.remaining=0'
+run_restore --reopen --checked-church-records >"$WORK/out" 2>&1
+[[ ! -e "$DIR/recovery.lock" && ! -e "$DIR/recovery-deleted.txt" ]]
+[[ -z "$(compgen -G "$DIR/.recovery-deleted.*")" ]]
 # Installation from both source modes carries the full protocol, and an
 # image pin starts only the app pull, never normal services or smoke.
 for mode in image build; do
@@ -535,7 +610,9 @@ change_model '.app.running=true | .caddy.running=true'
 run_restore --dump "$ARCHIVE" >"$WORK/out" 2>&1; phase_is recovering
 # Forward upgrades already hold ops.lock while calling backup. A real backup
 # must still complete under that descriptor and hold only its own second lock.
+# The uploads volume exists, as it does in every Fold deployment: a backup without it fails.
 seed quiesce Q; rm "$DIR/recovery.lock"
+change_model '.volume={exists:true,name:"restore-fixture_uploads",createdAt:"2026-11-15T00:00:00Z"}'
 (
   ops_lock_acquire "$DIR" fixture-upgrade
   "$DIR/recovery-tools/backup.sh" --deploy-dir "$DIR" --backup-dir "$DIR/dumps" >"$WORK/out" 2>&1
@@ -699,6 +776,591 @@ seed quiesce Q; rm "$DIR/recovery.lock"
   if grep -q 'Let the existing backup finish\|no recovery lock published' "$WORK/out"; then exit 1; fi
   [[ ! -s "$WORK/calls" && ! -e "$DIR/dumps" ]]
 )
+
+# --- M5.2: uploads restore, the backup service and the scheduler --------------
+# The Docker double models the backup-image helpers (testdata/restore-docker.sh):
+# the two folders are inode numbers, a held helper stays registered as running
+# until it is reaped, and settle is one compose run. Real containers, real
+# folders and a real erasure are the restore drill's.
+chmod 755 "$WORK"
+DARCHIVE="$WORK/fold-20261115-0230.dump"
+UARCHIVE="$WORK/uploads-20261115-0230.tgz"
+CRON="$DIR/.drill-cron/fold-backup"
+BACKUP_IMAGE_ID="$(printf 'sha256:%064d' 9)"
+FOREIGN=ffffffffffffffffffffffffffffffff
+# The pids of restore.sh processes running for this site (installed or staged
+# copy), whole shells and the command substitutions they left behind. /proc is read directly: procps is not
+# in every container.
+restore_processes() {
+  local p
+  local -a args
+  for p in /proc/[0-9]*; do
+    mapfile -d '' -t args 2>/dev/null <"$p/cmdline" || continue
+    if [[ "${args[*]}" == *"restore.sh --deploy-dir $DIR"* ]]; then echo "${p#/proc/}"; fi
+  done
+  return 0
+}
+wait_no_restore_processes() {
+  local i
+  for ((i=0;i<100;i++)); do [[ -z "$(restore_processes)" ]] && return 0; sleep 0.1; done
+  echo 'a restore.sh shell is still running' >&2
+  return 1
+}
+# After seed: a uploads volume, the helpers' folders and a deployed backup
+# service coordinated with this directory, as provision leaves them.
+up_model() {
+  chmod 755 "$DIR"
+  chown 0:65532 "$DIR/backup.lock"; chmod 640 "$DIR/backup.lock"
+  printf 'valid archive fixture\n' >"$DARCHIVE"; printf 'uploads archive fixture\n' >"$UARCHIVE"
+  change_model '
+    .volume={exists:true,name:"restore-fixture_uploads",createdAt:"2026-11-15T00:00:00Z"} | .helpers=[] | .restoreUploadsLevel=1
+    | .backup={defined:true,coord:"ok",image:"fixture:backup",running:false}
+    | .up={live:"100",staged:"none",stageState:"none",receipt:false,exchange:"none",dropIntent:"",dropDone:"",nextIno:200,origLive:"100",stageIno:"",
+           photoLive:false,photoStaged:false,validateFail:false,probeFail:false,stageFail:false,exchangeFail:false,dropFail:false,free:999999999,need:1000}'
+}
+# A running site, no lock, uploads archives beside their database archive.
+fresh_up() {
+  seed quiesce Q; rm "$DIR/recovery.lock"
+  up_model
+  change_model '.app.running=true | .caddy.running=true | .backup.running=true'
+}
+dump_up() { run_restore --dump "$DARCHIVE" --uploads "$UARCHIVE"; }
+# restore_env VAR=value... -- restore arguments
+restore_env() {
+  local -a vars=()
+  while [[ "$1" != -- ]]; do vars+=("$1"); shift; done
+  shift
+  env "${vars[@]}" "$DIR/recovery-tools/restore.sh" --deploy-dir "$DIR" --drill "$@"
+}
+# The host cron in the drill's own directory, as restore.sh sees it.
+cron_kind() { DEPLOY_DRILL=1 backup_cron_kind "$@"; }
+cron_install() { DEPLOY_DRILL=1 backup_cron_install "$@"; }
+# A lock and model at one point of the uploads life cycle, in private recovery
+# (or the phase named), with the folders where that point leaves them.
+seed_up() {
+  local phase="$1" observation="$2" cleanup="$3" upstate="$4" staged="" old=""
+  seed "$phase" "$observation" "$cleanup"
+  up_model
+  case "$upstate" in
+    preflighted|stage-intent) ;;
+    staged|exchange-intent)
+      staged=200
+      change_model '.up.staged="200" | .up.stageIno="200" | .up.nextIno=201 | .up.receipt=true | .up.stageState="complete" | .up.photoStaged=true' ;;
+    exchanged|old-drop-intent)
+      staged=200; old=100
+      change_model '.up.live="200" | .up.staged="100" | .up.stageIno="200" | .up.nextIno=201 | .up.receipt=true | .up.stageState="complete" | .up.exchange="done" | .up.photoLive=true' ;;
+  esac
+  change_state --arg up "$upstate" --arg staged "$staged" --arg old "$old" --arg archive "$UARCHIVE" \
+    --arg sha "$(sha256sum "$UARCHIVE" | cut -d' ' -f1)" --arg image "$BACKUP_IMAGE_ID" \
+    '.format=2 | .uploads={archive:$archive,archiveSha256:$sha,image:$image,volume:{name:"restore-fixture_uploads",createdAt:"2026-11-15T00:00:00Z"},liveInode:"100",stagedInode:$staged,oldInode:$old,state:$up}'
+}
+wait_ready() {
+  local point="$1" i
+  for ((i=0;i<300;i++)); do [[ ! -f "$DIR/drill.ready" ]] || break; sleep 0.1; done
+  [[ "$(cat "$DIR/drill.ready")" == "$point" ]]
+}
+
+# A database-only restore stays format 1 and never reaches an uploads helper,
+# settle or the folders. It still arms the scheduler: with no backup service in
+# the deployed Compose, the guarded host full cron.
+seed quiesce Q; rm "$DIR/recovery.lock"; chmod 755 "$DIR"
+change_model '.app.running=true | .caddy.running=true'
+run_restore --dump "$ARCHIVE" >"$WORK/out" 2>&1; phase_is recovering
+[[ "$(jq -er .format "$DIR/recovery.lock")" == 1 && "$(jq -r 'has("uploads")' "$DIR/recovery.lock")" == false ]]
+run_restore --status >"$WORK/out"; if grep -q '^uploads:' "$WORK/out"; then exit 1; fi
+run_restore --reopen --checked-church-records >"$WORK/out" 2>&1
+[[ ! -e "$DIR/recovery.lock" ]]
+if grep -q 'fold.uploads.role\|settle' "$WORK/calls"; then exit 1; fi
+if grep -qE '^up-|^settle' "$WORK/events"; then exit 1; fi
+grep -q 'root .*/backup.sh >>' "$CRON"; if grep -q -- '--expire-only' "$CRON"; then exit 1; fi
+[[ "$(stat -c %a "$CRON")" == 644 ]]
+
+# A lock that carries uploads is format 2, which a tool set from before it
+# cannot read, and its fields must be well formed.
+seed_up recovering A none exchanged
+[[ "$(jq -er .format "$DIR/recovery.lock")" == 2 ]]
+if jq -e '.format==1' "$DIR/recovery.lock" >/dev/null; then exit 1; fi
+change_state '.uploads.state="bogus"'
+rejected 'invalid recovery.lock' run_restore --status
+seed recovering A
+rejected 'was not started with --uploads' run_restore --resume --uploads "$UARCHIVE"
+rejected '--uploads is for --dump' run_restore --reopen --uploads "$UARCHIVE"
+
+# Every refusal happens before recovery.lock and before anything stops.
+for refusal in stamp capability archive space helper probe unset other rw other-dir no-backup; do
+  fresh_up
+  args=(--dump "$DARCHIVE" --uploads "$UARCHIVE"); needle=''
+  case "$refusal" in
+    stamp) cp "$UARCHIVE" "$WORK/uploads-20260101-0000.tgz"; args=(--dump "$DARCHIVE" --uploads "$WORK/uploads-20260101-0000.tgz"); needle='must be uploads-20261115-0230.tgz' ;;
+    capability) change_model '.restoreUploadsLevel=0'; needle='cannot settle restored uploads' ;;
+    archive) change_model '.up.validateFail=true'; needle='failed validation' ;;
+    space) change_model '.up.free=1'; needle='too little room' ;;
+    helper) change_model --arg n "$FOREIGN" '.helpers=[{id:"helper-stage-1",role:"stage",nonce:$n,image:""}]'; needle='still running' ;;
+    probe) change_model '.up.probeFail=true'; needle='cannot exchange folders atomically' ;;
+    unset|other|rw|other-dir) change_model --arg c "$refusal" '.backup.coord=$c'; needle='not coordinated' ;;
+    no-backup) change_model '.backup.defined=false'; needle='defines none' ;;
+  esac
+  rejected "$needle" "$DIR/recovery-tools/restore.sh" --deploy-dir "$DIR" --drill "${args[@]}"
+  [[ ! -e "$DIR/recovery.lock" ]]; no_sql_writes
+  [[ "$(jq -er '.app.running and .caddy.running' "$WORK/model.json")" == true ]]
+  if grep -qE 'stop-|^up-stage|^up-exchange|start-recovery' "$WORK/events"; then exit 1; fi
+  if grep -q 'rm-helper' "$WORK/events" && [[ "$refusal" == helper ]]; then exit 1; fi
+done
+# A database-only restore is refused too when a backup service in the deployed
+# Compose cannot see the locks.
+for coord in unset other rw other-dir; do
+  seed quiesce Q; rm "$DIR/recovery.lock"; up_model
+  change_model --arg c "$coord" '.app.running=true | .caddy.running=true | .backup.coord=$c'
+  rejected 'not coordinated' "$DIR/recovery-tools/restore.sh" --deploy-dir "$DIR" --drill --dump "$ARCHIVE"
+  [[ ! -e "$DIR/recovery.lock" ]]; no_sql_writes
+done
+# Discovery errors are not an absent service; lock permissions and directory
+# search are part of "the service can use the lock".
+seed quiesce Q; up_model
+backup_service_defined "$DIR"
+backup_coordination_check "$DIR" >/dev/null
+chmod 600 "$DIR/backup.lock"
+if backup_coordination_check "$DIR" >"$WORK/out" 2>&1; then exit 1; fi
+grep -q 'cannot lock it' "$WORK/out"
+chmod 640 "$DIR/backup.lock"; chmod 750 "$DIR"
+if backup_coordination_check "$DIR" >"$WORK/out" 2>&1; then exit 1; fi
+grep -q 'cannot be searched' "$WORK/out"
+chmod 755 "$DIR"
+change_model '.backup.defined=false'; rc=0; backup_service_defined "$DIR" || rc=$?; [[ "$rc" == 1 ]]
+change_model '.configFail=true'; rc=0; backup_service_defined "$DIR" || rc=$?; [[ "$rc" == 2 ]]
+change_model '.configFail=false'
+
+# The full run, in order: validate and probe, close, collect, stage, swap,
+# exchange, private recovery; then settle before anything public starts, smoke,
+# the old folder and receipt, and the scheduler, with the lock still held.
+fresh_up
+dump_up >"$WORK/out" 2>&1; phase_is recovering
+[[ "$(jq -er .uploads.state "$DIR/recovery.lock")" == exchanged ]]
+[[ "$(jq -er '.uploads|[.liveInode,.stagedInode,.oldInode]|join(",")' "$DIR/recovery.lock")" == 100,200,100 ]]
+[[ "$(jq -er .uploads.image "$DIR/recovery.lock")" == "$BACKUP_IMAGE_ID" ]]
+[[ "$(jq -er .uploads.volume.name "$DIR/recovery.lock")" == restore-fixture_uploads ]]
+[[ "$(jq -er .uploads.archiveSha256 "$DIR/recovery.lock")" == "$(sha256sum "$UARCHIVE" | cut -d' ' -f1)" ]]
+order="$(paste -sd, "$WORK/events")"
+[[ "$order" == *up-validate,up-probe*stop-caddy,stop-app,stop-backup*archive-restore*up-stage*up-exchange*start-recovery* ]]
+[[ "$(jq -r '[.up.live,.up.staged,(.helpers|length|tostring),(.up.photoLive|tostring)]|join(",")' "$WORK/model.json")" == 200,100,0,true ]]
+[[ "$(jq -r .backup.running "$WORK/model.json")" == false && "$(jq -r '.app.running or .caddy.running' "$WORK/model.json")" == false ]]
+run_restore --status >"$WORK/out"; grep -q 'uploads: state=exchanged liveInode=100 stagedInode=200 oldInode=100' "$WORK/out"
+image_id="$(jq -er .imageId "$DIR/recovery.lock")"; nonce="$(jq -er .nonce "$DIR/recovery.lock")"
+: >"$WORK/events"
+run_restore --reopen --checked-church-records >"$WORK/out" 2>&1
+[[ ! -e "$DIR/recovery.lock" ]]
+order="$(paste -sd, "$WORK/events")"
+[[ "$order" == *rm-recovery*settle-start*settle-end\ rc=0*start-app*start-caddy*smoke*up-drop,up-release*start-backup* ]]
+grep -qF "settle-start image=$image_id nonce=$nonce" "$WORK/events"
+# The argv ends with the recovery service and the command; the image's own
+# /fold entrypoint is kept, never replaced.
+grep -qE ' -f [^ ]*/compose.recovery.yml --profile recovery run --rm --no-deps -T recovery restore settle-uploads --json$' "$WORK/calls"
+if grep -q 'settle-uploads.*--entrypoint\|--entrypoint.*settle-uploads' "$WORK/calls"; then exit 1; fi
+[[ "$(jq -r '[.up.live,.up.staged,(.up.receipt|tostring),(.up.photoLive|tostring),.up.dropDone,.backup.running|tostring]|join(",")' "$WORK/model.json")" == 200,none,false,false,100,true ]]
+[[ ! -e "$CRON" ]]
+
+# Before settle the erased person's photo is still there and nothing is public;
+# after it, it is gone and still nothing is public.
+for point in before-settle after-settle; do
+  seed_up recovering A none exchanged
+  mkfifo "$DIR/drill.fifo"
+  restore_env RESTORE_DRILL_PAUSE="$point" -- --reopen --checked-church-records >"$WORK/out" 2>&1 &
+  holder=$!
+  wait_ready "$point"
+  [[ "$(jq -r '.app.running or .caddy.running or .backup.running' "$WORK/model.json")" == false ]]
+  if [[ "$point" == before-settle ]]; then
+    [[ "$(jq -r .up.photoLive "$WORK/model.json")" == true ]]
+  else
+    [[ "$(jq -r '[.up.photoLive,.recovery.exists]|join(",")' "$WORK/model.json")" == false,false ]]
+  fi
+  printf 'continue\n' >"$DIR/drill.fifo"
+  wait "$holder"
+  [[ ! -e "$DIR/recovery.lock" ]]
+done
+# Settle that cannot finish leaves the site closed; --resume returns to private
+# recovery, where the photo still exists, and a repeat settles.
+for settle_rc in 1 2; do
+  seed_up recovering A none exchanged
+  change_model --argjson rc "$settle_rc" '.settle.rc=$rc'
+  rejected reopen-failed "$DIR/recovery-tools/restore.sh" --deploy-dir "$DIR" --drill --reopen --checked-church-records
+  phase_is reopen-failed
+  [[ "$(jq -r '[.app.running,.caddy.running,.up.photoLive]|map(tostring)|join(",")' "$WORK/model.json")" == false,false,true ]]
+  change_model '.settle.rc=0'
+  run_restore --resume >"$WORK/out" 2>&1; phase_is recovering
+  run_restore --reopen --checked-church-records >"$WORK/out" 2>&1
+  [[ ! -e "$DIR/recovery.lock" && "$(jq -r .up.photoLive "$WORK/model.json")" == false ]]
+done
+# A zero exit that still reports an unexpected folder entry (or no counts) is not
+# clear: the site stays closed.
+for settle_out in '{"remaining":0,"unexpected":2}' '{"unexpected":0}' 'not json'; do
+  seed_up recovering A none exchanged
+  change_model --arg out "$settle_out" '.settle.out=$out'
+  rejected reopen-failed "$DIR/recovery-tools/restore.sh" --deploy-dir "$DIR" --drill --reopen --checked-church-records
+  phase_is reopen-failed
+  [[ "$(jq -r '[.app.running,.caddy.running]|map(tostring)|join(",")' "$WORK/model.json")" == false,false ]]
+done
+# Killed while settle runs: the retry removes its container first.
+seed_up recovering A none exchanged
+rc=0; restore_env RESTORE_DRILL_FAULT=during-settle RESTORE_FIXTURE_SETTLE_HOLD=1 -- --reopen --checked-church-records >"$WORK/out" 2>&1 || rc=$?
+[[ "$rc" == 137 && "$(jq -r .recovery.exists "$WORK/model.json")" == true ]]
+phase_is reopen-intent
+: >"$WORK/events"
+run_restore --resume >"$WORK/out" 2>&1; phase_is recovering
+order="$(paste -sd, "$WORK/events")"; [[ "$order" == *rm-recovery*start-recovery* ]]
+run_restore --reopen --checked-church-records >"$WORK/out" 2>&1
+[[ ! -e "$DIR/recovery.lock" && "$(jq -r .up.photoLive "$WORK/model.json")" == false ]]
+
+# Killed while the stage helper runs: the helper is still registered and
+# running. A foreign helper blocks the retry; with it gone the retry removes the
+# owned helper before it looks at a folder, and everything converges.
+fresh_up
+rc=0; restore_env RESTORE_DRILL_FAULT=during-uploads-stage RESTORE_FIXTURE_HELPER_HOLD=stage -- --dump "$DARCHIVE" --uploads "$UARCHIVE" >"$WORK/out" 2>&1 || rc=$?
+[[ "$rc" == 137 ]]
+# Only the caller died, as with a real SIGKILL: the command substitution that was
+# waiting on the held helper is still running, and it holds neither lock and
+# starts no second helper.
+[[ -n "$(restore_processes)" ]]
+( exec 9>>"$DIR/ops.lock"; flock -w 5 -x 9 )
+( exec 6>>"$DIR/backup.lock"; flock -w 5 -x 6 )
+[[ "$(jq -r '.helpers|length' "$WORK/model.json")" == 1 && "$(jq -r '.helpers[0].nonce' "$WORK/model.json")" == "$(jq -er .nonce "$DIR/recovery.lock")" ]]
+[[ "$(jq -r .up.stageState "$WORK/model.json")" == none ]]
+phase_is collected; [[ "$(jq -er .uploads.state "$DIR/recovery.lock")" == stage-intent ]]
+change_model --arg n "$FOREIGN" '.helpers += [{id:"helper-foreign-9",role:"stage",nonce:$n,image:""}]'
+before="$(jq -cS .up "$WORK/model.json")"
+rejected 'foreign uploads helper' run_restore --resume
+[[ "$(jq -cS .up "$WORK/model.json")" == "$before" && "$(jq -r '.helpers|length' "$WORK/model.json")" == 2 ]]
+rejected 'foreign uploads helper' run_restore --abort
+[[ "$(jq -cS .up "$WORK/model.json")" == "$before" ]]
+change_model --arg n "$FOREIGN" '.helpers |= map(select(.nonce!=$n))'
+: >"$WORK/events"
+run_restore --resume >"$WORK/out" 2>&1; phase_is recovering
+order="$(paste -sd, "$WORK/events")"; [[ "$order" == *rm-helper*up-stage*up-exchange* ]]
+[[ "$(jq -r '[(.helpers|length|tostring),.up.exchange,.up.live]|join(",")' "$WORK/model.json")" == 0,done,200 ]]
+# The helper's removal lets the surviving shell finish.
+wait_no_restore_processes
+# A real SIGKILL of the restore process alone, while a helper is held two command
+# substitutions down (the preflight's observe: uploads_observe inside a capture).
+# The shells waiting on it hold neither lock, so the next run takes ops.lock and
+# meets the helper (a running helper without a lock is refused for the operator
+# to remove); once it is gone the run converges.
+fresh_up
+RESTORE_FIXTURE_HELPER_HOLD=observe "$DIR/recovery-tools/restore.sh" --deploy-dir "$DIR" --drill --dump "$DARCHIVE" --uploads "$UARCHIVE" >"$WORK/out" 2>&1 &
+caller=$!
+# The preflight runs the short-lived validate and probe helpers first, so wait for
+# the held observe helper by role, not for the first helper of any kind.
+for ((i=0;i<150;i++)); do [[ "$(jq -r '[.helpers[]|select(.role=="observe")]|length' "$WORK/model.json")" == 0 ]] || break; sleep 0.1; done
+[[ "$(jq -r '.helpers|map(.role)|join(",")' "$WORK/model.json")" == observe ]]
+kill -KILL "$caller"
+rc=0; wait "$caller" || rc=$?
+[[ "$rc" == 137 && ! -e "$DIR/recovery.lock" ]]
+[[ -n "$(restore_processes)" ]]
+( exec 9>>"$DIR/ops.lock"; flock -w 5 -x 9 )
+( exec 6>>"$DIR/backup.lock"; flock -w 5 -x 6 )
+rejected 'still running without a recovery lock' dump_up
+if grep -q 'maintenance busy' "$WORK/out"; then exit 1; fi
+change_model '.helpers=[]'
+wait_no_restore_processes
+dump_up >"$WORK/out" 2>&1; phase_is recovering
+# Staging finished but was not acknowledged: the retry needs the archive's
+# bytes (staging is not yet recorded) and refuses another file.
+fresh_up
+rc=0; restore_env RESTORE_DRILL_FAULT=after-uploads-stage -- --dump "$DARCHIVE" --uploads "$UARCHIVE" >"$WORK/out" 2>&1 || rc=$?
+[[ "$rc" == 137 && "$(jq -r .up.stageState "$WORK/model.json")" == complete && "$(jq -er .uploads.state "$DIR/recovery.lock")" == stage-intent ]]
+printf 'another file\n' >"$WORK/other-uploads"
+rejected 'same uploads archive sha256' run_restore --resume --uploads "$WORK/other-uploads"
+mv "$UARCHIVE" "$WORK/held-uploads"
+rejected 'same uploads archive sha256' run_restore --resume
+mv "$WORK/held-uploads" "$UARCHIVE"
+run_restore --resume >"$WORK/out" 2>&1; phase_is recovering
+[[ "$(jq -er .uploads.state "$DIR/recovery.lock")" == exchanged ]]
+# Staged and killed before the swap: later phases never need the archive, and an
+# abort leaves the original database and the live folder as they were.
+fresh_up
+rc=0; restore_env RESTORE_DRILL_FAULT=before-swap -- --dump "$DARCHIVE" --uploads "$UARCHIVE" >"$WORK/out" 2>&1 || rc=$?
+[[ "$rc" == 137 && "$(jq -er .uploads.state "$DIR/recovery.lock")" == staged ]]
+live_before="$(jq -r .up.live "$WORK/model.json")"
+mv "$UARCHIVE" "$WORK/held-uploads"; mv "$DARCHIVE" "$WORK/held-dump"
+run_restore --resume >"$WORK/out" 2>&1; phase_is recovering
+[[ "$(jq -er .uploads.state "$DIR/recovery.lock")" == exchanged && "$(jq -r .up.live "$WORK/model.json")" == 200 ]]
+mv "$WORK/held-uploads" "$UARCHIVE"; mv "$WORK/held-dump" "$DARCHIVE"
+for abort_point in none after-uploads-drop before-scheduler; do
+  fresh_up
+  rc=0; restore_env RESTORE_DRILL_FAULT=before-swap -- --dump "$DARCHIVE" --uploads "$UARCHIVE" >"$WORK/out" 2>&1 || rc=$?
+  [[ "$rc" == 137 ]]
+  [[ "$(jq -r .up.live "$WORK/model.json")" == "$live_before" && "$(jq -r .up.staged "$WORK/model.json")" == 200 ]]
+  if [[ "$abort_point" != none ]]; then
+    rc=0; restore_env RESTORE_DRILL_FAULT="$abort_point" -- --abort >"$WORK/out" 2>&1 || rc=$?
+    [[ "$rc" == 137 && -e "$DIR/recovery.lock" ]]
+    run_restore --status >"$WORK/out" 2>&1 || true
+  fi
+  run_restore --abort >"$WORK/out" 2>&1
+  [[ ! -e "$DIR/recovery.lock" ]]
+  [[ "$(jq -r '[.up.live,.up.staged,(.up.receipt|tostring),.up.dropDone,.app.running,.caddy.running,.backup.running]|map(tostring)|join(",")' "$WORK/model.json")" == "$live_before,none,false,200,true,true,true" ]]
+  [[ "$(jq -er '.dbs.fold.oid' "$WORK/model.json")" == 10 ]]
+done
+# An abort that cannot remove the staged folder keeps the site closed and the
+# lock; the repeat finishes.
+fresh_up
+rc=0; restore_env RESTORE_DRILL_FAULT=before-swap -- --dump "$DARCHIVE" --uploads "$UARCHIVE" >"$WORK/out" 2>&1 || rc=$?
+[[ "$rc" == 137 ]]
+change_model '.up.dropFail=true'
+rejected 'abort-failed at=uploads' run_restore --abort
+phase_is abort-failed; [[ "$(jq -er .at "$DIR/recovery.lock")" == uploads ]]
+[[ "$(jq -r '.app.running or .caddy.running' "$WORK/model.json")" == false ]]
+change_model '.up.dropFail=false'
+run_restore --abort >"$WORK/out" 2>&1; [[ ! -e "$DIR/recovery.lock" ]]
+# A recorded stage that is missing is not a cleaned one. Without a recorded
+# removal, and with a recorded removal the helper's receipt does not confirm,
+# nothing is released: the lock, the receipt and the closed site stay, every
+# retry refuses the same way, and once the folder is back the abort converges.
+for missing in no-intent unconfirmed-intent; do
+  fresh_up
+  rc=0; restore_env RESTORE_DRILL_FAULT=before-swap -- --dump "$DARCHIVE" --uploads "$UARCHIVE" >"$WORK/out" 2>&1 || rc=$?
+  [[ "$rc" == 137 && "$(jq -er .uploads.state "$DIR/recovery.lock")" == staged && "$(jq -er .uploads.stagedInode "$DIR/recovery.lock")" == 200 ]]
+  change_model '.up.staged="none"'
+  [[ "$missing" == no-intent ]] || change_state '.uploads.state="staged-drop-intent"'
+  : >"$WORK/events"
+  for _ in 1 2; do
+    rejected 'abort-failed at=uploads' run_restore --abort
+    phase_is abort-failed; [[ "$(jq -er .at "$DIR/recovery.lock")" == uploads ]]
+    [[ "$(jq -er .uploads.stagedInode "$DIR/recovery.lock")" == 200 && "$(jq -er .uploads.state "$DIR/recovery.lock")" != staged-dropped ]]
+    [[ "$(jq -r '[.up.receipt,.up.dropDone,.app.running,.caddy.running]|map(tostring)|join(",")' "$WORK/model.json")" == true,,false,false ]]
+    if grep -q '^up-release$' "$WORK/events"; then exit 1; fi
+  done
+  [[ "$missing" == unconfirmed-intent ]] || grep -qF 'no removal of it was recorded' "$WORK/out"
+  change_model '.up.staged="200"'
+  run_restore --abort >"$WORK/out" 2>&1; [[ ! -e "$DIR/recovery.lock" ]]
+  [[ "$(jq -r '[.up.live,.up.staged,(.up.receipt|tostring),.up.dropDone]|join(",")' "$WORK/model.json")" == 100,none,false,200 ]]
+done
+# Staging finished but its acknowledgement was lost, so recovery.lock names no
+# stage (stage-intent, stagedInode empty) while the helper's receipt records a
+# completed one. If that folder then vanishes with no removal ever recorded, the
+# receipt is the witness: every abort refuses, keeps the lock, the receipt and
+# the closed site, and converges once the folder is back.
+fresh_up
+rc=0; restore_env RESTORE_DRILL_FAULT=after-uploads-stage -- --dump "$DARCHIVE" --uploads "$UARCHIVE" >"$WORK/out" 2>&1 || rc=$?
+[[ "$rc" == 137 && "$(jq -er .uploads.state "$DIR/recovery.lock")" == stage-intent && "$(jq -er .uploads.stagedInode "$DIR/recovery.lock")" == '' ]]
+[[ "$(jq -r '[.up.stageState,.up.stageIno,.up.staged]|join(",")' "$WORK/model.json")" == complete,200,200 ]]
+change_model '.up.staged="none"'
+for _ in 1 2; do
+  rejected 'abort-failed at=uploads' run_restore --abort
+  grep -qF 'would not release its receipt' "$WORK/out"
+  phase_is abort-failed; [[ "$(jq -er .at "$DIR/recovery.lock")" == uploads ]]
+  [[ "$(jq -er .uploads.state "$DIR/recovery.lock")" == stage-intent && "$(jq -er .uploads.stagedInode "$DIR/recovery.lock")" == '' ]]
+  [[ "$(jq -r '[.up.receipt,.up.stageIno,.up.dropDone,.up.live,.app.running,.caddy.running]|map(tostring)|join(",")' "$WORK/model.json")" == true,200,,100,false,false ]]
+done
+change_model '.up.staged="200"'
+run_restore --abort >"$WORK/out" 2>&1; [[ ! -e "$DIR/recovery.lock" ]]
+[[ "$(jq -r '[.up.live,.up.staged,(.up.receipt|tostring),.up.dropDone]|join(",")' "$WORK/model.json")" == 100,none,false,200 ]]
+# A pending receipt that names no stage has nothing to confirm: the same
+# disappearance of its (empty) folder is a clean abort.
+fresh_up
+change_model '.up.stageKill="mkdir"'
+rejected 'staging the uploads failed' dump_up
+[[ "$(jq -r '[.up.stageState,.up.stageIno,.up.staged]|join(",")' "$WORK/model.json")" == pending,,200 ]]
+change_model '.up.staged="none"'
+run_restore --abort >"$WORK/out" 2>&1; [[ ! -e "$DIR/recovery.lock" ]]
+[[ "$(jq -r '[.up.live,.up.staged,(.up.receipt|tostring)]|join(",")' "$WORK/model.json")" == 100,none,false ]]
+# Staging that fails keeps the lock and the closed site; both resume and abort work.
+fresh_up
+change_model '.up.stageFail=true'
+rejected 'staging the uploads failed' dump_up
+phase_is collected
+change_model '.up.stageFail=false'
+run_restore --resume >"$WORK/out" 2>&1; phase_is recovering
+# The stage helper is stopped after it created the empty staged folder and
+# before its receipt named it (a pending receipt, no stage inode: what the reap of
+# a running helper leaves when it lands in that window). The folder is not a
+# complete stage, nothing exchanges it, and both a retry and an abort converge
+# without touching the live folder or the database. The abort removes exactly that
+# folder under the recorded identity.
+for after in resume abort; do
+  fresh_up
+  change_model '.up.stageKill="mkdir"'
+  rejected 'staging the uploads failed' dump_up
+  phase_is collected; [[ "$(jq -er .uploads.state "$DIR/recovery.lock")" == stage-intent ]]
+  [[ "$(jq -r '[.up.live,.up.staged,.up.stageIno,.up.stageState,.up.exchange]|join(",")' "$WORK/model.json")" == 100,200,,pending,none ]]
+  [[ "$(jq -r '.app.running or .caddy.running' "$WORK/model.json")" == false ]]
+  if [[ "$after" == resume ]]; then
+    run_restore --resume >"$WORK/out" 2>&1; phase_is recovering
+    [[ "$(jq -er .uploads.state "$DIR/recovery.lock")" == exchanged && "$(jq -er .uploads.oldInode "$DIR/recovery.lock")" == 100 ]]
+    [[ "$(jq -r '[.up.live,.up.stageState,(.helpers|length|tostring)]|join(",")' "$WORK/model.json")" == 201,complete,0 ]]
+  else
+    run_restore --abort >"$WORK/out" 2>&1
+    [[ ! -e "$DIR/recovery.lock" ]]
+    [[ "$(jq -r '[.up.live,.up.staged,(.up.receipt|tostring),.up.dropDone,.app.running,.caddy.running,.backup.running]|map(tostring)|join(",")' "$WORK/model.json")" == 100,none,false,200,true,true,true ]]
+    [[ "$(jq -er '.dbs.fold.oid' "$WORK/model.json")" == 10 ]]
+  fi
+done
+# Exchange interrupted after the helper returned, before it was acknowledged.
+fresh_up
+rc=0; restore_env RESTORE_DRILL_FAULT=after-uploads-exchange -- --dump "$DARCHIVE" --uploads "$UARCHIVE" >"$WORK/out" 2>&1 || rc=$?
+[[ "$rc" == 137 && "$(jq -er .uploads.state "$DIR/recovery.lock")" == exchange-intent && "$(jq -r .up.live "$WORK/model.json")" == 200 ]]
+mv "$UARCHIVE" "$WORK/held-uploads"
+run_restore --resume >"$WORK/out" 2>&1; phase_is recovering
+[[ "$(jq -er .uploads.state "$DIR/recovery.lock")" == exchanged && "$(jq -er .uploads.oldInode "$DIR/recovery.lock")" == 100 ]]
+mv "$WORK/held-uploads" "$UARCHIVE"
+# Folders that match neither the recorded pair nor its swap go to reconcile-needed
+# with nothing exchanged or removed.
+seed_up restored A none exchange-intent
+change_model '.up.live="999"'
+before="$(jq -cS .up "$WORK/model.json")"
+rejected 'uploads folders do not match' run_restore --resume
+phase_is reconcile-needed
+[[ "$(jq -cS .up "$WORK/model.json")" == "$before" ]]
+# The recheck only restores the phase; the exchange refuses again, untouched.
+run_restore --resume >"$WORK/out" 2>&1; phase_is restored
+[[ "$(jq -cS .up "$WORK/model.json")" == "$before" ]]
+rejected 'uploads folders do not match' run_restore --resume
+phase_is reconcile-needed
+rejected 'abort refused' run_restore --abort
+[[ "$(jq -cS .up "$WORK/model.json")" == "$before" ]]
+# Removal of the old folder and the receipt: killed while it runs, after it
+# returns, and with the archive long gone. Each retry converges and removes
+# only the recorded tree.
+for point in during-uploads-drop after-uploads-drop; do
+  seed_up recovering A none exchanged
+  hold=(); [[ "$point" != during-uploads-drop ]] || hold=(RESTORE_FIXTURE_HELPER_HOLD=drop)
+  rc=0; restore_env RESTORE_DRILL_FAULT="$point" "${hold[@]}" -- --reopen --checked-church-records >"$WORK/out" 2>&1 || rc=$?
+  [[ "$rc" == 137 ]]
+  phase_is pre-dropped; [[ "$(jq -er .uploads.state "$DIR/recovery.lock")" == old-drop-intent ]]
+  mv "$UARCHIVE" "$WORK/held-uploads"
+  run_restore --resume >"$WORK/out" 2>&1
+  mv "$WORK/held-uploads" "$UARCHIVE"
+  [[ ! -e "$DIR/recovery.lock" ]]
+  [[ "$(jq -r '[.up.live,.up.staged,(.up.receipt|tostring),.up.dropDone,(.helpers|length|tostring)]|join(",")' "$WORK/model.json")" == 200,none,false,100,0 ]]
+done
+# The old folder is dropped only under its recorded intent and only by its
+# recorded identity: a different identity is refused and nothing is removed.
+seed_up pre-dropped C dropped old-drop-intent
+change_state '.uploads.oldInode="777"'
+rejected 'cleanup-failed at uploads' run_restore --resume
+[[ "$(jq -r .up.staged "$WORK/model.json")" == 100 ]]
+phase_is cleanup-failed; [[ "$(jq -er .at "$DIR/recovery.lock")" == uploads ]]
+change_state '.uploads.oldInode="100"'
+run_restore --resume >"$WORK/out" 2>&1; [[ ! -e "$DIR/recovery.lock" && "$(jq -r .up.staged "$WORK/model.json")" == none ]]
+
+# The scheduler is armed after smoke and cleanup, before the lock goes, and a kill
+# on either side of arming or of the lock's removal converges with the scheduler
+# already armed whenever the lock is absent.
+for flavor in service cron; do
+  for point in before-scheduler after-scheduler after-lock-remove; do
+    seed recovering A none; up_model
+    if [[ "$flavor" == cron ]]; then change_model '.backup.defined=false'; fi
+    rc=0; restore_env RESTORE_DRILL_FAULT="$point" -- --reopen --checked-church-records >"$WORK/out" 2>&1 || rc=$?
+    [[ "$rc" == 137 ]]
+    armed=false
+    if [[ "$flavor" == service ]]; then armed="$(jq -r .backup.running "$WORK/model.json")"; elif [[ -f "$CRON" ]]; then armed=true; fi
+    case "$point" in
+      before-scheduler) [[ -e "$DIR/recovery.lock" && "$armed" == false ]] ;;
+      after-scheduler) [[ -e "$DIR/recovery.lock" && "$armed" == true ]] ;;
+      after-lock-remove) [[ ! -e "$DIR/recovery.lock" && "$armed" == true ]] ;;
+    esac
+    if [[ -e "$DIR/recovery.lock" ]]; then run_restore --resume >"$WORK/out" 2>&1; fi
+    [[ ! -e "$DIR/recovery.lock" ]]
+    if [[ "$flavor" == service ]]; then [[ "$(jq -r .backup.running "$WORK/model.json")" == true && ! -e "$CRON" ]]
+    else [[ "$(cron_kind "$DIR")" == full ]]; fi
+  done
+done
+# A recovery never replaces a host full cron with expire-only, and a pin to a
+# Compose with no backup service puts the full cron back over an expire-only one.
+seed recovering A none; up_model
+cron_install "$DIR" full
+run_restore --reopen --checked-church-records >"$WORK/out" 2>&1
+[[ "$(cron_kind "$DIR")" == full && "$(jq -r .backup.running "$WORK/model.json")" == true ]]
+seed recovering A none; up_model
+change_model '.backup.defined=false'
+cron_install "$DIR" expire
+[[ "$(cron_kind "$DIR")" == expire ]]
+run_restore --reopen --checked-church-records >"$WORK/out" 2>&1
+[[ "$(cron_kind "$DIR")" == full ]]
+# A pinned backup service that does not share the locks is never started: the
+# site stays open, the lock stays, and the phase says the scheduler failed.
+seed recovering A none; up_model
+change_model '.backup.coord="unset"'
+rejected 'cleanup-failed at scheduler' run_restore --reopen --checked-church-records
+phase_is cleanup-failed; [[ "$(jq -er .at "$DIR/recovery.lock")" == scheduler ]]
+[[ "$(jq -r '[.backup.running,.app.running,.caddy.running]|map(tostring)|join(",")' "$WORK/model.json")" == false,true,true ]]
+if grep -q 'start-backup' "$WORK/events"; then exit 1; fi
+change_model '.backup.coord="ok"'
+run_restore --resume >"$WORK/out" 2>&1
+[[ ! -e "$DIR/recovery.lock" && "$(jq -r .backup.running "$WORK/model.json")" == true ]]
+# A pinned backup service whose resolved identity is not exactly the shipped one
+# is never started either: the site stays open, the lock stays and the phase says
+# the scheduler failed. The shipped identity then resumes. One case each for an
+# unset field, a wrong value and an added privilege; the whole rule is tabled in
+# backup-archives-fixtures.sh (case_identity).
+for override in user-unset capdrop-partial privileged; do
+  seed recovering A none; up_model
+  case "$override" in
+    user-unset) change_model '.backup.user="unset"' ;;
+    capdrop-partial) change_model '.backup.capDrop=["NET_RAW"]' ;;
+    privileged) change_model '.backup.privileged=true' ;;
+  esac
+  rejected 'cleanup-failed at scheduler' run_restore --reopen --checked-church-records
+  phase_is cleanup-failed; [[ "$(jq -er .at "$DIR/recovery.lock")" == scheduler ]]
+  [[ "$(jq -r '[.backup.running,.app.running,.caddy.running]|map(tostring)|join(",")' "$WORK/model.json")" == false,true,true ]]
+  if grep -q 'start-backup' "$WORK/events"; then exit 1; fi
+  change_model 'del(.backup.user, .backup.capDrop, .backup.privileged)'
+  run_restore --resume >"$WORK/out" 2>&1
+  [[ ! -e "$DIR/recovery.lock" && "$(jq -r .backup.running "$WORK/model.json")" == true ]]
+done
+# An abort arms the scheduler the same way.
+seed collected B; up_model
+run_restore --abort >"$WORK/out" 2>&1
+[[ ! -e "$DIR/recovery.lock" && "$(jq -r .backup.running "$WORK/model.json")" == true ]]
+
+# backup.lock: root, group 65532, mode 640 after every host acquisition, the
+# same inode, and nothing else in the directory loosened.
+seed quiesce Q; rm "$DIR/recovery.lock"; chmod 755 "$DIR"
+[[ "$(stat -c %a "$DIR/backup.lock")" == 600 ]]
+lock_id="$(stat -c '%d:%i' "$DIR/backup.lock")"
+for round in 1 2; do
+  ( backup_coord_acquire "$DIR" )
+  [[ "$(stat -c '%u:%g:%a' "$DIR/backup.lock")" == 0:65532:640 && "$lock_id" == "$(stat -c '%d:%i' "$DIR/backup.lock")" ]]
+done
+[[ "$(stat -c '%u:%a' "$DIR/.env")" == 0:600 ]]
+# A real uid 65532 locks the inode through a read-only handle, and the host and
+# that uid exclude one another in both directions.
+if command -v setpriv >/dev/null 2>&1; then
+  as_backup() { setpriv --reuid 65532 --regid 65532 --clear-groups "$@"; }
+  ( backup_coord_acquire "$DIR"
+    if as_backup bash -c 'exec 5<"$1"; flock -n -x 5' _ "$DIR/backup.lock"; then exit 1; fi )
+  # Started as a plain command, not through as_backup: a backgrounded shell
+  # function forks a subshell, so $! would name that wrapper and killing it
+  # would leave the real lock holder (setpriv, then bash, then sleep, one pid)
+  # alive and still holding the lock.
+  setpriv --reuid 65532 --regid 65532 --clear-groups bash -c 'exec 5<"$1"; flock -x 5; exec sleep 20' _ "$DIR/backup.lock" &
+  holder=$!
+  sleep 1
+  [[ "$(cat "/proc/$holder/comm")" == sleep && "$(stat -c %u "/proc/$holder")" == 65532 ]]
+  rc=0; ( backup_coord_acquire "$DIR" 1 restore ) >/dev/null 2>&1 || rc=$?
+  [[ "$rc" == 75 ]]
+  kill "$holder"; wait "$holder" 2>/dev/null || true
+  if kill -0 "$holder" 2>/dev/null; then exit 1; fi
+  ( backup_coord_acquire "$DIR" )
+  if as_backup test -r "$DIR/.env"; then exit 1; fi
+  [[ "$lock_id" == "$(stat -c '%d:%i' "$DIR/backup.lock")" ]]
+fi
+
+# provision --pin-only writes FOLD_BACKUP_COORD (byte-stable on a repeat) and
+# pulls the backup image with the app when the target Compose defines it; a
+# failed backup pull is a pin failure that restores the saved pin.
+seed pin-intent B; up_model
+for round in 1 2; do
+  ( ops_lock_acquire "$DIR" fixture
+    "$DIR/recovery-tools/provision.sh" --pin-only --skip-harden --deploy-dir "$DIR" --source-dir "$WORK/source" --domain groups.example.org --image fixture:target --allow-os --recovery-nonce "$NONCE" >"$WORK/out" 2>&1 )
+  [[ "$(env_value "$DIR/.env" FOLD_BACKUP_COORD)" == "$DIR" ]]
+  [[ "$round" == 1 ]] || [[ "$env_sum" == "$(sha256sum "$DIR/.env")" ]]
+  env_sum="$(sha256sum "$DIR/.env")"
+done
+grep -q "compose --project-directory $DIR pull app backup" "$WORK/calls"
+seed pin-intent B none partial; change_state '.target=null'; up_model
+change_model '.backupPullFail=true'
+before_env="$(cat "$DIR/.env")"
+rejected 'pin failed; site stays closed' run_restore --resume
+phase_is pin-failed
+[[ "$before_env" == "$(cat "$DIR/.env")" ]]
 
 echo 'restore review F8-F10 fixtures: ok'
 echo 'restore installed CLI fixtures: ok'

@@ -925,6 +925,35 @@ func TestCleanOwnerBatches(t *testing.T) {
 	})
 }
 
+// An empty keep, the closed-restore command's call for a folder with no
+// account, drains an owner of any size through repeated calls and then removes
+// the folder.
+func TestCleanOwnerEmptyKeepDrainsAcrossCalls(t *testing.T) {
+	s := testStore(t)
+	fillOwner(t, s.Dir, 1, 2*CleanBatch+5)
+	fillOwner(t, s.Dir, 2, 3)
+	calls := 0
+	for {
+		calls++
+		err := s.CleanOwner(context.Background(), avatarOwner(t, 1), "")
+		if err == nil {
+			break
+		}
+		if err != ErrMoreRemain || calls > 5 {
+			t.Fatalf("call %d: %v", calls, err)
+		}
+	}
+	if calls != 3 {
+		t.Fatalf("%d calls, want 3 for %d files", calls, 2*CleanBatch+5)
+	}
+	if exists(s.Dir, "avatars/1") {
+		t.Fatal("folder survived")
+	}
+	if entries, _ := os.ReadDir(filepath.Join(s.Dir, "avatars/2")); len(entries) != 3 {
+		t.Fatalf("a neighbor folder changed: %d entries", len(entries))
+	}
+}
+
 func TestCleanOwnerContext(t *testing.T) {
 	s := testStore(t)
 	fillOwner(t, s.Dir, 1, 200)

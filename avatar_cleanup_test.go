@@ -317,7 +317,6 @@ func waitForRowLockWaiter(t *testing.T, app *App) int {
 	return waitForLockedUsersQuery(t, app, "%users%FOR UPDATE%")
 }
 
-// advisoryLocksHeldBy counts the advisory locks a backend holds.
 func advisoryLocksHeldBy(t *testing.T, app *App, pid int) int {
 	t.Helper()
 	var n int
@@ -649,6 +648,7 @@ func TestMapAvatarCleanupError(t *testing.T) {
 		"unexpected":         {live, storage.ErrUnexpectedEntry, errAvatarFolderNested},
 		"incomplete":         {live, storage.ErrCleanupIncomplete, errAvatarCleanupPartial},
 		"foreign key":        {live, errAvatarKeyForeign, errAvatarKeyForeign},
+		"payload":            {live, errAvatarCleanupPayload, errAvatarCleanupPayload},
 		"lock timeout":       {live, &pgconn.PgError{Code: "55P03", Message: "canceling statement due to lock timeout"}, errAvatarLockTimeout},
 		"deadline":           {live, context.DeadlineExceeded, errAvatarOutOfTime},
 		"canceled":           {live, context.Canceled, errAvatarOutOfTime},

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Playwright's web server (make e2e): the real fold binary on a fresh
-# Postgres database named <DATABASE_URL's database>_e2e. No Python.
+# Postgres database named <DATABASE_URL's database>_e2e.
 set -euo pipefail
 : "${DATABASE_URL:?set DATABASE_URL (make e2e does)}"
 root="$(cd "$(dirname "$0")/../.." && pwd)"

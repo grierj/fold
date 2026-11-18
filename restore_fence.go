@@ -59,6 +59,13 @@ import (
 // restore tooling and operator procedure land and are verified.
 const recoveryPolicyLevel = 2
 
+// restoreUploadsLevel says this binary has `fold restore settle-uploads`
+// (restore_settle_uploads.go). The restore tooling refuses to bring uploads
+// back into a target that reports less. deploy/restore-uploads holds the same
+// integer (TestRestoreUploadsFileMatchesConstant); `fold version --json` reports
+// it as restoreUploads, and an older binary has no such field, which reads as 0.
+const restoreUploadsLevel = 1
+
 // restoreFenceKey is the settings row that holds the counter. It is bound as
 // the parameter of the two statements below, which only the two writers run.
 const restoreFenceKey = "restore_fence"

@@ -23,8 +23,6 @@ import (
 	"time"
 )
 
-// --- tests ---
-
 func TestSessionCookieExpiresOnServerAfterSevenDays(t *testing.T) {
 	secret := []byte("test-session-secret-at-least-32-bytes")
 	store := newSessionStore(secret, true)
@@ -219,7 +217,6 @@ func TestSecurityHeaders(t *testing.T) {
 	}
 }
 
-// The setup page names its language and links no /static assets.
 func TestSetupPageHasLanguageAndNoStaticLinks(t *testing.T) {
 	app := testApp(t)
 	w := httptest.NewRecorder()

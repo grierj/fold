@@ -38,6 +38,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/pressly/goose/v3"
 	"github.com/pressly/goose/v3/lock"
+	"gorm.io/gorm"
 )
 
 // Applying the baseline holds about a thousand locks until its transaction
@@ -2211,8 +2212,17 @@ func TestBaselineFileShape(t *testing.T) {
 	}
 }
 
-// The 00002 expand tests (M7.4 R4-S2). The migration adds suppressions.address_hash
-// beside the plaintext address, for the previous release to keep working.
+// The 00008 contract tests (M7.4 R4-SC, PLAN 10.1). 00002 added
+// suppressions.address_hash beside the plaintext address and shipped in v0.1.0;
+// 00008 fills any NULL hash, makes it NOT NULL, drops the plaintext address and
+// scrubs the address out of webhook.process jobs.
+
+// suppressionContractVersion is the migration that contracts 00002.
+const suppressionContractVersion = 8
+
+// scrubbedJobError is the sentence 00008 leaves in a webhook.process job's
+// last_error.
+const scrubbedJobError = "details removed when email addresses stopped being stored"
 
 // hasSchemaObject runs a one-row EXISTS query and returns its answer.
 func hasSchemaObject(t *testing.T, db *sql.DB, query string, args ...any) bool {
@@ -2224,17 +2234,48 @@ func hasSchemaObject(t *testing.T, db *sql.DB, query string, args ...any) bool {
 	return ok
 }
 
-// suppressionHashObjects reports whether the 00002 column, CHECK and unique
-// index exist, and whether the baseline's own CHECK and index are still there.
-func suppressionHashObjects(t *testing.T, db *sql.DB) (column, check, index, oldCheck, oldIndex bool) {
-	t.Helper()
-	column = hasSchemaObject(t, db, `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'suppressions' AND column_name = 'address_hash'`)
-	check = hasSchemaObject(t, db, `SELECT 1 FROM pg_constraint WHERE conrelid = 'public.suppressions'::regclass AND conname = 'suppressions_address_hash_check'`)
-	index = hasSchemaObject(t, db, `SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'suppressions' AND indexname = 'idx_suppressions_open_hash'`)
-	oldCheck = hasSchemaObject(t, db, `SELECT 1 FROM pg_constraint WHERE conrelid = 'public.suppressions'::regclass AND conname = 'suppressions_address_check'`)
-	oldIndex = hasSchemaObject(t, db, `SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'suppressions' AND indexname = 'idx_suppressions_open'`)
-	return
+// suppressionSchema reports which of the suppressions objects 00002 and
+// the baseline created, and 00008 replaced, exist.
+type suppressionSchema struct {
+	address        bool // the plaintext address column
+	hashNotNull    bool // address_hash is NOT NULL
+	formatCheck    bool // suppressions_address_hash_format_check (00008)
+	tieCheck       bool // suppressions_address_hash_check (00002)
+	addressCheck   bool // suppressions_address_check (baseline)
+	openIndex      bool // idx_suppressions_open (baseline, on the address)
+	openHashIndex  bool // idx_suppressions_open_hash (00002)
+	addressHashCol bool
 }
+
+func readSuppressionSchema(t *testing.T, db *sql.DB) suppressionSchema {
+	t.Helper()
+	col := func(name string) string {
+		return `SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'suppressions' AND column_name = '` + name + `'`
+	}
+	con := func(name string) string {
+		return `SELECT 1 FROM pg_constraint WHERE conrelid = 'public.suppressions'::regclass AND conname = '` + name + `'`
+	}
+	idx := func(name string) string {
+		return `SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'suppressions' AND indexname = '` + name + `'`
+	}
+	return suppressionSchema{
+		address:        hasSchemaObject(t, db, col("address")),
+		addressHashCol: hasSchemaObject(t, db, col("address_hash")),
+		hashNotNull:    hasSchemaObject(t, db, col("address_hash")+` AND is_nullable = 'NO'`),
+		formatCheck:    hasSchemaObject(t, db, con("suppressions_address_hash_format_check")),
+		tieCheck:       hasSchemaObject(t, db, con("suppressions_address_hash_check")),
+		addressCheck:   hasSchemaObject(t, db, con("suppressions_address_check")),
+		openIndex:      hasSchemaObject(t, db, idx("idx_suppressions_open")),
+		openHashIndex:  hasSchemaObject(t, db, idx("idx_suppressions_open_hash")),
+	}
+}
+
+// expandedSuppressionSchema is the shape at version 2 to 7: both the address
+// and its hash, the hash nullable.
+var expandedSuppressionSchema = suppressionSchema{address: true, addressHashCol: true, tieCheck: true, addressCheck: true, openIndex: true, openHashIndex: true}
+
+// contractedSuppressionSchema is the shape from 00008 on: the hash alone.
+var contractedSuppressionSchema = suppressionSchema{addressHashCol: true, hashNotNull: true, formatCheck: true, openHashIndex: true}
 
 func pgErrorCode(err error) string {
 	var pgErr *pgconn.PgError
@@ -2244,10 +2285,49 @@ func pgErrorCode(err error) string {
 	return ""
 }
 
-// TestSuppressionAddressHashExpand runs 00002 over rows written by the
-// baseline, then checks the column, the CHECK that ties the hash to the
-// address, the unique index and the way down.
-func TestSuppressionAddressHashExpand(t *testing.T) {
+// webhookJobPayload is a webhook.process payload as the code before 00008
+// queued it.
+func webhookJobPayload(address string) string {
+	return fmt.Sprintf(`{"provider":"postmark","kind":"bounced","address":%q,"messageId":"m-1","permanent":true,"detail":"HardBounce","at":"2026-11-01T10:00:00Z","key":"postmark:Bounce:1"}`, address)
+}
+
+// seedWebhookJobs adds the jobs the contract has to treat, and returns the id
+// of each by name. updated_at is old, so a change to it shows.
+func seedWebhookJobs(t *testing.T, db *sql.DB) map[string]int64 {
+	t.Helper()
+	const hardBounce = `ERROR: duplicate key value violates unique constraint "idx_suppressions_open" (SQLSTATE 23505): Key (channel, address, reason)=(email, pat@example.com, hard_bounce) already exists.`
+	ids := map[string]int64{}
+	for _, j := range []struct{ name, kind, payload, status, lastError string }{
+		{"queued", "webhook.process", webhookJobPayload("pat@example.com"), "queued", ""},
+		{"failed", "webhook.process", webhookJobPayload("åsa@example.com"), "failed", hardBounce},
+		{"dead", "webhook.process", webhookJobPayload("dead@example.com"), "dead", hardBounce},
+		{"done", "webhook.process", webhookJobPayload("done@example.com"), "done", ""},
+		{"no address", "webhook.process", `{"provider":"postmark","kind":"delivered","messageId":"m-2","key":"postmark:Delivery:2"}`, "done", ""},
+		{"null address", "webhook.process", `{"provider":"postmark","kind":"bounced","address":null,"messageId":"m-3","key":"postmark:Bounce:3"}`, "failed", "boom"},
+		{"other kind", "notify.deliver", `{"notificationId":1,"address":"pat@example.com"}`, "failed", "could not mail pat@example.com"},
+	} {
+		var id int64
+		if err := db.QueryRow(`INSERT INTO jobs (kind, payload, status, last_error, unique_key, attempts, updated_at)
+			VALUES ($1, $2::jsonb, $3, $4, $5, 2, now() - interval '10 days') RETURNING id`,
+			j.kind, j.payload, j.status, j.lastError, "job:"+j.name).Scan(&id); err != nil {
+			t.Fatalf("seed job %s: %v", j.name, err)
+		}
+		ids[j.name] = id
+	}
+	return ids
+}
+
+// jobColumns is every column of a job but the two 00008 may change.
+func jobColumns(t *testing.T, db *sql.DB) map[int64]string {
+	t.Helper()
+	return snapshotRows[int64](t, db, `SELECT id, (to_jsonb(j) - 'payload' - 'last_error')::text FROM jobs j`)
+}
+
+// TestSuppressionAddressContract runs 00002 and 00008 over rows written by the
+// baseline and by the previous release, then checks that every hash is the
+// hash of its address, the plaintext is gone from the table and the job queue,
+// the constraints that remain, and the way down.
+func TestSuppressionAddressContract(t *testing.T) {
 	t.Parallel()
 	name := testdb.Fresh(t, false)
 	gdb, err := testdb.Open(name)
@@ -2260,11 +2340,11 @@ func TestSuppressionAddressHashExpand(t *testing.T) {
 	}
 	t.Cleanup(func() { db.Close() })
 	ctx := context.Background()
+	if latestVersion(t) < suppressionContractVersion {
+		t.Fatalf("latest migration = %d, want at least %d (the suppression contract)", latestVersion(t), suppressionContractVersion)
+	}
 	p := newProvider(t, db)
 	upTo(t, p, 1)
-	if column, _, _, oldCheck, oldIndex := suppressionHashObjects(t, db); column || !oldCheck || !oldIndex {
-		t.Fatalf("at version 1: address_hash=%v suppressions_address_check=%v idx_suppressions_open=%v", column, oldCheck, oldIndex)
-	}
 
 	// Rows the baseline's CHECK accepts: btrim trims spaces only, so a
 	// non-breaking space and tabs are part of the stored address.
@@ -2284,7 +2364,7 @@ func TestSuppressionAddressHashExpand(t *testing.T) {
 		seed(pat, reason, true)
 	}
 	seed("åsa@example.com", "hard_bounce", false)
-	nbsp, tabs := pat+" ", pat+"\t\t\t"
+	nbsp, tabs := pat+"\u00a0", pat+"\t\t\t"
 	seed(nbsp, "hard_bounce", false)
 	seed(tabs, "hard_bounce", false)
 	if _, err := db.Exec(`INSERT INTO suppressions (channel, address, reason, cleared_at)
@@ -2292,109 +2372,200 @@ func TestSuppressionAddressHashExpand(t *testing.T) {
 		FROM generate_series(1, 1000) g`); err != nil {
 		t.Fatal(err)
 	}
+	jobIDs := seedWebhookJobs(t, db)
 
 	upTo(t, p, 2)
-	column, check, index, oldCheck, oldIndex := suppressionHashObjects(t, db)
-	if !column || !check || !index || !oldCheck || !oldIndex {
-		t.Fatalf("at version 2: address_hash=%v hash check=%v hash index=%v old check=%v old index=%v, want all present", column, check, index, oldCheck, oldIndex)
+	if got := readSuppressionSchema(t, db); got != expandedSuppressionSchema {
+		t.Fatalf("at version 2: %+v, want %+v", got, expandedSuppressionSchema)
+	}
+	// What the previous release (v0.1.0, which has 00002) still writes: a row
+	// with no hash, open and cleared.
+	const legacy = "legacy@example.com"
+	for _, q := range []string{
+		`INSERT INTO suppressions (channel, address, reason, provider, detail) VALUES ('email', '` + legacy + `', 'hard_bounce', 'legacy', 'old detail')`,
+		`INSERT INTO suppressions (channel, address, reason, cleared_at) VALUES ('email', '` + legacy + `', 'complaint', now())`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var withNull int
+	if err := db.QueryRow(`SELECT count(*) FROM suppressions WHERE address_hash IS NULL`).Scan(&withNull); err != nil || withNull != 2 {
+		t.Fatalf("rows the previous release wrote with no hash = %d (%v), want 2", withNull, err)
 	}
 
-	rows, err := db.Query(`SELECT address, address_hash FROM suppressions`)
+	// What each row must look like afterwards, by id: its own bytes' hash,
+	// and every other column as it was.
+	type kept struct{ hash, rest string }
+	wantRows := map[int64]kept{}
+	rows, err := db.Query(`SELECT id, address, (to_jsonb(s) - 'address' - 'address_hash')::text FROM suppressions s`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	n := 0
 	for rows.Next() {
-		var address string
-		var hash *string
-		if err := rows.Scan(&address, &hash); err != nil {
+		var id int64
+		var address, rest string
+		if err := rows.Scan(&id, &address, &rest); err != nil {
 			t.Fatal(err)
 		}
-		n++
-		if hash == nil || *hash != mail.StoredAddressHash(address) {
-			t.Errorf("address %q has hash %v, want %s", address, hash, mail.StoredAddressHash(address))
-		}
-		switch address {
-		case pat:
-			if hash != nil && *hash != mail.AddressHash(" Pat@Example.COM ") {
-				t.Errorf("%q hash %s differs from the hash of the normalized input", address, *hash)
-			}
-		case nbsp, tabs:
-			// Their own bytes, not the trimmed address's.
-			if hash != nil && *hash == mail.AddressHash(pat) {
-				t.Errorf("%q took the hash of %q", address, pat)
-			}
-		}
+		wantRows[id] = kept{mail.StoredAddressHash(address), rest}
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
 	rows.Close()
-	if n != 7+1000 {
-		t.Fatalf("rows after the migration = %d, want %d", n, 7+1000)
+	if len(wantRows) != 7+1000+2 {
+		t.Fatalf("rows before the contract = %d, want %d", len(wantRows), 7+1000+2)
+	}
+	jobsBefore := jobColumns(t, db)
+
+	upTo(t, p, suppressionContractVersion)
+	if got := readSuppressionSchema(t, db); got != contractedSuppressionSchema {
+		t.Fatalf("after the contract: %+v, want %+v", got, contractedSuppressionSchema)
+	}
+	gotRows := snapshotRows[int64](t, db, `SELECT id, (to_jsonb(s) - 'address_hash')::text FROM suppressions s`)
+	if len(gotRows) != len(wantRows) {
+		t.Fatalf("rows after the contract = %d, want %d", len(gotRows), len(wantRows))
+	}
+	hashes := snapshotRows[int64](t, db, `SELECT id, address_hash FROM suppressions`)
+	for id, want := range wantRows {
+		if hashes[id] != want.hash {
+			t.Errorf("row %d has hash %s, want %s", id, hashes[id], want.hash)
+		}
+		if gotRows[id] != want.rest {
+			t.Errorf("row %d changed beyond its address:\n%s\nwant\n%s", id, gotRows[id], want.rest)
+		}
+	}
+	// The hash of the normalized input finds the stored one; the padded rows
+	// kept their own bytes' hash.
+	var patOpen int
+	if err := db.QueryRow(`SELECT count(*) FROM suppressions WHERE address_hash = $1 AND cleared_at IS NULL`, mail.AddressHash(" Pat@Example.COM ")).Scan(&patOpen); err != nil || patOpen != 2 {
+		t.Fatalf("open rows found by the hash of a normalized input = %d (%v), want 2", patOpen, err)
+	}
+	var legacyOpen int
+	if err := db.QueryRow(`SELECT count(*) FROM suppressions WHERE address_hash = $1 AND cleared_at IS NULL`, mail.AddressHash(legacy)).Scan(&legacyOpen); err != nil || legacyOpen != 1 {
+		t.Fatalf("the row the previous release wrote = %d (%v), want 1 found by hash", legacyOpen, err)
 	}
 
-	// The CHECK ties the hash to the address, and accepts NULL (rows the
-	// previous release writes).
+	// Constraints that remain: NOT NULL, the format CHECK and the open-row
+	// unique index.
 	var id int64
-	if err := db.QueryRow(`SELECT id FROM suppressions WHERE address = $1 AND cleared_at IS NULL AND reason = 'hard_bounce'`, pat).Scan(&id); err != nil {
+	if err := db.QueryRow(`SELECT id FROM suppressions WHERE address_hash = $1 AND reason = 'hard_bounce' AND cleared_at IS NULL`, mail.AddressHash(pat)).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
-	good := mail.StoredAddressHash(pat)
+	good := mail.AddressHash(pat)
 	for name, bad := range map[string]string{
-		"uppercase":  strings.ToUpper(good),
-		"63 chars":   good[:63],
-		"mismatched": mail.StoredAddressHash("other@example.com"),
+		"uppercase": strings.ToUpper(good),
+		"63 chars":  good[:63],
+		"65 chars":  good + "0",
+		"not hex":   strings.Repeat("g", 64),
+		"empty":     "",
 	} {
 		_, err := db.Exec(`UPDATE suppressions SET address_hash = $1 WHERE id = $2`, bad, id)
 		if code := pgErrorCode(err); code != "23514" {
 			t.Errorf("%s hash: error %v (code %q), want a check violation", name, err, code)
 		}
 	}
-	if _, err := db.Exec(`UPDATE suppressions SET address_hash = NULL WHERE id = $1`, id); err != nil {
-		t.Fatalf("NULL hash refused: %v", err)
+	if _, err := db.Exec(`UPDATE suppressions SET address_hash = NULL WHERE id = $1`, id); pgErrorCode(err) != "23502" {
+		t.Errorf("NULL hash: %v, want not_null_violation 23502", err)
 	}
-	if _, err := db.Exec(`UPDATE suppressions SET address_hash = $1 WHERE id = $2`, good, id); err != nil {
-		t.Fatalf("restoring the hash: %v", err)
-	}
-
-	// A second open (channel, hash, reason) row is refused by the new index.
-	// idx_suppressions_open would refuse the same row first, so the test drops
-	// it inside a transaction it rolls back.
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.Exec(`DROP INDEX idx_suppressions_open`); err != nil {
-		t.Fatal(err)
-	}
-	_, err = tx.Exec(`INSERT INTO suppressions (channel, address, address_hash, reason) VALUES ('email', $1, $2, 'hard_bounce')`, pat, good)
+	_, err = db.Exec(`INSERT INTO suppressions (channel, address_hash, reason) VALUES ('email', $1, 'hard_bounce')`, good)
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) || pgErr.Code != "23505" || pgErr.ConstraintName != "idx_suppressions_open_hash" {
-		t.Errorf("second open hash row: %v, want a unique violation of idx_suppressions_open_hash", err)
+		t.Errorf("second open row for a hash: %v, want a unique violation of idx_suppressions_open_hash", err)
 	}
-	_ = tx.Rollback()
-	// A cleared row with the same hash is fine.
-	if _, err := db.Exec(`INSERT INTO suppressions (channel, address, address_hash, reason, cleared_at) VALUES ('email', $1, $2, 'hard_bounce', now())`, pat, good); err != nil {
+	if _, err := db.Exec(`INSERT INTO suppressions (channel, address_hash, reason, cleared_at) VALUES ('email', $1, 'hard_bounce', now())`, good); err != nil {
 		t.Errorf("a cleared row with an open row's hash: %v", err)
 	}
-
-	// Down: only what 00002 added goes.
-	if _, err := p.DownTo(ctx, 1); err != nil {
-		t.Fatalf("down to 1: %v", err)
+	// The webhook's insert.
+	for i := 0; i < 2; i++ {
+		res, err := db.Exec(`INSERT INTO suppressions (channel, address_hash, reason, provider, detail) VALUES ('email', $1, 'manual', 'p', 'd')
+			ON CONFLICT (channel, address_hash, reason) WHERE cleared_at IS NULL DO NOTHING`, good)
+		if n, _ := res.RowsAffected(); err != nil || n != int64(1-i) {
+			t.Errorf("webhook insert %d: %v rows=%d, want %d", i, err, n, 1-i)
+		}
 	}
-	if column, check, index, oldCheck, oldIndex := suppressionHashObjects(t, db); column || check || index || !oldCheck || !oldIndex {
-		t.Fatalf("after down: address_hash=%v hash check=%v hash index=%v old check=%v old index=%v, want only the old two", column, check, index, oldCheck, oldIndex)
+
+	// The job queue holds no address and every row keeps its bookkeeping.
+	sameRows(t, "every job column but payload and last_error", jobColumns(t, db), jobsBefore)
+	payloadOf := func(name string) map[string]any {
+		t.Helper()
+		var raw string
+		if err := db.QueryRow(`SELECT payload::text FROM jobs WHERE id = $1`, jobIDs[name]).Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(raw), &m); err != nil {
+			t.Fatalf("%s payload %s: %v", name, raw, err)
+		}
+		return m
+	}
+	lastErrorOf := func(name string) string {
+		t.Helper()
+		var s string
+		if err := db.QueryRow(`SELECT last_error FROM jobs WHERE id = $1`, jobIDs[name]).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	for name, address := range map[string]string{"queued": pat, "failed": "åsa@example.com", "dead": "dead@example.com", "done": "done@example.com"} {
+		m := payloadOf(name)
+		if _, has := m["address"]; has || m["addressHash"] != mail.StoredAddressHash(address) {
+			t.Errorf("%s job payload = %v, want addressHash %s and no address", name, m, mail.StoredAddressHash(address))
+		}
+		if m["provider"] != "postmark" || m["kind"] != "bounced" || m["messageId"] != "m-1" || m["permanent"] != true || m["detail"] != "HardBounce" || m["key"] != "postmark:Bounce:1" {
+			t.Errorf("%s job payload lost another key: %v", name, m)
+		}
+	}
+	if m := payloadOf("no address"); len(m) != 4 || m["messageId"] != "m-2" {
+		t.Errorf("a payload with no address changed: %v", m)
+	}
+	if m := payloadOf("null address"); len(m) != 4 || m["addressHash"] != nil || m["messageId"] != "m-3" {
+		t.Errorf("a null address left %v, want it dropped with no hash", m)
+	}
+	for name, want := range map[string]string{"queued": "", "done": "", "no address": "", "failed": scrubbedJobError, "dead": scrubbedJobError, "null address": scrubbedJobError} {
+		if got := lastErrorOf(name); got != want {
+			t.Errorf("%s job last_error = %q, want %q", name, got, want)
+		}
+	}
+	if m := payloadOf("other kind"); m["address"] != "pat@example.com" || lastErrorOf("other kind") != "could not mail pat@example.com" {
+		t.Errorf("another kind of job was changed: %v %q", m, lastErrorOf("other kind"))
+	}
+	var plaintext int
+	if err := db.QueryRow(`SELECT count(*) FROM jobs WHERE kind = 'webhook.process' AND (payload::text LIKE '%@%' OR last_error LIKE '%@%')`).Scan(&plaintext); err != nil || plaintext != 0 {
+		t.Fatalf("webhook.process jobs still holding an @ = %d (%v), want 0", plaintext, err)
+	}
+
+	// Down refuses while any suppression exists, and changes nothing.
+	before := appliedRows(t, db)
+	if _, err := p.Down(ctx); err == nil || !strings.Contains(err.Error(), "restore the upgrade dump") {
+		t.Fatalf("down with suppressions: %v, want a refusal that names the dump", err)
+	}
+	if got := appliedRows(t, db); got != before {
+		t.Fatalf("a refused down changed goose_db_version: %s, want %s", got, before)
+	}
+	if got := readSuppressionSchema(t, db); got != contractedSuppressionSchema {
+		t.Fatalf("after a refused down: %+v", got)
+	}
+	// On an empty table it puts the old shape back, and Up repeats the contract.
+	if _, err := db.Exec(`DELETE FROM suppressions`); err != nil {
+		t.Fatal(err)
+	}
+	downTo(t, p, suppressionContractVersion-1)
+	if got := readSuppressionSchema(t, db); got != expandedSuppressionSchema {
+		t.Fatalf("after down: %+v, want %+v", got, expandedSuppressionSchema)
+	}
+	if _, err := db.Exec(`INSERT INTO suppressions (channel, address, reason) VALUES ('email', 'down@example.com', 'hard_bounce')`); err != nil {
+		t.Fatalf("the previous release's insert after down: %v", err)
+	}
+	if _, err := db.Exec(`DELETE FROM suppressions`); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := p.Up(ctx); err != nil {
 		t.Fatalf("up again: %v", err)
 	}
-	if column, check, index, oldCheck, oldIndex := suppressionHashObjects(t, db); !column || !check || !index || !oldCheck || !oldIndex {
-		t.Fatalf("after up again: address_hash=%v hash check=%v hash index=%v old check=%v old index=%v, want all present", column, check, index, oldCheck, oldIndex)
-	}
-	var nulls int
-	if err := db.QueryRow(`SELECT count(*) FROM suppressions WHERE address_hash IS NULL`).Scan(&nulls); err != nil || nulls != 0 {
-		t.Fatalf("NULL hashes after up again = %d (%v), want 0", nulls, err)
+	if got := readSuppressionSchema(t, db); got != contractedSuppressionSchema {
+		t.Fatalf("after up again: %+v, want %+v", got, contractedSuppressionSchema)
 	}
 	if version, err := p.GetDBVersion(ctx); err != nil || version != latestVersion(t) {
 		t.Fatalf("version = %d, %v, want %d", version, err, latestVersion(t))
@@ -2404,32 +2575,19 @@ func TestSuppressionAddressHashExpand(t *testing.T) {
 	}
 }
 
-// TestSuppressionMatchingBasis checks the facts R4-S's matching proof rests on
-// (inventory 7.4): the stored address bytes are the bytes SQL hashes, and the
-// columns compare by bytes. The new hash arm in the readers matches the same
-// rows the old SQL `=` matched only on this basis.
+// TestSuppressionMatchingBasis checks the fact the hashing rests on: SQL's
+// SHA-256 of a stored string's UTF-8 bytes is the hash Go computes, so the
+// backfill in 00002 and 00008 agree with mail.StoredAddressHash for any
+// address, ASCII or not.
 func TestSuppressionMatchingBasis(t *testing.T) {
 	t.Parallel()
 	db := openSQL(t, testdb.Fresh(t, true))
-	const revisit = "R4-S's matching proof (inventory 7.4) assumes a UTF8 database with the libc provider and default column collations, so SQL and Go agree on stored address bytes. Revisit the proof, the migration CHECK and the readers before changing this."
+	const revisit = "00008's backfill and a webhook job's hash (migrations/00008_suppression_address_contract.sql) assume a UTF8 database, so SQL and Go hash the same bytes. Revisit them before changing this."
 	var encoding string
 	if err := db.QueryRow(`SHOW server_encoding`).Scan(&encoding); err != nil || encoding != "UTF8" {
 		t.Fatalf("server_encoding = %q (%v), want UTF8. %s", encoding, err, revisit)
 	}
-	var provider string
-	if err := db.QueryRow(`SELECT datlocprovider::text FROM pg_database WHERE datname = current_database()`).Scan(&provider); err != nil || provider != "c" {
-		t.Fatalf("datlocprovider = %q (%v), want c (libc, whose collations are deterministic). %s", provider, err, revisit)
-	}
-	for _, col := range []struct{ table, column string }{{"suppressions", "address"}, {"users", "email"}} {
-		var oid int64
-		var collname string
-		err := db.QueryRow(`SELECT a.attcollation::int8, c.collname FROM pg_attribute a JOIN pg_collation c ON c.oid = a.attcollation
-			WHERE a.attrelid = ('public.' || $1::text)::regclass AND a.attname = $2`, col.table, col.column).Scan(&oid, &collname)
-		if err != nil || oid != 100 || collname != "default" {
-			t.Fatalf("%s.%s collation = %d %q (%v), want the default collation (oid 100). %s", col.table, col.column, oid, collname, err, revisit)
-		}
-	}
-	for _, s := range []string{"pat@example.com", "åsa@example.com", "pat@example.com "} {
+	for _, s := range []string{"pat@example.com", "åsa@example.com", "pat@example.com ", "ÅSA@EXAMPLE.COM"} {
 		var got string
 		if err := db.QueryRow(`SELECT encode(sha256(convert_to($1::text, 'UTF8')), 'hex')`, s).Scan(&got); err != nil || got != mail.StoredAddressHash(s) {
 			t.Fatalf("SQL hash of %q = %q (%v), Go hash = %s. %s", s, got, err, mail.StoredAddressHash(s), revisit)
@@ -2437,83 +2595,118 @@ func TestSuppressionMatchingBasis(t *testing.T) {
 	}
 }
 
-// TestSuppressionExpandWaitsAtMostFiveSecondsForTheLock holds a lock that
-// conflicts with 00002's ALTER TABLE. The migration gives up after its 5s
-// lock_timeout and applies nothing. This bounds the wait to get the lock, not
-// the time the lock is held once it is taken.
-func TestSuppressionExpandWaitsAtMostFiveSecondsForTheLock(t *testing.T) {
+// TestSuppressionContractWaitsAtMostFiveSecondsForItsLocks holds a lock that
+// conflicts with 00008: first the table lock its ALTER TABLE needs, then the
+// row lock of a webhook.process job a worker could be finishing. The migration
+// gives up after its 5s lock_timeout and applies nothing, not even the
+// backfill or the job scrub that run before the ALTER. This bounds the wait to
+// get a lock, not the time the locks are held once taken.
+func TestSuppressionContractWaitsAtMostFiveSecondsForItsLocks(t *testing.T) {
 	t.Parallel()
-	name, db, p := freshAt(t, 1)
-	ctx := context.Background()
-	holder := holdLock(t, name, `LOCK suppressions IN ACCESS SHARE MODE`)
+	for _, c := range []struct{ name, lock string }{
+		{"the suppressions table", `LOCK suppressions IN ACCESS SHARE MODE`},
+		{"a webhook job row", `SELECT 1 FROM jobs WHERE kind = 'webhook.process' ORDER BY id LIMIT 1 FOR UPDATE`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			name, db, p := freshAt(t, suppressionContractVersion-1)
+			ctx := context.Background()
+			seedWebhookJobs(t, db)
+			if _, err := db.Exec(`INSERT INTO suppressions (channel, address, reason) VALUES ('email', 'pat@example.com', 'hard_bounce')`); err != nil {
+				t.Fatal(err)
+			}
+			jobsBefore := snapshotRows[int64](t, db, `SELECT id, to_jsonb(j)::text FROM jobs j`)
+			holder := holdLock(t, name, c.lock)
 
-	elapsed, err := timedUpTo(p, 2, 0)
-	if code := pgErrorCode(err); code != "55P03" {
-		t.Fatalf("UpTo(2) with the table locked: %v (code %q), want lock_not_available 55P03", err, code)
-	}
-	if elapsed < 5*time.Second || elapsed > 30*time.Second {
-		t.Fatalf("UpTo(2) gave up after %s, want at least 5s and well under 30s", elapsed)
-	}
-	if version, err := p.GetDBVersion(ctx); err != nil || version != 1 {
-		t.Fatalf("version after the timeout = %d, %v, want 1", version, err)
-	}
-	if column, _, _, _, _ := suppressionHashObjects(t, db); column {
-		t.Fatal("address_hash exists after the timed-out migration")
-	}
+			elapsed, err := timedUpTo(p, suppressionContractVersion, 0)
+			if code := pgErrorCode(err); code != "55P03" {
+				t.Fatalf("UpTo(%d) with %s locked: %v (code %q), want lock_not_available 55P03", suppressionContractVersion, c.name, err, code)
+			}
+			if elapsed < 5*time.Second || elapsed > 30*time.Second {
+				t.Fatalf("UpTo(%d) gave up after %s, want at least 5s and well under 30s", suppressionContractVersion, elapsed)
+			}
+			if version, err := p.GetDBVersion(ctx); err != nil || version != suppressionContractVersion-1 {
+				t.Fatalf("version after the timeout = %d, %v, want %d", version, err, suppressionContractVersion-1)
+			}
+			if got := readSuppressionSchema(t, db); got != expandedSuppressionSchema {
+				t.Fatalf("after the timeout: %+v, want the expanded shape", got)
+			}
+			var nulls int
+			if err := db.QueryRow(`SELECT count(*) FROM suppressions WHERE address_hash IS NULL`).Scan(&nulls); err != nil || nulls != 1 {
+				t.Fatalf("NULL hashes after the timeout = %d (%v), want the row left as the previous release wrote it", nulls, err)
+			}
+			sameRows(t, "jobs after the timeout", snapshotRows[int64](t, db, `SELECT id, to_jsonb(j)::text FROM jobs j`), jobsBefore)
 
-	if err := holder.Rollback(); err != nil {
-		t.Fatal(err)
-	}
-	upTo(t, p, 2)
-	if column, _, _, _, _ := suppressionHashObjects(t, db); !column {
-		t.Fatal("address_hash is missing after the migration")
+			if err := holder.Rollback(); err != nil {
+				t.Fatal(err)
+			}
+			upTo(t, p, suppressionContractVersion)
+			if got := readSuppressionSchema(t, db); got != contractedSuppressionSchema {
+				t.Fatalf("after the migration: %+v, want the contracted shape", got)
+			}
+		})
 	}
 }
 
-// TestSuppressionAddressHashExpandScale times 00002 over a large table. It is
-// opt-in: set FOLD_SUPPRESSION_SCALE_ROWS to the number of rows (1 to
-// 1,000,000). It asserts no timing; the PR records the numbers as
-// measurements on that host, not bounds. It also times one call of
-// mail.OpenSuppressionReasons with 500 inputs, half of them present, so the
-// measured SQL is the SQL the readers run.
-func TestSuppressionAddressHashExpandScale(t *testing.T) {
+// TestSuppressionAddressContractScale times 00008 over a large table. It is
+// opt-in: set FOLD_SUPPRESSION_SCALE_ROWS to the number of suppression rows
+// (1 to 1,000,000); a tenth as many webhook.process jobs are seeded beside
+// them, a fifth of those failed with an error text. It asserts no timing; the
+// PR records the numbers as measurements on that host, not bounds. It also
+// times one call of mail.OpenSuppressionReasons with 500 inputs, half of
+// them present, so the measured SQL is the SQL the readers run.
+func TestSuppressionAddressContractScale(t *testing.T) {
 	raw := os.Getenv("FOLD_SUPPRESSION_SCALE_ROWS")
 	if raw == "" {
-		t.Skip("set FOLD_SUPPRESSION_SCALE_ROWS (1 to 1000000) to time migration 00002 on a large suppressions table")
+		t.Skip("set FOLD_SUPPRESSION_SCALE_ROWS (1 to 1000000) to time migration 00008 on a large suppressions table")
 	}
 	rowsWanted, err := strconv.Atoi(raw)
 	if err != nil || rowsWanted < 1 || rowsWanted > 1_000_000 {
 		t.Fatalf("FOLD_SUPPRESSION_SCALE_ROWS = %q, want an integer from 1 to 1000000", raw)
 	}
+	jobsWanted := max(rowsWanted/10, 1)
 	dbName := testdb.Fresh(t, false)
 	db := openSQL(t, dbName)
 	p := newProvider(t, db)
-	upTo(t, p, 1)
-	// 90% of the rows are cleared, and every row has a distinct address.
-	if _, err := db.Exec(`INSERT INTO suppressions (channel, address, reason, created_at, cleared_at)
-		SELECT 'email', 'u' || g || '@example.com', CASE WHEN g % 2 = 0 THEN 'hard_bounce' ELSE 'complaint' END, now(), CASE WHEN g % 10 <> 0 THEN now() END
-		FROM generate_series(1, $1::int) g`, rowsWanted); err != nil {
-		t.Fatalf("seed: %v", err)
+	upTo(t, p, suppressionContractVersion-1)
+	// 90% of the rows are cleared, every row has a distinct address, and
+	// every row has its hash, as a database that ran 00002 does.
+	if _, err := db.Exec(`INSERT INTO suppressions (channel, address, address_hash, reason, created_at, cleared_at)
+		SELECT 'email', a, encode(sha256(convert_to(a, 'UTF8')), 'hex'), CASE WHEN g % 2 = 0 THEN 'hard_bounce' ELSE 'complaint' END, now(), CASE WHEN g % 10 <> 0 THEN now() END
+		FROM (SELECT g, 'u' || g || '@example.com' AS a FROM generate_series(1, $1::int) g) s`, rowsWanted); err != nil {
+		t.Fatalf("seed suppressions: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO jobs (kind, payload, status, last_error, unique_key)
+		SELECT 'webhook.process',
+			jsonb_build_object('provider', 'postmark', 'kind', 'bounced', 'address', 'u' || g || '@example.com', 'messageId', 'm' || g, 'permanent', true, 'detail', 'HardBounce', 'key', 'k' || g),
+			CASE WHEN g % 5 = 0 THEN 'failed' ELSE 'done' END,
+			CASE WHEN g % 5 = 0 THEN 'duplicate key value (email, u' || g || '@example.com, hard_bounce)' ELSE '' END,
+			'scale:' || g
+		FROM generate_series(1, $1::int) g`, jobsWanted); err != nil {
+		t.Fatalf("seed jobs: %v", err)
 	}
 	if _, err := db.Exec(`ANALYZE suppressions`); err != nil {
 		t.Fatal(err)
 	}
-	// The file is one transaction, so this is the whole span of the lock.
-	start := time.Now()
-	upTo(t, p, 2)
-	elapsed := time.Since(start)
-	var nulls, total int
-	if err := db.QueryRow(`SELECT count(*) FILTER (WHERE address_hash IS NULL), count(*) FROM suppressions`).Scan(&nulls, &total); err != nil {
+	if _, err := db.Exec(`ANALYZE jobs`); err != nil {
 		t.Fatal(err)
 	}
-	if nulls != 0 || total != rowsWanted {
-		t.Fatalf("after the migration: %d NULL hashes, %d rows, want 0 and %d", nulls, total, rowsWanted)
+	// The file is one transaction, so this is the whole span of the locks.
+	start := time.Now()
+	upTo(t, p, suppressionContractVersion)
+	elapsed := time.Since(start)
+	var total, plaintext int
+	if err := db.QueryRow(`SELECT count(*) FROM suppressions`).Scan(&total); err != nil || total != rowsWanted {
+		t.Fatalf("suppressions after the migration = %d (%v), want %d", total, err, rowsWanted)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM jobs WHERE payload ? 'address' OR payload::text LIKE '%@%' OR last_error LIKE '%@%'`).Scan(&plaintext); err != nil || plaintext != 0 {
+		t.Fatalf("jobs still holding an address = %d (%v), want 0", plaintext, err)
 	}
 	var version string
 	if err := db.QueryRow(`SELECT version()`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("rows=%d migrate_00002=%s postgres=%q", rowsWanted, elapsed, version)
+	t.Logf("suppressions=%d jobs=%d migrate_00008=%s postgres=%q", rowsWanted, jobsWanted, elapsed, version)
 
 	// One lookup of 500 addresses through the real function: up to 250 open
 	// rows (every tenth address is open) and the rest absent.
@@ -2543,55 +2736,35 @@ func TestSuppressionAddressHashExpandScale(t *testing.T) {
 	if len(found) != present {
 		t.Fatalf("lookup found %d addresses, want %d", len(found), present)
 	}
-	t.Logf("rows=%d open_suppression_lookup_500_inputs=%s present=%d", rowsWanted, lookup, present)
+	t.Logf("suppressions=%d open_suppression_lookup_500_inputs=%s present=%d", rowsWanted, lookup, present)
 }
 
-// The statements below are deliberate frozen copies of what the previous
-// release (2aea60a, before R4-S) sent to the suppressions table. They are
-// fixtures for the old binary, not stand-ins for current code: the point is to
-// show that an old binary running against a version-2 database still works.
-
-// oldSuppression is the previous release's models.Suppression: no AddressHash.
-type oldSuppression struct {
-	ID        uint `gorm:"primaryKey"`
-	Channel   string
-	Address   string
-	Reason    string
-	Provider  string
-	Detail    string
-	CreatedAt time.Time
-	ClearedAt *time.Time
-	ClearedBy *uint
-}
-
-func (oldSuppression) TableName() string { return "suppressions" }
-
+// The statements below are frozen copies of what v0.1.0 (74d322dc, the release
+// that holds 00002) sends to the suppressions table. They are fixtures for the
+// old binary, not stand-ins for current code: they show what a rollback to
+// that image meets after the contraction.
 const (
-	// api_email_webhooks.go:159-160 at 2aea60a.
-	oldInsertSuppressionSQL = `INSERT INTO suppressions (channel, address, reason, provider, detail) VALUES ('email', ?, ?, ?, ?)
-			ON CONFLICT (channel, address, reason) WHERE cleared_at IS NULL DO NOTHING`
-	// api_admin_suppressions.go:60-61 at 2aea60a.
-	oldClearSuppressionSQL = `UPDATE suppressions SET cleared_at = ?, cleared_by = ?
-			WHERE channel = 'email' AND address = ? AND cleared_at IS NULL RETURNING reason`
-	// api_notifications.go:833-834 at 2aea60a, run with the account's email
-	// supplied as a one-row relation named users.
-	oldRecipientSuppressionSQL = `SELECT COALESCE((SELECT string_agg(s.reason, ',') FROM suppressions s
-			WHERE s.channel = 'email' AND s.address = lower(btrim(users.email)) AND s.cleared_at IS NULL), '')
-		FROM (SELECT CAST(? AS text) AS email) users`
-	// The insert in api_email_webhooks.go as R4-S3 changed it. Unlike the
-	// frozen copies above this one is tied to the production source below, so
-	// the rows this test writes are the rows the webhook writes.
-	newInsertSuppressionSQL = `INSERT INTO suppressions (channel, address, address_hash, reason, provider, detail) VALUES ('email', ?, ?, ?, ?, ?)
+	// api_email_webhooks.go at v0.1.0.
+	releasedInsertSuppressionSQL = `INSERT INTO suppressions (channel, address, address_hash, reason, provider, detail) VALUES ('email', ?, ?, ?, ?, ?)
 			ON CONFLICT (channel, address, reason) WHERE cleared_at IS NULL
 			DO UPDATE SET address_hash = EXCLUDED.address_hash WHERE suppressions.address_hash IS NULL`
+	// internal/mail/suppress.go at v0.1.0.
+	releasedOpenSuppressionsSQL = `SELECT address, address_hash, reason FROM suppressions
+	WHERE channel = 'email' AND cleared_at IS NULL
+	AND (address_hash IN ? OR (address_hash IS NULL AND address IN ?)) ORDER BY id`
+	// api_admin_suppressions.go at v0.1.0.
+	releasedClearSuppressionSQL = `UPDATE suppressions SET cleared_at = ?, cleared_by = ?
+			WHERE channel = 'email' AND cleared_at IS NULL
+			AND (address_hash = ? OR (address_hash IS NULL AND address = ?)) RETURNING reason`
 )
 
-// TestSuppressionExpandKeepsThePreviousBinaryWorking proves the expand step
-// (Route B, DEC-138) is safe for a rollback or a mixed window: every
-// statement the previous binary sends recognizes every row the new code
-// writes, the new code recognizes every row the old binary writes, and the
-// previous goose runner treats a version-2 database as current.
-func TestSuppressionExpandKeepsThePreviousBinaryWorking(t *testing.T) {
+// TestSuppressionContractNeedsTheDumpToRollBack records what the contraction
+// does to the previous release, which decides the rollback wording in the
+// docs: that image's migration runner treats the contracted database as
+// current and boots, but every statement it sends to suppressions fails on the
+// missing column, so a rollback must restore the dump upgrade.sh takes, and
+// `fold migrate down-one` is refused while any suppression exists.
+func TestSuppressionContractNeedsTheDumpToRollBack(t *testing.T) {
 	t.Parallel()
 	gdb, err := testdb.Open(testdb.Fresh(t, true))
 	if err != nil {
@@ -2603,270 +2776,77 @@ func TestSuppressionExpandKeepsThePreviousBinaryWorking(t *testing.T) {
 	}
 	t.Cleanup(func() { sqlDB.Close() })
 	ctx := context.Background()
-	if latest := latestVersion(t); latest < 2 {
-		t.Fatalf("latest migration = %d, want at least 2 (the suppression expand)", latest)
+	if latest := latestVersion(t); latest < suppressionContractVersion {
+		t.Fatalf("latest migration = %d, want at least %d (the suppression contract)", latest, suppressionContractVersion)
+	}
+	const address = "pat@example.com"
+	if err := gdb.Exec(`INSERT INTO suppressions (channel, address_hash, reason) VALUES ('email', ?, 'hard_bounce')`, mail.AddressHash(address)).Error; err != nil {
+		t.Fatal(err)
 	}
 
-	// The new insert is a copy, so tie it to the source it copies.
-	src, err := os.ReadFile("../api_email_webhooks.go")
+	// v0.1.0's statements fail on the missing column. Each runs in its own
+	// transaction so a failure does not abort the next.
+	h := mail.StoredAddressHash(address)
+	for name, run := range map[string]func(tx *gorm.DB) error{
+		"webhook insert": func(tx *gorm.DB) error {
+			return tx.Exec(releasedInsertSuppressionSQL, address, h, "hard_bounce", "postmark", "d").Error
+		},
+		"send lookup": func(tx *gorm.DB) error {
+			var rows []struct{ Address string }
+			return tx.Raw(releasedOpenSuppressionsSQL, []string{h}, []string{address}).Scan(&rows).Error
+		},
+		"admin clear": func(tx *gorm.DB) error {
+			var reasons []string
+			return tx.Raw(releasedClearSuppressionSQL, time.Now(), nil, h, address).Scan(&reasons).Error
+		},
+	} {
+		err := gdb.Transaction(run)
+		if code := pgErrorCode(err); code != "42703" {
+			t.Errorf("v0.1.0's %s on the contracted schema: %v (code %q), want undefined_column 42703", name, err, code)
+		}
+	}
+
+	// v0.1.0's goose runner holds 00001 to 00007. A database recorded at a
+	// newer version is current to it, so it boots and changes nothing.
+	entries, err := fs.ReadDir(migrations.Files, ".")
 	if err != nil {
 		t.Fatal(err)
 	}
-	collapse := func(s string) string { return strings.Join(strings.Fields(s), " ") }
-	if !strings.Contains(collapse(string(src)), collapse(newInsertSuppressionSQL)) {
-		t.Fatal("api_email_webhooks.go no longer holds newInsertSuppressionSQL; update this fixture to the webhook's insert so the test keeps writing the rows the webhook writes")
-	}
-
-	const pat, asa = "pat@example.com", "åsa@example.com"
-	newInsert := func(address, reason string) int64 {
-		t.Helper()
-		res := gdb.Exec(newInsertSuppressionSQL, address, mail.StoredAddressHash(address), reason, "postmark", "new detail")
-		if res.Error != nil {
-			t.Fatalf("new insert of %q: %v", address, res.Error)
+	previousFiles := fstest.MapFS{}
+	for _, e := range entries {
+		version, err := strconv.Atoi(strings.SplitN(e.Name(), "_", 2)[0])
+		if err != nil || !strings.HasSuffix(e.Name(), ".sql") || version >= suppressionContractVersion {
+			continue
 		}
-		return res.RowsAffected
-	}
-	oldInsert := func(address, reason string) int64 {
-		t.Helper()
-		res := gdb.Exec(oldInsertSuppressionSQL, address, reason, "legacy", "old detail")
-		if res.Error != nil {
-			t.Fatalf("old insert of %q: %v", address, res.Error)
-		}
-		return res.RowsAffected
-	}
-	// The old readers.
-	oldSend := func(address string) []string { // suppress.go:55 at 2aea60a
-		t.Helper()
-		var reasons []string
-		if err := gdb.Model(&oldSuppression{}).
-			Where("channel = ? AND address = ? AND cleared_at IS NULL", "email", strings.ToLower(strings.TrimSpace(address))).
-			Pluck("reason", &reasons).Error; err != nil {
-			t.Fatal(err)
-		}
-		sort.Strings(reasons)
-		return reasons
-	}
-	oldRecipient := func(email string) []string {
-		t.Helper()
-		var joined string
-		if err := gdb.Raw(oldRecipientSuppressionSQL, email).Scan(&joined).Error; err != nil {
-			t.Fatal(err)
-		}
-		if joined == "" {
-			return nil
-		}
-		reasons := strings.Split(joined, ",")
-		sort.Strings(reasons)
-		return reasons
-	}
-	oldBatch := func(addresses ...string) map[string][]string { // messages_send.go:597, messages_audience.go:361
-		t.Helper()
-		var sups []oldSuppression
-		if err := gdb.Where("channel = 'email' AND cleared_at IS NULL AND address IN ?", addresses).Find(&sups).Error; err != nil {
-			t.Fatal(err)
-		}
-		out := map[string][]string{}
-		for _, s := range sups {
-			out[s.Address] = append(out[s.Address], s.Reason)
-		}
-		for _, reasons := range out {
-			sort.Strings(reasons)
-		}
-		return out
-	}
-	oldClear := func(address string) []string {
-		t.Helper()
-		var reasons []string
-		if err := gdb.Raw(oldClearSuppressionSQL, time.Now(), nil, address).Scan(&reasons).Error; err != nil {
-			t.Fatal(err)
-		}
-		sort.Strings(reasons)
-		return reasons
-	}
-	// The new reader.
-	newLookup := func(address string) []string {
-		t.Helper()
-		found, err := mail.OpenSuppressionReasons(gdb, []string{address})
+		data, err := fs.ReadFile(migrations.Files, e.Name())
 		if err != nil {
 			t.Fatal(err)
 		}
-		return found[mail.NormalizeAddress(address)]
-	}
-	type stored struct {
-		hash      *string
-		provider  string
-		detail    string
-		createdAt time.Time
-		clearedAt *time.Time
-	}
-	rowsFor := func(address, reason string, open bool) []stored {
-		t.Helper()
-		q := `SELECT address_hash, provider, detail, created_at, cleared_at FROM suppressions WHERE address = $1 AND reason = $2 AND cleared_at IS `
-		if open {
-			q += `NULL`
-		} else {
-			q += `NOT NULL`
-		}
-		rows, err := sqlDB.Query(q, address, reason)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer rows.Close()
-		var out []stored
-		for rows.Next() {
-			var s stored
-			if err := rows.Scan(&s.hash, &s.provider, &s.detail, &s.createdAt, &s.clearedAt); err != nil {
-				t.Fatal(err)
-			}
-			out = append(out, s)
-		}
-		if err := rows.Err(); err != nil {
-			t.Fatal(err)
-		}
-		return out
-	}
-	same := func(label string, got, want []string) {
-		t.Helper()
-		if strings.Join(got, ",") != strings.Join(want, ",") {
-			t.Errorf("%s = %v, want %v", label, got, want)
-		}
-	}
-
-	// 1. Rows the new webhook insert writes, retried and redelivered.
-	for _, r := range []struct{ address, reason string }{{pat, "hard_bounce"}, {pat, "complaint"}, {asa, "hard_bounce"}} {
-		if n := newInsert(r.address, r.reason); n != 1 {
-			t.Fatalf("new insert of %q %s affected %d rows, want 1", r.address, r.reason, n)
-		}
-	}
-	for i := 0; i < 2; i++ {
-		for _, r := range []struct{ address, reason string }{{pat, "hard_bounce"}, {pat, "complaint"}, {asa, "hard_bounce"}} {
-			if n := newInsert(r.address, r.reason); n != 0 {
-				t.Fatalf("redelivery of %q %s affected %d rows, want 0 (the hash is already set)", r.address, r.reason, n)
-			}
-		}
-	}
-	var total int
-	if err := sqlDB.QueryRow(`SELECT count(*) FROM suppressions`).Scan(&total); err != nil || total != 3 {
-		t.Fatalf("rows after retries = %d (%v), want 3", total, err)
-	}
-	for _, r := range []struct{ address, reason string }{{pat, "hard_bounce"}, {pat, "complaint"}, {asa, "hard_bounce"}} {
-		got := rowsFor(r.address, r.reason, true)
-		if len(got) != 1 || got[0].hash == nil || *got[0].hash != mail.StoredAddressHash(r.address) {
-			t.Fatalf("new-written row %q %s = %+v, want one row with its hash", r.address, r.reason, got)
-		}
-	}
-
-	// 2. The old readers see them.
-	same("old send lookup of pat", oldSend(" Pat@Example.com "), []string{"complaint", "hard_bounce"})
-	same("old send lookup of åsa", oldSend(asa), []string{"hard_bounce"})
-	same("old notify.deliver subquery for pat", oldRecipient("  PAT@example.com"), []string{"complaint", "hard_bounce"})
-	batch := oldBatch(pat, asa, "nobody@example.com")
-	if len(batch) != 2 {
-		t.Errorf("old batch lookup = %v, want pat and åsa", batch)
-	}
-	same("old batch reasons for pat", batch[pat], []string{"complaint", "hard_bounce"})
-	same("old batch reasons for åsa", batch[asa], []string{"hard_bounce"})
-
-	// 3. The old model scans the new column set without error: GORM drops a
-	// column the struct lacks.
-	var old []oldSuppression
-	if err := gdb.Find(&old).Error; err != nil || len(old) != 3 {
-		t.Fatalf("old model Find = %d rows, %v, want 3 and no error", len(old), err)
-	}
-	var viaStar []oldSuppression
-	if err := gdb.Raw(`SELECT * FROM suppressions`).Scan(&viaStar).Error; err != nil || len(viaStar) != 3 {
-		t.Fatalf("SELECT * into the old model = %d rows, %v, want 3 and no error", len(viaStar), err)
-	}
-
-	// 4. The old insert meets a hashed open row: nothing added, hash intact.
-	if n := oldInsert(pat, "hard_bounce"); n != 0 {
-		t.Fatalf("old insert beside a hashed open row affected %d rows, want 0", n)
-	}
-	if got := rowsFor(pat, "hard_bounce", true); len(got) != 1 || got[0].hash == nil {
-		t.Fatalf("after the old insert: %+v, want the one hashed row", got)
-	}
-
-	// 5. The old clear clears rows the new code wrote, and only open ones.
-	const gone = "gone@example.com"
-	newInsert(gone, "hard_bounce")
-	newInsert(gone, "complaint")
-	same("new lookup before the old clear", newLookup(gone), []string{"hard_bounce", "complaint"})
-	same("old clear", oldClear(gone), []string{"complaint", "hard_bounce"})
-	if len(newLookup(gone)) != 0 || len(oldSend(gone)) != 0 {
-		t.Error("a cleared hashed row still blocks")
-	}
-	if cleared := rowsFor(gone, "hard_bounce", false); len(cleared) != 1 || cleared[0].hash == nil {
-		t.Errorf("cleared row = %+v, want it kept with its hash", cleared)
-	}
-	if n := newInsert(gone, "hard_bounce"); n != 1 {
-		t.Errorf("new insert beside a cleared row affected %d rows, want 1", n)
-	}
-	same("new lookup after a fresh report", newLookup(gone), []string{"hard_bounce"})
-
-	// 6. An old-style insert leaves the hash NULL and passes the CHECK. The
-	// new lookup finds it through the address arm.
-	const legacy = "legacy@example.com"
-	if n := oldInsert(legacy, "hard_bounce"); n != 1 {
-		t.Fatalf("old insert of a new address affected %d rows, want 1", n)
-	}
-	if n := oldInsert(legacy, "hard_bounce"); n != 0 {
-		t.Fatalf("old insert retried affected %d rows, want 0", n)
-	}
-	before := rowsFor(legacy, "hard_bounce", true)
-	if len(before) != 1 || before[0].hash != nil {
-		t.Fatalf("old-written row = %+v, want one row with a NULL hash", before)
-	}
-	same("new lookup of an old-written row", newLookup(" LEGACY@example.com "), []string{"hard_bounce"})
-
-	// 7. A redelivery through the new insert fills the hash and nothing else.
-	if n := newInsert(legacy, "hard_bounce"); n != 1 {
-		t.Fatalf("redelivery over a NULL hash affected %d rows, want 1", n)
-	}
-	after := rowsFor(legacy, "hard_bounce", true)
-	if len(after) != 1 || after[0].hash == nil || *after[0].hash != mail.StoredAddressHash(legacy) {
-		t.Fatalf("after the redelivery: %+v, want the hash filled", after)
-	}
-	if after[0].provider != "legacy" || after[0].detail != "old detail" || !after[0].createdAt.Equal(before[0].createdAt) || after[0].clearedAt != nil {
-		t.Errorf("the redelivery changed more than the hash: before %+v, after %+v", before[0], after[0])
-	}
-	if n := newInsert(legacy, "hard_bounce"); n != 0 {
-		t.Errorf("second redelivery affected %d rows, want 0", n)
-	}
-	same("new lookup after the hash was filled", newLookup(legacy), []string{"hard_bounce"})
-	same("old send lookup after the hash was filled", oldSend(legacy), []string{"hard_bounce"})
-
-	// 8. The previous goose runner holds only the baseline. Against a database
-	// recorded at a newer version it must not refuse, fail or change anything,
-	// so a rollback to the previous image boots. This result decides the
-	// rollback wording in the docs (R4-S5): goose v3.29.0 (gooseutil.UpVersions)
-	// counts only source files missing below the database's highest version, so
-	// a database ahead of its source is current. If a goose upgrade ever refuses
-	// here, the docs must say a rollback needs `fold migrate down-one` with the
-	// new binary first; change this assertion in the same commit.
-	baseline, err := fs.ReadFile(migrations.Files, "00001_baseline.sql")
-	if err != nil {
-		t.Fatal(err)
+		previousFiles[e.Name()] = &fstest.MapFile{Data: data}
 	}
 	locker, err := lock.NewPostgresSessionLocker(lock.WithLockID(migrations.LockID))
 	if err != nil {
 		t.Fatal(err)
 	}
-	previous, err := goose.NewProvider(goose.DialectPostgres, sqlDB, fstest.MapFS{"00001_baseline.sql": &fstest.MapFile{Data: baseline}}, goose.WithSessionLocker(locker))
+	previous, err := goose.NewProvider(goose.DialectPostgres, sqlDB, previousFiles, goose.WithSessionLocker(locker))
 	if err != nil {
 		t.Fatal(err)
 	}
 	applied := appliedRows(t, sqlDB)
 	results, err := previous.Up(ctx)
 	if err != nil || len(results) != 0 {
-		t.Fatalf("previous goose runner Up = %d results, %v: want nil and nothing applied (if goose now refuses, R4-S5's rollback text must name `fold migrate down-one` with the new binary first)", len(results), err)
+		t.Fatalf("previous goose runner Up = %d results, %v: want nil and nothing applied", len(results), err)
 	}
 	if got := appliedRows(t, sqlDB); got != applied {
 		t.Fatalf("previous goose runner changed goose_db_version: before %s, after %s", applied, got)
 	}
-	if column, check, index, _, _ := suppressionHashObjects(t, sqlDB); !column || !check || !index {
-		t.Fatal("previous goose runner removed what 00002 added")
+
+	// And the new binary's own Down refuses, so there is no way back that
+	// would lose the addresses silently.
+	p := newProvider(t, sqlDB)
+	if _, err := p.Down(ctx); err == nil || !strings.Contains(err.Error(), "restore the upgrade dump") {
+		t.Fatalf("down with a suppression: %v, want a refusal that names the dump", err)
 	}
-	t.Logf("previous goose runner against version %d: Up returned nil and applied nothing; a rollback to the previous image needs no migrate down", latestVersion(t))
 }
 
 // The 00003 consent-erasure-scrub tests (M7.4 R4-2d1, owner decision 1). The

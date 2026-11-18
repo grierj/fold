@@ -22,14 +22,12 @@ func TestAPILoginFlow(t *testing.T) {
 	c := newAPIClient(t, app)
 	c.fetchCSRF()
 
-	// wrong password → 401
 	w := c.do("POST", "/api/v1/auth/login",
 		map[string]string{"email": "alice@example.com", "password": "nope"}, true)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("wrong password: got %d", w.Code)
 	}
 
-	// correct → 200 with user payload
 	w = c.do("POST", "/api/v1/auth/login",
 		map[string]string{"email": "Alice@Example.COM", "password": "secret123"}, true)
 	if w.Code != http.StatusOK {
@@ -43,7 +41,6 @@ func TestAPILoginFlow(t *testing.T) {
 		t.Fatalf("unexpected user: %+v", loginBody.User)
 	}
 
-	// me works with the session cookie
 	w = c.do("GET", "/api/v1/auth/me", nil, false)
 	if w.Code != http.StatusOK {
 		t.Fatalf("me: got %d", w.Code)

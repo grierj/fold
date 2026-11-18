@@ -168,9 +168,8 @@ func noticeEnd(o *models.EventOccurrence) time.Time {
 
 // eventNoticeVars builds the guarded Vars and link for one recipient of
 // an event notice from preloaded facts (issue #76): a registrant who
-// cannot see the group gets no group name, place, or group link
-// (PR #41). It reads nothing; loadNoticeFacts did the reading once for
-// every recipient.
+// cannot see the group gets no group name, place, or group link. It reads
+// nothing; loadNoticeFacts did the reading once for every recipient.
 func eventNoticeVars(ev *models.Event, o *models.EventOccurrence, userID uint, facts *noticeFacts) (notify.Vars, string) {
 	var g *models.Group
 	if ev.GroupID != nil {

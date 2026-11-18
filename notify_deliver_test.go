@@ -466,7 +466,7 @@ func TestNotifyDeliverHashedAndLegacySuppressions(t *testing.T) {
 func suppressDeliverAddress(t *testing.T, app *App, u *models.User) {
 	t.Helper()
 	if err := app.DB.Create(&models.Suppression{
-		Channel: "email", Address: strings.ToLower(strings.TrimSpace(u.Email)), Reason: models.SuppressHardBounce,
+		Channel: "email", AddressHash: mail.AddressHash(u.Email), Reason: models.SuppressHardBounce,
 	}).Error; err != nil {
 		t.Fatal(err)
 	}

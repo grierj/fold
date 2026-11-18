@@ -6,7 +6,6 @@ RUN npm ci --no-audit --no-fund
 COPY web/ ./
 RUN npm run build
 
-# Backend build stage
 FROM golang:1.27-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -18,10 +17,11 @@ ARG FOLD_VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=${FOLD_VERSION}" -o /out/fold .
 # Seed the data dir so the named volume inherits nonroot ownership on
 # first mount (distroless nonroot is 65532:65532; there is no shell to
-# chown with in the final stage).
-RUN mkdir -p /data/uploads
+# chown with in the final stage). /backup-status is the read-only mount of
+# the backup service's status files; it is seeded the same way so the volume
+# is writable by the backup service (also 65532) whichever starts first.
+RUN mkdir -p /data/uploads /backup-status
 
-# Run stage
 FROM gcr.io/distroless/static-debian12:nonroot
 # Pin the working directory: distroless nonroot defaults to /home/nonroot,
 # so a relative UPLOAD_DIR would land off the /data volume.
@@ -30,6 +30,7 @@ COPY --from=build /out/fold /fold
 # Carry the data dir (with nonroot ownership) into the image so a fresh
 # named volume starts writable by the app user.
 COPY --from=build --chown=65532:65532 /data /data
+COPY --from=build --chown=65532:65532 /backup-status /backup-status
 ENV PORT=8080 \
     APP_ENV=prod \
     UPLOAD_DIR=/data/uploads
