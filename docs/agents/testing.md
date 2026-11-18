@@ -5,8 +5,13 @@ setup, a source guard or the e2e harness is what you are changing or debugging.
 
 ## Go tests
 
-- `make test` runs `go test ./...` against `DATABASE_URL`; `scripts/go-test.sh` shards the root
-  package and starts the dev database if `DATABASE_URL` is unset.
+- `make test` runs `go test ./...` against `DATABASE_URL` (`make go-test`), plus the shell
+  self-tests; it starts the dev database if `DATABASE_URL` is unset. CI runs `make go-test` in the
+  test job and the self-tests in the checks job.
+  `scripts/go-test.sh` shards the root package (`FOLD_TEST_SHARDS`, default two per CPU: the slow
+  tests mostly wait on real deadlines) and balances the shards by the seconds in
+  `scripts/go-test-durations.txt`. A test that newly takes several seconds belongs in that file:
+  refresh it with `FOLD_TEST_RECORD=1 FOLD_TEST_SHARDS=8 scripts/go-test.sh`.
 - Tests hash passwords at bcrypt's cheapest cost; a test that measures timing calls
   `realPasswordCost(t)` first.
 - Handler tests use `httptest` and `internal/testdb` (reuse the cookie-jar + CSRF dance in
@@ -194,8 +199,8 @@ build`, `make e2e`) and CI. Every name below is a test that exists today; the lo
 | The scanner: the scan SQL, batches, cursor, the tombstone discovery markers, the legacy (deleted-accounts) scan | `go test . -count=1 -run '^(TestReasonScanNoSkip\|TestLegacyScanNoSkip\|TestReasonScanIsBounded\|TestReasonOrderingMatrix\|TestBatchedScanMatchesTheSingleStatementOnPostgres\|TestTombstoneDiscoveryNumericMarkersAndShape\|TestTombstoneStructuralMatchAndNumericMarker)$'` | The traversal (live and legacy, T07B-3a) must not skip or repeat a request or an account, every unit stays bounded, the batched scan equals the single statement, and the markers decide what a sweep revisits. Needs `DATABASE_URL`. |
 | A transaction, the attempt ledger, the restore fence or a legacy save (T07B-3b) | `go test . -count=1 -run '^(TestLegacySaveDecidesEachReason\|TestLegacySaveRefusesAStaleSet\|TestLegacySaveStatementOrder)$'`; `go test . -count=8 -run '^TestAttemptLifecycle$'`; `go test . -count=1 -run '^TestFencedTransactionsTakeTheTicketFirst$'`; then the restore-fence tests below | `-count=8` because the lifecycle tests are about ordering; the guard reads the whole production tree; the fence tests dump and restore a real database, so they need the `pg_dump` setup in "Restore tests" above (`TestRestoreFence*`, `TestReasonReviewRestoreWithOpenPanel`). |
 | The review UI or its store, live or legacy | `cd web && npx vitest run src/pages/ReasonReviewLegacy.test.tsx src/components/ReasonReviewList.test.tsx src/components/ReasonReviewSection.test.tsx src/lib/reasonReviewStore.test.ts`; then `make e2e` (the shards decide which specs run together, so a spec filter after the spec list does not narrow it; with `DATABASE_URL` set, `E2E_SHARDS=1 web/e2e/run.sh --grep "reviewing contact-request reasons"` runs the deletion flow alone, and `--grep "the deleted-accounts review"` the legacy review in `admin-reason-review.spec.ts`, and `--grep "long reason reviews"` the long-history session spec, after `cd web && npm run build`), which includes `admin-delete-user.spec.ts`, `admin-reason-review.spec.ts`, `reason-review-session.spec.ts` and the `a11y` and `layout` specs | Vitest is the fast loop; the e2e spec drives the real deletion; axe and layout catch what a unit test cannot see. Look at the 390px screenshots (`.cursor/skills/verify-ui`). |
-| Host archives, adopted copies, expiry, cutover: `checks.sh` archive section, `backup.sh`, `provision.sh`, `upgrade.sh`, the backup image | `make backup-test` (the image, no Docker) and `make provision-dry-run` (`backup-archives-fixtures.sh`, as root in the dry-run container) | The fixtures stub commands through `PATH` only; crash cases kill the script at the Nth `rm`, `mv` or `sync` and require a rerun to converge, and the cutover cases run `provision.sh`'s own cutover functions (cut out by name) to the cron switch, and its failure path (exit 77 confirmed, 78 unconfirmed) through `upgrade.sh`'s own `run_provision`. Offsite uses one fake bucket for both producers (`deploy/digitalocean/bucket-model.sh`, sourced by the `rclone` stub in `backup-test.sh` and the `docker` stub's aws-cli branch in `backup-archives-fixtures.sh`): PUTs are kept under their whole key, an attempts ledger records every PUT invocation apart from what committed (a client's own retries inside one invocation never reach a PATH stub, so each key must be the target of exactly one), any list, head, get, delete or other client call writes a `forbidden` file that every case requires absent, and per-Nth-invocation modes are `fail-before`, `commit-then-fail` (a lost response) and `hook` (run a second deployment, with its own folder, lock and archives, before this PUT commits). `od` is stubbed per producer for reproducible run ids and for the refused answers (fail, short, non-hex, uppercase, empty). `assert`-style checks go through `bucket_check STAMP:ID...` (the committed keys are exactly one pair per named folder; `bucket_selftest` rejects mismatched stamps, two folders, two dump members, a 31-character or uppercase id, an extra path segment and flat keys) and `bucket_source_guard` (neither producer holds a listing, head, get, `--immutable` or flat key; both hold their run folder). The fake `age` only marks or rotates its input, so the fakes prove routing (the remote bytes are the local `.age` and not the plain file), not encryption; real `age` and real S3 clients are T8 and T7P's. The host cases `host_offsite*`, `host_run_id_refused`, `host_uploads_volume` and `single_producer` and the image cases `ciphertext_only_upload`, `offsite_*` and `run_id_refused` cover the interleavings (either order, and a second deployment between the first's two PUTs), a foreign complete same-stamp folder, the failure shapes, the run-id refusals and the three-way uploads-volume observation; `single_producer` keeps only the host-versus-service refusals. Not covered here and recorded for T8 and T7P: a real S3 server with a producer policy that allows `PutObject` (and multipart create, part and complete, with `AbortMultipartUpload`) under `fold/` and denies `GetObject`, `HeadObject`, `ListBucket` and `DeleteObject`, both real clients succeeding under it with negative controls (a list, a get and a delete each fail with the same key) and objects above the multipart thresholds (aws 8 MiB, rclone 200 MiB), a client killed mid-multipart leaving nothing visible under the key, real `age` decryption of both members on the workstation to the recorded hashes, two producers in one bucket in one minute with disjoint folders and the earlier objects' ETags unchanged, and restoring only from the recorded folder. If the pinned server cannot express write-only, that is recorded and the proof moves to `docs/FIRST-CHURCH-CHECKS.md`. B2 and Spaces behaviour stays unverified until that check; the cron cases log the order of `sync` and `mv` and fail each step. Nothing live (real signals, the immutable-attribute fault, a real Docker root) is covered here. |
-| Recovery: `restore.sh`, the drill, the deploy tools | `make provision-dry-run` (the dry-run container also runs the drill fixtures, `restore-drill-modes-fixtures.sh` among them; needs Docker), then only the drill cases the change can reach, through `restore-drill.sh` (the case list is its `drill_progress_init` call) | The full drill is long; `docs/agents/deploy.md` ("Full restore drill frequency") is the one place that says when it is owed. |
+| Host archives, adopted copies, expiry, cutover: `checks.sh` archive section, `backup.sh`, `provision.sh`, `upgrade.sh`, the backup image | `make backup-test` (the image, no Docker); the host side is a real-droplet check (DEC-154) | `backup-test.sh` stubs commands through `PATH` only. Offsite uses one fake bucket (`deploy/digitalocean/bucket-model.sh`, sourced by the `rclone` stub): PUTs are kept under their whole key, any list, head, get or delete writes a `forbidden` file every case requires absent, and `bucket_check` holds the committed keys to one pair per run folder. The fake `age` only marks its input, so it proves routing, not encryption. The host cases (archive copies, expiry, cutover, crash convergence) and real `age` and S3 clients are checked on a real droplet and listed in `docs/FIRST-CHURCH-CHECKS.md`. |
+| Recovery: `restore.sh`, the drill, the deploy tools | The drill cases the change can reach, through `restore-drill.sh` on a disposable droplet (the case list is its `drill_progress_init` call); there is no CI harness (DEC-154) | The full drill is long; `docs/agents/deploy.md` ("Full restore drill frequency") is the one place that says when it is owed. |
 
 Run `-run` patterns exactly as written: an unanchored pattern that matches nothing passes
 silently, so read the `--- PASS` lines for the names you meant.
@@ -306,19 +311,11 @@ scripts/reason-review-scale.sh --drill-reason "why the full drill is owed now"
   thing that can send the time limit's KILL, and its exit asks a copy still running to stop and
   waits for it before it removes the run's directory (`drop_selftest`). Real runs on a droplet
   are a hand check (`docs/FIRST-CHURCH-CHECKS.md`), not covered by this.
-- **The isolation fixtures** (`isolation-fixtures.sh`, `qc1-fixtures.sh`, `qc1-runtime-fixtures.sh`,
-  `restore-drill-modes-fixtures.sh`, run by `make provision-dry-run`) hold the pure checks in
-  `isolation.sh` (mount table, daemon scope and contents, existing configuration, the guarded host
-  paths) and source guards over the real scripts: the local-daemon pin, the declared-disposable
-  check and the scope check come before anything the restore drill or the QC-1 runner creates, the
-  runner's volume is unnamed and removed only after its owner label is read, `browser-prepare.sh`
-  refuses before it installs and installs only from the lock, and each crossing revision's own
-  `check_os` accepts the host's real `/etc/os-release` (nothing is replaced;
-  `crossings/os-release.json` records the identity with `applied:false`). They no longer run the
-  drill, the runner or `browser-prepare.sh` against a stub `docker`, `node` or `npm`: the
-  refusals of an undeclared host, a remote daemon, a busy daemon, a mislabelled image, a dirty
-  tree, the browser preparation and the runner's order of work are real
-  checks on a disposable droplet (`docs/FIRST-CHURCH-CHECKS.md`, "Drill and QC-1 isolation").
+- **Drill and QC-1 isolation** (`isolation.sh`: mount table, daemon scope and contents, existing
+  configuration, the guarded host paths) is checked on a disposable droplet, not in CI (DEC-154):
+  the refusals of an undeclared host, a remote daemon, a busy daemon, a mislabelled image, a dirty
+  tree, the browser preparation and the runner's order of work (`docs/FIRST-CHURCH-CHECKS.md`,
+  "Drill and QC-1 isolation").
 
 ### Reason-review scale matrix (#293, #294)
 
@@ -381,7 +378,7 @@ judge's verdict. `TestQC1AppFacts` checks the source-derived query, and
 `TestQC1PlanMarkersAreWhatTheApplicationSends` checks its order after the report. Source review and
 the collector's first-same-backend-block check establish adjacency. If the query changes, regenerate
 the facts as above and review the proof. `testdata/qc1-current-audit-retention.log` is a real log of the current
-build for this check. Judging older evidence with a changed `lib.sh` makes a new, labelled
+build; `TestQC1SuccessorIsTheLoggedStatement` holds the facts' successor to it. Judging older evidence with a changed `lib.sh` makes a new, labelled
 diagnostic; the saved matrix and its recorded `lib.sh` hash are never rewritten.
 
 The layout is bound to the rows, not only to the labels. The judge (`qc1_evidence_status`) requires
@@ -393,7 +390,7 @@ own layouts and are not held to it. Each cell's record carries its `rowLayouts`.
 
 `record()` hands the row's figures to `jq` in a file, never as a process argument: a multibyte
 browser case holds the final screen's 50 reason texts (about 145 kB), and Linux refuses one
-argument above 128 KiB. `qc1-fixtures.sh` runs the runner's real `record()` on such a screen.
+argument above 128 KiB.
 
 - **`--charset multibyte`** replaces the reason text with a 21-rune unit of 1- to 4-byte UTF-8 runes
   (accented letters and Omega, the euro sign, CJK, a zero-width joiner, emoji and combining marks),
@@ -452,11 +449,7 @@ argument above 128 KiB. `qc1-fixtures.sh` runs the runner's real `record()` on s
   only with every gap in its `gaps` named in the status line and Grier's dated answer quoted
   ("Yes - run matrix; PILOT gaps may close if named", Nov 14, 2026); it is never rounded up to
   `FULL`. The record at `8ef97ff7` is such a `PILOT`.
-- **Checks that run without Docker**: `qc1-fixtures.sh` (the judge's charset, shape, exactness and
-  agreement rules, the snapshot comparison, `set-v1.mjs agree` and `dom-text`, and the matrix report
-  over four consistent full cells: the one FULL control and each way it is spoiled after the rows are
-  complete), `qc1-panel-fixtures.mjs` (the on-screen comparison rule by rule and the rune accounting)
-  and `make reason-review-scale-test` (the matrix report's own checks against stub evidence, none of
+- **Checks that run without Docker**: `make reason-review-scale-test` (the matrix report's own checks against stub evidence, none of
   which can be FULL). The `go` section of `qc1/app-facts.json` changes only by
   `UPDATE_QC1_FACTS=1 go test -run TestQC1AppFacts .`; its `web` section is held by
   `ReasonReviewSection.test.tsx`.
@@ -520,10 +513,7 @@ reasons. A matrix run still records the two legacy placeholders as pending, with
   proxied by `timeToFirstItemsMs`; the marker lookup is measured at 0 markers, at 100 and at 100%, not at intermediate mixes; parse time is not separated
   from request time. Close #292's measurement part only with the invocation `complete: true` and every budget finding either absent or carrying its
   reviewed R4-C06 disposition; otherwise the PR says `Refs`.
-- **Checks that run without Docker**: the legacy-only block of `qc1-fixtures.sh` (the nine-row set per size passes the judge and the status
-  with its provenance; every added rule has a mutation that fails it by name, including the 503, the slow unit, the slow 200 probe and a sequential
-  marker plan, which must stay what they were; the missing, failed and mismatched smoke and marker-source provenance, each invalid; the status mode;
-  the helpers; the refusals; and that the marker file runs in one place) and `go test -run 'TestQC1LegacyMarkersSQL|TestQC1LegacyPlanMarkersAreWhatTheApplicationSends|TestQC1AppFacts' .`
+- **Checks that run without Docker**: `go test -run 'TestQC1LegacyMarkersSQL|TestQC1LegacyPlanMarkersAreWhatTheApplicationSends|TestQC1AppFacts' .`
   (needs `DATABASE_URL`).
 
 ### Sampling Next changed reason (#298)
@@ -620,9 +610,7 @@ without it; none is written before then.
   copied from `next-changed.json`, with the original observations kept beside it.
   Grier's closing criterion for #298 (Nov 14, 2026) is a pooled p95 under 300 ms in both configurations with
   every over-target press listed; an isolated press over 300 ms under a passing p95 is listed, not profiled.
-- **Checks that run without Docker**: `qc1-panel-fixtures.mjs` (the repeated presses, their origins,
-  the uncounted moves, a run that stops part-way, the load deltas, the profiler and the parsers) and
-  `make reason-review-scale-test` (`reason-review-next-changed.sh --self-test`: hand-computed p50, p95
+- **Checks that run without Docker**: `make reason-review-scale-test` (`reason-review-next-changed.sh --self-test`: hand-computed p50, p95
   and max over stub presses, the runs it must refuse to count, pooling across stacks, and no figures
   without a run).
 
@@ -654,9 +642,13 @@ without it; none is written before then.
 - `make e2e` runs Playwright against the real binary (first run:
   `cd web && npx playwright install chromium`). `web/e2e/run.sh` splits specs across shards
   (`E2E_SHARDS`), each with its own server, database and seed; never rely on another spec having
-  run first. Refresh `durations.json` with `E2E_RECORD_DURATIONS=1 make e2e`.
-- a11y and layout checks run in parts (`UI_PARTS`, `partSelected`); `UPDATE_UI_BASELINE=1` needs
-  `E2E_SHARDS=1`.
+  run first. CI runs one plan over three machines (`E2E_RUNNER=i/3`, three shards each).
+- Shards are planned from `web/e2e/durations.json`, and a spec with no entry stops the plan: add an
+  estimate when you add a spec, and refresh the file with `E2E_RECORD_DURATIONS=1 make e2e`
+  (`E2E_SHARDS=9` is close to CI) when a spec's length changes a lot.
+- a11y and layout checks run in parts (`UI_PARTS`), and `reason-review-session.spec.ts` in one part
+  per width; a spec joins with an entry in `partedSpecs` (`web/e2e/shards.mjs`) and a
+  `partSelected` guard. `UPDATE_UI_BASELINE=1` needs `E2E_SHARDS=1`.
 - Prefer `gotoSettled` to `waitForLoadState("networkidle")`. `signIn` and `signInTo` clear cookies
   first; `signInTo` leaves the app before its API login so no page swaps the CSRF cookie. Assert on
   roles and visible text; accept `confirm()` with `page.on("dialog")`.

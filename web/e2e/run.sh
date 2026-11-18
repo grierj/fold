@@ -7,7 +7,10 @@
 # e2e/shards.mjs balances the slices by the seconds in e2e/durations.json;
 # the page checks (a11y, layout) are split into parts to spread them.
 #
-#   E2E_SHARDS=n            number of shards (default: CPUs, 2..6)
+#   E2E_SHARDS=n            number of shards on this machine (default: CPUs, 2..6)
+#   E2E_RUNNER=i/n          CI: this is machine i of n. The plan covers n times
+#                           E2E_SHARDS shards and this machine runs its own
+#                           E2E_SHARDS of them; the dev shard runs on machine n.
 #
 # The shards run the fold server in production mode, where GET /dev/outbox is a
 # 404 and the e2e server has no email service (messages.spec.ts and system.spec.ts
@@ -25,6 +28,13 @@ cd "$(dirname "$0")/.."
 cpus=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)
 default=$((cpus < 2 ? 2 : cpus > 6 ? 6 : cpus))
 shards=${E2E_SHARDS:-$default}
+runner=${E2E_RUNNER:-1/1}
+if ! [[ "$runner" =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] || ((BASH_REMATCH[1] > BASH_REMATCH[2])); then
+	echo "run.sh: E2E_RUNNER must be i/n with 1 <= i <= n, not $runner" >&2
+	exit 2
+fi
+machine=${BASH_REMATCH[1]} machines=${BASH_REMATCH[2]}
+first=$(((machine - 1) * shards))
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -34,45 +44,57 @@ export FOLD_E2E_BIN="$tmp/fold"
 rm -rf test-results
 
 started=$(date +%s)
-mapfile -t plan < <(node e2e/shards.mjs plan "$shards")
+plan_out=$(node e2e/shards.mjs plan $((shards * machines)))
+mapfile -t plan <<<"$plan_out"
 pids=()
 for ((s = 1; s <= shards; s++)); do
-	IFS='|' read -r parts files <<<"${plan[s - 1]}"
-	read -ra specs <<<"$files"
+	IFS='|' read -r parts files <<<"${plan[first + s - 1]}"
+	read -ra names <<<"$files"
+	# Playwright reads each file argument as a pattern over the path: "session.spec.ts" alone
+	# also runs reason-review-session.spec.ts. "e2e/<file>" matches only that file.
+	specs=("${names[@]/#/e2e/}")
+	# With no spec named, playwright would run the whole suite.
+	((${#specs[@]} > 0)) || { echo "run.sh: shard $((first + s)) has no specs; use fewer shards" >&2; exit 1; }
 	E2E_SHARD=$s E2E_PORT=$((18090 + s)) E2E_OUTPUT_DIR="test-results/shard-$s" E2E_PARTS="$parts" \
 		PLAYWRIGHT_JSON_OUTPUT_NAME="$tmp/shard$s.json" \
 		npx playwright test --reporter=list,json seed "${specs[@]}" "$@" >"$tmp/shard$s.log" 2>&1 &
 	pids+=("$!")
 done
 
-# The dev shard: its own port, database ("<db>_e2e_dev") and seed, in dev mode. Left out of the
-# durations that E2E_RECORD_DURATIONS writes (its messages.spec.ts run is a second one).
-mapfile -t dev_specs < <(grep -l '/dev/outbox' e2e/*.spec.ts | xargs -n1 basename | sort)
-# With no spec named, playwright would run the whole suite in dev mode.
-if ((${#dev_specs[@]} == 0)); then echo "run.sh: no spec mentions /dev/outbox; the dev shard has nothing to run" >&2; exit 1; fi
-E2E_APP_ENV=dev E2E_SHARD=dev E2E_PORT=$((18090 + shards + 1)) E2E_OUTPUT_DIR="test-results/shard-dev" \
-	PLAYWRIGHT_JSON_OUTPUT_NAME="$tmp/dev.json" \
-	npx playwright test --reporter=list,json seed "${dev_specs[@]}" "$@" >"$tmp/dev.log" 2>&1 &
-dev_pid=$!
+# The dev shard: its own port, database ("<db>_e2e_dev") and seed, in dev mode, on the last
+# machine only. Left out of the durations that E2E_RECORD_DURATIONS writes (its messages.spec.ts
+# run is a second one).
+dev_pid=
+if ((machine == machines)); then
+	mapfile -t dev_specs < <(grep -l '/dev/outbox' e2e/*.spec.ts | sort)
+	# With no spec named, playwright would run the whole suite in dev mode.
+	if ((${#dev_specs[@]} == 0)); then echo "run.sh: no spec mentions /dev/outbox; the dev shard has nothing to run" >&2; exit 1; fi
+	E2E_APP_ENV=dev E2E_SHARD=dev E2E_PORT=$((18090 + shards + 1)) E2E_OUTPUT_DIR="test-results/shard-dev" \
+		PLAYWRIGHT_JSON_OUTPUT_NAME="$tmp/dev.json" \
+		npx playwright test --reporter=list,json seed "${dev_specs[@]}" "$@" >"$tmp/dev.log" 2>&1 &
+	dev_pid=$!
+fi
 
 status=0
 for ((s = 1; s <= shards; s++)); do
 	if wait "${pids[s - 1]}"; then
-		echo "shard $s/$shards: $(grep -E '^ +[0-9]+ (passed|skipped|flaky)' "$tmp/shard$s.log" | xargs)"
+		echo "shard $((first + s))/$((shards * machines)): $(grep -E '^ +[0-9]+ (passed|skipped|flaky)' "$tmp/shard$s.log" | xargs)"
 	else
 		status=1
-		echo "--- shard $s/$shards failed:"
+		echo "--- shard $((first + s))/$((shards * machines)) failed:"
 		cat "$tmp/shard$s.log"
 	fi
 done
-if wait "$dev_pid"; then
+if [ -z "$dev_pid" ]; then
+	:
+elif wait "$dev_pid"; then
 	echo "dev shard: $(grep -E '^ +[0-9]+ (passed|skipped|flaky)' "$tmp/dev.log" | xargs)"
 else
 	status=1
 	echo "--- dev shard failed:"
 	cat "$tmp/dev.log"
 fi
-echo "e2e: $shards shards in $(($(date +%s) - started))s"
+echo "e2e: machine $machine/$machines, $shards shards in $(($(date +%s) - started))s"
 if ((status == 0)) && [ -n "${E2E_RECORD_DURATIONS:-}" ]; then
 	node e2e/shards.mjs record "$tmp"/shard*.json
 	echo "e2e: updated e2e/durations.json"

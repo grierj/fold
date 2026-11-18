@@ -11,6 +11,12 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request stops the run for its older head. Master runs
+# are grouped by commit, so none is ever cancelled.
+concurrency:
+  group: test-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     runs-on: ubuntu-26.04
@@ -49,30 +55,63 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - name: Install shellcheck and GNU coreutils
+      - name: Install GNU coreutils
         run: |
           sudo apt-get update
-          sudo apt-get install -y shellcheck coreutils-from-gnu coreutils-from-uutils- --allow-remove-essential
-      - run: make lint-sh lint-go deadcode
+          sudo apt-get install -y coreutils-from-gnu coreutils-from-uutils- --allow-remove-essential
       # Known vulnerabilities in reachable Go code (DEC-37). Pinned version.
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
-      # Includes the schema drift check (migrations/migrations_test.go).
-      - run: make test
+      # Includes the schema drift check (migrations/migrations_test.go). The
+      # shell self-tests that make test also runs are in the checks job: beside
+      # the Go shards on four CPUs they starved the tests that time a deadline.
+      - run: make go-test
+        env:
+          FOLD_TEST_SHARDS: 6
+
+  # Static checks and the tests that need no database: shell, Go and web
+  # lint, the shell self-tests, Vitest, token contrast, the production build
+  # and its budget, and the runtime dependency audit. Required through the
+  # web job below.
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - name: Install shellcheck and GNU coreutils
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck coreutils-from-gnu coreutils-from-uutils- --allow-remove-essential
+      - run: make lint-sh lint-go deadcode
+      - run: make reason-review-scale-test backup-test
       - working-directory: web
-        run: npm ci && npm run build && npm run bundle-size
+        run: npm ci && npm test
+      # Unused files, exports and dependencies (knip, #79).
+      - run: make lint-web
+      # Token contrast (ENFORCEMENT.md B7): text 4.5:1, control edges 3:1.
+      - working-directory: web
+        run: npm run contrast
+      - working-directory: web
+        run: npm run build && npm run bundle-size
       # Runtime dependencies only; dev-only findings come through Dependabot.
       - working-directory: web
         run: npm audit --omit=dev --audit-level=high
 
-  # Frontend tests (M0.4): Vitest, then Playwright (Chromium) against the
-  # real binary on a fresh Postgres database (make e2e, web/e2e/server.sh).
-  web:
+  # Playwright (Chromium) against the real binary on fresh Postgres
+  # databases (make e2e, web/e2e/run.sh), split over three machines of three
+  # shards each from one plan (E2E_RUNNER). Required through the web job below.
+  e2e:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        machine: [1, 2, 3]
     services:
       postgres:
         image: postgres:16
@@ -100,21 +139,24 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - working-directory: web
-        run: npm ci && npm test
-      # Unused files, exports and dependencies (knip, #79).
-      - run: make lint-web
-      # Token contrast (ENFORCEMENT.md B7): text 4.5:1, control edges 3:1.
+        run: npm ci
+      # No --with-deps: the runner image already has Chromium's libraries, and
+      # the extra fonts it would add come from an apt mirror that has taken
+      # up to seven minutes.
       - working-directory: web
-        run: npm run contrast
-      - working-directory: web
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install chromium
       - run: make e2e
+        env:
+          E2E_RUNNER: ${{ matrix.machine }}/3
+          E2E_SHARDS: 3
       # Screenshots of the main pages at 390, 768 and 1280 px, kept with the
       # run so a styling PR's reviewer can compare them with master's.
       - name: Screenshots
+        if: matrix.machine == 1
         working-directory: web
         run: SCREENS_DIR="$PWD/screens" npx playwright test seed screens
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - if: matrix.machine == 1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: screenshots
           path: web/screens/
@@ -122,24 +164,22 @@ jobs:
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: playwright-traces
+          name: playwright-traces-${{ matrix.machine }}
           path: web/test-results/
           retention-days: 7
 
-  # DigitalOcean provisioner: shellcheck, a dry-run, and a second real run
-  # inside Ubuntu 24.04 (systemd and Docker stubbed). No DigitalOcean API calls.
-  provision:
+  # The required "web" check (ruleset and scripts/merge-rules-check.sh):
+  # green only when checks and every e2e machine passed. always() keeps it
+  # from being skipped, and a skipped required check would count as passed.
+  web:
+    if: always()
+    needs: [checks, e2e]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          # The deploy drill fixtures require the real pre-scrub history
-          # (a278962 and its descendants) and fail without it, so no shallow clone.
-          fetch-depth: 0
-      - name: Install shellcheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
-      - run: make lint-sh
-      - run: make provision-dry-run
+      - name: Every web check passed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: jq -e 'to_entries | all(.value.result == "success")' <<<"$RESULTS"
 
   # Boots the shipped Compose stack (app + Postgres) and smokes /healthz and
   # /setup. Branch protection does not require this job until Grier adds it.

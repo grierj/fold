@@ -12,8 +12,7 @@
 # write. qc1-measure.sh writes nothing to the host and uses only Docker objects
 # it creates, so it takes the same daemon and socket checks without the path list.
 #
-# The pure functions take a mountinfo file or a path list and are exercised by
-# isolation-fixtures.sh without Docker.
+# The pure functions take a mountinfo file or a path list.
 # shellcheck disable=SC2034
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then echo 'source from a drill only' >&2; exit 1; fi
 

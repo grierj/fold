@@ -11,6 +11,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -165,6 +167,60 @@ func numberNamed(text string, start int) (string, int) {
 // deletion with reasons, and the pages that precede it, send every one of
 // them, and the audit report is the facts file's statement with its named
 // arguments numbered.
+// qc1CurrentAuditLog is lines 620 to 935, unmodified, of the server log of one
+// real explained deletion (account 13) by a build whose discovery statement is
+// the facts file's successor. Its hash is pinned so the log cannot be edited
+// to agree with a changed statement: only a new Docker-captured log can
+// (docs/agents/erasure.md).
+const (
+	qc1CurrentAuditLog       = "deploy/digitalocean/testdata/qc1-current-audit-retention.log"
+	qc1CurrentAuditLogSHA256 = "04a3b9b82937cbcfaa30f99d29fda137a6aa3790c002ce75f2a525e9084ad6f8"
+)
+
+// TestQC1SuccessorIsTheLoggedStatement holds the facts file's successor (the
+// first statement of conversion discovery, sent right after the audit report)
+// to the text the real server logged, so the facts are never regenerated with
+// a different statement.
+func TestQC1SuccessorIsTheLoggedStatement(t *testing.T) {
+	raw, err := os.ReadFile(qc1FactsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file qc1FactsFileShape
+	if err := json.Unmarshal(raw, &file); err != nil {
+		t.Fatalf("%s: %v", qc1FactsFile, err)
+	}
+	successor := file.Go.AuditReport.Successor
+	logged, err := os.ReadFile(qc1CurrentAuditLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum := sha256.Sum256(logged); hex.EncodeToString(sum[:]) != qc1CurrentAuditLogSHA256 {
+		t.Fatalf("%s changed: it is a captured real-server log; replace it only with a new capture and its hash", qc1CurrentAuditLog)
+	}
+	first, _, _ := strings.Cut(successor, "\n")
+	var found []string
+	lines := strings.Split(string(logged), "\n")
+	for i, line := range lines {
+		text, ok := strings.CutPrefix(line, "\tQuery Text: ")
+		if !ok || text != first {
+			continue
+		}
+		block := []string{text}
+		for _, next := range lines[i+1:] {
+			if strings.HasPrefix(next, "\tQuery Parameters: ") || !strings.HasPrefix(next, "\t ") {
+				break
+			}
+			block = append(block, strings.TrimPrefix(next, "\t"))
+		}
+		found = append(found, strings.Join(block, "\n"))
+	}
+	if len(found) != 1 || found[0] != successor {
+		t.Fatalf("%s must log the facts file's successor exactly once; it logged %d statement(s) starting with its first line:\n%s\nwant:\n%s",
+			qc1CurrentAuditLog, len(found), strings.Join(found, "\n---\n"), successor)
+	}
+}
+
 func TestQC1PlanMarkersAreWhatTheApplicationSends(t *testing.T) {
 	// One row a unit, so the walk continues from a cursor and sends the continuation statement.
 	prevUnit := reasonUnitRows

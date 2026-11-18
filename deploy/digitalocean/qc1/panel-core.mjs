@@ -1,7 +1,5 @@
 // QC-1 item 10, the rendered deletion panel: WHAT is measured and in WHAT order, with no browser in it. panel-measure.mjs drives
-// the real panel in Chromium through panel-driver.mjs; this module takes any `driver` with the same methods, which is how
-// qc1-fixtures.sh tests the sequence, the readiness rule, the click and navigation bookkeeping and the finding it assembles without a
-// browser (a fake driver models the panel's states on a virtual clock).
+// the real panel in Chromium through panel-driver.mjs; this module takes any `driver` with the same methods.
 //
 // The panel (T07B-2 scaling F6/F7): the whole review is read page by page (100 requests a page) into a store; only 50 reasons are on
 // the screen at a time ("Reasons 1 to 50 of at least 10,000" while the walk runs, "of 10,000" once it ended), with Next 50 / Previous 50,

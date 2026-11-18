@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # The browser runtime of the disposable host: whether web/package-lock.json pins
-# what `npm ci` must install. Sourced by browser-prepare.sh and by qc1-fixtures.sh
-# (no Docker).
+# what `npm ci` must install. Sourced by browser-prepare.sh.
 # shellcheck disable=SC2034
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then echo 'source from browser-prepare.sh only' >&2; exit 1; fi
 
