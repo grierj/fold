@@ -1,3 +1,4 @@
+import { isString } from "./wireValues";
 import { appendFileSync } from "node:fs";
 import { env } from "node:process";
 import { describe, expect, it } from "vitest";
@@ -5,10 +6,12 @@ import type { ErasureReasonItem } from "../types";
 import { KEEP, REMOVE, ReasonReviewStore, ReasonStoreError } from "./reasonReviewStore";
 
 const hex = (n: number) => (n % 0xffff).toString(16).padStart(4, "0").repeat(16);
+
 const item = (id: string | number, hash = hex(Number(id))): ErasureReasonItem => ({
   requestId: String(id), reviewHash: hash, role: "subject", purpose: "contact", status: "pending", createdAt: "2026-11-01T12:00:00Z",
   counterpartName: "Lee", counterpartDeleted: false, reviewerIsParty: false, reason: `r${id}`,
 });
+
 const items = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => item(from + i));
 
 describe("ReasonReviewStore", () => {
@@ -67,14 +70,15 @@ describe("ReasonReviewStore", () => {
   // and a hash must be exactly 64 lowercase hex characters.
   describe("line terminators and spaces", () => {
     const terminators = { LF: "\n", CR: "\r", CRLF: "\r\n", "U+2028": "\u2028", "U+2029": "\u2029", NEL: "\u0085", tab: "\t", space: " ", NBSP: "\u00a0" };
-    const cases = Object.entries(terminators).flatMap(([name, t]) => [
+
+    const cases: Array<[string, () => ErasureReasonItem[]]> = Object.entries(terminators).flatMap(([name, t]) => [
       [`an id ending in ${name}`, () => [item("5" + t)]],
       [`an id starting with ${name}`, () => [item(t + "5")]],
       [`a negative id ending in ${name}`, () => [item("-5" + t)]],
       [`a hash ending in ${name}`, () => [item(1, "a".repeat(64) + t)]],
       [`a hash starting with ${name}`, () => [item(1, t + "a".repeat(64))]],
       [`a 64-character hash whose last character is ${name}`, () => [item(1, "a".repeat(63) + t.slice(0, 1))]],
-    ] as Array<[string, () => ErasureReasonItem[]]>);
+    ]);
 
     it.each(cases)("refuses %s, and the store is not touched", (_name, page) => {
       const store = new ReasonReviewStore();
@@ -92,18 +96,22 @@ describe("ReasonReviewStore", () => {
 
     it("refuses an id that is not a string, and the other spellings BigInt would read", () => {
       const store = new ReasonReviewStore();
+
       for (const id of [5, null, undefined, "0x10", "1e3", "", "+1", "01", "-0", "1_000"]) {
-        expect(() => store.appendPage([{ ...item(1), requestId: id as unknown as string }])).toThrow(ReasonStoreError);
+        expect(() => store.appendPage([{ ...item(1), requestId: id }])).toThrow(ReasonStoreError);
       }
+
       expect(store.total).toBe(0);
       expect(store.getVersion()).toBe(0);
     });
 
     it("refuses a hash that is 63 or 65 characters, upper-case, or not a string", () => {
       const store = new ReasonReviewStore();
+
       for (const h of ["a".repeat(63), "a".repeat(65), "A".repeat(64), "a".repeat(63) + "g", 7, null]) {
-        expect(() => store.appendPage([{ ...item(1), reviewHash: h as unknown as string }])).toThrow(ReasonStoreError);
+        expect(() => store.appendPage([{ ...item(1), reviewHash: h }])).toThrow(ReasonStoreError);
       }
+
       expect(store.total).toBe(0);
     });
 
@@ -126,21 +134,25 @@ describe("ReasonReviewStore", () => {
   it("choose keeps the counters equal to a full recount after 10,000 random operations", () => {
     const store = new ReasonReviewStore();
     const n = 3000;
+
     for (let from = 1; from <= n; from += 100) store.appendPage(items(from, Math.min(from + 100, n + 1)));
-    const model = new Array<number>(n).fill(0);
+    const model = Array.from({ length: n }, () => 0);
     let seed = 12345;
     const rand = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff);
+
     for (let i = 0; i < 10_000; i++) {
       const at = rand() % n;
       const c = rand() % 2 === 0 ? KEEP : REMOVE;
       store.choose(at, c);
       model[at] = c;
     }
+
     const snap = store.getSnapshot();
     expect(snap.keep).toBe(model.filter((c) => c === KEEP).length);
     expect(snap.remove).toBe(model.filter((c) => c === REMOVE).length);
     expect(snap.unchosen).toBe(model.filter((c) => c === 0).length);
     expect(snap.total).toBe(n);
+
     for (let i = 0; i < n; i += 97) expect(store.choiceAt(i)).toBe(model[i]);
   });
 
@@ -189,7 +201,9 @@ describe("ReasonReviewStore", () => {
   describe("operation counts", () => {
     const sized = (n: number) => {
       const store = new ReasonReviewStore();
+
       for (let from = 1; from <= n; from += 100) store.appendPage(items(from, Math.min(from + 100, n + 1)));
+
       return store;
     };
 
@@ -197,6 +211,7 @@ describe("ReasonReviewStore", () => {
       for (const n of [1_000, 100_000]) {
         const store = sized(n);
         const before = store.operations;
+
         for (let i = 0; i < 1000; i++) store.choose((i * 7919) % n, i % 2 ? KEEP : REMOVE);
         expect(store.operations - before).toBe(1000);
       }
@@ -220,6 +235,7 @@ describe("ReasonReviewStore", () => {
 
     it("a search for the next reason without a choice costs only the distance it walks", () => {
       const store = sized(100_000);
+
       for (let i = 0; i < 99_990; i++) store.choose(i, KEEP);
       const before = store.operations;
       expect(store.nextUnchosen(99_980)).toBe(99_990);
@@ -239,18 +255,23 @@ describe("ReasonReviewStore", () => {
     it("keeps exactly the (id, hash) matches at 100,000 reasons and marks new and changed ones", () => {
       const store = new ReasonReviewStore();
       const n = 100_000;
+
       for (let from = 1; from <= n; from += 100) store.appendPage(items(from, Math.min(from + 100, n + 1)));
+
       for (let i = 0; i < n; i += 2) store.choose(i, KEEP);
+
       for (let i = 1; i < n; i += 2) store.choose(i, REMOVE);
       const prior = store.carry();
       expect(prior.size).toBe(n);
       store.reset(prior);
       // id 5's hash changed; ids 1.. are the same except that 7 has vanished and 100001 is new
       const next: ErasureReasonItem[] = [];
+
       for (let id = 1; id <= n + 1; id++) {
         if (id === 7) continue;
         next.push(id === 5 ? item(id, "e".repeat(64)) : item(id));
       }
+
       for (let at = 0; at < next.length; at += 100) store.appendPage(next.slice(at, at + 100));
       const snap = store.getSnapshot();
       expect(snap.total).toBe(n);
@@ -276,20 +297,24 @@ describe("ReasonReviewStore", () => {
 // (scripts/reason-review-hardening.sh sets them).
 function mulberry32(seed: number) {
   let a = seed >>> 0;
+
   return () => {
     a = (a + 0x6d2b79f5) >>> 0;
     let t = a;
     t = Math.imul(t ^ (t >>> 15), t | 1);
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
 
 function seedsFromEnv(): number[] {
   const one = env.FOLD_REASON_SEED;
+
   if (one) return [Number(one)];
   const base = Number(env.FOLD_REASON_SEED_BASE ?? 20261111);
   const runs = Number(env.FOLD_REASON_RUNS ?? 24);
+
   return Array.from({ length: runs }, (_, i) => base + i);
 }
 
@@ -309,43 +334,54 @@ class Model {
   accepts(page: ErasureReasonItem[]): boolean {
     let prev = this.last;
     const seen = new Set(this.items.map((m) => m.item.requestId));
+
     for (const it of page) {
-      if (typeof it.requestId !== "string") return false;
+      if (!isString(it.requestId)) return false;
       let v: bigint;
+
       try {
         v = BigInt(it.requestId);
       } catch {
         return false;
       }
+
       // The round trip rejects what BigInt reads but the walk never writes: a
       // trailing line terminator or space, "0x10", "+1", "01" and "-0".
       if (v.toString() !== it.requestId) return false;
+
       if (v < -(2n ** 63n) || v > 2n ** 63n - 1n) return false;
+
       if (prev !== null && v <= prev) return false;
+
       if (seen.has(it.requestId)) return false;
+
       // The length is checked, not implied by the pattern's end: "$" matches
       // before a final newline, so a longer hash with one would pass the
       // pattern alone.
-      if (typeof it.reviewHash !== "string" || it.reviewHash.length !== 64 || !/^[0-9a-f]{64}$/.test(it.reviewHash)) return false;
+      if (!isString(it.reviewHash) || it.reviewHash.length !== 64 || !/^[0-9a-f]{64}$/.test(it.reviewHash)) return false;
       seen.add(it.requestId);
       prev = v;
     }
+
     return true;
   }
 
   append(page: ErasureReasonItem[]): void {
     if (page.length === 0) return;
+
     for (const it of page) {
       const old = this.prior?.get(it.requestId);
       const kept = old && old.hash === it.reviewHash ? old.choice : 0;
       this.items.push({ id: BigInt(it.requestId), hash: it.reviewHash, choice: kept, changed: this.prior !== null && !kept, item: it });
       this.last = BigInt(it.requestId);
     }
+
     this.version++;
   }
 
   choose(at: number, c: 1 | 2): void {
     const m = this.items[at];
+
     if (!m || m.choice === c) return;
     m.choice = c;
     m.changed = false;
@@ -360,22 +396,25 @@ class Model {
   }
 
   carry(): Map<string, { hash: string; choice: 1 | 2 }> {
-    return new Map(this.items.filter((m) => m.choice !== 0).map((m) => [m.item.requestId, { hash: m.hash, choice: m.choice as 1 | 2 }]));
+    return new Map(this.items.filter((m) => m.choice !== 0).map((m) => [m.item.requestId, { hash: m.hash, choice: m.choice === 1 ? 1 : 2 }]));
   }
 
   next(from: number, want: (m: ModelItem) => boolean): number {
     const n = this.items.length;
+
     for (let step = 1; step <= n; step++) {
       const i = (from + step + n) % n;
+
       if (want(this.items[i])) return i;
     }
+
     return -1;
   }
 }
 
 // Plain comparisons per item (a few hundred items, a few hundred steps, many
 // seeds): expect() only for the aggregates.
-function same(got: unknown, want: unknown, what: string) {
+function same(got: ErasureReasonItem | ErasureReasonItem[] | boolean | number | string | undefined, want: ErasureReasonItem | ErasureReasonItem[] | boolean | number | string | undefined, what: string) {
   if (got !== want) throw new Error(`${what} is ${String(got)}, want ${String(want)}`);
 }
 
@@ -409,6 +448,7 @@ function compare(store: ReasonReviewStore, model: Model, rng: () => number, with
   same(f.version, model.version, "frozen version");
   same(f.hashes.length, n * 32, "frozen hash bytes");
   expect([...f.choices]).toEqual(model.items.map((m) => m.choice));
+
   if (withHashes) {
     model.items.forEach((m, i) => {
       same(f.ids[i], m.item.requestId, `frozen id ${i}`);
@@ -420,12 +460,15 @@ function compare(store: ReasonReviewStore, model: Model, rng: () => number, with
 describe("the reference model", () => {
   it("refuses the same newline-suffixed ids and hashes production refuses", () => {
     const model = new Model();
+
     for (const id of ["5\n", "5\r", "5\r\n", "-5\n", "5\u00a0", "5 ", "0x10", "+1", "01", "-0", ""]) {
       expect(model.accepts([{ ...item(0), requestId: id }]), JSON.stringify(id)).toBe(false);
     }
+
     for (const hash of ["a".repeat(64) + "\n", "\n" + "a".repeat(64), "a".repeat(63) + "\n", "A".repeat(64)]) {
       expect(model.accepts([{ ...item(1), reviewHash: hash }]), JSON.stringify(hash)).toBe(false);
     }
+
     expect(model.accepts([{ ...item(1) }])).toBe(true);
     expect(model.accepts([])).toBe(true);
   });
@@ -446,24 +489,30 @@ describe("random operations against a reference model", () => {
     const model = new Model();
     const hashOf = () => Array.from({ length: 32 }, () => below(256).toString(16).padStart(2, "0")).join("");
     const itemOf = (id: bigint, hash = hashOf()): ErasureReasonItem => ({ ...item(0), requestId: String(id), reviewHash: hash });
+
     // A page that continues the walk: ascending ids with gaps, now and then at an int64 extreme.
     const goodPage = (): ErasureReasonItem[] => {
       const size = 1 + below(6);
       let id = model.last === null ? (rng() < 0.3 ? -(2n ** 63n) + BigInt(below(5)) : BigInt(below(2000) - 1000)) : model.last + 1n + BigInt(below(4));
       const page: ErasureReasonItem[] = [];
+
       for (let i = 0; i < size; i++) {
         if (id > 2n ** 63n - 1n) break;
         page.push(itemOf(id));
         id += 1n + BigInt(below(3));
       }
+
       return page;
     };
+
     const badPage = (): ErasureReasonItem[] => {
       const page = goodPage();
       const at = below(page.length || 1);
       const kind = below(8);
+
       if (page.length === 0) return [itemOf(5n), itemOf(5n)];
       const mutate = (patch: Partial<ErasureReasonItem>) => (page[at] = { ...page[at], ...patch });
+
       if (kind === 0) mutate({ requestId: "+" + page[at].requestId });
       else if (kind === 1) mutate({ requestId: page[at].requestId + "\n" });
       else if (kind === 2) mutate({ reviewHash: page[at].reviewHash.slice(0, 63) + "G" });
@@ -472,8 +521,10 @@ describe("random operations against a reference model", () => {
       else if (kind === 5 && model.items.length > 0) page.unshift(model.items[below(model.items.length)].item); // a repeat
       else if (kind === 6 && model.last !== null) page.unshift(itemOf(model.last - BigInt(below(3)))); // does not continue
       else page.push(page[at]); // twice on one page
+
       return page;
     };
+
     const step = (label: string, run: () => void) => {
       trace.push(label);
       run();
@@ -482,6 +533,7 @@ describe("random operations against a reference model", () => {
     try {
       for (let op = 0; op < 260; op++) {
         const roll = below(100);
+
         if (roll < 28) {
           const page = goodPage();
           step(`append good [${page.map((p) => p.requestId).join(",")}]`, () => {
@@ -520,9 +572,12 @@ describe("random operations against a reference model", () => {
             store.reset(prior ? new Map(prior) : null);
             model.reset(prior ? new Map(prior) : null);
             const walk: ModelItem[] = [];
+
             for (const m of before) if (rng() < 0.8) walk.push({ ...m, hash: rng() < 0.2 ? hashOf() : m.hash });
+
             for (let k = below(4); k > 0; k--) walk.push({ id: BigInt(below(4000) - 2000), hash: hashOf(), choice: 0, changed: false, item: item(0) });
             const sorted = [...new Map(walk.map((m) => [m.id, m] as const)).values()].sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
+
             for (let at = 0; at < sorted.length; ) {
               const size = 1 + below(5);
               const page = sorted.slice(at, at + size).map((m) => itemOf(m.id, m.hash));
@@ -539,12 +594,14 @@ describe("random operations against a reference model", () => {
         } else {
           step(`read`, () => undefined);
         }
+
         compare(store, model, rng, op % 11 === 0 || op === 259);
       }
+
       record(`store seed ${seed} ok: ${trace.length} operations`);
     } catch (e) {
       const shown = trace.length > 120 ? [`... ${trace.length - 120} earlier operations ...`, ...trace.slice(-120)] : trace;
-      const report = `reproduce with FOLD_REASON_SEED=${seed}; ${trace.length} operations, the last failing:\n${shown.join("\n")}\n${(e as Error).message}`;
+      const report = `reproduce with FOLD_REASON_SEED=${seed}; ${trace.length} operations, the last failing:\n${shown.join("\n")}\n${e instanceof Error ? e.message : String(e)}`;
       record(`store seed ${seed} FAILED: ${report}`);
       throw new Error(report);
     }

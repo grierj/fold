@@ -1,4 +1,7 @@
-import { render, screen, within } from "@testing-library/react";
+import { stubService } from "../test/service";
+import { Site } from "../api/site";
+import { renderWithAuth } from "../test/auth";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -6,8 +9,10 @@ import { ApiError } from "../api/core";
 import { fakeSub, installBrowser, uninstallBrowser, type BrowserOptions } from "../test/push";
 
 const site = vi.fn();
-vi.mock("../api/site", async (orig) => ({ ...(await orig<typeof import("../api/site")>()), Site: { get: () => site() } }));
-vi.mock("../auth", () => ({ useAuth: () => ({ user: null }) }));
+
+stubService(Site, () => ({ get: () => site() }));
+
+const render = renderWithAuth(() => ({ user: null }));
 
 import { NotificationsSetupPage } from "./NotificationsSetup";
 
@@ -19,13 +24,16 @@ const UA = {
 };
 
 beforeEach(() => site.mockReset().mockResolvedValue({ name: "Grace Church", timezone: "UTC", selfSignup: "off", roomsEnabled: false, pushEnabled: true }));
+
 afterEach(() => uninstallBrowser());
 
 function show(o: BrowserOptions = {}) {
   installBrowser(o);
   render(<MemoryRouter><NotificationsSetupPage /></MemoryRouter>);
+
   return screen.findByRole("heading", { name: "Get notifications on your phone", level: 1 });
 }
+
 const first = () => screen.getAllByRole("heading", { level: 2 })[0];
 
 it("puts the iPhone steps first on an iPhone, with the other devices below", async () => {
@@ -36,6 +44,7 @@ it("puts the iPhone steps first on an iPhone, with the other devices below", asy
   expect(within(mine).getByText("Using a different browser?")).toBeInTheDocument();
   expect(within(mine).getAllByRole("link", { name: "Me → Notifications" })[0]).toHaveAttribute("href", "/profile/notifications");
   const others = screen.getByRole("region", { name: "Using a different device?" });
+
   for (const h of ["Get notifications on your Android phone", "Get notifications on your computer", "Get notifications in Safari on your Mac"]) {
     expect(within(others).getByRole("heading", { name: h, level: 3 })).toBeInTheDocument();
   }
@@ -93,6 +102,7 @@ it("says when this browser can't receive notifications", async () => {
 it("collapses the other devices and closes with one shortcut line", async () => {
   await show();
   const others = screen.getByRole("region", { name: "Using a different device?" });
+
   for (const d of others.querySelectorAll("details")) expect(d.open).toBe(false);
   expect(screen.getAllByText(/Notifications are a shortcut/)).toHaveLength(1);
 });

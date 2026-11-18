@@ -1,3 +1,6 @@
+import { requiredElement } from "../../test/dom";
+import type { JsonObject } from "../../lib/wireValues";
+import { stubService } from "../../test/service";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
@@ -8,18 +11,20 @@ import { RoomRequests } from "../../api/rooms";
 import type { RoomRequest } from "../../types";
 import { RoomRequestsList } from "./RoomRequestsList";
 
-vi.mock("../../api/rooms", async (actual) => ({ ...(await actual<typeof import("../../api/rooms")>()), RoomRequests: { list: vi.fn(), confirm: vi.fn(), reject: vi.fn() } }));
+stubService(RoomRequests, () => ({ list: vi.fn(), confirm: vi.fn(), reject: vi.fn() }));
 
 // The tests run in America/Boise, where 19:00 UTC on Nov 10 is noon.
 const series: RoomRequest = {
   id: 5, eventId: 9, eventTitle: "Weekly Bible study", groupName: "Room 201 class", roomId: 1, roomName: "Fellowship Hall", building: "Main",
   series: true, requestedBy: "Lee Park", dates: 40, busyDates: 0, firstDate: "2026-11-10", firstStartsAt: "2026-11-10T19:00:00Z", createdAt: "2026-10-30T15:00:00Z",
 };
+
 const single: RoomRequest = { ...series, id: 6, eventId: 10, eventTitle: "Potluck", groupName: "", series: false, dates: 1, firstDate: "2026-11-17", firstStartsAt: "2026-11-17T19:00:00Z" };
 
 // The page owns the list and drops a decided request; this stands in for it.
 function Harness({ initial, needApproval = true, reload = () => {} }: { initial: RoomRequest[] | null; needApproval?: boolean; reload?: () => void }) {
   const [requests, setRequests] = useState(initial);
+
   return (
     <MemoryRouter>
       <RoomRequestsList requests={requests} needApproval={needApproval} error={null} reload={reload}
@@ -29,7 +34,8 @@ function Harness({ initial, needApproval = true, reload = () => {} }: { initial:
     </MemoryRouter>
   );
 }
-const row = (title: string) => screen.getByRole("heading", { name: title }).closest("li") as HTMLElement;
+
+const row = (title: string) => requiredElement(screen.getByRole("heading", { name: title }).closest("li"), HTMLElement);
 const btn = (within_: HTMLElement, name: string) => within(within_).getByRole("button", { name: new RegExp(`^${name}`) });
 
 beforeEach(() => {
@@ -174,7 +180,7 @@ describe("RoomRequestsList", () => {
   });
 
   describe("when someone else decided first (409)", () => {
-    const conflict = (data: Record<string, unknown>) => new ApiError(409, "This was already handled", data);
+    const conflict = (data: JsonObject) => new ApiError(409, "This was already handled", data);
 
     it("says who handled it, in this page's verbs, drops the row and asks for a fresh list", async () => {
       vi.mocked(RoomRequests.confirm).mockRejectedValue(conflict({ resolvedBy: "Pat Smith", resolution: "rejected" }));

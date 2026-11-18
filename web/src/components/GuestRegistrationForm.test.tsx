@@ -1,10 +1,11 @@
+import { stubService } from "../test/service";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 import { Guests } from "../api/events";
 import { GuestRegistrationForm } from "./GuestRegistrationForm";
 
-vi.mock("../api/events", async (actual) => ({ ...(await actual<typeof import("../api/events")>()), Guests: { register: vi.fn() } }));
+stubService(Guests, () => ({ register: vi.fn() }));
 
 it("requires the adult affirmation before requesting a guest confirmation", async () => {
   vi.mocked(Guests.register).mockResolvedValue({ message: "Check your email." });

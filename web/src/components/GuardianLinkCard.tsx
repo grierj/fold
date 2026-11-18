@@ -27,11 +27,14 @@ export function GuardianLinkCard({ link, onDone }: { link: GuardianLink; onDone:
   async function confirmLink() {
     if (!checkNote.trim()) {
       showFieldErrors(ref.current, () => setNoteError("Write how you checked this link first."));
+
       return;
     }
+
     setNoteError(null);
     setBusy("confirm");
     setError(null);
+
     try {
       const { guardianLink } = await AdminGuardianLinks.confirm(link.id, checkNote.trim());
       const self = guardianLink.confirmedBy !== undefined && guardianLink.confirmedBy === link.guardianUserId;
@@ -46,6 +49,7 @@ export function GuardianLinkCard({ link, onDone }: { link: GuardianLink; onDone:
     if (!confirm(`Don't confirm ${link.guardianName} as guardian of ${link.personName}?`)) return;
     setBusy("reject");
     setError(null);
+
     try {
       await AdminGuardianLinks.reject(link.id, rejectNote.trim() || undefined);
       onDone(`Didn't confirm ${who}.`);

@@ -34,7 +34,8 @@ export function CalendarPage() {
   const [params, setParams] = useSearchParams();
   const zone = browserTimeZone();
   const today = dayOf(new Date().toISOString(), zone);
-  const view: View = params.get("view") === "week" || params.get("view") === "month" ? (params.get("view") as View) : "agenda";
+  const requestedView = params.get("view");
+  const view: View = requestedView === "week" || requestedView === "month" ? requestedView : "agenda";
   const date = /^\d{4}-\d{2}-\d{2}$/.test(params.get("date") ?? "") ? params.get("date")! : today;
   const mine = !!user && params.get("mine") === "1";
   const remote = params.get("remote") === "1";
@@ -61,14 +62,17 @@ export function CalendarPage() {
   const toolbar = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const bar = toolbar.current;
+
     if (!bar) return;
     const measure = () => bar.parentElement?.style.setProperty("--calendar-toolbar-height", `${bar.getBoundingClientRect().height}px`);
     measure();
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
     observer?.observe(bar);
+
     return () => observer?.disconnect();
   }, [view]);
   const range = rangeFor(view, date, agendaDays);
+
   const paging = usePage(occs, `${date}:${mine}:${group}:${church}:${remote}:${childcare}:${deleted}`, 25, {
     page: Number(params.get("page")) || 1,
     onChange: (page) => go({ page: String(page) }),
@@ -97,6 +101,7 @@ export function CalendarPage() {
         setLoading(false);
         setLoaded(true);
       });
+
     return () => {
       alive = false;
     };
@@ -104,12 +109,15 @@ export function CalendarPage() {
 
   function link(next: Record<string, string | null>): string {
     const p = new URLSearchParams(params);
+
     for (const [k, v] of Object.entries(next)) {
       if (v === null) p.delete(k);
       else p.set(k, v);
     }
+
     return `/calendar?${p}`;
   }
+
   function go(next: Record<string, string | null>) {
     const changes = "page" in next ? next : { page: null, ...next };
     setParams(new URLSearchParams(link(changes).split("?")[1]), { replace: false });
@@ -132,6 +140,7 @@ export function CalendarPage() {
   const showChildcare = childcare || (loaded && anyChildcare);
   const weekCount = weekDays.reduce((n, d) => n + (byDay.get(d)?.length ?? 0), 0);
   const groupName = groups.find((g) => String(g.id) === group)?.name ?? "this group";
+
   const filterSummary = [
     mine && "Just mine",
     remote && "Remote seats",
@@ -290,6 +299,7 @@ function AgendaEmpty({
   go: (next: Record<string, string | null>) => void;
 }) {
   const art = <Illustration name="no-events" />;
+
   if (mine) {
     return (
       <EmptyState
@@ -300,11 +310,13 @@ function AgendaEmpty({
       />
     );
   }
+
   if (childcare) {
     return <EmptyState illustration={art} title="No events with childcare coming up"
       body="Events that offer childcare will show up here."
       action={<Button variant="secondary" onClick={() => go({ childcare: null })}>Show everything</Button>} />;
   }
+
   if (remote) {
     return (
       <EmptyState
@@ -315,6 +327,7 @@ function AgendaEmpty({
       />
     );
   }
+
   if (group) {
     return (
       <EmptyState
@@ -325,6 +338,7 @@ function AgendaEmpty({
       />
     );
   }
+
   return (
     <EmptyState
       illustration={art}

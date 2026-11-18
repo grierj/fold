@@ -49,20 +49,28 @@ export function ProfilePage() {
   const { user, loading, logout, isAdmin, canCompose } = useAuth();
   const { section } = useParams();
   const [search, setSearch] = useSearchParams();
+
   if (loading) return <div className="fold-page fold-page-narrow"><Skeleton kind="page" /></div>;
+
   if (!user) return null;
 
-  const groups = sectionGroups
-    .map((group) => ({ ...group, items: group.items.filter((item) => !item.adultOnly || user.accountType !== "teen") }))
-    .filter((group) => group.items.length > 0);
+  const groups = sectionGroups.flatMap((group) => {
+    const items = group.items.filter((item) => !item.adultOnly || user.accountType !== "teen");
+
+    return items.length ? [{ ...group, items }] : [];
+  });
+
   const selected = groups.flatMap((group) => group.items).find((item) => item.id === section);
+
   if (section && !selected) return <Navigate to="/profile" replace />;
   const shownName = publicName(user);
+
   // The hub shows headings and descriptions; the desktop sidebar keeps the
   // headings but not the descriptions, so it stays short.
   const menu = (hub: boolean) => <nav aria-label="Profile settings" className="space-y-5">
     {groups.map((group) => {
       const headingId = `profile-group-${hub ? "hub" : "side"}-${group.heading}`;
+
       return <div key={group.heading} role="group" aria-labelledby={headingId}>
         {hub
           ? <h2 id={headingId} className="mb-2 text-sm font-semibold text-text-muted">{group.heading}</h2>
@@ -95,13 +103,16 @@ export function ProfilePage() {
   </div>;
 
   const securityTab = search.get("tab") === "password" ? "password" : "email";
+
   function changeSecurityTab(tab: "email" | "password") {
     setSearch((previous) => {
       const next = new URLSearchParams(previous);
       next.set("tab", tab);
+
       return next;
     }, { replace: true });
   }
+
   return <div className="fold-page wrap-anywhere">
     <div className="fold-settings-grid">
       <aside className="hidden lg:block space-y-6">
@@ -160,6 +171,7 @@ function ProfileDetails() {
   const tz = zone ?? user?.timezone ?? "";
   // Leaving with edits that aren't saved yet asks first (DEC-98).
   const { guard } = useUnsavedChanges(!!user && (dn.trim() !== user.displayName || fullName.trim() !== user.name || ph.trim() !== user.phone || tz.trim() !== user.timezone));
+
   if (!user) return null;
   const focalX = user.avatarFocalX;
   const focalY = user.avatarFocalY;
@@ -167,37 +179,45 @@ function ProfileDetails() {
   async function save(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true); setError(null); setSaved(false);
+
     try {
-      await ProfileApi.update({ displayName: dn, name: fullName, phone: ph, ...(tz ? { timezone: tz } : {}) });
+      await ProfileApi.update({ displayName: dn, name: fullName, phone: ph, timezone: tz || undefined });
       await refresh();
       setSaved(true);
     } catch (err) { setError(errorText(err, "We couldn't save your changes.")); }
     finally { setSaving(false); }
   }
+
   async function savePictureFile(file: File | null) {
     if (!file) return;
     setPictureBusy(true); setPictureError(null); setPictureStatus("Saving picture…");
+
     try {
       await ProfileApi.uploadAvatar(file); await refresh(); setPictureStatus("Picture saved.");
     } catch (err) { setPictureStatus(null); setPictureError(errorText(err, "We couldn't save your picture.")); }
     finally { setPictureBusy(false); }
   }
+
   async function saveFocal(next: { x: number; y: number }) {
     if (next.x === focalX && next.y === focalY) return;
     setPictureBusy(true); setPictureError(null); setPictureStatus("Saving picture…");
+
     try {
       await ProfileApi.update({ avatarFocal: next }); await refresh(); setPictureStatus("Picture saved.");
     } catch (err) { setPictureStatus(null); setPictureError(errorText(err, "We couldn't save your picture.")); }
     finally { setPictureBusy(false); }
   }
+
   async function removeAvatar() {
     if (!confirm("Remove your profile picture?")) return;
     setPictureBusy(true); setPictureError(null); setPictureStatus(null);
+
     try {
       await ProfileApi.deleteAvatar(); await refresh(); setPictureStatus("Picture removed.");
     } catch (err) { setPictureError(errorText(err, "We couldn't remove that.")); }
     finally { setPictureBusy(false); }
   }
+
   return <div className="space-y-6">
     {user.accountType !== "teen" && <div className="space-y-4">
       <ImageUpload key={user.avatarUrl || "none"} label="Profile picture" initialUrl={user.avatarUrl || undefined} initialFocal={{ x: focalX, y: focalY }} maxDim={512} aspectClass="aspect-square max-w-48!" placeholderName={publicName(user)} onFile={savePictureFile} onFocal={saveFocal} />
@@ -227,13 +247,17 @@ function ProfilePrivacy() {
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
   if (!user) return null;
+
   if (user.accountType === "teen") return <p className="text-text-muted">Your email and phone are always hidden from group leaders and event hosts. You, admins, and your confirmed guardians can still see them.</p>;
   const hideContact = value ?? user.hideContactFromLeaders;
+
   async function change(next: boolean) {
     // The box is disabled while a save is in flight, so changes are one at a
     // time and a failure goes back to the value from before this save.
     setSaving(true); setValue(next); setSaved(false); setError(null);
+
     try {
       await ProfileApi.update({ hideContactFromLeaders: next }); await refresh();
       setSaved(true);
@@ -242,6 +266,7 @@ function ProfilePrivacy() {
       setError(errorText(err, "We couldn't save your changes."));
     } finally { setSaving(false); }
   }
+
   return <div className="fold-form space-y-4">
     {error && <FormError>{error}</FormError>}
     <Checkbox label="Hide my contact info from group leaders" description="Hide your email and phone from group leaders and event hosts. Admins can still see them." checked={hideContact} disabled={saving} onChange={(e) => void change(e.target.checked)} />

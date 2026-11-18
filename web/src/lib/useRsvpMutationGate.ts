@@ -9,12 +9,14 @@ export type RsvpMutationGate = {
 export function useRsvpMutationGate(): RsvpMutationGate {
   const held = useRef(false);
   const [busy, setBusy] = useState(false);
+
   const acquire = useCallback(() => {
     // The ref closes the same-tick gap before React can render disabled controls.
     if (held.current) return null;
     held.current = true;
     setBusy(true);
     let released = false;
+
     return () => {
       if (released) return;
       released = true;
@@ -23,5 +25,6 @@ export function useRsvpMutationGate(): RsvpMutationGate {
       flushSync(() => setBusy(false));
     };
   }, []);
+
   return useMemo(() => ({ busy, acquire }), [acquire, busy]);
 }

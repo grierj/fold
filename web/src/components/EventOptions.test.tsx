@@ -1,3 +1,7 @@
+import { requiredElement } from "../test/dom";
+import { testSite } from "../test/fixtures";
+import { stubService } from "../test/service";
+import { Events } from "../api/events";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
@@ -10,8 +14,9 @@ import { emptySeats } from "./SeatsField";
 import { emptyVideo } from "./VideoField";
 import type { Visibility } from "../types";
 
-vi.mock("../api/events", () => ({ Events: { generateJitsi: vi.fn() } }));
-vi.mock("../api/site", () => ({ Site: { get: vi.fn(() => Promise.resolve({ pushEnabled: true })) } }));
+stubService(Events, () => ({ generateJitsi: vi.fn() }));
+
+stubService(Site, () => ({ get: vi.fn(() => Promise.resolve({ name: "Fold", timezone: "UTC", selfSignup: "off" as const, roomsEnabled: false, pushEnabled: true })) }));
 
 const base: EventOptionValues = { ...emptyEventOptions(), reminderPush: false };
 
@@ -19,6 +24,7 @@ const base: EventOptionValues = { ...emptyEventOptions(), reminderPush: false };
 function closedSummary(values: EventOptionValues, visibility?: Visibility): string | null {
   render(<EventOptions idPrefix="s" open={false} onOpenChange={() => {}} values={values} onChange={() => {}}
     visibility={visibility ? { value: visibility, field: null } : undefined} />);
+
   return document.getElementById(screen.getByRole("button", { name: "More options" }).getAttribute("aria-describedby")!)!.textContent;
 }
 
@@ -48,6 +54,7 @@ describe("the closed summary", () => {
 function Harness({ open = false }: { open?: boolean }) {
   const [isOpen, setOpen] = useState(open);
   const [values, setValues] = useState<EventOptionValues>(base);
+
   return <EventOptions idPrefix="t" open={isOpen} onOpenChange={setOpen} values={values} onChange={setValues} />;
 }
 
@@ -87,7 +94,7 @@ describe("ReminderField in More options", () => {
     const select = screen.getByLabelText("Reminder email");
     expect(select).toHaveValue("1440");
     expect(select).toHaveAccessibleDescription("We'll email everyone going. People on the waitlist hear they're still waiting.");
-    expect(Array.from((select as HTMLSelectElement).options).map((o) => o.text)).toEqual(["Off", "2 hours before", "1 day before", "2 days before", "1 week before"]);
+    expect(Array.from(requiredElement(select, HTMLSelectElement).options).map((o) => o.text)).toEqual(["Off", "2 hours before", "1 day before", "2 days before", "1 week before"]);
     await userEvent.selectOptions(select, "Off");
     await userEvent.click(screen.getByRole("button", { name: "More options" }));
     expect(screen.getByText("No seat limit · No video · No childcare · No reminder")).toBeInTheDocument();
@@ -96,6 +103,7 @@ describe("ReminderField in More options", () => {
 
 function PushHarness() {
   const [values, setValues] = useState<EventOptionValues>({ ...base, reminderPush: true });
+
   return (
     <>
       <EventOptions idPrefix="p" open onOpenChange={() => {}} values={values} onChange={setValues} />
@@ -116,7 +124,7 @@ describe("the push reminder switch (M3.13d3)", () => {
   });
 
   it("is hidden when the church turned notifications off", async () => {
-    vi.mocked(Site.get).mockResolvedValueOnce({ pushEnabled: false } as never);
+    vi.mocked(Site.get).mockResolvedValueOnce(testSite({ pushEnabled: false }));
     render(<PushHarness />);
     await waitFor(() => expect(screen.queryByRole("checkbox", { name: /Push reminder/ })).not.toBeInTheDocument());
     expect(screen.getByLabelText("Reminder email")).toBeInTheDocument();

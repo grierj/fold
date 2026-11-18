@@ -21,10 +21,17 @@ export function AttendeeDetails({ attendee: a, childcare = true, status, showAcc
     window.addEventListener("focus", update);
     const until = person?.careNotesVisibleUntil;
     const timer = until ? window.setTimeout(update, Math.max(0, new Date(until).getTime() - Date.now() + 1)) : undefined;
-    return () => { window.removeEventListener("focus", update); if (timer !== undefined) window.clearTimeout(timer); };
+
+    return () => {
+      window.removeEventListener("focus", update);
+
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
   }, [person?.careNotesVisibleUntil]);
   const notes = person?.careNotesVisibleUntil && clock > new Date(person.careNotesVisibleUntil).getTime() ? undefined : person?.careNotes;
+
   if (!subject) return null;
+
   return <div className="min-w-0 break-words">
     <span>{a.name}{person && showHousehold(person.householdName, holder?.name) && <> · {person.householdName}</>}</span>
     <span className="inline-flex flex-wrap items-center gap-1 ml-1">
@@ -47,6 +54,7 @@ export function AttendeeDetails({ attendee: a, childcare = true, status, showAcc
 // surname household ("Smith household" under John Smith) (PR 110 N1).
 function showHousehold(household: string, holder?: string): boolean {
   const last = holder?.trim().split(/\s+/).pop()?.toLowerCase();
+
   return !last || household.trim().toLowerCase() !== `${last} household`;
 }
 
@@ -58,8 +66,10 @@ function Note({ text, label, name }: { text: string; label: string; name: string
   // Offer the toggle only when the clamp actually cuts the note (PR 110 N3).
   useLayoutEffect(() => {
     const el = ref.current;
+
     if (el && !open && el.clientHeight > 0) setClamped(el.scrollHeight > el.clientHeight + 1);
   }, [text, open]);
+
   return <div className="mt-1 text-sm text-text-muted">
     <div ref={ref} id={id} className={`whitespace-pre-wrap wrap-anywhere ${open ? "" : "line-clamp-3"}`}>{label}: {text}</div>
     {(clamped || open) && <Button variant="link" aria-expanded={open} aria-controls={id} onClick={() => setOpen(!open)}>

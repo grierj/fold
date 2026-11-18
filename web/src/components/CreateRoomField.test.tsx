@@ -1,3 +1,5 @@
+import { requiredElement } from "../test/dom";
+import { stubService } from "../test/service";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
@@ -9,8 +11,9 @@ import type { SeriesRoom } from "../types";
 import { emptySeats } from "./SeatsField";
 import { CreateRoomField, scheduleFields, scheduleReady, type Schedule } from "./CreateRoomField";
 
-vi.mock("../api/site", async (importActual) => ({ ...(await importActual<typeof import("../api/site")>()), Site: { get: vi.fn() } }));
-vi.mock("../api/rooms", async (importActual) => ({ ...(await importActual<typeof import("../api/rooms")>()), SeriesRooms: { check: vi.fn() } }));
+stubService(Site, () => ({ get: vi.fn() }));
+
+stubService(SeriesRooms, () => ({ check: vi.fn() }));
 
 const room = (over: Partial<SeriesRoom>): SeriesRoom => ({ id: 1, name: "Fellowship Hall", building: "Main", capacity: 80, features: "", restricted: false, busyDates: 0, tooSmall: false, ...over });
 const hall = room({});
@@ -28,8 +31,10 @@ beforeEach(() => {
 // The page keeps the chosen room, as both create forms do.
 function Harness({ schedule, groupId, visibility, onChange }: { schedule: Schedule | null; groupId?: number; visibility?: string; onChange?: (id: number | null) => void }) {
   const [roomId, setRoomId] = useState<number | null>(null);
+
   return <CreateRoomField id="t-room" schedule={schedule} groupId={groupId} visibility={visibility} roomId={roomId} onChange={(id) => { setRoomId(id); onChange?.(id); }} />;
 }
+
 const select = () => screen.findByRole("combobox", { name: /^Room/ });
 
 describe("CreateRoomField", () => {
@@ -52,10 +57,10 @@ describe("CreateRoomField", () => {
   it("checks a group event's dates with its group, and words busy as N of M dates", async () => {
     render(<Harness schedule={weekly} groupId={5} />);
     const box = await select();
-    await waitFor(() => expect(Array.from((box as HTMLSelectElement).options)).toHaveLength(4));
+    await waitFor(() => expect(Array.from(requiredElement(box, HTMLSelectElement).options)).toHaveLength(4));
     expect(SeriesRooms.check).toHaveBeenCalledTimes(1);
     expect(SeriesRooms.check).toHaveBeenCalledWith({ ...weekly, groupId: 5 });
-    expect(Array.from((box as HTMLSelectElement).options).map((o) => o.textContent)).toEqual([
+    expect(Array.from(requiredElement(box, HTMLSelectElement).options).map((o) => o.textContent)).toEqual([
       "No room",
       "Fellowship Hall · Main (80 seats)",
       "Chapel — in use on 2 of 10 dates",

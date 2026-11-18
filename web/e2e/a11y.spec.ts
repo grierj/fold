@@ -8,21 +8,26 @@ import { open, partSelected, UI_PARTS, uiPages, uiPart, type UIPage } from "./ui
 async function scan(page: Page, name: string) {
   for (const width of [390, 1280]) {
     await page.setViewportSize({ width, height: 900 });
+
     const wcag = await new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
       .analyze();
+
     // heading-order is a best-practice rule, not included by WCAG tags.
     // Run it separately: withRules would replace, not extend, withTags.
     const headings = await new AxeBuilder({ page }).withRules(["heading-order"]).analyze();
     const violations = [...wcag.violations, ...headings.violations];
     const bad = violations.filter((v) => v.impact === "moderate" || v.impact === "serious" || v.impact === "critical");
+
     for (const v of violations.filter((v) => !bad.includes(v))) {
       console.log(`axe ${v.impact} ${name}@${width}: ${v.id} (${v.nodes.length})`);
     }
+
     expect.soft(
       bad.map((v) => `${v.impact} ${v.id}: ${v.help} — ${v.nodes.map((n) => n.target.join(" ")).join(", ")}`),
       `${name} at ${width}px`,
     ).toEqual([]);
+
     if (process.env.SCREENS_DIR) {
       await page.screenshot({ path: `${process.env.SCREENS_DIR}/a11y-${name.replaceAll(" ", "-")}-${width}.png`, fullPage: true, animations: "disabled" });
     }
@@ -32,6 +37,7 @@ async function scan(page: Page, name: string) {
 // The page list is scanned in contiguous parts (keeping each person's pages
 // together) so e2e/run.sh can spread them across shards.
 test.describe.configure({ mode: "parallel" });
+
 for (let part = 0; part < UI_PARTS; part++) {
   if (partSelected("a11y", part)) test(`main pages have no moderate, serious or critical axe issues (part ${part + 1} of ${UI_PARTS})`, async ({ page, request }) => {
     test.setTimeout(240_000);
@@ -39,6 +45,7 @@ for (let part = 0; part < UI_PARTS; part++) {
     // pages only this check covers.
     const pages = await uiPages(request);
     const group = pages.find((ui) => ui.id === "group-leader")!;
+
     const extra: UIPage[] = [
       { ...group, id: "group about", prepare: async (p) => { await p.getByRole("tab", { name: "About" }).click(); } },
       { ...group, id: "group members", prepare: async (p) => { await p.getByRole("tab", { name: "Members" }).click(); } },
@@ -54,16 +61,21 @@ for (let part = 0; part < UI_PARTS; part++) {
       { id: "admin groups", who: "grier", path: "/admin?tab=groups", ready: (p) => p.getByRole("heading", { name: "Admin" }) },
       { id: "admin invite", who: "grier", path: "/admin?tab=invite", ready: (p) => p.getByRole("heading", { name: "Admin" }) },
     ];
+
     let who: string | null = null;
+
     for (const ui of uiPart([...pages, ...extra], part)) {
       if (ui.who !== who) {
         await page.context().clearCookies();
+
         if (ui.who) await signIn(page, ui.who);
         who = ui.who;
       }
+
       await open(page, ui);
       await scan(page, ui.id);
     }
+
     if (who) await signOut(page);
   });
 }

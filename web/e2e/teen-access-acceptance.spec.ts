@@ -4,6 +4,7 @@ import { apiAs, attemptPendingSignIn, email, fromMore, PASSWORD, signIn } from "
 
 async function capture(page: Page, name: string) {
   if (!process.env.SCREENS_DIR) return;
+
   for (const width of [390, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `${name} overflow at ${width}`).toBe(true);
@@ -27,15 +28,19 @@ test("a consented teen joins general events with restricted roles, private ident
   const teenName = "Casey General";
   const registrations: { eventId: number; status: string }[] = [];
   const visibility: { role: string; identityVisible: boolean; badge: string | null }[] = [];
+
   const { user: teen } = await admin("POST", "/admin/users", {
     name: "Casey General Full Name", displayName: teenName, email: teenEmail, phone: teenPhone, password: PASSWORD,
     ageBand: "teen", birthDate: `${new Date().getUTCFullYear() - 15}-01-01`,
   });
+
   const adults: Record<string, number> = {};
+
   for (const role of ["leader", "member", "host"]) {
     const { user } = await admin("POST", "/admin/users", { name: `Acceptance ${role}`, email: email(`acceptance-${role}`), password: PASSWORD, ageBand: "adult" });
     adults[role] = user.id;
   }
+
   const { group } = await admin("POST", "/groups", { name: "Community service", description: "Church members of all ages serve together.", visibility: "public", tags: ["service"] });
   await admin("POST", `/admin/groups/${group.id}/members`, { userId: adults.leader, role: "leader" });
   await admin("POST", `/admin/groups/${group.id}/members`, { userId: adults.member, role: "member" });
@@ -52,6 +57,7 @@ test("a consented teen joins general events with restricted roles, private ident
   await page.goto(`/groups/${group.id}`);
   await page.getByRole("button", { name: "Join this group", exact: true }).click();
   await expect(page.getByRole("button", { name: "You're a member" })).toBeVisible();
+
   for (const occurrence of [event, churchEvent]) {
     await page.goto(`/events/${occurrence.id}`);
     await page.getByRole("button", { name: "Going", exact: true }).click();
@@ -61,6 +67,7 @@ test("a consented teen joins general events with restricted roles, private ident
     expect(status).toBe("going");
     registrations.push({ eventId: occurrence.id, status });
   }
+
   await capture(page, "active-teen-general-event");
   await refused({ client: page.request, method: "POST", path: "/groups", data: { name: "Teen-led group", visibility: "public" }, status: 403 });
   await refused({ client: page.request, method: "POST", path: "/events", data: { ...details, title: "Teen-hosted event" }, status: 403 });
@@ -71,6 +78,7 @@ test("a consented teen joins general events with restricted roles, private ident
   await refused({ client: request, method: "PUT", path: `/admin/users/${teen.id}`, data: { role: "admin" }, status: 400 });
 
   const contexts = [];
+
   try {
     for (const role of ["member", "leader", "host", "admin"]) {
       const context = await browser.newContext(); contexts.push(context);
@@ -82,21 +90,27 @@ test("a consented teen joins general events with restricted roles, private ident
       const body = await eventResponse.json();
       const attendee = body.occurrences[0].attendees?.find((a: { userId?: number }) => a.userId === teen.id);
       visibility.push({ role, identityVisible: attendee !== undefined, badge: attendee?.accountType ?? null });
+
       if (role === "admin") expect(attendee).toMatchObject({ email: teenEmail, phone: teenPhone });
       else {
         expect(JSON.stringify(body)).not.toContain(teenEmail);
         expect(JSON.stringify(body)).not.toContain(teenPhone);
       }
+
       if (role === "member") expect(attendee).toBeUndefined();
       else {
         expect(attendee).toMatchObject({ name: teenName, accountType: "teen", status: "going" });
+
         if (role !== "admin") {
           expect(attendee).not.toHaveProperty("email");
           expect(attendee).not.toHaveProperty("phone");
         }
+
         expect(attendee).not.toHaveProperty("avatarUrl");
       }
+
       await viewer.goto(`/events/${eventID}`);
+
       if (role === "member") {
         await expect(viewer.getByText(teenName, { exact: true })).toHaveCount(0);
         await expect(viewer.getByText("Teen", { exact: true })).toHaveCount(0);
@@ -107,17 +121,21 @@ test("a consented teen joins general events with restricted roles, private ident
         await expect(roster.getByText(teenName, { exact: true })).toBeVisible();
         await expect(roster.getByText("Teen", { exact: true })).toBeVisible();
       }
+
       if (role !== "host") {
         const roster = await (await viewer.request.get(`/api/v1/groups/${group.id}/members`)).json();
         const member = roster.members.find((m: { id: number }) => m.id === teen.id);
+
         if (role === "member") expect(member).toBeUndefined();
         else expect(member).toMatchObject({ name: teenName, accountType: "teen", avatarUrl: "", role: "member" });
+
         if (role === "admin") expect(member).toMatchObject({ email: teenEmail, phone: teenPhone });
         else {
           expect(JSON.stringify(roster)).not.toContain(teenEmail);
           expect(JSON.stringify(roster)).not.toContain(teenPhone);
         }
       }
+
       await capture(viewer, `active-teen-${role}-visibility`);
     }
   } finally { for (const context of contexts) await context.close(); }
@@ -128,12 +146,15 @@ test("a consented teen joins general events with restricted roles, private ident
   const { calendarFeed } = await response.json();
   const feedPath = new URL(calendarFeed.url).pathname;
   const calendarStatuses: { stage: string; status: number }[] = [];
+
   async function checkFeed(stage: string, expected: number) {
     const response = await request.get(feedPath);
     calendarStatuses.push({ stage, status: response.status() });
     expect(response.status(), stage).toBe(expected);
+
     return response;
   }
+
   const firstFeed = await checkFeed("active with consent", 200);
   expect(await firstFeed.text()).toContain("Community gardening");
   await admin("POST", `/admin/users/${teen.id}/teen-consents`, { scope: "account", status: "revoked" });
@@ -149,5 +170,6 @@ test("a consented teen joins general events with restricted roles, private ident
   await checkFeed("consent grant preserves suspension", 404);
   await admin("PUT", `/admin/users/${teen.id}`, { status: "active" });
   await checkFeed("administrator enabled with consent", 200);
+
   if (process.env.SCREENS_DIR) await writeFile(`${process.env.SCREENS_DIR}/result.txt`, JSON.stringify({ feature: "teen-access-acceptance", entryPoints: ["Waiting for consent", "Join this group", "Going", "Manage sign-ups", "Calendar feed"], teenId: teen.id, groupId: group.id, registrations, visibility, calendarStatuses }, null, 2) + "\n");
 });

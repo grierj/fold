@@ -15,17 +15,23 @@ export function ContactRequestForm({ subjectUserId, subjectName, contextType, co
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [created, setCreated] = useState<ContactRequest | null>(null);
+
   async function submit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+
     if (Array.from(reason).length > 1000) {
       showFieldErrors(e.currentTarget, () => setReasonError(ERROR_COPY.contact_reason_long));
+
       return;
     }
+
     setBusy(true); setError(""); setReasonError("");
+
     try { setCreated((await Contacts.create({ subjectUserId, contextType, contextId, fields, reason })).request); }
     catch (e) { setError(errorText(e)); }
     finally { setBusy(false); }
   }
+
   return <section aria-label={`Request direct contact with ${subjectName}`} className="mt-3 p-4 rounded-lg border border-border bg-surface space-y-3">
     <h3 className="font-semibold">Request direct contact with {subjectName}</h3>
     {created ? <>

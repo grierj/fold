@@ -31,6 +31,7 @@ configureApi({
     syncAppBadge(0);
     endSession();
     const { pathname, search } = router.state.location;
+
     // A second 401 already in flight must not replace Log in's "from".
     if (pathname === "/login") return;
     void router.navigate("/login", { state: { from: pathname + search }, replace: true });

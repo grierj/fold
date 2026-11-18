@@ -1,3 +1,4 @@
+import { stubService } from "../test/service";
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
@@ -7,9 +8,12 @@ import { ApiError } from "../api/core";
 import type { ContactGrant, ContactReveal } from "../types";
 import { ContactGrantCard } from "./ContactGrantCard";
 
-vi.mock("../api/contacts", () => ({ Contacts: { reveal: vi.fn(), revoke: vi.fn() } }));
+stubService(Contacts, () => ({ reveal: vi.fn(), revoke: vi.fn() }));
+
 const grant: ContactGrant = { id: 4, requestId: 5, requesterId: 1, requesterName: "Lee", subjectUserId: 2, subjectName: "Pat", contextType: "group", contextId: 3, fields: "both", needsAdmin: false, grantedAt: "2026-10-01T12:00:00Z", endReason: "", canReveal: true, canRevoke: true };
+
 beforeEach(() => { vi.clearAllMocks(); vi.spyOn(window, "confirm").mockReturnValue(true); });
+
 const mount = (g = grant, onChanged = vi.fn()) => render(<MemoryRouter><ContactGrantCard grant={g} onChanged={onChanged} /></MemoryRouter>);
 
 it("does not reveal on GET/review; explicit POST echoes exact scope and clears on close", async () => {

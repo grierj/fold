@@ -1,4 +1,7 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { testEvent, testSite } from "../test/fixtures";
+import { renderWithAuth } from "../test/auth";
+import { stubService } from "../test/service";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -8,10 +11,13 @@ import { Site } from "../api/site";
 import { UnsavedChangesBlocker } from "../lib/unsavedChanges";
 import { NewChurchEvent } from "./NewChurchEvent";
 
-vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 1 }, loading: false, isAdmin: true }) }));
-vi.mock("../api/events", async (importActual) => ({ ...(await importActual<typeof import("../api/events")>()), Events: { createChurch: vi.fn(), generateJitsi: vi.fn() } }));
-vi.mock("../api/rooms", async (importActual) => ({ ...(await importActual<typeof import("../api/rooms")>()), SeriesRooms: { check: vi.fn() } }));
-vi.mock("../api/site", async (importActual) => ({ ...(await importActual<typeof import("../api/site")>()), Site: { get: vi.fn().mockResolvedValue({ timezone: "America/Denver" }) } }));
+const render = renderWithAuth(() => ({ user: { id: 1 }, loading: false, isAdmin: true }));
+
+stubService(Events, () => ({ createChurch: vi.fn(), generateJitsi: vi.fn() }));
+
+stubService(SeriesRooms, () => ({ check: vi.fn() }));
+
+stubService(Site, () => ({ get: vi.fn().mockResolvedValue({ timezone: "America/Denver" }) }));
 
 function renderForm() {
   const router = createMemoryRouter(
@@ -22,14 +28,16 @@ function renderForm() {
     ],
     { initialEntries: ["/events/new"] },
   );
+
   render(<RouterProvider router={router} />);
+
   return router;
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(Events.createChurch).mockResolvedValue({ event: { id: 4 } } as never);
-  vi.mocked(Site.get).mockResolvedValue({ timezone: "America/Denver" } as never);
+  vi.mocked(Events.createChurch).mockResolvedValue({ event: testEvent(4) });
+  vi.mocked(Site.get).mockResolvedValue(testSite({ timezone: "America/Denver" }));
 });
 
 it("shares the group form's order: When, Location, then a closed More options with its summary", async () => {
@@ -90,7 +98,7 @@ it("asks before leaving unsaved edits", async () => {
 });
 
 it("offers a Room beside Location when rooms are on and books it for the series on create", async () => {
-  vi.mocked(Site.get).mockResolvedValue({ timezone: "America/Denver", roomsEnabled: true } as never);
+  vi.mocked(Site.get).mockResolvedValue(testSite({ timezone: "America/Denver", roomsEnabled: true }));
   vi.mocked(SeriesRooms.check).mockResolvedValue({
     rooms: [{ id: 3, name: "Fellowship Hall", building: "Main", capacity: 80, features: "", restricted: false, busyDates: 0, tooSmall: false }],
     dates: 12,

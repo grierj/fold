@@ -1,4 +1,9 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { renderWithAuth } from "../test/auth";
+import { stubService } from "../test/service";
+import { Calendar } from "../api/calendar";
+import { Groups } from "../api/groups";
+import { Site } from "../api/site";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,17 +11,23 @@ import type { CalendarOccurrence } from "../types";
 import { CalendarPage } from "./Calendar";
 
 const { list, groups, auth, site } = vi.hoisted(() => ({ list: vi.fn(), groups: vi.fn(), auth: vi.fn(), site: vi.fn() }));
-vi.mock("../auth", () => ({ useAuth: auth }));
-vi.mock("../api/calendar", () => ({ Calendar: { list } }));
-vi.mock("../api/groups", () => ({ Groups: { list: groups } }));
-vi.mock("../api/site", () => ({ Site: { get: site } }));
+
+const render = renderWithAuth(auth);
+
+stubService(Calendar, () => ({ list }));
+
+stubService(Groups, () => ({ list: groups }));
+
+stubService(Site, () => ({ get: site }));
 
 const occ = (eventId: number, o: Partial<CalendarOccurrence> = {}): CalendarOccurrence => ({
   eventId, date: "2026-10-21", startsAt: "2026-10-21T18:00:00Z", endsAt: "2026-10-21T19:00:00Z", title: `Event ${eventId}`,
   location: "", churchWide: true, remoteAvailable: false, childcareAvailable: false, myStatus: null, ownScope: false, ...o,
 });
+
 const show = (occurrences: CalendarOccurrence[], path = "/calendar") => {
   list.mockResolvedValue({ occurrences, truncated: false });
+
   return render(<MemoryRouter initialEntries={[path]}><CalendarPage /></MemoryRouter>);
 };
 
@@ -143,7 +154,7 @@ describe("week count line", () => {
     [[occ(1)], "1 event this week"],
     [[occ(1), occ(2, { date: "2026-10-22" })], "2 events this week"],
   ])("says %j as %s", async (occs, text) => {
-    show(occs as CalendarOccurrence[], week);
+    show(occs, week);
     expect(await screen.findByText(text)).toBeInTheDocument();
   });
 });

@@ -54,6 +54,7 @@ export function NewEvent() {
       .finally(() => {
         if (alive) setLoading(false);
       });
+
     return () => {
       alive = false;
     };
@@ -61,12 +62,15 @@ export function NewEvent() {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+
     if (!f.begin()) return;
+
     try {
       const { event } = await Groups.createEvent(id!, {
         ...f.body(),
-        ...(visReason.trim() ? { visibilityReason: visReason.trim() } : {}),
+        visibilityReason: visReason.trim() || undefined,
       });
+
       markSaved();
       // A room may be busy on some dates, which then need one; the event page lists them. A check can be stale
       // or still pending at submit, so any chosen room goes there.

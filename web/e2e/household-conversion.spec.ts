@@ -11,19 +11,24 @@ async function latestInvite(page: Page, address: string, previous = ""): Promise
     const section = sections.find((part) => part.includes(`To: ${address}`));
     const raw = section?.match(/https?:[^\s<]+\/invite\?token=[A-Za-z0-9_-]+/)?.[0];
     link = raw ? new URL(raw).pathname + new URL(raw).search : "";
+
     return link !== "" && link !== previous;
   }).toBe(true);
+
   return link;
 }
 
 // With SCREENS_DIR set, capture a state at 390 and 1280 px.
 async function shoot(page: import("@playwright/test").Page, name: string) {
   const dir = process.env.SCREENS_DIR;
+
   if (!dir) return;
+
   for (const width of [390, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     await page.screenshot({ path: `${dir}/${name}-${width}.png`, fullPage: true });
   }
+
   await page.setViewportSize({ width: 1280, height: 900 });
 }
 

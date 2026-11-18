@@ -5,9 +5,11 @@ import { reminderAudience, reminderDateText, reminderLines, reminderName, remind
 // Wednesday Nov 4 2026, 11:00 AM in Boise (MST, UTC-7).
 const now = new Date("2026-11-04T18:00:00Z");
 const zone = "America/Boise";
+
 const sent = (over: Partial<DateReminder> = {}): DateReminder => ({
   messageId: 41, kind: "going", status: "sent", sentAt: "2026-11-04T02:00:00Z", reached: 12, failed: 0, skipped: 0, ...over,
 });
+
 const lines = (r: Partial<DateReminders>, viewer = zone) =>
   reminderLines({ minutes: 1440, dueAt: null, covered: false, messages: [], ...r }, zone, now, viewer).map((l) => l.text);
 

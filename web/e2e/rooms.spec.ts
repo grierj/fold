@@ -1,3 +1,4 @@
+import * as schema from "valibot";
 import { expect, test } from "@playwright/test";
 import { apiAs, pickRoom, signIn } from "./helpers";
 
@@ -5,14 +6,15 @@ import { apiAs, pickRoom, signIn } from "./helpers";
 // becomes the date's place, and releasing it brings the typed location back.
 test("a leader books the Fellowship Hall for a date, sees it as the place, and releases it", async ({ page, request }) => {
   const admin = await apiAs(request, "grier");
-  const { groups } = (await admin("GET", "/groups")) as { groups: { id: number; name: string }[] };
+  const { groups } = schema.parse(schema.looseObject({ groups: schema.array(schema.looseObject({ id: schema.number(), name: schema.string() })) }), (await admin("GET", "/groups")));
   const group = groups.find((g) => g.name === "Room 201 class")!;
   const lee = await apiAs(request, "lee");
   const day = new Date(Date.now() + 40 * 864e5).toISOString().slice(0, 10);
-  const { event } = (await lee("POST", `/groups/${group.id}/events`, {
+
+  const { event } = schema.parse(schema.looseObject({ event: schema.looseObject({ id: schema.number() }) }), (await lee("POST", `/groups/${group.id}/events`, {
     title: "Room booking night", startsLocal: `${day}T19:00`, durationMinutes: 60, tzid: "America/Boise",
     location: "north door",
-  })) as { event: { id: number } };
+  })));
 
   await signIn(page, "lee");
   await page.goto(`/events/${event.id}`);
@@ -35,15 +37,16 @@ test("a leader books the Fellowship Hall for a date, sees it as the place, and r
 // series, and each date's card shows it as the place.
 test("a leader books the Fellowship Hall for every date of a weekly event", async ({ page, request }) => {
   const admin = await apiAs(request, "grier");
-  const { groups } = (await admin("GET", "/groups")) as { groups: { id: number; name: string }[] };
+  const { groups } = schema.parse(schema.looseObject({ groups: schema.array(schema.looseObject({ id: schema.number(), name: schema.string() })) }), (await admin("GET", "/groups")));
   const group = groups.find((g) => g.name === "Room 201 class")!;
   const lee = await apiAs(request, "lee");
   const day = new Date(Date.now() + 41 * 864e5).toISOString().slice(0, 10);
   const weekday = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"][new Date(`${day}T12:00:00Z`).getUTCDay()];
-  const { event } = (await lee("POST", `/groups/${group.id}/events`, {
+
+  const { event } = schema.parse(schema.looseObject({ event: schema.looseObject({ id: schema.number() }) }), (await lee("POST", `/groups/${group.id}/events`, {
     title: "Weekly room night", startsLocal: `${day}T08:00`, durationMinutes: 30, tzid: "America/Boise",
     recurrenceRule: `FREQ=WEEKLY;BYDAY=${weekday}`,
-  })) as { event: { id: number } };
+  })));
 
   await signIn(page, "lee");
   await page.goto(`/events/${event.id}`);
@@ -71,22 +74,25 @@ test("a leader books the Fellowship Hall for every date of a weekly event", asyn
 test("a series room busy on one date lists it, and Pick a room books another room for it", async ({ page, request }) => {
   const admin = await apiAs(request, "grier");
   await admin("POST", "/admin/rooms", { name: "Library", capacity: 20 });
-  const { groups } = (await admin("GET", "/groups")) as { groups: { id: number; name: string }[] };
+  const { groups } = schema.parse(schema.looseObject({ groups: schema.array(schema.looseObject({ id: schema.number(), name: schema.string() })) }), (await admin("GET", "/groups")));
   const group = groups.find((g) => g.name === "Room 201 class")!;
-  const { rooms } = (await admin("GET", "/admin/rooms")) as { rooms: { id: number; name: string }[] };
+  const { rooms } = schema.parse(schema.looseObject({ rooms: schema.array(schema.looseObject({ id: schema.number(), name: schema.string() })) }), (await admin("GET", "/admin/rooms")));
   const hall = rooms.find((r) => r.name === "Fellowship Hall")!;
   const lee = await apiAs(request, "lee");
   const day = new Date(Date.now() + 43 * 864e5).toISOString().slice(0, 10);
   const weekday = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"][new Date(`${day}T12:00:00Z`).getUTCDay()];
+
   // Someone else's one-date event holds the hall on the series' first date.
-  const { event: other } = (await lee("POST", `/groups/${group.id}/events`, {
+  const { event: other } = schema.parse(schema.looseObject({ event: schema.looseObject({ id: schema.number() }) }), (await lee("POST", `/groups/${group.id}/events`, {
     title: "Hall holder", startsLocal: `${day}T09:00`, durationMinutes: 30, tzid: "America/Boise",
-  })) as { event: { id: number } };
+  })));
+
   await lee("PUT", `/events/${other.id}/dates/${day}/room`, { roomId: hall.id });
-  const { event } = (await lee("POST", `/groups/${group.id}/events`, {
+
+  const { event } = schema.parse(schema.looseObject({ event: schema.looseObject({ id: schema.number() }) }), (await lee("POST", `/groups/${group.id}/events`, {
     title: "Busy first date", startsLocal: `${day}T09:00`, durationMinutes: 30, tzid: "America/Boise",
     recurrenceRule: `FREQ=WEEKLY;BYDAY=${weekday}`,
-  })) as { event: { id: number } };
+  })));
 
   await signIn(page, "lee");
   await page.goto(`/events/${event.id}`);
@@ -115,18 +121,21 @@ test("a series room busy on one date lists it, and Pick a room books another roo
 test("a leader sees the room their group used before under Suggested", async ({ page, request }) => {
   const admin = await apiAs(request, "grier");
   const name = `Prayer room ${Date.now() % 100000}`;
-  const { room: prayer } = (await admin("POST", "/admin/rooms", { name, capacity: 12 })) as { room: { id: number } };
-  const { groups } = (await admin("GET", "/groups")) as { groups: { id: number; name: string }[] };
+  const { room: prayer } = schema.parse(schema.looseObject({ room: schema.looseObject({ id: schema.number() }) }), (await admin("POST", "/admin/rooms", { name, capacity: 12 })));
+  const { groups } = schema.parse(schema.looseObject({ groups: schema.array(schema.looseObject({ id: schema.number(), name: schema.string() })) }), (await admin("GET", "/groups")));
   const group = groups.find((g) => g.name === "Room 201 class")!;
   const lee = await apiAs(request, "lee");
   const day = (n: number) => new Date(Date.now() + n * 864e5).toISOString().slice(0, 10);
-  const { event: before } = (await lee("POST", `/groups/${group.id}/events`, {
+
+  const { event: before } = schema.parse(schema.looseObject({ event: schema.looseObject({ id: schema.number() }) }), (await lee("POST", `/groups/${group.id}/events`, {
     title: "Earlier prayer night", startsLocal: `${day(44)}T06:00`, durationMinutes: 30, tzid: "America/Boise",
-  })) as { event: { id: number } };
+  })));
+
   await lee("PUT", `/events/${before.id}/dates/${day(44)}/room`, { roomId: prayer.id });
-  const { event } = (await lee("POST", `/groups/${group.id}/events`, {
+
+  const { event } = schema.parse(schema.looseObject({ event: schema.looseObject({ id: schema.number() }) }), (await lee("POST", `/groups/${group.id}/events`, {
     title: "Next prayer night", startsLocal: `${day(45)}T06:00`, durationMinutes: 30, tzid: "America/Boise",
-  })) as { event: { id: number } };
+  })));
 
   await signIn(page, "lee");
   await page.goto(`/events/${event.id}`);

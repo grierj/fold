@@ -13,6 +13,8 @@
 @import './tokens.css';
 @import './base.css' layer(base);
 
+@source not '../tools/oxlint';
+
 /* The server-rendered pages (setup, dev outbox) use this stylesheet too. */
 @source '../../templates';
 

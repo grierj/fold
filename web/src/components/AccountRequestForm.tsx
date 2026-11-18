@@ -41,9 +41,11 @@ export function AccountRequestForm({
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+
     if (ageBand === "under13") return;
     setBusy(true);
     setError(null);
+
     try {
       const res = await onSubmit({
         name, email, phone: phone || undefined,
@@ -51,6 +53,7 @@ export function AccountRequestForm({
         guardianEmail: ageBand === "teen" && !friend ? guardianEmail || undefined : undefined,
         message: message || undefined, website: website || undefined,
       });
+
       setDone(res.message);
     } catch (err) {
       setError(errorText(err));

@@ -1,3 +1,4 @@
+import * as schema from "valibot";
 import { expect, test } from "@playwright/test";
 import { apiAs, signIn, fromMore } from "./helpers";
 
@@ -10,14 +11,18 @@ function futureDate(days: number): string {
 test("making one event invite-only previews and confirms", async ({ page, request }) => {
   test.setTimeout(30_000);
   const admin = await apiAs(request, "grier");
-  const { group } = (await admin("POST", "/groups", {
+
+  const { group } = schema.parse(schema.looseObject({ group: schema.looseObject({ id: schema.number() }) }), (await admin("POST", "/groups", {
     name: "Garden club", description: "", tags: [], imageUrl: "", location: "Back lot",
     visibility: "public", memberLimit: null,
-  })) as { group: { id: number } };
+  })));
+
   const date = futureDate(21);
-  const ev = ((await admin("POST", `/groups/${group.id}/events`, {
+
+  const ev = (schema.parse(schema.looseObject({ event: schema.looseObject({ id: schema.number() }) }), (await admin("POST", `/groups/${group.id}/events`, {
     title: "Seed swap", startsLocal: `${date}T10:00`, durationMinutes: 60, tzid: "America/Boise", location: "", recurrenceRule: "",
-  })) as { event: { id: number } }).event.id;
+  })))).event.id;
+
   await (await apiAs(request, "quinn"))("PUT", `/events/${ev}/registrations`, { status: "going", date });
   const grier = await apiAs(request, "grier");
 
@@ -29,7 +34,7 @@ test("making one event invite-only previews and confirms", async ({ page, reques
   const review = page.getByRole("dialog");
   await expect(review.getByText("Making this event invite-only")).toBeVisible();
   await expect(review).toContainText("1 person registered will be cancelled and notified");
-  const vis = async () => ((await grier("GET", `/events/${ev}`)) as { event: { visibility: string } }).event.visibility;
+  const vis = async () => (schema.parse(schema.looseObject({ event: schema.looseObject({ visibility: schema.string() }) }), (await grier("GET", `/events/${ev}`)))).event.visibility;
   expect(await vis()).toBe("public");
 
   await review.getByRole("button", { name: "Make this event invite-only" }).click();
@@ -44,9 +49,9 @@ test("making one event invite-only previews and confirms", async ({ page, reques
 
 test("a private series can open one date without opening its siblings", async ({ page, request }) => {
   const admin = await apiAs(request, "grier");
-  const { group } = await admin("POST", "/groups", { name: "Date-only welcome", visibility: "invite_only", location: "Hidden meeting room" }) as { group: { id: number } };
+  const { group } = schema.parse(schema.looseObject({ group: schema.looseObject({ id: schema.number() }) }), await admin("POST", "/groups", { name: "Date-only welcome", visibility: "invite_only", location: "Hidden meeting room" }));
   const date = futureDate(14);
-  const { event } = await admin("POST", `/groups/${group.id}/events`, { title: "Welcome evening", startsLocal: `${date}T18:00`, durationMinutes: 60, tzid: "UTC", recurrenceRule: "FREQ=WEEKLY;COUNT=3", remoteAvailable: true, guestsAllowed: 3 }) as { event: { id: number } };
+  const { event } = schema.parse(schema.looseObject({ event: schema.looseObject({ id: schema.number() }) }), await admin("POST", `/groups/${group.id}/events`, { title: "Welcome evening", startsLocal: `${date}T18:00`, durationMinutes: 60, tzid: "UTC", recurrenceRule: "FREQ=WEEKLY;COUNT=3", remoteAvailable: true, guestsAllowed: 3 }));
   await signIn(page, "grier");
   await page.goto(`/events/${event.id}`);
   await fromMore(page, "Edit this date");

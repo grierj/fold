@@ -21,16 +21,20 @@ const SETUP = "/notifications/setup";
 // a saved result is kept for later visits to this page; a failure or
 // saved:false is forgotten, so Try again saves again.
 const resaved = new Map<string, Promise<PushSubscribeResponse | null>>();
+
 function resaveOnce(sub: PushSubscription): Promise<PushSubscribeResponse | null> {
   let p = resaved.get(sub.endpoint);
+
   if (!p) {
     const endpoint = sub.endpoint;
     p = Push.save(sub.toJSON()).catch(() => null).then((r) => {
       if (!r?.saved) resaved.delete(endpoint);
+
       return r;
     });
     resaved.set(endpoint, p);
   }
+
   return p;
 }
 
@@ -78,10 +82,13 @@ export function PushDeviceCard({ load }: { load: () => Promise<NotificationSetti
         const pending = load();
         pending.catch(() => {}); // a failure is shown below, or not at all when the church is off
         const config = await Push.config();
+
         if (!config.enabled) {
           if (alive.current) setData({ enabled: false, publicKey: "", platform: "computer", device: "unavailable", mine: null, setUpBefore: false, push: NO_PUSH });
+
           return;
         }
+
         const settings = await pending;
         const env = readPushEnv();
         const device = deviceState(env);
@@ -89,32 +96,41 @@ export function PushDeviceCard({ load }: { load: () => Promise<NotificationSetti
         let mine: Loaded["mine"] = null;
         let setUpBefore = false;
         let resaveMessage: string | undefined;
+
         if (device === "available" && env.permission === "granted") {
           const sub = await localSubscription();
+
           // Re-save only while the person's push consent is on (after "Turn
           // off notifications everywhere" on another device, a leftover
           // subscription must not turn it back on), and only for the person
           // this browser says it belongs to; anyone else taps to decide.
           if (sub && !push.on) resaved.delete(sub.endpoint);
+
           if (sub && push.on && sameKey(sub, config.publicKey) && userId !== null && pushOwner() === String(userId)) {
             const r = await resaveOnce(sub);
+
             if (r?.saved && r.device) mine = { id: r.device.id, sub };
             else if (r?.message) resaveMessage = r.message;
           }
+
           setUpBefore = !!sub && !mine;
         }
+
         if (alive.current) setData({ enabled: true, publicKey: config.publicKey, platform: env.platform, device, mine, setUpBefore, resaveMessage, push });
       } catch (err) {
         if (alive.current) setLoadError(errorText(err, "We couldn't load your notification settings."));
       }
     })();
+
     return () => { alive.current = false; };
   }, [load, attempt, userId]);
 
   if (loadError) return <ErrorNotice message={loadError} onRetry={() => setAttempt((n) => n + 1)} />;
+
   if (!data) return <Skeleton kind="lines" count={2} label="Loading notifications on this device…" />;
   const others = data.push.devices.filter((d) => d.id !== data.mine?.id);
   const state = cardState({ enabled: data.enabled, device: data.device, thisDeviceOn: !!data.mine, otherDevices: others.length });
+
   // The church turned notifications off: no card at all (DEC-124).
   if (state === "church_off") return null;
   const church = churchName(site) || "Fold";
@@ -124,6 +140,7 @@ export function PushDeviceCard({ load }: { load: () => Promise<NotificationSetti
   async function act(fn: () => Promise<void>) {
     if (busy) return;
     setBusy(true); setStatus(""); setError(null);
+
     try {
       await fn();
     } catch (err) {
@@ -132,8 +149,10 @@ export function PushDeviceCard({ load }: { load: () => Promise<NotificationSetti
       if (alive.current) setBusy(false);
     }
   }
+
   const refreshed = async (mine: Loaded["mine"]) => {
     const s = await SettingsApi.get();
+
     if (alive.current) setData((d) => d && { ...d, mine, setUpBefore: false, resaveMessage: undefined, push: s.settings.push ?? NO_PUSH });
     heading.current?.focus();
   };
@@ -145,31 +164,43 @@ export function PushDeviceCard({ load }: { load: () => Promise<NotificationSetti
     const asked = Notification.requestPermission();
     void act(async () => {
       const permission = await asked;
+
       if (permission === "denied") {
         if (alive.current) setData((d) => d && { ...d, device: "blocked" });
         heading.current?.focus();
+
         return;
       }
+
       if (permission !== "granted") {
         setStatus("Notifications are still off. You can turn them on any time.");
+
         return;
       }
+
       let sub: PushSubscription;
+
       try {
         const made = await subscribeThisDevice(publicKey);
         sub = made.sub;
+
         // A subscription made with an older key can't receive anything:
         // its row goes too (it is ours only if the server says so).
         if (made.replaced) await Push.remove(made.replaced).catch(() => {});
       } catch {
         setError("This browser couldn't turn on notifications. Try again, or use email on this device.");
+
         return;
       }
+
       const r = await Push.save(sub.toJSON());
+
       if (!r.saved || !r.device) {
         setStatus(r.message || "Notifications are still off. Try again in a few minutes.");
+
         return;
       }
+
       resaved.set(sub.endpoint, Promise.resolve(r));
       setPushOwner(userId);
       await refreshed({ id: r.device.id, sub });
@@ -179,6 +210,7 @@ export function PushDeviceCard({ load }: { load: () => Promise<NotificationSetti
 
   function sendTest() {
     const mine = data?.mine;
+
     if (!mine) return;
     void act(async () => {
       const r = await Push.test(mine.sub.endpoint);
@@ -188,6 +220,7 @@ export function PushDeviceCard({ load }: { load: () => Promise<NotificationSetti
 
   function turnOffHere() {
     const mine = data?.mine;
+
     if (!mine) return;
     void act(async () => {
       await Push.remove(mine.sub.endpoint);
@@ -206,6 +239,7 @@ export function PushDeviceCard({ load }: { load: () => Promise<NotificationSetti
       resaved.clear();
       setPushOwner(null);
       await data?.mine?.sub.unsubscribe().catch(() => false);
+
       if (alive.current) setData((d) => d && { ...d, mine: null, setUpBefore: false, push: r.push });
       heading.current?.focus();
       setStatus("Notifications are off on all your devices.");
@@ -215,6 +249,7 @@ export function PushDeviceCard({ load }: { load: () => Promise<NotificationSetti
   function changeKind(category: EmailKind["category"], off: boolean) {
     void act(async () => {
       const r = await SettingsApi.updatePush(category, off);
+
       if (alive.current) setData((d) => d && { ...d, push: r.settings.push ?? d.push });
       setStatus("Saved");
     });
@@ -280,6 +315,7 @@ export function PushDeviceCard({ load }: { load: () => Promise<NotificationSetti
       <Choices legend="What comes to your devices" hint="Turn off the kinds you don't want. Everything still shows in Alerts.">
         {data.push.kinds.map((k) => {
           const copy = EMAIL_KIND_COPY[k.category];
+
           return <Checkbox key={k.category} label={copy.label} description={copy.hint} checked={!k.off} aria-disabled={busy || undefined}
             onChange={(e) => { if (!busy) changeKind(k.category, !e.target.checked); }} />;
         })}
@@ -309,6 +345,7 @@ function OtherDevices({ devices }: { devices: PushDevice[] }) {
 // 2.7, "Blocked it by mistake?"). The directions page has the long form.
 function undoSteps(platform: Platform, church: string): string[] {
   const host = window.location.host;
+
   switch (platform) {
     case "ios":
       return [

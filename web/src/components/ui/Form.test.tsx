@@ -94,10 +94,12 @@ describe("Form", () => {
 
   it.each([" ".repeat(10), "  secret with spaces  "])("never trims or rejects meaningful password whitespace (%j)", async (password) => {
     let received = "";
+
     const submit = vi.fn((event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
       received = within(event.currentTarget).getByLabelText<HTMLInputElement>("Password").value;
     });
+
     render(<Form onSubmit={submit}>
       <Field id="constructor" label="Password"><Input type="password" defaultValue={password} minLength={10} required /></Field>
       <Button variant="primary" type="submit">Save</Button>

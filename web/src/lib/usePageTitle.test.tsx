@@ -4,6 +4,7 @@ import { usePageTitle } from "./usePageTitle";
 
 function Page({ title, site = "Grace Church", route = "/" }: { title?: string; site?: string; route?: string }) {
   usePageTitle(site, route);
+
   return <main id="main">{title && <h1>{title}</h1>}</main>;
 }
 

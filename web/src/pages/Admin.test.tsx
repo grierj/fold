@@ -1,4 +1,9 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { requiredElement } from "../test/dom";
+import { testGroup, testInvitation } from "../test/fixtures";
+import { renderWithAuth } from "../test/auth";
+import { stubService } from "../test/service";
+import { AdminGuardianLinks } from "../api/guardians";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,20 +24,38 @@ import { AdminPage } from "./Admin";
 
 // One stable object, like the real provider: a fresh one per render would re-run the page's load effects.
 const auth = vi.hoisted(() => ({ user: { id: 1 }, loading: false, isAdmin: true }));
-vi.mock("../auth", () => ({ useAuth: () => auth }));
-vi.mock("../api/contactHistory", async (actual) => ({ ...(await actual<typeof import("../api/contactHistory")>()), ContactHistory: { people: vi.fn(), list: vi.fn(), csv: vi.fn() } }));
-vi.mock("../api/people", async (actual) => ({ ...(await actual<typeof import("../api/people")>()), People: { search: vi.fn() } }));
-vi.mock("../api/invitations", async (actual) => ({ ...(await actual<typeof import("../api/invitations")>()), Invitations: { create: vi.fn() } }));
-vi.mock("../api/groups", async (actual) => ({ ...(await actual<typeof import("../api/groups")>()), Groups: { list: vi.fn(), members: vi.fn().mockResolvedValue({ members: [] }), memberDeparturePreview: vi.fn(), confirmMemberDeparture: vi.fn() } }));
-vi.mock("../api/admin", async (actual) => ({ ...(await actual<typeof import("../api/admin")>()), AdminGroups: { list: vi.fn(), addMember: vi.fn() }, Admin: { pending: vi.fn().mockResolvedValue({ groups: [] }), deletions: vi.fn().mockResolvedValue({ groups: [] }), approve: vi.fn(), reject: vi.fn(), deleteGroup: vi.fn(), churchAddress: vi.fn().mockResolvedValue({ address: "Grace Church" }), setChurchAddress: vi.fn(), guardianCopies: vi.fn().mockResolvedValue({ on: false }), setGuardianCopies: vi.fn(), replyTo: vi.fn().mockResolvedValue({ address: "" }), setReplyTo: vi.fn(), pushEnabled: vi.fn().mockResolvedValue({ on: true }), setPushEnabled: vi.fn() }, AdminJobs: { list: vi.fn(), retry: vi.fn(), dismiss: vi.fn() } }));
-vi.mock("../api/adminUsers", async (actual) => ({ ...(await actual<typeof import("../api/adminUsers")>()), AdminUsers: { list: vi.fn().mockResolvedValue({ users: [] }), clearEmailSuppression: vi.fn(), legacyReasonsProbe: vi.fn() } }));
-vi.mock("../api/guardians", async (actual) => ({ ...(await actual<typeof import("../api/guardians")>()), AdminGuardianLinks: { list: vi.fn().mockResolvedValue({ guardianLinks: [], nominations: [] }) } }));
-vi.mock("../api/accountRequests", async (actual) => ({ ...(await actual<typeof import("../api/accountRequests")>()), AdminAccountRequests: { list: vi.fn(), approve: vi.fn(), setSelfSignup: vi.fn() } }));
-vi.mock("../api/rooms", async (actual) => ({ ...(await actual<typeof import("../api/rooms")>()), AdminRooms: { list: vi.fn(), create: vi.fn(), update: vi.fn(), setEnabled: vi.fn(), setApproval: vi.fn(), locations: vi.fn(), matchLocation: vi.fn() }, RoomRequests: { list: vi.fn(), confirm: vi.fn(), reject: vi.fn() } }));
-vi.mock("../api/site", async (actual) => ({ ...(await actual<typeof import("../api/site")>()), Site: { get: vi.fn().mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off", roomsEnabled: false, pushEnabled: true }) } }));
+
+const render = renderWithAuth(() => auth);
+
+stubService(ContactHistory, () => ({ people: vi.fn(), list: vi.fn(), csv: vi.fn() }));
+
+stubService(People, () => ({ search: vi.fn() }));
+
+stubService(Invitations, () => ({ create: vi.fn() }));
+
+stubService(Groups, () => ({ list: vi.fn(), members: vi.fn().mockResolvedValue({ members: [] }), memberDeparturePreview: vi.fn(), confirmMemberDeparture: vi.fn() }));
+
+stubService(AdminGroups, () => ({ list: vi.fn(), addMember: vi.fn() }));
+
+stubService(Admin, () => ({ pending: vi.fn().mockResolvedValue({ groups: [] }), deletions: vi.fn().mockResolvedValue({ groups: [] }), approve: vi.fn(), reject: vi.fn(), deleteGroup: vi.fn(), churchAddress: vi.fn().mockResolvedValue({ address: "Grace Church" }), setChurchAddress: vi.fn(), guardianCopies: vi.fn().mockResolvedValue({ on: false }), setGuardianCopies: vi.fn(), replyTo: vi.fn().mockResolvedValue({ address: "" }), setReplyTo: vi.fn(), pushEnabled: vi.fn().mockResolvedValue({ on: true }), setPushEnabled: vi.fn() }));
+
+stubService(AdminJobs, () => ({ list: vi.fn(), retry: vi.fn(), dismiss: vi.fn() }));
+
+stubService(AdminUsers, () => ({ list: vi.fn().mockResolvedValue({ users: [] }), clearEmailSuppression: vi.fn(), legacyReasonsProbe: vi.fn() }));
+
+stubService(AdminGuardianLinks, () => ({ list: vi.fn().mockResolvedValue({ guardianLinks: [], nominations: [] }) }));
+
+stubService(AdminAccountRequests, () => ({ list: vi.fn(), approve: vi.fn(), setSelfSignup: vi.fn() }));
+
+stubService(AdminRooms, () => ({ list: vi.fn(), create: vi.fn(), update: vi.fn(), setEnabled: vi.fn(), setApproval: vi.fn(), locations: vi.fn(), matchLocation: vi.fn() }));
+
+stubService(RoomRequests, () => ({ list: vi.fn(), confirm: vi.fn(), reject: vi.fn() }));
+
+stubService(Site, () => ({ get: vi.fn().mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off", roomsEnabled: false, pushEnabled: true }) }));
 
 function HistoryDestination() {
   const { id } = useParams();
+
   return <p>Person history {id}</p>;
 }
 
@@ -66,8 +89,8 @@ beforeEach(() => {
   vi.mocked(AdminAccountRequests.list).mockResolvedValue({ requests: [request] });
   vi.mocked(AdminAccountRequests.approve).mockReset();
   vi.mocked(Groups.members).mockReset().mockResolvedValue({ members: [] });
-  vi.mocked(Groups.list).mockReset().mockResolvedValue({ groups: [{ id: 3, name: "Choir" } as import("../types").GroupSummary] });
-  vi.mocked(Invitations.create).mockReset().mockResolvedValue({} as never);
+  vi.mocked(Groups.list).mockReset().mockResolvedValue({ groups: [testGroup({ id: 3, name: "Choir" })] });
+  vi.mocked(Invitations.create).mockReset().mockResolvedValue({ invitation: testInvitation() });
   vi.mocked(AdminAccountRequests.setSelfSignup).mockReset();
   vi.mocked(Groups.memberDeparturePreview).mockReset();
   vi.mocked(Groups.confirmMemberDeparture).mockReset();
@@ -267,6 +290,7 @@ describe("Users search and filters", () => {
     user(3, "Cy Off", { status: "disabled" }),
     user(4, "Di Invited", { status: "invited" }),
   ];
+
   const rows = () => screen.getAllByRole("row").slice(1);
 
   it("filters by name, display name or email as you type, ignoring case", async () => {
@@ -336,7 +360,7 @@ it("requires evidence for approval with account consent and sends both in one de
 });
 
 it("uses name selection on admin add with the existing role and over-limit choice", async () => {
-  vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [{ id: 3, name: "Choir", memberCount: 0, status: "active" } as import("../types").GroupSummary] });
+  vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [testGroup({ id: 3, name: "Choir", memberCount: 0, status: "active" })] });
   vi.mocked(People.search).mockResolvedValue({ state: "results", people: [{ selectionId: "opaque", displayName: "Pat", teen: false, sharedGroups: [], otherGroups: [] }] });
   vi.mocked(AdminGroups.addMember).mockRejectedValueOnce(new ApiError(409, "full", { code: "group_full" })).mockResolvedValueOnce({});
   vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -351,7 +375,7 @@ it("uses name selection on admin add with the existing role and over-limit choic
 });
 
 it("uses the canonical departure preview and POST for an admin removal", async () => {
-  const group = { id: 3, name: "Choir", description: "", memberCount: 1, status: "active", tags: [], imageUrl: "", coverFocalX: 50, coverFocalY: 50, location: "", leaderName: "", nextEventAt: null, leaderId: 1, visibility: "public", deletionRequested: false, memberLimit: null } as import("../types").GroupSummary;
+  const group = testGroup({ id: 3, name: "Choir", description: "", memberCount: 1, status: "active", tags: [], imageUrl: "", coverFocalX: 50, coverFocalY: 50, location: "", leaderName: "", nextEventAt: null, leaderId: 1, visibility: "public", deletionRequested: false, memberLimit: null });
   const member = { id: 9, name: "Pat Person", avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50, role: "member", joinedAt: "2026-10-01T00:00:00Z", admin: false };
   vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [group] });
   vi.mocked(Groups.members).mockResolvedValueOnce({ members: [member] }).mockResolvedValue({ members: [] });
@@ -367,7 +391,7 @@ it("uses the canonical departure preview and POST for an admin removal", async (
 });
 
 it.each([401, 403, 404])("clears the protected roster and collapses the manager after departure authority fails with %s", async (status) => {
-  const group = { id: 3, name: "Choir", description: "", memberCount: 1, status: "active", tags: [], imageUrl: "", coverFocalX: 50, coverFocalY: 50, location: "", leaderName: "", nextEventAt: null, leaderId: 1, visibility: "public", deletionRequested: false, memberLimit: null } as import("../types").GroupSummary;
+  const group = testGroup({ id: 3, name: "Choir", description: "", memberCount: 1, status: "active", tags: [], imageUrl: "", coverFocalX: 50, coverFocalY: 50, location: "", leaderName: "", nextEventAt: null, leaderId: 1, visibility: "public", deletionRequested: false, memberLimit: null });
   const member = { id: 9, name: "Pat Protected", email: "pat-protected@example.com", phone: "555-0109", avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50, role: "member", joinedAt: "2026-10-01T00:00:00Z", admin: false };
   const denied = new ApiError(status, "private", { code: status === 401 ? "signed_out" : "invalid" });
   vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [group] });
@@ -396,7 +420,7 @@ it.each([401, 403, 404])("clears the protected roster and collapses the manager 
 });
 
 it("offers a teen Ask to add without a leader-role shortcut", async () => {
-  vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [{ id: 3, name: "Choir", memberCount: 0, status: "active" } as import("../types").GroupSummary] });
+  vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [testGroup({ id: 3, name: "Choir", memberCount: 0, status: "active" })] });
   vi.mocked(AdminGroups.addMember).mockReset();
   vi.mocked(People.search).mockResolvedValue({ state: "results", people: [{ selectionId: "teen", displayName: "Teen Pat", teen: true, sharedGroups: [], otherGroups: [] }] });
   render(<MemoryRouter initialEntries={["/admin?tab=groups"]}><AdminPage /></MemoryRouter>);
@@ -484,6 +508,7 @@ it("does not fall back to the first user when the selected row has no email", as
 it("saves self-signup the moment it changes and says Saved", async () => {
   vi.mocked(AdminAccountRequests.setSelfSignup).mockImplementation(async (selfSignup) => {
     vi.mocked(Site.get).mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup, roomsEnabled: false, pushEnabled: true });
+
     return { selfSignup };
   });
   render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
@@ -509,7 +534,8 @@ it("puts self-signup back and says why when saving fails", async () => {
 });
 
 it("disables self-signup while a save is in flight, then goes back to the value from before that save on failure", async () => {
-  let fail: (e: unknown) => void = () => {};
+  let fail: (cause: unknown) => void = () => {};
+
   vi.mocked(AdminAccountRequests.setSelfSignup).mockReturnValue(new Promise((_, reject) => { fail = reject; }));
   render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
   const mode = await screen.findByRole("group", { name: "Self-signup" });
@@ -553,6 +579,7 @@ it("invites without a group by default, confirms in a status and clears the form
 
 describe("Approvals: new groups", () => {
   const pending = group(9, "Sunrise study", { status: "pending", tags: ["music", "worship"], leaderName: "Lee Leader" });
+
   const open = async () => {
     vi.mocked(Admin.pending).mockResolvedValue({ groups: [pending] });
     vi.mocked(AdminAccountRequests.list).mockResolvedValue({ requests: [] });
@@ -701,10 +728,10 @@ describe("Approvals: new groups", () => {
     vi.mocked(AdminAccountRequests.list).mockResolvedValue({ requests: [request] });
     render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
     await screen.findByText("Sunrise study");
-    const card = screen.getByText("Sunrise study", { selector: "a" }).closest("div.bg-surface") as HTMLElement;
+    const card = requiredElement(screen.getByText("Sunrise study", { selector: "a" }).closest("div.bg-surface"), HTMLElement);
     await userEvent.click(within(card).getByRole("button", { name: "Approve" }));
     await screen.findByText(/“Sunrise study” approved/);
-    const accountCard = (await screen.findByText(request.name)).closest("div.bg-surface") as HTMLElement;
+    const accountCard = requiredElement((await screen.findByText(request.name)).closest("div.bg-surface"), HTMLElement);
     await userEvent.click(within(accountCard).getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(screen.queryByText(/“Sunrise study” approved/)).not.toBeInTheDocument());
   });
@@ -765,7 +792,11 @@ it("says so, with a retry, when /site fails on a bookmarked Rooms tab", async ()
 });
 
 it("reads the rooms switch from /site and saves it the moment it changes, then shows the tab", async () => {
-  vi.mocked(AdminRooms.setEnabled).mockImplementation(async (roomsEnabled) => { withRooms(roomsEnabled); return { roomsEnabled }; });
+  vi.mocked(AdminRooms.setEnabled).mockImplementation(async (roomsEnabled) => {
+    withRooms(roomsEnabled);
+
+    return { roomsEnabled };
+  });
   render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
   const box = await screen.findByRole("checkbox", { name: /Use rooms/ });
   expect(box).not.toBeChecked();
@@ -780,7 +811,11 @@ it("reads the rooms switch from /site and saves it the moment it changes, then s
 
 it("starts the rooms switch on when /site says rooms are on, and hides the tab when it is turned off", async () => {
   withRooms(true);
-  vi.mocked(AdminRooms.setEnabled).mockImplementation(async (roomsEnabled) => { withRooms(roomsEnabled); return { roomsEnabled }; });
+  vi.mocked(AdminRooms.setEnabled).mockImplementation(async (roomsEnabled) => {
+    withRooms(roomsEnabled);
+
+    return { roomsEnabled };
+  });
   render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
   const box = await screen.findByRole("checkbox", { name: /Use rooms/ });
   await waitFor(() => expect(box).toBeChecked());
@@ -793,7 +828,8 @@ it("starts the rooms switch on when /site says rooms are on, and hides the tab w
 });
 
 it("disables the rooms switch while it saves and puts it back with an error when saving fails", async () => {
-  let fail: (e: unknown) => void = () => {};
+  let fail: (cause: unknown) => void = () => {};
+
   vi.mocked(AdminRooms.setEnabled).mockReturnValue(new Promise((_, reject) => { fail = reject; }));
   render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
   const box = await screen.findByRole("checkbox", { name: /Use rooms/ });
@@ -811,6 +847,7 @@ it("disables the rooms switch while it saves and puts it back with an error when
 
 describe("room booking approval (M2.1d)", () => {
   const approval = () => screen.findByRole("checkbox", { name: /Room bookings need an admin's approval/ });
+
   const waiting = {
     id: 5, eventId: 9, eventTitle: "Weekly Bible study", groupName: "Room 201 class", roomId: 1, roomName: "Fellowship Hall", building: "Main",
     series: true, requestedBy: "Lee Park", dates: 40, busyDates: 0, firstDate: "2026-11-10", firstStartsAt: "2026-11-10T19:00:00Z", createdAt: "2026-10-30T15:00:00Z",
@@ -952,6 +989,7 @@ it("says more than 100 on the System tab when more tasks failed than the list ho
 
 describe("email suppressions on the Users tab (M3.2c, DEC-113)", () => {
   const since = "2026-10-20T15:00:00Z";
+
   const people = () => [
     user(1, "Ann"),
     user(2, "Bo Bounce", { emailSuppression: { reason: "hard_bounce", since } }),

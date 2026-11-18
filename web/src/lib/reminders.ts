@@ -20,15 +20,21 @@ export interface ReminderLine {
 function pushText(m: DateReminders["messages"][number], zone: string, now: Date, viewer: string): string {
   const waiting = m.waiting ?? 0;
   const parts: string[] = [];
+
   if (m.reached > 0) {
     parts.push(`Reminder pushed to ${people(m.reached)}`);
+
     if (m.sentAt) parts.push(lowerLead(formatWhenIn(m.sentAt, zone, now, viewer, true)));
+
     if (waiting > 0) parts.push(`${waiting} waiting`);
   } else {
     parts.push(waiting > 0 ? `Push reminder waiting to go to ${people(waiting)}` : "Push reminder reached no one");
   }
+
   if (m.failed > 0) parts.push(`${m.failed} didn't get it`);
+
   if (m.skipped > 0) parts.push(`${m.skipped} skipped`);
+
   return parts.join(" · ");
 }
 
@@ -43,30 +49,40 @@ function pushText(m: DateReminders["messages"][number], zone: string, now: Date,
 export function reminderLines(r: DateReminders, zone: string, now = new Date(), viewer = browserTimeZone()): ReminderLine[] {
   const out: ReminderLine[] = [];
   let emails = 0;
+
   for (const m of r.messages) {
     const noun = NOUN[m.kind];
     let text: string;
+
     if (m.kind === "push") {
       out.push({ key: `m${m.messageId}`, text: pushText(m, zone, now, viewer), messageId: m.messageId });
       continue;
     }
+
     switch (m.status) {
       case "sent": {
         const parts = [m.reached > 0 ? `${noun} emailed to ${people(m.reached)}` : `${noun} reached no one`];
+
         if (m.sentAt) parts.push(lowerLead(formatWhenIn(m.sentAt, zone, now, viewer, true)));
+
         if (m.failed > 0) parts.push(`${m.failed} didn't get it`);
+
         if (m.skipped > 0) parts.push(`${m.skipped} skipped`);
         text = parts.join(" · ");
         break;
       }
+
       case "failed": text = `${noun} didn't go out`; break;
       case "cancelled": continue;
       default: text = `${noun} is going out now`;
     }
+
     emails++;
     out.push({ key: `m${m.messageId}`, text, messageId: m.messageId });
   }
+
   const push = r.push ?? null;
+
   if (r.minutes === 0) {
     out.push({ key: "off", text: push ? "Reminder emails are off for this event" : "Reminders are off for this event" });
   } else if (r.dueAt && !r.covered && new Date(r.dueAt).getTime() > now.getTime()) {
@@ -74,11 +90,13 @@ export function reminderLines(r: DateReminders, zone: string, now = new Date(), 
   } else if (emails === 0) {
     out.push({ key: "none", text: "No reminder went out for this date" });
   }
+
   if (push === false && r.minutes !== 0) {
     out.push({ key: "push-off", text: "Push reminders are off for this event" });
   } else if (push && r.pushDueAt && new Date(r.pushDueAt).getTime() > now.getTime()) {
     out.push({ key: "push-due", text: `Push reminder goes out ${lowerLead(formatWhenIn(r.pushDueAt, zone, now, viewer))}` });
   }
+
   return out;
 }
 
@@ -92,14 +110,17 @@ export const reminderName = (r: Pick<MessageReminder, "kind"> | undefined) =>
 // emails and its heading (displaySubject) do.
 export function reminderRowTitle(m: Pick<Message, "reminder">, now = new Date()): string {
   const r = m.reminder;
+
   if (!r) return reminderName(r);
   let day: string;
+
   try {
     day = formatShortWeekdayDay(r.startsAt, r.tzid || browserTimeZone(), now);
   } catch {
     // A zone the browser doesn't know: its own clock, as formatWhenIn falls back.
     day = formatShortWeekdayDay(r.startsAt, browserTimeZone(), now);
   }
+
   return `${reminderName(r)} · ${r.eventTitle}, ${day}`;
 }
 

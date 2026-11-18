@@ -13,11 +13,13 @@ import { ChildcareBadge } from "../ChildcareBadge";
 /** @public tested directly; the day sections render it. */
 export function EventRow({ occ }: { occ: CalendarOccurrence }) {
   const state = calendarState(occ);
+
   const stateClass = state === "going"
     ? "border-primary bg-primary-subtle text-text"
     : ghosted(state)
       ? "border-border border-dashed bg-sunken text-text"
       : "border-border bg-surface text-text";
+
   return (
     <Link
       to={occurrenceLink(occ)}
@@ -62,11 +64,13 @@ export function EventChip({ occ, stacked }: { occ: CalendarOccurrence; stacked?:
   const title = occ.title || occ.groupName || "";
   const state = calendarState(occ);
   const label = calendarStateLabel(occ);
+
   // Keep the visible words in the same order in the accessible name, then
   // append context that a compact chip does not have room to render.
   const name = [`${time} ${title}`, label, occ.remoteAvailable && "Remote", occ.childcareAvailable && "Childcare", occ.churchWide ? "Church-wide" : occ.groupName, occ.groupDeleted && "deleted group"]
     .filter(Boolean)
     .join(", ");
+
   const stateClass = state === "going"
     ? "border-primary bg-primary-subtle text-text"
     : ghosted(state)
@@ -74,6 +78,7 @@ export function EventChip({ occ, stacked }: { occ: CalendarOccurrence; stacked?:
       : state === "declined"
         ? "border-border bg-surface text-text-muted"
         : "border-transparent bg-primary-subtle text-primary-on-subtle";
+
   return (
     <Link
       to={occurrenceLink(occ)}

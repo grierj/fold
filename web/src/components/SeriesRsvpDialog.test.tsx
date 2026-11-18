@@ -26,6 +26,7 @@ it("defaults to Just this date, traps focus, cancels with Escape and restores fo
 it("offers all three scopes", async () => {
   const choose = vi.fn();
   render(<SeriesRsvpDialog answer="Maybe" onChoose={choose} onCancel={vi.fn()} />);
+
   for (const [name, scope] of [["Just this date", "just_this_date"], ["This and following dates", "this_and_following"], ["All future dates", "all_future"]] as const) {
     const option = screen.getByRole("button", { name });
     await userEvent.click(option);

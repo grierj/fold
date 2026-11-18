@@ -1,11 +1,9 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
 import { afterEach, beforeEach } from "vitest";
+import { forgetSite } from "../lib/useSite";
 
 // /site is shared for the page's life; each test starts with nothing read.
-// Imported inside the hook so a test file's vi.mock of the API applies to it.
-beforeEach(async () => {
-  const { forgetSite } = await import("../lib/useSite");
-  forgetSite();
-});
+beforeEach(forgetSite);
+
 afterEach(() => cleanup());

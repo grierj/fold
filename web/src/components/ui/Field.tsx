@@ -13,6 +13,7 @@ import { AlertCircleIcon } from "../icons";
 // Go guard keeps raw <input>, <select> and <textarea> inside components/ui.
 // labelId names a control that a <label for> can't (the composer's editor).
 type Wiring = { id: string; labelId: string; describedBy?: string; invalid: boolean };
+
 const FieldContext = createContext<Wiring | null>(null);
 
 type FieldProps = {
@@ -32,6 +33,7 @@ export function Field({ label, hint, error: providedError, optional, id: fixed, 
   const hintId = hint ? `${id}-hint` : undefined;
   const errorId = error ? `${id}-error` : undefined;
   const describedBy = [hintId, errorId].filter(Boolean).join(" ") || undefined;
+
   return (
     <div>
       <label id={`${id}-label`} className="label" htmlFor={id}>
@@ -57,7 +59,9 @@ function FieldError({ id, children }: { id?: string; children: ReactNode }) {
 
 export function useField(control: string): Wiring {
   const w = useContext(FieldContext);
+
   if (!w) throw new Error(`<${control}> must sit inside a <Field label="…"> (components/ui/Field.tsx)`);
+
   return w;
 }
 
@@ -66,6 +70,7 @@ export const wire = (w: Wiring) => ({ id: w.id, "aria-describedby": w.describedB
 // `layout` takes width classes only, for short fields such as a count or a
 // time ("w-28"); on phones a short field still sits on its own row.
 type Layout = { layout?: string };
+
 const cls = (layout?: string) => (layout ? `input ${layout}` : "input");
 
 export function Input({ layout, ref, ...props }: Omit<InputHTMLAttributes<HTMLInputElement>, "id" | "className" | "style"> & Layout & { ref?: Ref<HTMLInputElement> }) {
@@ -95,6 +100,7 @@ export function Select({
   const w = useField("Select");
   const chosen = options?.find((o) => o.value === String(value))?.label;
   const describedBy = [w.describedBy, callerDescribedBy].filter(Boolean).join(" ") || undefined;
+
   return (
     <select className={cls(layout)} value={value} title={chosen} {...rest} {...wire(w)} aria-describedby={describedBy}>
       {options ? options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>) : children}
@@ -119,6 +125,7 @@ export function Choices({ legend, hint, error: providedError, optional, children
   const hintId = hint ? `${id}-hint` : undefined;
   const errorId = error ? `${id}-error` : undefined;
   const describedBy = [hintId, errorId].filter(Boolean).join(" ") || undefined;
+
   return (
     <fieldset id={id} aria-describedby={describedBy} aria-invalid={error ? true : undefined}>
       <legend className="label">
@@ -143,6 +150,7 @@ function Row({ type, label, description, id: fixed, ...input }: RowProps & { typ
   const error = useContext(FormErrorsContext).get(id);
   const errorId = error ? `${id}-error` : undefined;
   const describedBy = [input["aria-describedby"], errorId].filter(Boolean).join(" ") || undefined;
+
   return (
     <div>
       <label className="choice-row">
@@ -164,9 +172,11 @@ export const Checkbox = (p: RowProps) => <Row type="checkbox" {...p} />;
 // after the errors have rendered, for example from a useEffect on them.
 export function focusFirstInvalid(form: HTMLElement | null): boolean {
   const el = form?.querySelector<HTMLElement>('[aria-invalid="true"]');
+
   if (!el) return false;
   const target = el.tagName === "FIELDSET" ? el.querySelector<HTMLElement>('input:not(:disabled):not([type="hidden"]), select:not(:disabled), textarea:not(:disabled)') : el;
   target?.focus();
+
   return !!target;
 }
 

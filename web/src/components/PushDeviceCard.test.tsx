@@ -1,4 +1,8 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { stubService } from "../test/service";
+import { Push, NotificationSettings as NotificationSettingsApi } from "../api/notifications";
+import { Site } from "../api/site";
+import { renderWithAuth } from "../test/auth";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -14,11 +18,15 @@ const api = vi.hoisted(() => ({
   get: vi.fn(),
   updatePush: vi.fn(),
 }));
-vi.mock("../api/notifications", async (orig) => ({ ...(await orig<typeof import("../api/notifications")>()), Push: { config: api.config, save: api.save, remove: api.remove, turnOffEverywhere: api.turnOffEverywhere, test: api.test }, NotificationSettings: { get: api.get, updatePush: api.updatePush } }));
-vi.mock("../api/site", async (orig) => ({ ...(await orig<typeof import("../api/site")>()), Site: { get: async () => ({ name: "Grace Church", timezone: "America/Boise", selfSignup: "request", roomsEnabled: false }) } }));
+
+stubService(Push, () => ({ config: api.config, save: api.save, remove: api.remove, turnOffEverywhere: api.turnOffEverywhere, test: api.test }));
+
+stubService(NotificationSettingsApi, () => ({ get: api.get, updatePush: api.updatePush }));
+
+stubService(Site, () => ({ get: async () => ({ name: "Grace Church", timezone: "America/Boise", selfSignup: "request", roomsEnabled: false, pushEnabled: true }) }));
 
 // Signed in as person 5; this browser remembers its subscription is theirs.
-vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 5 } }) }));
+const render = renderWithAuth(() => ({ user: { id: 5 } }));
 
 import { PushDeviceCard } from "./PushDeviceCard";
 
@@ -43,21 +51,26 @@ beforeEach(() => {
   api.save.mockImplementation(async () => {
     const d = device(7, "Chrome on Windows");
     push = { ...push, on: true, devices: [d, ...push.devices.filter((x) => x.id !== 7)] };
+
     return { saved: true, device: d };
   });
   api.remove.mockImplementation(async () => {
     push = { ...push, devices: push.devices.filter((x) => x.id !== 7) };
+
     return {};
   });
   api.turnOffEverywhere.mockImplementation(async () => {
     push = { ...push, on: false, devices: [] };
+
     return { push: structuredClone(push) };
   });
   api.updatePush.mockImplementation(async (category: string, off: boolean) => {
     push = { ...push, kinds: push.kinds.map((k) => (k.category === category ? { ...k, off } : k)) };
+
     return { settings: settings() };
   });
 });
+
 afterEach(() => {
   localStorage.clear();
   uninstallBrowser();
@@ -67,8 +80,10 @@ afterEach(() => {
 function show(o: BrowserOptions = {}) {
   const browser = installBrowser(o);
   render(<MemoryRouter><PushDeviceCard load={async () => settings()} /></MemoryRouter>);
+
   return browser;
 }
+
 const card = () => screen.findByRole("region", { name: "Notifications on this device" });
 
 describe("the eight states", () => {
@@ -228,9 +243,12 @@ describe("the flows", () => {
     expect(await screen.findByRole("button", { name: "Send a test notification" })).toBeInTheDocument();
     expect(b.Notification.requestPermission).toHaveBeenCalledTimes(1);
     expect(b.serviceWorker.register).toHaveBeenCalledWith("/sw.js", { scope: "/" });
-    const opts = (b.pushManager.subscribe.mock.calls[0] as unknown[])[0] as PushSubscriptionOptionsInit;
+    const [opts] = b.pushManager.subscribe.mock.calls[0];
     expect(opts.userVisibleOnly).toBe(true);
-    expect([...(opts.applicationServerKey as Uint8Array)]).toEqual([1, 2, 3]);
+    const key = opts.applicationServerKey;
+
+    if (!(key instanceof Uint8Array)) throw new Error("Expected a binary application server key");
+    expect([...key]).toEqual([1, 2, 3]);
     expect(api.save).toHaveBeenCalledWith(b.current()!.toJSON());
     expect(screen.getByRole("status")).toHaveTextContent("Turned on. Send a test to check it works.");
   });

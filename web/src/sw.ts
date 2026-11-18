@@ -4,4 +4,7 @@
 // pushsubscriptionchange, with no fetch handler and no cache.
 import { wire, type WorkerScope } from "./sw/wire";
 
-wire(globalThis as unknown as WorkerScope);
+// This entry is loaded as a service worker and uses its global scope.
+declare const self: WorkerScope;
+
+wire(self);

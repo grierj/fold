@@ -18,11 +18,13 @@ export function GuardianConsentPage() {
     setReview({ kind: "loading" });
     Guardians.preview(token).then((preview) => { if (active) setReview({ kind: "ready", preview }); })
       .catch(() => { if (active) setReview({ kind: "expired" }); });
+
     return () => { active = false; };
   }, [token]);
 
   async function grant() {
     setBusy(true);
+
     try { await Guardians.useEmail(token); setReview({ kind: "done" }); }
     catch { setReview({ kind: "expired" }); }
     finally { setBusy(false); }

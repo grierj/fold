@@ -28,6 +28,7 @@ import { Skeleton } from "../components/ui/Skeleton";
 
 const LIST_LIMIT = 25;
 const STATUSES = ["draft", "scheduled", "sending", "sent", "failed", "cancelled"];
+
 export function MessagesPage() {
   const { user, canCompose, isAdmin } = useAuth();
   const church = useChurchZoneLoad();
@@ -41,16 +42,36 @@ export function MessagesPage() {
   const [resolvedKey, setResolvedKey] = useState("");
   const count = useRef<HTMLParagraphElement>(null);
   const paging = useRef(false);
-  useEffect(() => { const timer = setTimeout(() => setDebounced(search), 300); return () => clearTimeout(timer); }, [search]);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(search), 300);
+
+    return () => clearTimeout(timer);
+  }, [search]);
+
   function change(key: string, value: string) {
     paging.current = false;
-    setParams((old) => { const next = new URLSearchParams(old); next.delete("cursor"); if (value) next.set(key, value); else next.delete(key); return next; }, { replace: true });
+    setParams((old) => {
+      const next = new URLSearchParams(old);
+      next.delete("cursor");
+
+      if (value) next.set(key, value); else next.delete(key);
+
+      return next;
+    }, { replace: true });
   }
+
   function move(cursor: string) {
     if (cursor && !canPage) return;
     paging.current = true;
-    setParams((old) => { const next = new URLSearchParams(old); if (cursor) next.set("cursor", cursor); else next.delete("cursor"); return next; });
+    setParams((old) => {
+      const next = new URLSearchParams(old);
+
+      if (cursor) next.set("cursor", cursor); else next.delete("cursor");
+
+      return next;
+    });
   }
+
   const reminders = isAdmin && params.get("show") === "reminders";
   // A leader's list is theirs alone: no category to choose.
   const category = isAdmin ? (reminders ? "reminder" : "announcement") : undefined;
@@ -67,6 +88,7 @@ export function MessagesPage() {
     Promise.all([Messages.list(category, { limit: LIST_LIMIT, cursor, search: debounced, status }), Messages.options()])
       .then(([{ messages: list, nextCursor }, o]) => { if (alive) { setMessages(list); setNextCursor(nextCursor ?? ""); setOptions(o); setResolvedKey(requestKey); } })
       .catch((e) => { if (alive) setError(errorText(e, "We couldn't load your messages.")); });
+
     return () => { alive = false; };
   }, [reload, category, cursor, debounced, status, requestKey]);
   useEffect(() => {

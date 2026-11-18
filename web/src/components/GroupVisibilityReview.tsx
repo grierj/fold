@@ -70,6 +70,7 @@ export function GroupVisibilityReview({
           <ul className="mt-2 space-y-3">
             {impact.leaderOpened.map((e) => {
               const key = (e.decisionKey || String(e.id));
+
               return (
                 <li key={e.decisionKey || e.id} data-testid={`opened-${e.id}`}>
                   <Choices

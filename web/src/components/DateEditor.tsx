@@ -10,6 +10,7 @@ import { FormActions } from "./ui/FormActions";
 import { Button } from "./ui/Button";
 import { VisibilityField } from "./EventVisibility";
 import { RoomField } from "./RoomField";
+
 // DateEditor changes one occurrence only (time, duration, title,
 // location). It mirrors the group page's editor: later series changes
 // leave an edited date alone.
@@ -34,9 +35,11 @@ export function DateEditor({
   const [title, setTitle] = useState(instance.title);
   const [location, setLocation] = useState(instance.location);
   const [capacity, setCapacity] = useState(instance.capacity === null ? "" : String(instance.capacity));
+
   const [remoteCapacity, setRemoteCapacity] = useState(
     instance.remoteCapacity === null ? "" : String(instance.remoteCapacity)
   );
+
   const [remoteError, setRemoteError] = useState<string | null>(null);
   const remotePrefix = `date-${instance.id}`;
   const root = useRef<HTMLFormElement>(null);
@@ -48,53 +51,68 @@ export function DateEditor({
   async function save(e: React.FormEvent) {
     e.preventDefault();
     const remoteMsg = remoteProblem({ available: instance.remoteAvailable, capacity: remoteCapacity }, true);
+
     if (remoteMsg) {
       showFieldErrors(root.current, () => setRemoteError(remoteMsg));
+
       return;
     }
+
     setRemoteError(null);
-    const body: {
-      startsLocal?: string;
-      durationMinutes?: number;
-      location?: string;
-      title?: string;
-      capacityOverride?: number | null;
-      remoteCapacityOverride?: number | null;
-      visibility?: Visibility | "series";
-      reason?: string;
-      confirm?: boolean;
-    } = {};
+
+    const body: Parameters<typeof Events.updateOccurrence>[2] = {};
+
     const startsLocal = `${date}T${time}`;
+
     if (startsLocal !== instance.startsLocal) body.startsLocal = startsLocal;
+
     if (duration !== instance.durationMinutes) body.durationMinutes = duration;
+
     if (title !== instance.title) body.title = title;
+
     if (location !== instance.location) body.location = location;
     const capTrimmed = capacity.trim();
     const capCurrent = instance.capacity === null ? "" : String(instance.capacity);
+
     if (capTrimmed !== capCurrent) body.capacityOverride = capTrimmed === "" ? null : Number(capTrimmed);
+
     if (instance.remoteAvailable) {
       const rcTrimmed = remoteCapacity.trim();
       const rcCurrent = instance.remoteCapacity === null ? "" : String(instance.remoteCapacity);
+
       if (rcTrimmed !== rcCurrent) body.remoteCapacityOverride = rcTrimmed === "" ? null : Number(rcTrimmed);
     }
+
     if (visibility !== (instance.visibilityOverride ?? "series")) { body.visibility = visibility; body.reason = reason.trim() || undefined; }
+
     if (Object.keys(body).length === 0) {
       onClose();
+
       return;
     }
+
     setBusy(true);
     setError(null);
+
     try {
-      if (body.visibility !== undefined) {
+      if (body.visibility != null) {
         const impact = await Events.dateVisibilityImpact(instance.eventId, instance.date, body.visibility);
         const count = impact.tightened.reduce((n, row) => n + row.registrants, 0);
-        if (count > 0 && !window.confirm(`This cancels and notifies ${count} registered people who can no longer see this date. Save this date?`)) { setBusy(false); return; }
+
+        if (count > 0 && !window.confirm(`This cancels and notifies ${count} registered people who can no longer see this date. Save this date?`)) {
+          setBusy(false);
+
+          return;
+        }
+
         body.confirm = count > 0;
       }
+
       await Events.updateOccurrence(instance.eventId, instance.date, body);
       onSaved();
     } catch (err) {
       const msg = errorText(err, "We couldn't update this date.");
+
       if (isRemoteError(err)) {
         showFieldErrors(root.current, () => {
           setError(msg);
@@ -103,6 +121,7 @@ export function DateEditor({
       } else {
         setError(msg);
       }
+
       setBusy(false);
     }
   }

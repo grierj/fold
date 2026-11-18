@@ -22,12 +22,15 @@ export function NewGroup() {
       visibility: data.visibility,
       memberLimit: data.memberLimit,
     });
+
     if (data.coverFile) {
       await GroupCover.upload(group.id, data.coverFile);
     }
+
     if (data.coverFocal) {
       await Groups.update(group.id, { coverFocal: data.coverFocal });
     }
+
     setCreated(group);
   }
 

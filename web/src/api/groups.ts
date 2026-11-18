@@ -1,3 +1,4 @@
+import { isString } from "../lib/wireValues";
 import type {
   CoverUploadResponse,
   DepartureConfirmationResponse,
@@ -51,7 +52,7 @@ export const Groups = {
     api<MembersResponse>(path`/groups/${id}/members/${userId}/role`, { method: "PUT", body: { role } }),
   // overLimit: add even though the group is full (an explicit, audited choice; DEC-39).
   addMember: (id: Id, target: string | { selectionId: string }, overLimit = false) =>
-    api<unknown>(path`/groups/${id}/members`, { method: "POST", body: { ...(typeof target === "string" ? { email: target } : target), overLimit } }),
+    api<unknown>(path`/groups/${id}/members`, { method: "POST", body: { ...(isString(target) ? { email: target } : target), overLimit } }),
   requestDeletion: (id: Id) => api<GroupResponse>(path`/groups/${id}/deletion-request`, { method: "POST" }),
   cancelDeletion: (id: Id) => api<unknown>(path`/groups/${id}/deletion-request`, { method: "DELETE" }),
   members: (id: Id) => api<MembersResponse>(path`/groups/${id}/members`),

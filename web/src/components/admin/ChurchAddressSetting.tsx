@@ -38,18 +38,23 @@ export function ChurchAddressSetting() {
   useEffect(() => {
     alive.current = true;
     load();
+
     return () => { alive.current = false; };
   }, [load]);
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
     setError(null); setOk(false);
+
     if (lines(address) > MAX_LINES) {
       setFieldError(`Keep the address to ${MAX_LINES} lines.`);
+
       return;
     }
+
     setFieldError(null);
     setBusy(true);
+
     try {
       const r = await Admin.setChurchAddress(address);
       setAddress(r.address); setSaved(r.address); setOk(true);
@@ -61,6 +66,7 @@ export function ChurchAddressSetting() {
   if (loadFailed) {
     return <div className="mb-6 max-w-xl"><ErrorNotice message="We couldn't load the church's mailing address." onRetry={load} /></div>;
   }
+
   return (
     <Form noValidate onSubmit={save} className="mb-6 max-w-xl space-y-4">
       {guard}

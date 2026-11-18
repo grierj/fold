@@ -9,6 +9,7 @@ import { resolve } from "node:path";
 // committing the deletion (c8ce79d, 08137aa), so the build writes it back.
 export const DIST_README =
   "This directory holds the built frontend (npm run build in web/).\nIt is embedded into the Go binary via go:embed.\n";
+
 const keepDistReadme = {
   name: "keep-dist-readme",
   closeBundle() {
@@ -19,24 +20,12 @@ const keepDistReadme = {
 // Build artifacts land in web/dist, which the Go binary embeds via go:embed.
 // Assets use absolute paths: the binary serves the SPA at /, and relative
 // paths broke deep links such as /groups/1 (assets resolved under /groups/).
-export default defineConfig({
+const app = defineConfig({
   plugins: [react(), tailwindcss(), keepDistReadme],
   base: "/",
   build: {
     outDir: "dist",
     emptyOutDir: true,
-    // The service worker (src/sw.ts) is a second entry built to exactly
-    // dist/sw.js, unhashed: browsers find a worker by a fixed URL, and one
-    // served from the root has the whole site as its scope. index.html
-    // doesn't link it, so bundle-size.mjs's entry budget doesn't count it.
-    // It imports only src/sw/, which the app never does, so it shares no
-    // chunk with the page and stays one classic script.
-    rolldownOptions: {
-      input: { index: resolve(import.meta.dirname, "index.html"), sw: resolve(import.meta.dirname, "src/sw.ts") },
-      output: {
-        entryFileNames: (chunk) => (chunk.name === "sw" ? "sw.js" : "assets/[name]-[hash].js"),
-      },
-    },
   },
   server: {
     port: 5173,
@@ -78,3 +67,21 @@ export default defineConfig({
     setupFiles: ["./src/test/setup.ts"],
   },
 });
+
+const serviceWorker = defineConfig({
+  build: {
+    outDir: "dist",
+    emptyOutDir: false,
+    copyPublicDir: false,
+    // The root URL gives the worker site-wide scope. The IIFE keeps it a
+    // classic script even when it shares dependencies with the app.
+    lib: {
+      entry: resolve(import.meta.dirname, "src/sw.ts"),
+      formats: ["iife"],
+      name: "FoldWorker",
+      fileName: () => "sw.js",
+    },
+  },
+});
+
+export default defineConfig(({ mode }) => mode === "service-worker" ? serviceWorker : app);

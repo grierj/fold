@@ -12,8 +12,11 @@ import { FormActions } from "./ui/FormActions";
 
 function reasonLabel(reason: DepartureKeepableDate["keepReason"], remove: boolean) {
   const person = remove ? "them" : "you";
+
   if (reason === "underway") return `Recommended to keep: this date is already underway for ${person}.`;
+
   if (reason === "cutoff") return `Recommended to keep: this date starts soon for ${person}.`;
+
   return `Optional: this is a public date ${remove ? "they" : "you"} chose.`;
 }
 
@@ -56,6 +59,7 @@ export function GroupDepartureDialog({
     const response = remove
       ? await Groups.memberDeparturePreview(groupId, subjectId)
       : await Groups.departurePreview(groupId);
+
     return response.departure;
   }, [groupId, remove, subjectId]);
 
@@ -70,6 +74,7 @@ export function GroupDepartureDialog({
   useEffect(() => {
     const returnTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     cancelButton.current?.focus();
+
     return () => {
       if (returnTo?.isConnected) returnTo.focus();
       else fallbackFocusRef.current?.();
@@ -96,6 +101,7 @@ export function GroupDepartureDialog({
       .finally(() => {
         if (alive) setLoading(false);
       });
+
     return () => { alive = false; };
   }, [fetchPreview, showPreview]);
 
@@ -107,19 +113,26 @@ export function GroupDepartureDialog({
     if (event.key === "Escape") {
       event.preventDefault();
       close();
+
       return;
     }
+
     if (event.key !== "Tab") return;
+
     const controls = Array.from(panel.current?.querySelectorAll<HTMLElement>(
       'button:not([disabled]), input:not([disabled]), textarea:not([disabled])'
     ) ?? []).filter((control) => control.getAttribute("aria-hidden") !== "true");
+
     if (!controls.length) {
       event.preventDefault();
       panel.current?.focus();
+
       return;
     }
+
     const first = controls[0];
     const last = controls[controls.length - 1];
+
     if (event.shiftKey && document.activeElement === first) {
       event.preventDefault();
       last.focus();
@@ -134,6 +147,7 @@ export function GroupDepartureDialog({
     setUnavailable(false);
     setLoading(true);
     setError(null);
+
     try {
       const next = await fetchPreview();
       showPreview(
@@ -157,16 +171,20 @@ export function GroupDepartureDialog({
     if (!preview || pending) return;
     setPending(true);
     setError(null);
+
     try {
       const keepOccurrenceIds = preview.dates
         .filter((date) => selected.has(date.occurrenceId))
         .map((date) => date.occurrenceId);
+
       const response = remove
         ? await Groups.confirmMemberDeparture(groupId, subjectId, preview.snapshot, keepOccurrenceIds, allowNote ? note.trim() || undefined : undefined)
         : await Groups.confirmDeparture(groupId, preview.snapshot, keepOccurrenceIds);
+
       await onCompleted(response.departure);
     } catch (err) {
       const code = errorCode(err);
+
       if (code === "departure_stale" || code === "departure_unavailable" || (err instanceof ApiError && (err.status === 403 || err.status === 404))) {
         await refreshAfterConflict(code);
       } else {
@@ -180,6 +198,7 @@ export function GroupDepartureDialog({
   const heading = preview
     ? preview.action === "leave" ? `Leave ${preview.groupName}?` : `Remove ${preview.subjectName}?`
     : unavailable ? "Departure unavailable" : "Review departure";
+
   const goingClause = preview && preview.goingCount > 0
     ? `, including ${count(
       preview.goingCount,
@@ -187,6 +206,7 @@ export function GroupDepartureDialog({
       preview.action === "leave" ? "dates you said Going to" : "dates they said Going to"
     )}`
     : "";
+
   const description = preview?.affectedCount
     ? preview.action === "leave"
       ? `You'll be taken off ${count(preview.affectedCount, "upcoming date")}${goingClause}. Your past attendance stays.`
@@ -230,8 +250,10 @@ export function GroupDepartureDialog({
                     onChange={(event) => {
                       setSelected((current) => {
                         const next = new Set(current);
+
                         if (event.target.checked) next.add(date.occurrenceId);
                         else next.delete(date.occurrenceId);
+
                         return next;
                       });
                     }}

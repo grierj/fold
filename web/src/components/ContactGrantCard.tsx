@@ -33,8 +33,10 @@ export function ContactGrantCard({ grant, onChanged, revealVariant = "primary" }
     // A hidden tab, changed grant or unmount discards both the values and any
     // in-flight reveal response. Nothing is written to storage or shared data.
     const clear = () => { generation.current++; setRevealed(null); setBusy(false); };
+
     document.addEventListener("visibilitychange", clear);
     clear();
+
     return () => { generation.current++; document.removeEventListener("visibilitychange", clear); };
   }, [grant.id, grant.endedAt, grant.canReveal, grant.contextId]);
 
@@ -42,21 +44,28 @@ export function ContactGrantCard({ grant, onChanged, revealVariant = "primary" }
     if (!canReveal || grant.contextId === undefined) return;
     const current = ++generation.current;
     setBusy(true); setError(""); setRevealed(null);
+
     try {
       const values = await Contacts.reveal(grant.id, { subjectUserId: grant.subjectUserId, contextType: grant.contextType, contextId: grant.contextId, fields });
+
       if (generation.current === current) setRevealed(values);
     } catch (e) { if (generation.current === current) setError(errorText(e)); }
     finally { if (generation.current === current) setBusy(false); }
   }
+
   function close() { generation.current++; setRevealed(null); setBusy(false); }
+
   async function revoke() {
     close();
+
     if (!confirm(`Revoke ${grant.requesterName}'s direct contact access to ${grant.subjectName}? This prevents future reveals, but cannot recall details already copied.`)) return;
     setBusy(true); setError("");
+
     try { await Contacts.revoke(grant.id); onChanged(); }
     catch (e) { setError(errorText(e)); }
     finally { setBusy(false); }
   }
+
   return <section aria-label={`Contact grant for ${grant.subjectName}`} className="rounded-lg border border-border p-4 bg-surface space-y-3">
     <h3 className="font-semibold wrap-anywhere">{grant.requesterName} → {grant.subjectName}</h3>
     <p>{contactFieldsLabel(grant.fields)} · {grant.endedAt ? "Ended" : "Active grant"}</p>

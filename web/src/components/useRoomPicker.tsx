@@ -15,9 +15,11 @@ export function useRoomPicker<T>(fetch: () => Promise<T>, deps: readonly unknown
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
+
     return () => { alive.current = false; };
   }, []);
   const list = useLoad(fetch, deps, { enabled });
+
   return {
     enabled,
     alive,

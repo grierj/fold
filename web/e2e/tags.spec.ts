@@ -1,3 +1,4 @@
+import * as schema from "valibot";
 import { expect, test } from "@playwright/test";
 import { apiAs } from "./helpers";
 
@@ -5,11 +6,13 @@ import { apiAs } from "./helpers";
 // opens with tags selected still offers every tag.
 test("tag filters OR together, clear, and deep-link with all chips", async ({ page, request }) => {
   const admin = await apiAs(request, "grier");
+
   for (const [name, tags] of [["Choir practice", ["choir"]], ["Band night", ["Band"]], ["Women's study", ["women"]]] as const) {
     await admin("POST", "/groups", {
       name, description: "", tags, imageUrl: "", location: "", visibility: "public", memberLimit: null,
     });
   }
+
   const directory = page.locator("#groups");
   const chips = page.getByRole("group", { name: "Group tags", exact: true });
   const chip = (name: string) => chips.getByRole("button", { name, exact: true });
@@ -30,17 +33,19 @@ test("tag filters OR together, clear, and deep-link with all chips", async ({ pa
   const cleared = page.waitForResponse((r) => r.request().method() === "GET" && new URL(r.url()).pathname === "/api/v1/groups" && !new URL(r.url()).search);
   await directory.getByRole("button", { name: "Clear", exact: true }).click();
   await expect(page).toHaveURL("/");
-  const total = ((await (await cleared).json()) as { groups: unknown[] }).groups.length;
+  const total = schema.parse(schema.looseObject({ groups: schema.array(schema.unknown()) }), await (await cleared).json()).groups.length;
   // Wait for the unfiltered result, not the previous two-group count that
   // can survive briefly while the URL change starts its request.
   await expect(directory.getByRole("status")).toHaveText(total > 12 ? `Showing 12 of ${total} groups` : `${total} groups`);
   // Clear restores every group, not necessarily all on the first 12-row batch.
   const more = directory.getByRole("button", { name: "Show more groups", exact: true });
+
   while (await more.count()) {
     const before = await directory.getByRole("status").innerText();
     await more.click();
     await expect(directory.getByRole("status")).not.toHaveText(before);
   }
+
   await expect(group("Women's study")).toBeVisible();
   await expect(group("Room 201 class")).toBeVisible();
   await expect(page.getByRole("group", { name: "Selected group filters" })).toHaveCount(0);
@@ -51,8 +56,10 @@ test("tag filters OR together, clear, and deep-link with all chips", async ({ pa
   await page.getByRole("button", { name: "Filters (1)", exact: true }).click();
   await expect(group("Choir practice")).toBeVisible();
   await expect(group("Band night")).toHaveCount(0);
+
   for (const name of ["Band", "class", "women"]) {
     await expect(chip(name)).toHaveAttribute("aria-pressed", "false");
   }
+
   await expect(chips.getByRole("button", { pressed: true })).toHaveCount(1);
 });

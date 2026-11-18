@@ -26,6 +26,7 @@ export function ComingUp({ onReady }: { onReady?: () => void } = {}) {
     const zone = browserTimeZone();
     const from = dayOf(now.toISOString(), zone);
     const { occurrences } = await Calendar.list({ from, to: addDays(from, WINDOW_DAYS), tz: zone, mine: true });
+
     // The range starts at the beginning of today, so drop what has ended.
     // A date the person can't go to is not "coming up for" them.
     return occurrences
@@ -33,6 +34,7 @@ export function ComingUp({ onReady }: { onReady?: () => void } = {}) {
       .sort((a, b) => Date.parse(a.startsAt) - Date.parse(b.startsAt))
       .slice(0, SHOWN);
   }, []);
+
   const rows = load.data ?? null;
   const error = load.error ? errorText(load.error, "We couldn't load your calendar.") : null;
 
@@ -69,9 +71,11 @@ export function ComingUp({ onReady }: { onReady?: () => void } = {}) {
 
 function ComingUpRow({ occ }: { occ: CalendarOccurrence }) {
   const state = calendarState(occ);
+
   const where = [occ.churchWide ? "Church-wide" : occ.groupName || (occ.hostedBy ? `Hosted by ${occ.hostedBy}` : ""), occ.location]
     .filter(Boolean)
     .join(" · ");
+
   return (
     // The same link the calendar's rows use: an exact-date invitation has its
     // own address, anything else opens the event.

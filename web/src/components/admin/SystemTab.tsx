@@ -18,17 +18,21 @@ const tries = (n: number) => `${n} ${n === 1 ? "try" : "tries"}`;
 function deliveryLine(d: AdminDeliverySummary | null | undefined, jobs: AdminJob[] | null, more: boolean): string | null {
   if (!d || (d.queued === 0 && d.deferred === 0 && d.failed === 0)) return null;
   const parts: string[] = [];
+
   if (d.queued > 0) {
     const one = d.queued === 1;
     const when = d.oldestQueuedAt ? lowerLead(formatWhen(d.oldestQueuedAt, undefined, undefined, true)) : "";
     let s = one ? "1 email is waiting to send." : `${d.queued} emails are waiting to send.`;
+
     if (d.oldestQueuedAt) s += one ? ` It has waited since ${when}.` : ` The oldest has waited since ${when}.`;
     s += one ? " Fold sends it on its own." : " Fold sends them on its own.";
     parts.push(s);
   }
+
   if (d.deferred > 0) {
     const one = d.deferred === 1;
     const listed = jobs?.find((j) => j.kind === "notify.deliver");
+
     if (listed) {
       parts.push(one
         ? `1 email stopped after too many tries. To send it, use Retry now on “${listed.label}” below.`
@@ -41,11 +45,13 @@ function deliveryLine(d: AdminDeliverySummary | null | undefined, jobs: AdminJob
         : `${d.deferred} emails stopped after too many tries and aren't among the tasks listed.`);
     }
   }
+
   if (d.failed > 0) {
     parts.push(d.failed === 1
       ? "1 email could not be sent in the last 7 days. The mail service refused it, or email isn't set up."
       : `${d.failed} emails could not be sent in the last 7 days. The mail service refused them, or email isn't set up.`);
   }
+
   return parts.join(" ");
 }
 
@@ -66,9 +72,10 @@ function JobRow({ job, onDone }: { job: AdminJob; onDone: (id: number, message: 
     setRefocus(null);
   }, [busy, refocus]);
 
-  async function run(which: "retry" | "dismiss", action: () => Promise<unknown>, message: string, fallback: string) {
+  async function run(which: "retry" | "dismiss", action: () => ReturnType<typeof AdminJobs.retry> | ReturnType<typeof AdminJobs.dismiss>, message: string, fallback: string) {
     setBusy(true);
     setError(null);
+
     try {
       await action();
       onDone(job.id, message);
@@ -81,6 +88,7 @@ function JobRow({ job, onDone }: { job: AdminJob; onDone: (id: number, message: 
 
   // Names for a screen reader, which hears these buttons in a list of cards.
   const forLabel = <>{" "}<span className="sr-only">{job.label}</span></>;
+
   return (
     <li className="bg-surface rounded-lg border border-border p-6 space-y-3">
       <h3 className="font-bold wrap-anywhere">{job.label}</h3>
@@ -137,6 +145,7 @@ export function SystemTab({ jobs, more, error, reload, onRemoved, deliveries = n
   }, [status.n]);
 
   const delivery = deliveryLine(deliveries, lineJobs === undefined ? jobs : lineJobs, more);
+
   return (
     <>
     <BackupStatus />

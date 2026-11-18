@@ -1,11 +1,12 @@
+import { stubService } from "../test/service";
+import { Events } from "../api/events";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { EventIntro, openedEventWarning } from "./EventIntro";
 import { EventVisibilityControl } from "./EventVisibility";
 
-vi.mock("../api/core", () => ({ ApiError: class extends Error {} }));
-vi.mock("../api/events", () => ({ Events: { setVisibility: vi.fn(), visibilityImpact: vi.fn(), addHost: vi.fn(), removeHost: vi.fn() } }));
+stubService(Events, () => ({ setVisibility: vi.fn(), visibilityImpact: vi.fn(), addHost: vi.fn(), removeHost: vi.fn() }));
 
 describe("opened events", () => {
   it("says hosted by the church and does not name the group", () => {

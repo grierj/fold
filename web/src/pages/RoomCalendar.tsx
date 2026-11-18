@@ -37,6 +37,7 @@ import { CalendarViewSwitch } from "../components/calendar/CalendarViews";
 
 // One hour of the day grid, in pixels: a 30-minute booking is 32px tall.
 const HOUR_PX = 64;
+
 // A Day block shorter than this has room for one line only: time and title
 // take 40px, and a waiting label needs a third line.
 const shortBlock = (px: number, waiting?: boolean) => px < (waiting ? 56 : 40);
@@ -65,10 +66,12 @@ export function RoomCalendarPage() {
       })
       .catch((e) => {
         if (!alive) return;
+
         if (e instanceof ApiError && e.status === 404) setUnavailable(true);
         else setError(errorText(e, "We couldn't load the room calendar."));
       })
       .finally(() => alive && setLoading(false));
+
     return () => {
       alive = false;
     };
@@ -76,22 +79,30 @@ export function RoomCalendarPage() {
 
   function link(next: Record<string, string | null>): string {
     const p = new URLSearchParams(params);
+
     for (const [k, v] of Object.entries(next)) {
       if (v === null) p.delete(k);
       else p.set(k, v);
     }
+
     const q = p.toString();
+
     return `/calendar/rooms${q ? `?${q}` : ""}`;
   }
+
   function go(next: Record<string, string | null>) {
     setParams(new URLSearchParams(link(next).split("?")[1] ?? ""));
   }
+
   const calendarLink = (v: string) => {
     if (v === "rooms") return link({});
     const p = new URLSearchParams();
+
     if (v !== "agenda") p.set("view", v);
+
     if (v !== "agenda" && dateParam) p.set("date", dateParam);
     const q = p.toString();
+
     return `/calendar${q ? `?${q}` : ""}`;
   };
 
@@ -116,6 +127,7 @@ export function RoomCalendarPage() {
       </div>
     );
   }
+
   if (!user) {
     return (
       <div className="fold-page">
@@ -130,6 +142,7 @@ export function RoomCalendarPage() {
       </div>
     );
   }
+
   if (unavailable) {
     return (
       <div className="fold-page">
@@ -161,7 +174,7 @@ export function RoomCalendarPage() {
       <div className="flex flex-col gap-4 border-b border-border pb-6 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
         <ViewSwitch
           label="Room calendar view"
-          items={(["day", "week"] as RoomView[]).map((v) => ({
+          items={(["day", "week"]).map((v) => ({
             label: v === "day" ? "Day" : "Week",
             to: link({ view: v === "day" ? null : v }),
             current: v === view,
@@ -237,7 +250,9 @@ export function RoomCalendarPage() {
 // approval dashed, a reserved one grey. Each also says so in words.
 function slotTone(slot: RoomSlot): string {
   if (slot.reserved) return "border-border bg-sunken text-text-muted";
+
   if (slot.waiting) return "border-dashed border-border-strong bg-surface text-text";
+
   return "border-transparent bg-primary-subtle text-primary-on-subtle hover:underline";
 }
 
@@ -247,6 +262,7 @@ function SlotBox({ slot, zone, className, children, style }: { slot: RoomSlot; z
   const to = slotLink(slot);
   const label = slotLabel(slot, zone);
   const cls = `block overflow-hidden rounded-sm border ${slotTone(slot)} ${className}`;
+
   return to ? (
     <Link to={to} title={label} aria-label={label} className={cls} style={style}>
       {children}
@@ -264,6 +280,7 @@ function SlotBox({ slot, zone, className, children, style }: { slot: RoomSlot; z
 // (titles wrap to two lines); otherwise it is a phone row.
 function SlotWords({ slot, zone, mode }: { slot: RoomSlot; zone: string; mode: "short" | "block" | "cell" | "row" }) {
   const byline = slotByline(slot);
+
   if (mode === "short") {
     return (
       <span className="block truncate text-xs">
@@ -273,7 +290,9 @@ function SlotWords({ slot, zone, mode }: { slot: RoomSlot; zone: string; mode: "
       </span>
     );
   }
+
   const titleClass = mode === "block" ? "truncate text-xs" : mode === "cell" ? "line-clamp-2 text-xs" : "line-clamp-2 text-sm";
+
   return (
     <>
       <span className="block text-xs tabular-nums">{formatTimeRange(slot.startsAt, slot.endsAt, zone)}</span>
@@ -291,6 +310,7 @@ function DayGrid({ rooms, day, zone }: { rooms: RoomCalendarRoom[]; day: string;
   const hours = Array.from({ length: end - start }, (_, i) => start + i);
   const height = (end - start) * HOUR_PX;
   const top = (min: number) => ((min - start * 60) / 60) * HOUR_PX;
+
   return (
     <div tabIndex={0} role="region" aria-label="Rooms by time" className="overflow-x-auto rounded-lg border border-border bg-surface">
       <div className="flex min-w-max">
@@ -307,6 +327,7 @@ function DayGrid({ rooms, day, zone }: { rooms: RoomCalendarRoom[]; day: string;
         {rooms.map((r) => {
           const placed = placeSlots(r.bookings, day, zone);
           const headingId = `room-${r.id}-day`;
+
           return (
             <section key={r.id} aria-labelledby={headingId} className="w-44 flex-none border-r border-border last:border-r-0 lg:w-auto lg:min-w-44 lg:flex-1">
               <h3 id={headingId} className="flex h-12 flex-col justify-center border-b border-border px-2 text-sm font-semibold text-text">
@@ -327,6 +348,7 @@ function DayGrid({ rooms, day, zone }: { rooms: RoomCalendarRoom[]; day: string;
                   <ul>
                     {placed.map((p, i) => {
                       const h = Math.max(top(p.end) - top(p.start), 24);
+
                       return (
                       <li
                         key={`${p.slot.startsAt}-${i}`}
@@ -378,6 +400,7 @@ function WeekGrid({ rooms, days, zone, today }: { rooms: RoomCalendarRoom[]; day
         <tbody>
           {rooms.map((r) => {
             const byDay = slotsByDay(r.bookings, zone);
+
             return (
               <tr key={r.id}>
                 <th scope="row" className="sticky left-0 z-10 border-t border-border bg-surface p-2 align-top text-sm font-semibold text-text">
@@ -390,6 +413,7 @@ function WeekGrid({ rooms, days, zone, today }: { rooms: RoomCalendarRoom[]; day
                 </th>
                 {days.map((d) => {
                   const list = byDay.get(d) ?? [];
+
                   return (
                     <td key={d} className="border-l border-t border-border p-1 align-top">
                       {list.length === 0 ? (
@@ -421,10 +445,12 @@ function WeekGrid({ rooms, days, zone, today }: { rooms: RoomCalendarRoom[]; day
 // the room is free.
 function PhoneList({ room, days, zone }: { room: RoomCalendarRoom; days: string[]; zone: string }) {
   const byDay = slotsByDay(room.bookings, zone);
+
   return (
     <div className="space-y-6">
       {days.map((d) => {
         const list = byDay.get(d) ?? [];
+
         return (
           <section key={d}>
             {days.length > 1 && <h3 className="py-2 font-semibold text-text">{formatDayHeading(d, zone)}</h3>}

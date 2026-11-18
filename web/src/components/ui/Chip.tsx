@@ -11,5 +11,6 @@ type Props = Omit<ButtonHTMLAttributes<HTMLButtonElement>, "className" | "style"
 
 export function Chip({ selected, size = "md", type = "button", ...rest }: Props) {
   const cls = size === "sm" ? "chip min-h-11 min-w-11 px-2 text-xs" : "chip";
+
   return <button type={type} aria-pressed={selected} className={cls} {...rest} />;
 }

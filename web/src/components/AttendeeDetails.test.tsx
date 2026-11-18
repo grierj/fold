@@ -5,6 +5,7 @@ import type { Attendee } from "../types";
 import { AttendeeDetails } from "./AttendeeDetails";
 
 const attendee: Attendee = { registrationId: 9, name: "Kit", status: "going", guestCount: 0, attendanceMode: "in_person", childcareRequested: true, householdPerson: { personId: 3, name: "Kit", householdName: "Leader household", kind: "child", age: 6, registeredBy: { userId: 7, name: "John Smith" }, careNotes: "Allergy\n" + "LongCareNote".repeat(100) } };
+
 afterEach(() => vi.useRealTimers());
 
 it("shares household labels without inventing a surname, badges and authorized ages", () => {

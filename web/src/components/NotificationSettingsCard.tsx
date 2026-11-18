@@ -12,9 +12,11 @@ const save = (c: EmailSettingsChange) => NotificationSettings.update(c).then((r)
 // every later call (a retry).
 function sharedFirst(first: Promise<Settings>): () => Promise<Settings> {
   let used = false;
+
   return () => {
     if (used) return load();
     used = true;
+
     return first;
   };
 }
@@ -26,8 +28,10 @@ function sharedFirst(first: Promise<Settings>): () => Promise<Settings> {
 export function NotificationSettingsCard() {
   const [loaders] = useState(() => {
     const first = load();
+
     return { email: sharedFirst(first), push: sharedFirst(first) };
   });
+
   return <div className="space-y-6">
     <EmailSettings load={loaders.email} save={save} />
     <PushDeviceCard load={loaders.push} />
