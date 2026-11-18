@@ -23,7 +23,7 @@ test is `internal/rooms/busy.go` and the suggestion engine `internal/rooms/sugge
 
 ### 9.3 Room suggestions: the exact rule
 
-When someone picks a room for event E (group G_E, which may be none; visibility V_E; type T_E, the tags of G_E (DEC-100); occurrence time window W), Fold suggests rooms like this. Suggestions come with each picker's own room list: the one-date picker, the series picker and the create forms' room check (DEC-110). The rule is frozen as shipped (DEC-141).
+When someone picks a room for event E (group G_E, which may be none; visibility V_E; type T_E, the tags of G_E (DEC-100); occurrence time window W), Fold suggests rooms like this. Suggestions come with each picker's own room list: the one-date picker, the series picker and the create forms' room check (DEC-110). The rule is as shipped (DEC-141; its freeze on expanding this rule was lifted by DEC-153, Nov 18, 2026 — new cases or signals enter through a milestone and a brief).
 
 **Definitions**
 

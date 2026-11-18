@@ -65,7 +65,7 @@ narratives and follow-up lists, is kept in
 | M6.3 Attendance roll for leaders | Not started; brief R10, pulled ahead (DEC-145) | |
 | M6.4 QR / self check-in | Out (DEC-140) | |
 | M6.5 Prayer requests | Not started | |
-| M6.6 Group discussions | Not started | |
+| M6.6 Group discussions | Not started; absorbed into M8.6 (announcements vs discussion, Phase 8) — do not build as a separate board | |
 | M6.7 Households and teen accounts | Moved to M1.9 and M1.10 (DEC-8), done there | |
 | M6.8 Background-check status flags on slots | Not started | |
 | M6.9 Photo galleries | Not started | |
@@ -86,8 +86,16 @@ narratives and follow-up lists, is kept in
 | M7.8 People and own-data export | Not started | |
 | M7.9 Frontend speed and discoverability | Not started | |
 | M7.10 Generated web types | Not started | |
-| M7.11 Contact locks inside the freeze | Not started | |
+| M7.11 Contact locks (freeze lifted by DEC-153) | Not started | |
 | M7.12 Cut execution and maintenance tax | In progress: the guard tiers and the UI ratchet down to zero remain | #316, #317, #326 |
+| M8.1 EventDate 3-second test (Phase 8 balance pass) | Not started; end goal in phase-8.md, brief needed for the visual end-state; R15-1 lazy slice lands with or before it | |
+| M8.2 Guest and token flows feel account-free (Phase 8) | Not started; closes the audit index's named token-page a11y/390px gap for /invite, /set-password, /guest/* | |
+| M8.3 Directory finder in 10 seconds (Phase 8) | Not started; the directory slice of M7.9 (R15-3, R15-5), pulled forward — M7.9's other slices keep their own place | |
+| M8.4 Attendance 30-second roll (Phase 8) | Not started; this is M6.3 sequenced here (brief R10); M6.2 sign-up sheets follow it immediately | |
+| M8.5 GroupDetail and Home pulse (Phase 8) | Not started; existing data only, brief needed | |
+| M8.6 Announcements vs discussion (Phase 8) | Not started; new surface — DEC-153 rescinded DEC-145, so the freeze no longer applies; needs a brief first; absorbs M6.6 | |
+| M8.7 Calendar subscribe surfacing (Phase 8) | Not started; feeds built in M1.7, this is visibility and revocation surfacing only | |
+| M8.8 Moats named in-product (Phase 8) | Not started; presentation only, no privacy, consent or room behaviour change | |
 | Simplicity: drop `pending_return` (DEC-47), event visibility on the event (DEC-48) | Done | #43 |
 | UI makeover and UI enforcement (DEC-57–DEC-67) | Done | #58, #60–#62, #64–#66, #71–#73 |
 | Security and correctness fixes, Oct 2026 | Done | #44, #45, #96–#100, #163, #182, #183 |

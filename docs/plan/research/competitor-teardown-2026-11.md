@@ -6,7 +6,9 @@ approved Audit 2026-11 briefs in
 This is a research document. It owns no product policy: PLAN.md and the
 DEC log win on any conflict, and DEC-145 (surface freeze till live)
 governs every "net-new" item below — they are recorded here so they are
-not lost, not proposed for the current waves.
+not lost, not proposed for the current waves. *(Nov 18, 2026: see the
+addendum at the end of this document — the eight recommendations have
+since been promoted into PLAN 14.11 / Phase 8 on Grier's direction.)*
 
 Sources: a teardown matrix built 2026-11-03 scoring six products across
 Fold's twelve current surfaces (interactive version held by Grier /
@@ -244,3 +246,36 @@ defensible order. Two small actions are worth taking when convenient:
    the candidate table above rather than from a fresh teardown; the
    competitor facts will need re-verifying, but the Fold-side analysis
    will still hold.
+
+## Addendum — Nov 18, 2026: the eight recommendations are promoted
+
+The recommendation above is superseded. On Nov 18, 2026, with the
+simple deployment path working, Grier directed that this teardown's
+eight prioritised recommendations be treated as high priority and
+written into the plan as specific end goals. They now live in
+[`milestones/phase-8.md`](../milestones/phase-8.md) (PLAN 14.11,
+milestones M8.1–M8.8), in this order:
+
+| Teardown recommendation | Phase 8 milestone |
+|---|---|
+| P0 EventDate around Luma's 3-second test | M8.1 |
+| P0 One-date guest invite that feels like Partiful | M8.2 (also closes the §4 token-page named gap) |
+| P1 Church Center finder filters | M8.3 (the directory slice of R15/M7.9, pulled forward; area and life stage are card information, not facets — see M8.3's scope boundary) |
+| P2 30-second attendance (BAND) | M8.4 (M6.3/R10, sequenced ahead of the two unbriefed P1 items — see phase-8.md's order note) |
+| P1 GroupDetail pulse (Heylo) | M8.5 (extended to signed-in Home's Coming Up) |
+| P1 Announcements vs discussion (BAND) | M8.6 (absorbs M6.6; DEC-153 rescinded DEC-145 on Nov 18, 2026, so only a brief remains) |
+| P2 One-tap calendar subscribe (Luma) | M8.7 |
+| P2 Name and surface Fold's moats | M8.8 |
+
+Of the post-live candidate table above, only the announcement/board
+split was promoted (as M8.6). "Read by" receipts, per-date event chat,
+directory ordering by participation and icebreaker prompts stay out,
+with reasons recorded in phase-8.md's "Not promoted" table. The
+Fold-side analysis in §§1–10 stands; competitor facts are still
+November 2026 and must be re-verified before any brief cites them.
+
+DEC-153 (Nov 18, 2026) also lifts DEC-141's freeze, which §§5–6 above
+describe as in force: room-suggestion and direct-contact expansion are
+permitted again, through a milestone and a brief. No Phase 8 milestone
+expands them — M8.8 only explains the existing suggestion — so that
+permission currently changes nothing in the build order.

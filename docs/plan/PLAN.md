@@ -146,9 +146,22 @@ Phases: [0 Foundations](milestones/phase-0.md) · [1 Events and people](mileston
 [2 Rooms](milestones/phase-2.md) · [3 Messaging](milestones/phase-3.md) ·
 [4 Setup and providers](milestones/phase-4.md) · [5 Release engineering](milestones/phase-5.md) ·
 [6 Community features](milestones/phase-6.md) ·
-[7 First-church hardening](milestones/phase-7.md). Each milestone states what it depends on, its
+[7 First-church hardening](milestones/phase-7.md) ·
+[8 Balance pass](milestones/phase-8.md). Each milestone states what it depends on, its
 scope, its acceptance criteria and its tests. Where each one stands is in
 [`STATUS.md`](../../STATUS.md).
+
+Phase 8 (14.11) is the balance pass added Nov 18, 2026 on Grier's direction: the eight
+prioritised recommendations from Winston's Nov 3, 2026 competitor teardown
+([`research/competitor-teardown-2026-11.md`](research/competitor-teardown-2026-11.md)),
+promoted to high priority now that the simple deployment path works. It sequences
+existing milestones (M6.3, and the directory slice of M7.9) together with new
+milestones M8.1–M8.8, and states each item's end goal in specific user-visible terms.
+DEC-153 (Nov 18, 2026, in [`decisions.md`](decisions.md)) rescinds DEC-145: the
+surface freeze is lifted in full, the initial deployment capability being
+sufficient to allow future work on product surface; DEC-145's R7/R8 rejections
+stand. DEC-153 also lifts every other freeze gated on a first church going
+live, DEC-141's rooms/contact freeze included.
 
 ### 14.1 Rules for every milestone
 
@@ -193,6 +206,7 @@ the email work).
 | v0.7 SMS | Telnyx, keywords and revocation, send window and caps, SMS reminders, member requests, notification preferences and SMS, SMS provisioning | M3.7–M3.9, M3.12, M4.6 |
 | v0.8 CLI | `fold setup` (the S3 and private-assets adapter waits until a church asks, DEC-140) | M4.8 |
 | v1.0 | Hardening, sign-up sheets, attendance, security review (Twilio deferred until demanded, DEC-140) | M6.2, M6.3 + fixes |
+| Balance pass | The teardown's eight identified weak surfaces, in the order in 14.11: EventDate 3-second test, guest/token flows, directory finder, attendance, group pulse, announcements vs discussion, calendar-subscribe surfacing, moats named in-product | M8.1–M8.8 (M6.3 sequenced as M8.4; the directory slice of M7.9 as M8.3; M6.2 follows M8.4) |
 | v1.x and later | Community features | Rest of M6 |
 | Future, on request (not committed) | Render Blueprint, Twilio adapter, S3 adapter, ChMS sync, durable audit log: each re-enters only as a new milestone for a named church (DEC-140) | — |
 | Desired, no milestone | Encrypted offsite backup uploads: finishing and proving them (a producer-only bucket policy, real `age` decryption, B2 and Spaces behaviour). The code that uploads `age`-encrypted pairs exists and is not an acceptance requirement of M5.2 (DEC-152) | — |
@@ -215,3 +229,4 @@ Every decision is in [decisions.md](decisions.md).
 - Notice email timing (R6 open question 3): whether a non-urgent notice's email waits 15 minutes
   and is skipped if the person has already seen or read it in the app. M3.12 plans it; today
   `notify.deliver` sends at once.
+- DEC-145's surface freeze: rescinded by DEC-153 (Nov 18, 2026). No longer open.

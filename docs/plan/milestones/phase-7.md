@@ -11,7 +11,8 @@ PR per slice (14.1).
 
 Order: M7.1 first; then M7.2 and M7.5 with the M5.1 image work; M7.7 (the baseline squash) before
 any brief that adds schema; then the rest. No new surface beyond these briefs and existing
-milestones until a first church is live (DEC-145).
+milestones until a first church is live (DEC-145) — that freeze was rescinded by DEC-153
+(Nov 18, 2026); this phase's own scope is unchanged.
 
 **M7.1 Setup takeover: verify and close (SEC1)**
 - Done (#241): first-run setup needs the setup token, and the first admin is created in one locked
@@ -176,7 +177,7 @@ milestones until a first church is live (DEC-145).
   contract guard (`TestWebTypesMatchGoJSON`) shrinks to auto-discovery.
 - Brief: [`R15-R16-frontend.md`](../briefs/audit-2026-11/R15-R16-frontend.md) (R16).
 
-**M7.11 Contact locks inside the freeze (R19, DEC-141)**
+**M7.11 Contact locks (R19, DEC-141; freeze lifted by DEC-153)**
 - Not started. Re-scope before starting: R19 was written before M7.4, and account erasure now
   depends on the contact gate (`fencedContactMutation`, the restore ticket's turn and
   `eraseTombstoneOnce` run under it; `docs/agents/erasure.md`). The re-scoped milestone keeps

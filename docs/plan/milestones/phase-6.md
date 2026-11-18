@@ -9,7 +9,7 @@ Each item is one milestone. None is built yet. Each still needs acceptance crite
 - M6.3 Attendance roll for leaders. Brief ready: [`briefs/audit-2026-11/R10-R14-features.md`](../briefs/audit-2026-11/R10-R14-features.md) (R10; pulled ahead of the rest of Phase 6, DEC-145)
 - M6.4 (out, DEC-140) QR / self check-in: child check-in kiosks are confirmed out, not later.
 - M6.5 Prayer requests
-- M6.6 Group discussions
+- M6.6 Group discussions (absorbed into M8.6, Phase 8: discussion is built as the second lane beside announcements, not as a separate board — see [`phase-8.md`](phase-8.md))
 - M6.7 (moved to M1.9 and M1.10: households and teen accounts are core, DEC-8)
 - M6.8 Background-check status flags on slots
 - M6.9 Photo galleries (private by default)
