@@ -5,8 +5,9 @@ setup, a source guard or the e2e harness is what you are changing or debugging.
 
 ## Go tests
 
-- `make test` runs `go test ./...` against `DATABASE_URL`, plus the shell self-tests (CI passes
-  `-j3`, so they run beside the Go tests); it starts the dev database if `DATABASE_URL` is unset.
+- `make test` runs `go test ./...` against `DATABASE_URL` (`make go-test`), plus the shell
+  self-tests; it starts the dev database if `DATABASE_URL` is unset. CI runs `make go-test` in the
+  test job and the self-tests in the checks job.
   `scripts/go-test.sh` shards the root package (`FOLD_TEST_SHARDS`, default two per CPU: the slow
   tests mostly wait on real deadlines) and balances the shards by the seconds in
   `scripts/go-test-durations.txt`. A test that newly takes several seconds belongs in that file:

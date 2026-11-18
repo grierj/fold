@@ -17,8 +17,8 @@ dev: devdb
 	(cd web && npm run dev) & \
 	wait
 
-# go test ./... and the shell self-tests. With make -j (CI passes it) the
-# self-tests run beside the Go tests instead of before them.
+# go test ./... and the shell self-tests. CI runs go-test in its test job and
+# the self-tests in its checks job.
 test: go-test reason-review-scale-test backup-test
 
 # go test ./... against DATABASE_URL, with the root package split across

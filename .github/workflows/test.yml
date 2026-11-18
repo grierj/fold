@@ -61,15 +61,17 @@ jobs:
           sudo apt-get install -y coreutils-from-gnu coreutils-from-uutils- --allow-remove-essential
       # Known vulnerabilities in reachable Go code (DEC-37). Pinned version.
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
-      # Includes the schema drift check (migrations/migrations_test.go). -j
-      # runs the shell self-tests beside the Go shards (scripts/go-test.sh).
-      - run: make test
+      # Includes the schema drift check (migrations/migrations_test.go). The
+      # shell self-tests that make test also runs are in the checks job: beside
+      # the Go shards on four CPUs they starved the tests that time a deadline.
+      - run: make go-test
         env:
-          MAKEFLAGS: -j3 --output-sync=target
+          FOLD_TEST_SHARDS: 6
 
   # Static checks and the tests that need no database: shell, Go and web
-  # lint, Vitest, token contrast, the production build and its budget, and
-  # the runtime dependency audit. Required through the web job below.
+  # lint, the shell self-tests, Vitest, token contrast, the production build
+  # and its budget, and the runtime dependency audit. Required through the
+  # web job below.
   checks:
     runs-on: ubuntu-latest
     steps:
@@ -82,9 +84,12 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - name: Install shellcheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Install shellcheck and GNU coreutils
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck coreutils-from-gnu coreutils-from-uutils- --allow-remove-essential
       - run: make lint-sh lint-go deadcode
+      - run: make reason-review-scale-test backup-test
       - working-directory: web
         run: npm ci && npm test
       # Unused files, exports and dependencies (knip, #79).
