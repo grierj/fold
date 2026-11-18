@@ -27,8 +27,8 @@ are in `docs/plan/M7.4-ERASURE-INVENTORY.md` (section numbers below point there)
   (`TestAuditHistoricalActorStatementShape`). **Send nothing between the report and statement 1,
   start no other statement with the first 90 characters of statement 1, and never change
   statement 1's text or regenerate `deploy/digitalocean/qc1/app-facts.json` with a different one**:
-  the saved real-server log pins it, so `provision` goes red and only a new Docker-captured log
-  fixes it (`deploy.md`; `TestAuditDiscoveryStatementsAndBinds`, `TestAuditConversionRequestStatementShape`).
+  the saved real-server log pins it, so `TestQC1SuccessorIsTheLoggedStatement` fails and only a new
+  Docker-captured log fixes it (`deploy.md`; `TestAuditDiscoveryStatementsAndBinds`, `TestAuditConversionRequestStatementShape`).
   Design: `docs/plan/design/r4-conversion-ip-minimization.md` sections 14 and 15.
 - Which rows keep an address, and under which owner statement, is the C3 table in inventory 6.5.2
   (DEC-148). A new registry action needs a row there, or `TestC3ChecklistCoversTheRegistry` fails; its

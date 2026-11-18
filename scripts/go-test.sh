@@ -43,6 +43,11 @@ awk -v n="$shards" '
   { best = 0; for (s = 1; s < n; s++) if (load[s] < load[best]) best = s
     load[best] += $1; print best, $2 }
 ' >"$tmp/plan"
+# An empty durations file would let the first awk read the test list as durations.
+if (($(wc -l <"$tmp/plan") != $(wc -l <"$tmp/tests"))); then
+	echo "go-test.sh: the shard plan does not hold every test; is $durations empty?" >&2
+	exit 1
+fi
 
 verbose=()
 [ -n "${FOLD_TEST_RECORD:-}" ] && verbose=(-test.v)

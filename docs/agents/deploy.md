@@ -39,9 +39,9 @@ that changes how an operator upgrades, rolls back or restores. The operator-faci
   `UPDATE_QC1_FACTS=1 go test -run TestQC1AppFacts .` regenerates the `go` section for review).
   The facts include the text of the erasure's retention report and, once the QC-1 work that records
   it has merged, of discovery's first audit statement; a saved real-server log under
-  `deploy/digitalocean/testdata/` is checked against that text. Never
-  regenerate a fact with a changed statement to make a check pass: `provision` goes red, and only a new
-  Docker-captured log fixes it (`docs/agents/erasure.md`).
+  `deploy/digitalocean/testdata/` is checked against that text (`TestQC1SuccessorIsTheLoggedStatement`,
+  which also pins the log's hash). Never regenerate a fact with a changed statement to make a check
+  pass: that test fails, and only a new Docker-captured log fixes it (`docs/agents/erasure.md`).
 
 ## Recovery levels (R4-RP)
 

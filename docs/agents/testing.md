@@ -376,7 +376,8 @@ evidence is collected and is rechecked by the judge, so `identityProven` in the 
 judge's verdict. `TestQC1AppFacts` checks the source-derived query, and
 `TestQC1PlanMarkersAreWhatTheApplicationSends` checks its order after the report. Source review and
 the collector's first-same-backend-block check establish adjacency. If the query changes, regenerate
-the facts as above and review the proof. Judging older evidence with a changed `lib.sh` makes a new, labelled
+the facts as above and review the proof. `testdata/qc1-current-audit-retention.log` is a real log of the current
+build; `TestQC1SuccessorIsTheLoggedStatement` holds the facts' successor to it. Judging older evidence with a changed `lib.sh` makes a new, labelled
 diagnostic; the saved matrix and its recorded `lib.sh` hash are never rewritten.
 
 The layout is bound to the rows, not only to the labels. The judge (`qc1_evidence_status`) requires

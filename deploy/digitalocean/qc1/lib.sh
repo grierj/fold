@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # T07B-2-V QC-1: pure functions of the reason-review measurement harness
-# (qc1-measure.sh). Sourced only. Item numbers follow T07B-D4-CONTRACT R4-C06:
+# (qc1-measure.sh). Sourced only; qc1-fixtures.sh exercises every function here
+# without Docker, SQL or a network. Item numbers follow T07B-D4-CONTRACT R4-C06:
 #   1 sparse and no-reason accounts           2 large unrelated tables
 #   3 live discovery, both party directions   4 legacy discovery (T07B-3a)
 #   5 request size (real valid bodies near and across maxRequestBytes;
