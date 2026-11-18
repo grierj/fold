@@ -25,8 +25,11 @@ export type DeviceState = "unavailable" | "unavailable_ios" | "install_first" | 
 // desktop pages as a Mac, which only touch points give away.
 function platformOf(ua: string, maxTouchPoints = 0): Platform {
   if (/iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && maxTouchPoints > 1)) return "ios";
+
   if (/Android/.test(ua)) return "android";
+
   if (/Macintosh/.test(ua) && /Version\/[\d.]+.*Safari\//.test(ua) && !/Chrome|Chromium|Edg\/|Firefox/.test(ua)) return "mac-safari";
+
   return "computer";
 }
 
@@ -34,11 +37,13 @@ function platformOf(ua: string, maxTouchPoints = 0): Platform {
 // "Version/17.1" when iPadOS passes as a Mac.
 function iosVersion(ua: string): [number, number] | null {
   const m = ua.match(/ OS (\d+)_(\d+)/) ?? ua.match(/Version\/(\d+)\.(\d+)/);
+
   return m ? [Number(m[1]), Number(m[2])] : null;
 }
 
 export function readPushEnv(): PushEnv {
   const supported = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+
   return {
     secure: window.isSecureContext === true,
     supported,
@@ -53,13 +58,19 @@ export function readPushEnv(): PushEnv {
 // can only from the Home Screen app (Safari tabs have no PushManager).
 export function deviceState(env: PushEnv): DeviceState {
   if (!env.secure) return "unavailable";
+
   if (env.platform === "ios") {
     const v = env.iosVersion;
+
     if (v && (v[0] < 16 || (v[0] === 16 && v[1] < 4))) return "unavailable_ios";
+
     if (!env.standalone) return "install_first";
   }
+
   if (!env.supported) return "unavailable";
+
   if (env.permission === "denied") return "blocked";
+
   return "available";
 }
 
@@ -69,8 +80,11 @@ export type PushCardState = "unavailable" | "unavailable_ios" | "install_first" 
 
 export function cardState(f: { enabled: boolean; device: DeviceState; thisDeviceOn: boolean; otherDevices: number }): PushCardState {
   if (!f.enabled) return "church_off";
+
   if (f.device !== "available") return f.device;
+
   if (f.thisDeviceOn) return "on";
+
   return f.otherDevices > 0 ? "on_elsewhere" : "ready";
 }
 
@@ -80,23 +94,29 @@ function keyBytes(base64url: string): Uint8Array<ArrayBuffer> {
   const pad = "=".repeat((4 - (base64url.length % 4)) % 4);
   const raw = atob((base64url + pad).replace(/-/g, "+").replace(/_/g, "/"));
   const out = new Uint8Array(new ArrayBuffer(raw.length));
+
   for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+
   return out;
 }
 
 // sameKey: the subscription was made with the church's current key. One
 // made before a key rotation can't receive anything now.
-export function sameKey(sub: PushSubscription, publicKey: string): boolean {
+export function sameKey(sub: Pick<PushSubscription, "options">, publicKey: string): boolean {
   const have = sub.options?.applicationServerKey;
+
   if (!have) return true; // the browser doesn't say; trust it
   const a = new Uint8Array(have);
   const b = keyBytes(publicKey);
+
   return a.length === b.length && a.every((x, i) => x === b[i]);
 }
 
 export async function localSubscription(): Promise<PushSubscription | null> {
   const reg = await registration();
+
   if (!reg?.pushManager) return null;
+
   try {
     return await reg.pushManager.getSubscription();
   } catch {
@@ -112,9 +132,12 @@ export async function subscribeThisDevice(publicKey: string): Promise<{ sub: Pus
   await navigator.serviceWorker.register("/sw.js", { scope: "/" });
   const reg = await navigator.serviceWorker.ready;
   const old = await reg.pushManager.getSubscription();
+
   if (old && sameKey(old, publicKey)) return { sub: old };
+
   if (old) await old.unsubscribe().catch(() => false);
   const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(publicKey) });
+
   return { sub, replaced: old?.endpoint };
 }
 
@@ -124,6 +147,7 @@ export async function subscribeThisDevice(publicKey: string): Promise<{ sub: Pus
 // browser, a quiet re-save would move the first person's device to them.
 // Logout's clearClientData wipes it. Storage can be unavailable.
 const OWNER = "fold.pushOwner";
+
 export function pushOwner(): string | null {
   try {
     return localStorage.getItem(OWNER);
@@ -131,6 +155,7 @@ export function pushOwner(): string | null {
     return null;
   }
 }
+
 export function setPushOwner(userId: number | null) {
   try {
     if (userId === null) localStorage.removeItem(OWNER);

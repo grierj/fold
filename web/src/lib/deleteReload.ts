@@ -11,6 +11,7 @@
 
 let seq = 0;
 const pending = new Map<number, number>();
+
 // restore_detected is about the whole server, not one person: after it every
 // delete waits for a fresh list, with its own wording (0 means none).
 let restoreAt = 0;
@@ -38,5 +39,6 @@ export function reloadStarted(): number {
 
 export function reloadSucceeded(started: number): void {
   for (const [userId, at] of pending) if (at <= started) pending.delete(userId);
+
   if (restoreAt !== 0 && restoreAt <= started) restoreAt = 0;
 }

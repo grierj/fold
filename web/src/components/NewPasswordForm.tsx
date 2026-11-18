@@ -15,7 +15,7 @@ export function NewPasswordForm({ idPrefix, passwordLabel, confirmLabel, submitL
   confirmLabel: string;
   submitLabel: string;
   submit: (password: string) => Promise<void>;
-  describe: (err: unknown) => string;
+  describe: (cause: unknown) => string;
 }) {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -23,21 +23,27 @@ export function NewPasswordForm({ idPrefix, passwordLabel, confirmLabel, submitL
   const [fieldError, setFieldError] = useState<{ field: "password" | "confirm"; message: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
-  async function onSubmit(e: React.FormEvent) {
+  async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    const form = e.currentTarget as HTMLFormElement;
+    const form = e.currentTarget;
     const problem = passwordProblem(password);
+
     if (problem) {
       showFieldErrors(form, () => setFieldError({ field: "password", message: problem }));
+
       return;
     }
+
     if (password !== confirm) {
       showFieldErrors(form, () => setFieldError({ field: "confirm", message: "The passwords don't match." }));
+
       return;
     }
+
     setFieldError(null);
     setBusy(true);
     setError(null);
+
     try {
       await submit(password);
       setPassword("");

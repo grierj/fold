@@ -1,4 +1,4 @@
-import { useContext, useEffect, useRef, type ReactNode } from "react";
+import { useContext, useEffect, useRef } from "react";
 import { UNSAFE_DataRouterContext, useBlocker } from "react-router-dom";
 
 // Leaving a page with unsaved edits asks first (DEC-98). Closing or reloading
@@ -19,26 +19,32 @@ export function leaveWithoutAsking() {
   leavingOnPurpose = true;
 }
 
-export function useUnsavedChanges(dirty: boolean): { guard: ReactNode; markSaved: () => void; resume: () => void } {
+export function useUnsavedChanges(dirty: boolean) {
   const dirtyRef = useRef(dirty);
   const saved = useRef(false);
   dirtyRef.current = dirty;
   useEffect(() => {
     const unsaved = () => dirtyRef.current && !saved.current;
     openForms.add(unsaved);
+
     return () => { openForms.delete(unsaved); };
   }, []);
   useEffect(() => {
     if (!dirty) {
       saved.current = false;
+
       return;
     }
+
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       if (anyUnsaved()) e.preventDefault();
     };
+
     window.addEventListener("beforeunload", onBeforeUnload);
+
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [dirty]);
+
   // `guard` is kept for callers that render it; the app-wide blocker does the work.
   return { guard: null, markSaved: () => { saved.current = true; }, resume: () => { saved.current = false; } };
 }
@@ -47,16 +53,20 @@ export function useUnsavedChanges(dirty: boolean): { guard: ReactNode; markSaved
 // tests that render in a MemoryRouter get the tab-close prompt only.
 export function UnsavedChangesBlocker() {
   const dataRouter = useContext(UNSAFE_DataRouterContext);
+
   return dataRouter ? <NavigationGuard /> : null;
 }
 
 function NavigationGuard() {
   const blocker = useBlocker(({ currentLocation, nextLocation }) =>
     anyUnsaved() && (currentLocation.pathname !== nextLocation.pathname || currentLocation.search !== nextLocation.search));
+
   useEffect(() => {
     if (blocker.state !== "blocked") return;
+
     if (window.confirm("Leave without saving? Your changes will be lost.")) blocker.proceed();
     else blocker.reset();
   }, [blocker]);
+
   return null;
 }

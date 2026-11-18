@@ -1,4 +1,7 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { requiredElement } from "../test/dom";
+import { renderWithAuth } from "../test/auth";
+import { stubService } from "../test/service";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 import { ApiError } from "../api/core";
@@ -9,9 +12,12 @@ import { Form } from "./ui/Form";
 import { SeriesRoomField } from "./SeriesRoomField";
 
 const actor = { isAdmin: false };
-vi.mock("../auth", () => ({ useAuth: () => actor }));
-vi.mock("../api/site", async (importActual) => ({ ...(await importActual<typeof import("../api/site")>()), Site: { get: vi.fn() } }));
-vi.mock("../api/rooms", async (importActual) => ({ ...(await importActual<typeof import("../api/rooms")>()), SeriesRooms: { list: vi.fn(), set: vi.fn() } }));
+
+const render = renderWithAuth(() => actor);
+
+stubService(Site, () => ({ get: vi.fn() }));
+
+stubService(SeriesRooms, () => ({ list: vi.fn(), set: vi.fn() }));
 
 const room = (over: Partial<SeriesRoom>): SeriesRoom => ({ id: 1, name: "Fellowship Hall", building: "Main", capacity: 80, features: "", restricted: false, busyDates: 0, tooSmall: false, ...over });
 const hall = room({});
@@ -28,9 +34,12 @@ beforeEach(() => {
 
 function show(onChanged = vi.fn()) {
   render(<Form noValidate onSubmit={(e) => e.preventDefault()}><SeriesRoomField eventId={7} idPrefix="t" onChanged={onChanged} /></Form>);
+
   return onChanged;
 }
+
 const select = () => screen.findByRole("combobox", { name: /^Room for every date/ });
+
 // Choosing is not booking: the button after the select books.
 async function pickAndBook(value: string, button = "Book for every date") {
   await userEvent.selectOptions(await select(), value);
@@ -41,7 +50,7 @@ it("words each option like the one-date Room, with how many dates are busy", asy
   show();
   const box = await select();
   expect(SeriesRooms.list).toHaveBeenCalledWith(7);
-  expect(Array.from((box as HTMLSelectElement).options).map((o) => o.textContent)).toEqual([
+  expect(Array.from(requiredElement(box, HTMLSelectElement).options).map((o) => o.textContent)).toEqual([
     "No series room",
     "Fellowship Hall · Main (80 seats)",
     "Chapel — in use on 2 of 10 dates",
@@ -275,5 +284,5 @@ it("lists suggested rooms first with why and busy dates, then the rest", async (
     ["Suggested", ["Chapel — in use on 2 of 10 dates — Used by this event 4 times"]],
     ["Other rooms", ["Fellowship Hall · Main (80 seats)", "Closet · Annex (1 seat) — may be too small"]],
   ]);
-  expect((box as HTMLSelectElement).options[0].textContent).toBe("No series room");
+  expect(requiredElement(box, HTMLSelectElement).options[0].textContent).toBe("No series room");
 });

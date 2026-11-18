@@ -13,6 +13,7 @@ const LABELS: Record<CalendarViewName, string> = { agenda: "Agenda", week: "Week
 // answers, so the Rooms item never flashes in and out.
 export function useRoomCalendarShown(): boolean {
   const { user } = useAuth();
+
   return useRoomsEnabled() === true && isNotTeen(user);
 }
 
@@ -21,5 +22,6 @@ export function useRoomCalendarShown(): boolean {
 // drift. `to` builds each view's link.
 export function CalendarViewSwitch({ current, rooms, to }: { current: CalendarViewName; rooms: boolean; to: (v: CalendarViewName) => string }) {
   const views: CalendarViewName[] = rooms || current === "rooms" ? ["agenda", "week", "month", "rooms"] : ["agenda", "week", "month"];
+
   return <ViewSwitch label="Calendar view" items={views.map((v) => ({ label: LABELS[v], to: to(v), current: v === current }))} />;
 }

@@ -22,6 +22,7 @@ function TeenConsentControls({ teen, onChanged }: { teen: GuardianTeen; onChange
     setBusy(true);
     setError("");
     setMessage("");
+
     try {
       await Guardians.change(teen.linkId, scope, status);
       setShowGrants(false);
@@ -34,6 +35,7 @@ function TeenConsentControls({ teen, onChanged }: { teen: GuardianTeen; onChange
   async function email() {
     setBusy(true);
     setError("");
+
     try { setMessage((await Guardians.email(teen.linkId)).message); }
     catch (e) { setError(errorText(e)); }
     finally { setBusy(false); }
@@ -46,6 +48,7 @@ function TeenConsentControls({ teen, onChanged }: { teen: GuardianTeen; onChange
     <Field id={`guardian-scope-${teen.linkId}`} label="Consent" hint="Account consent lets your teen use Fold. SMS consent also needs their own opt-in before any texts can be sent.">
       <Select value={scope} onChange={(e) => {
         const value = e.target.value;
+
         if (value === "account" || value === "sms" || value === "photos") { setScope(value); setMessage(""); }
       }}>
         <option value="account">Account</option><option value="sms">SMS</option><option value="photos">Photos</option>
@@ -69,14 +72,18 @@ export function GuardianConsentCard() {
   const [error, setError] = useState("");
   const [loadError, setLoadError] = useState("");
   const [busy, setBusy] = useState(false);
+
   async function load() { setTeens((await Guardians.teens()).teens); setLoaded(true); }
-  useEffect(() => { load().catch((e: unknown) => setLoadError(errorText(e))); }, []);
-  function retry() { setLoadError(""); void load().catch((e: unknown) => setLoadError(errorText(e))); }
+
+  useEffect(() => { load().catch((cause: unknown) => setLoadError(errorText(cause))); }, []);
+
+  function retry() { setLoadError(""); void load().catch((cause: unknown) => setLoadError(errorText(cause))); }
 
   async function claim(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError("");
+
     try { setMessage((await Guardians.claim(email)).message); setEmail(""); }
     catch (err) { setError(errorText(err)); }
     finally { setBusy(false); }

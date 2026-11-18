@@ -35,6 +35,7 @@ export function roomOptionLabel(room: RoomPickerItem, reason?: string): string {
 export function parseRoomLabel(label: string): { room: string; seats: number | null; notes: string[] } {
   const [head, ...notes] = label.split(NOTE_SEPARATOR);
   const sized = /^(.*) \((\d+) seats?\)$/.exec(head);
+
   return sized ? { room: sized[1], seats: Number(sized[2]), notes } : { room: head, seats: null, notes };
 }
 
@@ -42,7 +43,9 @@ export function parseRoomLabel(label: string): { room: string; seats: number | n
 // holds the room on. `dates` is how many dates the booking would cover.
 export function seriesRoomLabel(room: SeriesRoom, dates: number, reason?: string): string {
   let busy = "";
+
   if (room.busyDates > 0) busy = note(dates <= 1 ? "in use at this time" : `in use on ${room.busyDates} of ${dates} dates`);
+
   return `${roomName(room)}${seatsSuffix(room)}${busy}${room.tooSmall ? note("may be too small") : ""}${reason ? note(reason) : ""}`;
 }
 
@@ -52,16 +55,19 @@ export function busyDatesNote(room: SeriesRoom, dates: number, where: "edit" | "
   if (room.busyDates <= 0) return null;
   const name = roomName(room);
   const listed = where === "edit" ? "the busy dates will be listed under “Dates that need a room”." : "the event page will list the busy dates under “Dates that need a room”.";
+
   if (dates <= 1) {
     return where === "edit"
       ? `${name} is in use at this time, so the date will need a room; ${listed}`
       : `${name} is in use at this time, so the event will start without a room. The event page will ask you to pick one.`;
   }
+
   if (room.busyDates >= dates) {
     return where === "edit"
       ? `${name} is in use on all ${dates} dates, so none can be booked yet; ${listed}`
       : `${name} is in use on all ${dates} dates, so none can be booked yet. The event page will list them under “Dates that need a room”.`;
   }
+
   return `${name} is in use on ${room.busyDates} of ${dates} dates. It will be booked on the other ${dates - room.busyDates}, and ${listed}`;
 }
 
@@ -70,20 +76,26 @@ export function busyDatesNote(room: SeriesRoom, dates: number, where: "edit" | "
 export function seriesBookingMessage(res: SeriesBooking, over = 0): string {
   const dates = (n: number) => count(n, "date");
   const parts: string[] = [];
+
   if (res.defaultRoom === null) parts.push("Series room released.");
   else if (res.booked > 0) {
     parts.push(over > 0
       ? `Booked for ${dates(res.booked)}, ${over} of them over another booking.`
       : `Booked for ${dates(res.booked)}.`);
   }
+
   if (res.defaultRoom !== null && res.pending > 0) parts.push(`Sent to an admin for approval: ${dates(res.pending)}.`);
   const n = res.lost.length;
+
   if (n > 0) {
     parts.push(`${dates(n)} ${n === 1 ? "is" : "are"} busy; pick another room for ${n === 1 ? "it" : "them"} under “Dates that need a room” on the event page.`);
   }
+
   if (res.kept > 0) {
     parts.push(`${dates(res.kept)} ${res.kept === 1 ? "keeps" : "keep"} the room picked for ${res.kept === 1 ? "it" : "them"}.`);
   }
+
   if (parts.length === 0) parts.push("There are no upcoming dates to book.");
+
   return parts.join(" ");
 }

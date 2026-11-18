@@ -1,3 +1,4 @@
+import { isCallable } from "../lib/wireValues";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "./ui/Button";
 
@@ -29,15 +30,18 @@ export function DateActions({ eventId, date, sharePath, title, when, nameDate }:
 
   async function share() {
     const url = `${window.location.origin}${sharePath}`;
-    if (typeof navigator.share === "function") {
+
+    if (isCallable(navigator.share)) {
       try {
         await navigator.share({ title, text: when, url });
       } catch (e) {
         // Closing the sheet is a choice, not a failure.
         if (!(e instanceof DOMException && e.name === "AbortError")) say(`Copy this link: ${url}`);
       }
+
       return;
     }
+
     try {
       await navigator.clipboard.writeText(url);
       say("Link copied");

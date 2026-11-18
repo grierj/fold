@@ -34,6 +34,7 @@ const RichTextView = lazy(() => import("../components/messages/RichTextEditor").
 // API's code in words (lib/errors.ts).
 
 type Action = "draft" | "preview" | "test" | "send";
+
 type Errors = { audience?: string; subject?: string; body?: string; when?: string; form?: string; test?: string };
 
 // Which field a server error belongs under.
@@ -124,6 +125,7 @@ export function MessageComposerPage() {
     Messages.options()
       .then((o) => { if (alive) setOptions(o); })
       .catch((e) => { if (alive) setLoadError({ text: errorText(e, "We couldn't open the composer."), missing: false }); });
+
     return () => { alive = false; };
   }, [reload]);
 
@@ -135,12 +137,14 @@ export function MessageComposerPage() {
     Messages.get(Number(id))
       .then(({ message: m }) => { if (alive) { setMessage(m); setReady(false); } })
       .catch((e) => { if (alive) setLoadError({ text: errorText(e, "We couldn't open this message."), missing: errorCode(e) === "not_found" }); });
+
     return () => { alive = false; };
   }, [id, message?.id, reload]);
 
   // Fill the form once the options (and the message, when there is one) are here.
   useEffect(() => {
     if (ready || !options || !church.done || (id && !message)) return;
+
     if (message) startFrom(message, options, message.status === "draft" && message.editable);
     else {
       const c = prefillChoice(params, options);
@@ -148,6 +152,7 @@ export function MessageComposerPage() {
       setSaved({ subject: "", body: null, key: audienceKey(toAudience(c)), pushAlert: true });
       setEditing(true);
     }
+
     setReady(true);
   }, [ready, options, id, message, params, church.done]);
 
@@ -160,11 +165,13 @@ export function MessageComposerPage() {
     setSaved({ subject: m.subject, body: null, key: audienceKey(toAudience(c)), pushAlert: m.pushAlert });
     const later = m.status === "scheduled" && m.scheduledAt && new Date(m.scheduledAt).getTime() > Date.now() + 60_000;
     setWhen(later ? "later" : "now");
+
     if (later && m.scheduledAt) {
       const w = wallClock(m.scheduledAt, zone);
       setDay(w.day);
       setTime(w.time);
     }
+
     setEditorKey((k) => k + 1);
     setEditing(edit);
     setErrors({});
@@ -183,27 +190,34 @@ export function MessageComposerPage() {
 
   function problems(action: Action): Errors {
     const e: Errors = {};
+
     if (!audience) e.audience = choice.target ? "Choose at least one kind of person." : ERROR_COPY.message_audience;
+
     if (action === "test" || action === "send") {
       if (!subject.trim()) e.subject = "Add a subject.";
+
       if (!body) e.body = "Write your message.";
     }
+
     if (action === "send" && when === "later") {
       const at = wallToInstant(day, time, zone);
       const ms = at ? new Date(at).getTime() : NaN;
+
       if (!day || !time) e.when = "Choose a date and a time.";
       else if (!at || ms < Date.now() || ms > Date.now() + YEAR_MS) e.when = ERROR_COPY.message_when;
     }
+
     return e;
   }
 
   // place shows a server error under its field, or with the buttons. A
   // message that started sending meanwhile (message_locked), or whose people
   // changed under the schedule press (message_changed), is read again.
-  function place(err: unknown, fallback: string, where: keyof Errors = "form") {
-    const code = errorCode(err);
+  function place(cause: unknown, fallback: string, where: keyof Errors = "form") {
+    const code = errorCode(cause);
     const field = code ? FIELD_OF[code] : undefined;
-    const text = errorText(err, fallback);
+    const text = errorText(cause, fallback);
+
     if ((code === "message_locked" || code === "message_changed") && message && options) {
       Messages.get(message.id)
         .then(({ message: m }) => {
@@ -213,8 +227,10 @@ export function MessageComposerPage() {
           setErrors({ form: text });
         })
         .catch(() => show({ form: text }));
+
       return;
     }
+
     show({ [field ?? where]: text });
   }
 
@@ -224,6 +240,7 @@ export function MessageComposerPage() {
     const { message: m } = message ? await Messages.update(message.id, draft) : await Messages.create(draft);
     setMessage(m);
     setSaved({ subject: draft.subject, body, key, pushAlert });
+
     if (!message) {
       // The new address is the same draft, now saved: no "Leave without
       // saving?" for this move, and the guard is back right after it.
@@ -231,6 +248,7 @@ export function MessageComposerPage() {
       navigate(`/messages/${m.id}`, { replace: true });
       resume();
     }
+
     return m;
   }
 
@@ -238,7 +256,9 @@ export function MessageComposerPage() {
   // first (it needs its audience, like any draft). The editor shows the words.
   async function saveForPicture(): Promise<{ id: number } | { error: string }> {
     if (message) return { id: message.id };
+
     if (!audience) return { error: "Choose who this message is for first. A picture is added to a saved draft." };
+
     try {
       return { id: (await save()).id };
     } catch (e) {
@@ -249,31 +269,44 @@ export function MessageComposerPage() {
   async function run(action: Action) {
     if (busy) return;
     const found = problems(action);
-    if (Object.keys(found).length) { show(found); return; }
+
+    if (Object.keys(found).length) {
+      show(found);
+
+      return;
+    }
+
     setErrors({});
     setNote("");
     setConfirm(null);
     setBusy(action);
     let m: Message;
+
     try {
       m = await save();
     } catch (e) {
       place(e, "We couldn't save the message.");
       setBusy(null);
+
       return;
     }
+
     try {
       if (action === "draft") setNote("Draft saved.");
+
       if (action === "preview") {
         const { preview: p } = await Messages.preview(m.id);
         setPreview((old) => ({ ...p, id: m.id, n: (old?.n ?? 0) + 1 }));
       }
+
       if (action === "test") {
         await Messages.test(m.id);
         setNote(`Sent to you at ${user?.email ?? "your email address"}.`);
       }
+
       if (action === "send") {
         const { summary } = await Messages.audiencePreview(m.audience);
+
         if (summary.eligible === 0) show({ audience: ERROR_COPY.message_nobody });
         else setConfirm({ eligible: summary.eligible, push: pushShown && pushAlert ? summary.push : 0, at: when === "later" ? wallToInstant(day, time, zone) : null, snap });
       }
@@ -288,6 +321,7 @@ export function MessageComposerPage() {
   async function schedule() {
     if (!message || !asking || busy) return;
     setBusy("schedule");
+
     try {
       const { message: m } = await Messages.schedule(message.id, asking.at ?? undefined);
       setMessage(m);
@@ -306,8 +340,10 @@ export function MessageComposerPage() {
 
   async function cancelMessage() {
     if (!message || busy) return;
+
     if (!window.confirm("Cancel this message? It won't be sent, and you can't undo this.")) return;
     setBusy("cancel");
+
     try {
       const { message: m } = await Messages.cancel(message.id);
       setMessage(m);
@@ -322,9 +358,11 @@ export function MessageComposerPage() {
   // Try again (DEC-131): only the people it failed for, after asking.
   async function retry() {
     if (!message || busy) return;
+
     if (!window.confirm(retryQuestion(history?.counts.failed ?? message.failedCount, history?.counts.guardianCopiesFailed ?? 0))) return;
     setBusy("retry");
     setRetryError("");
+
     try {
       const { message: m } = await Messages.retry(message.id);
       setMessage(m);
@@ -338,8 +376,10 @@ export function MessageComposerPage() {
   // Discarding a draft cancels it for good; it stays on the list as Discarded.
   async function discardDraft() {
     if (!message || busy) return;
+
     if (!window.confirm("Discard this draft? You can't undo this.")) return;
     setBusy("cancel");
+
     try {
       await Messages.cancel(message.id);
       markSaved();
@@ -354,6 +394,7 @@ export function MessageComposerPage() {
   // only unsaved changes are asked about.
   function doneEditing() {
     if (!message || !options) return;
+
     if (dirty && !window.confirm("Stop editing? Your unsaved changes will be lost.")) return;
     startFrom(message, options, false);
   }
@@ -374,7 +415,9 @@ export function MessageComposerPage() {
         : <><h1 className="text-3xl font-bold">Message</h1><ErrorNotice message={loadError.text} onRetry={() => { setLoadError(null); setReload((n) => n + 1); }} /></>}
     </>);
   }
+
   if (!options || !ready) return page(<Skeleton kind="page" label="Loading the composer…" />);
+
   if (!options.canCompose && !message) {
     return page(<>
       {back}
@@ -394,6 +437,7 @@ export function MessageComposerPage() {
     // state), so its email counts are always empty.
     const pushReminder = message.channel === "push";
     const label = statusLabel(message, zone);
+
     return page(<>
       {reminder && !isAdmin && message.reminder && datePath
         ? <ButtonLink variant="link" to={datePath}>‹ Back to {message.reminder.eventTitle}</ButtonLink>

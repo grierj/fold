@@ -49,11 +49,13 @@ type Walk =
 function mergeUnit(known: readonly string[], unit: readonly LegacyDiscoveryAccount[]): string[] {
   const merged = known.slice();
   const seen = new Set(merged);
+
   for (const { userId } of unit) {
     if (seen.has(userId)) continue;
     seen.add(userId);
     merged.push(userId);
   }
+
   return merged;
 }
 
@@ -71,9 +73,11 @@ function useDiscovery() {
   const go = useCallback(async () => {
     const mine = ++run.current;
     setWalk({ kind: "walking" });
+
     for (;;) {
       const at = cursor.current;
       let unit: LegacyReasonDiscovery;
+
       try {
         unit = await AdminUsers.legacyReasons(at);
       } catch (e) {
@@ -81,20 +85,28 @@ function useDiscovery() {
           const failure = legacyReadFailure(e);
           setWalk({ kind: failure.kind === "locked" ? "locked" : "failed", text: failure.text });
         }
+
         return;
       }
+
       if (run.current !== mine) return;
+
       // A cursor already asked for would loop for ever: fail closed, keeping what was found.
       if (unit.next !== null && requested.current.has(unit.next)) {
         setWalk({ kind: "failed", text: ERROR_COPY.reason_review_busy });
+
         return;
       }
+
       setAccounts((prev) => mergeUnit(prev, unit.accounts));
       cursor.current = unit.next;
+
       if (unit.next === null) {
         setWalk({ kind: "done" });
+
         return;
       }
+
       requested.current.add(unit.next);
     }
   }, []);
@@ -112,6 +124,7 @@ function useDiscovery() {
 
   useEffect(() => {
     void go();
+
     return () => {
       run.current++;
     };
@@ -122,8 +135,11 @@ function useDiscovery() {
 
 export function ReasonReviewLegacyPage() {
   const { user, loading, isAdmin } = useAuth();
+
   if (loading) return null;
+
   if (!user) return null;
+
   // The server alone decides who is an adult; this only keeps the page from
   // opening for someone the server is bound to refuse.
   if (!isAdmin || user.status !== "active" || user.accountType === "teen") {
@@ -134,6 +150,7 @@ export function ReasonReviewLegacyPage() {
       </div>
     );
   }
+
   return <LegacyReview key={`${user.id}:${user.status}:${user.role}:${user.accountType}:${user.birthDate}`} />;
 }
 
@@ -150,12 +167,15 @@ function LegacyReview() {
       </div>
     );
   }
+
   return <LegacyReviewWalk account={account} />;
 }
 
 function LegacyReviewWalk({ account }: { account: string | null }) {
   const discovery = useDiscovery();
+
   if (account === null) return <LegacyList {...discovery} />;
+
   return <LegacyAccountView key={account} account={account} onEmpty={discovery.forget} />;
 }
 
@@ -185,8 +205,11 @@ type Phase =
   | { kind: "history" }
   // Nothing more can be done from here; `reload` is a restore that a reload lifts.
   | { kind: "locked"; reload: boolean };
+
 type Note = { text: string; alert: boolean };
+
 type Prior = ReadonlyMap<string, { hash: string; choice: ReasonChoice | undefined }>;
+
 type Choices = Readonly<Record<string, ReasonChoice | undefined>>;
 
 const IDLE: Phase = { kind: "idle" };
@@ -196,30 +219,40 @@ const IDLE: Phase = { kind: "idle" };
 function checkedPage(page: ErasureReasonPage, account: string): ErasureReasonPage {
   const seen = new Set<string>();
   let ok = page.items.length <= MAX_PAGE_ITEMS;
+
   for (const item of page.items) {
     if (item.partyRef !== account || seen.has(item.requestId)) ok = false;
     seen.add(item.requestId);
   }
+
   if (!ok) throw new ApiError(502, "unexpected answer to a deleted account's reasons");
+
   return page;
 }
 
 function LegacyAccountView({ account, onEmpty }: { account: string; onEmpty: (userId: string) => void }) {
   const progress = useRef<{ cursor: string | null; seen: Set<string> }>({ cursor: null, seen: new Set() });
+
   const load = useLoad(async () => {
     const epoch = load.epoch();
+
     for (;;) {
       const page = checkedPage(await AdminUsers.legacyReasonsPage(account, progress.current.cursor), account);
+
       if (load.epoch() !== epoch) return page;
+
       if (page.items.length > 0 || page.next === null) {
         progress.current = { cursor: null, seen: new Set() };
+
         return page;
       }
+
       if (progress.current.seen.has(page.next)) throw new ApiError(502, "repeated deleted-account reason cursor");
       progress.current.seen.add(page.next);
       progress.current.cursor = page.next;
     }
   }, [account]);
+
   const [choices, setChoices] = useState<Choices>({});
   const [changed, setChanged] = useState<ReadonlySet<string>>(() => new Set());
   const [phase, setPhase] = useState<Phase>(IDLE);
@@ -241,6 +274,7 @@ function LegacyAccountView({ account, onEmpty }: { account: string; onEmpty: (us
 
   useEffect(() => {
     mounted.current = true;
+
     return () => {
       mounted.current = false;
       attempt.current = null;
@@ -258,14 +292,18 @@ function LegacyAccountView({ account, onEmpty }: { account: string; onEmpty: (us
     if (!page) return;
     const prior = carry.current;
     carry.current = null;
+
     if (!prior) return;
     const kept: Record<string, ReasonChoice | undefined> = {};
     const marked = new Set<string>();
+
     for (const item of page.items) {
       const before = prior.get(item.requestId);
+
       if (before?.hash === item.reviewHash && before.choice) kept[item.requestId] = before.choice;
       else marked.add(item.requestId);
     }
+
     setChoices(kept);
     setChanged(marked);
     const first = page.items.findIndex((item) => marked.has(item.requestId));
@@ -301,13 +339,16 @@ function LegacyAccountView({ account, onEmpty }: { account: string; onEmpty: (us
       carry.current = prior;
       progress.current = { cursor: null, seen: new Set() };
     }
+
     setChoices({});
     setChanged(new Set());
+
     return load.retry();
   }
 
   async function unlock(resume = false) {
     const outcome = await reload(resume ? undefined : null);
+
     if (outcome !== "loaded" || !mounted.current) return;
     setPhase(IDLE);
     setNote(null);
@@ -321,13 +362,16 @@ function LegacyAccountView({ account, onEmpty }: { account: string; onEmpty: (us
   function refuse(failure: LegacyRefusal) {
     attempt.current = null;
     working.current = false;
+
     if (failure.kind === "locked") {
       if (failure.reloadToUnlock) requireRestoreReload();
       setPhase({ kind: "locked", reload: failure.reloadToUnlock === true });
     } else {
       setPhase(IDLE);
     }
+
     setNote({ text: failure.text, alert: true });
+
     if (failure.kind === "changed") void reload(priorChoices());
   }
 
@@ -344,13 +388,17 @@ function LegacyAccountView({ account, onEmpty }: { account: string; onEmpty: (us
     setPhase({ kind: "checking" });
     setNote({ text, alert: false });
     let step: LegacySettleStep;
+
     try {
       step = legacySettleStep(await AdminUsers.settleAttempt(id, account, "legacy_reason_save"));
     } catch (e) {
       step = legacySettleFailure(e);
     }
+
     settling.current = false;
+
     if (!isCurrent(press)) return;
+
     switch (step.kind) {
       case "applied":
         decided(step.text);
@@ -389,32 +437,42 @@ function LegacyAccountView({ account, onEmpty }: { account: string; onEmpty: (us
     setPhase({ kind: "saving" });
     setNote(null);
     box.current?.focus();
+
     // Exactly the loaded items, in page order, with the choice made for each.
     const decisions: LegacyReasonDecision[] = items.map((item) => ({
       requestId: item.requestId,
       reviewHash: item.reviewHash,
+      // SAFETY: Save is gated until every loaded item has a choice.
       choice: choices[item.requestId] as ReasonChoice,
     }));
+
     let id: string;
+
     try {
       // One fresh id per press. If the mint fails no PUT has been sent, so nothing can have happened.
       id = (await AdminUsers.mintAttempt(account, "legacy_reason_save")).attemptId;
     } catch (e) {
       if (isCurrent(press)) refuse(legacyMintFailure(e));
+
       return;
     }
+
     if (!isCurrent(press)) return;
     attempt.current = id;
+
     try {
       await AdminUsers.saveLegacyReasons(account, id, decisions);
     } catch (e) {
       if (!isCurrent(press)) return;
       const failure = legacySaveFailure(e);
+
       // Never a not-saved message before the settle answer.
       if (failure.kind === "uncertain") void settle(id, press, failure.text);
       else refuse(failure);
+
       return;
     }
+
     if (!isCurrent(press)) return;
     // The counts the server answers with are checked and deliberately not shown.
     decided(LEGACY_SAVED);
@@ -470,12 +528,14 @@ function LegacyList({ accounts, walk, go, stop }: ReturnType<typeof useDiscovery
   useEffect(() => {
     if (before.current === walk.kind) return;
     before.current = walk.kind;
+
     if (walk.kind !== "done") box.current?.focus();
   }, [walk.kind]);
 
   const status = walk.kind === "walking" ? CHECKING : walk.kind === "stopped" ? STOPPED : "";
   // A locked list shows nothing: the answers that built it no longer hold.
   const shown = walk.kind === "locked" ? [] : accounts;
+
   return (
     <div className="fold-page-narrow space-y-5">
       <h1 className="text-2xl font-bold">{LEGACY_REVIEW_TITLE}</h1>

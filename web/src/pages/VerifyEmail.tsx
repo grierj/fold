@@ -19,8 +19,10 @@ export function VerifyEmail() {
   useEffect(() => {
     if (!token) {
       setState("error");
+
       return;
     }
+
     if (redeemed.current === token) return;
     redeemed.current = token;
     ProfileApi.verifyEmail(token)

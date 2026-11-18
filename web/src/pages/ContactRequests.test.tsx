@@ -1,4 +1,6 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { renderWithAuth } from "../test/auth";
+import { stubService } from "../test/service";
+import { act, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -8,14 +10,21 @@ import type { ContactGrant, ContactRequest } from "../types";
 import { ContactRequestsPage } from "./ContactRequests";
 import { RequireUser } from "../components/RequireUser";
 
-const actor = vi.hoisted(() => ({ user: { id: 2 } as { id: number } | null }));
-vi.mock("../auth", () => ({ useAuth: () => actor }));
-vi.mock("../api/contacts", () => ({ Contacts: { request: vi.fn(), requests: vi.fn(), grants: vi.fn(), decide: vi.fn(), withdraw: vi.fn(), revoke: vi.fn(), reveal: vi.fn() } }));
+type TestSession = { user: { id: number } | null };
+
+const actor: TestSession = { user: { id: 2 } };
+
+const render = renderWithAuth(() => actor);
+
+stubService(Contacts, () => ({ request: vi.fn(), requests: vi.fn(), grants: vi.fn(), decide: vi.fn(), withdraw: vi.fn(), revoke: vi.fn(), reveal: vi.fn() }));
+
 const request: ContactRequest = { id: 7, requesterId: 1, requesterName: "Lee", subjectUserId: 2, subjectName: "Pat", contextType: "event", contextId: 3, fields: "email", reason: "A private reason", needsAdmin: true, subjectDecision: "pending", adminDecision: "pending", status: "pending", createdAt: "2026-10-01T12:00:00Z", expiresAt: "2026-10-15T12:00:00Z", endReason: "", canSubjectDecide: true, canAdminDecide: false, canWithdraw: false };
 const grant: ContactGrant = { id: 8, requestId: 7, requesterId: 1, requesterName: "Lee", subjectUserId: 2, subjectName: "Pat", contextType: "event", fields: "email", needsAdmin: true, grantedAt: "2026-10-02T12:00:00Z", endReason: "", canReveal: false, canRevoke: true };
+
 function mount(path = "/contact-requests/7") {
   return render(<MemoryRouter initialEntries={[path]}><Routes><Route path="/contact-requests" element={<RequireUser><ContactRequestsPage /></RequireUser>} /><Route path="/contact-requests/:id" element={<RequireUser><ContactRequestsPage /></RequireUser>} /><Route path="/login" element={<p>Sign in first</p>} /></Routes></MemoryRouter>);
 }
+
 beforeEach(() => {
   vi.clearAllMocks(); actor.user = { id: 2 };
   vi.mocked(Contacts.request).mockResolvedValue({ request });
@@ -29,6 +38,7 @@ it.each(["subject", "admin"] as const)("shows independent teen/admin decisions w
   vi.mocked(Contacts.request).mockImplementation(async () => ({ request: current }));
   vi.mocked(Contacts.decide).mockImplementation(async (_id, party, decision) => {
     current = { ...current, [party === "subject" ? "subjectDecision" : "adminDecision"]: decision, canSubjectDecide: false, canAdminDecide: false };
+
     return { request: current };
   });
   mount();
@@ -104,18 +114,22 @@ it("paginates request and grant histories using their own last exclusive IDs", a
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
+  let reject!: (cause: unknown) => void;
   const promise = new Promise<T>((resolvePromise, rejectPromise) => { resolve = resolvePromise; reject = rejectPromise; });
+
   return { promise, resolve, reject };
 }
 
 for (const kind of ["requests", "grants"] as const) {
   function historyPages() {
     const page = vi.fn<(before?: number) => Promise<number[]>>();
+
     if (kind === "requests") vi.mocked(Contacts.requests).mockImplementation(async (before) => ({ requests: (await page(before)).map((id) => ({ ...request, id, subjectName: `${kind} person ${id}` })) }));
     else vi.mocked(Contacts.grants).mockImplementation(async (before) => ({ grants: (await page(before)).map((id) => ({ ...grant, id, subjectName: `${kind} person ${id}`, canRevoke: false })) }));
+
     return page;
   }
+
   const firstIds = Array.from({ length: 100 }, (_, i) => 300 - i);
   const refreshedIds = Array.from({ length: 100 }, (_, i) => 301 - i);
   const olderButton = () => screen.getByRole("button", { name: `Load older ${kind}` });
@@ -173,9 +187,11 @@ for (const kind of ["requests", "grants"] as const) {
   it.each(["first load", "pagination"])(`discards ${kind} %s results after unmount`, async (stage) => {
     const old = deferred<number[]>();
     const page = historyPages();
+
     if (stage === "pagination") page.mockResolvedValueOnce(firstIds);
     page.mockReturnValueOnce(old.promise).mockResolvedValueOnce(refreshedIds);
     const view = mount("/contact-requests");
+
     if (stage === "pagination") await userEvent.click(await screen.findByRole("button", { name: `Load older ${kind}` }));
     view.unmount();
     mount("/contact-requests");

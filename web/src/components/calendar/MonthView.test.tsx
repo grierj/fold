@@ -7,6 +7,7 @@ import type { CalendarOccurrence } from "../../types";
 import { MonthView } from "./MonthView";
 
 const statuses: CalendarOccurrence["myStatus"][] = ["going", "maybe", null, "waitlisted"];
+
 const occs: CalendarOccurrence[] = statuses.map((myStatus, index) => ({
   eventId: index + 1, date: "2026-10-21", startsAt: "2026-10-21T18:00:00Z", endsAt: "2026-10-21T19:00:00Z",
   title: `Event ${index + 1}`, location: "", churchWide: true, remoteAvailable: false, childcareAvailable: false,
@@ -34,6 +35,7 @@ describe("MonthView", () => {
     more.focus();
     await userEvent.keyboard("{Enter}");
     expect(onSelect).toHaveBeenLastCalledWith("2026-10-21");
+
     for (const link of screen.getAllByRole("link")) expect(link).not.toHaveAttribute("tabindex", "-1");
     const dots = phone.querySelectorAll("[aria-hidden=true] span");
     expect(dots).toHaveLength(3);

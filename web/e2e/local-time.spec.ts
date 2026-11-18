@@ -1,3 +1,4 @@
+import * as schema from "valibot";
 import { expect, test } from "@playwright/test";
 import { apiAs, signIn, fromMore } from "./helpers";
 
@@ -13,14 +14,18 @@ function futureDate(days: number): string {
 
 test("event times follow the browser's zone, with one 'held in' line on the event page", async ({ page, request }) => {
   const admin = await apiAs(request, "grier");
-  const { group } = (await admin("POST", "/groups", {
+
+  const { group } = schema.parse(schema.looseObject({ group: schema.looseObject({ id: schema.number() }) }), (await admin("POST", "/groups", {
     name: "Late club", description: "", tags: [], location: "", visibility: "public", memberLimit: null,
-  })) as { group: { id: number } };
+  })));
+
   const date = futureDate(9);
-  const { event } = (await admin("POST", `/groups/${group.id}/events`, {
+
+  const { event } = schema.parse(schema.looseObject({ event: schema.looseObject({ id: schema.number() }) }), (await admin("POST", `/groups/${group.id}/events`, {
     title: "Night watch", startsLocal: `${date}T22:30`, durationMinutes: 60, tzid: "America/Boise",
     location: "", recurrenceRule: "",
-  })) as { event: { id: number } };
+  })));
+
   const nextDay = new Date(`${date}T12:00:00Z`);
   nextDay.setUTCDate(nextDay.getUTCDate() + 1);
   const badgeDay = String(nextDay.getUTCDate());

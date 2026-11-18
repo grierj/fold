@@ -3,6 +3,7 @@ export async function prepareUpload(file: File, maxDim: number): Promise<File> {
   // Loaded only here: the library is about 20 kB gzip that most visits
   // never need (#77). Vite emits it as a same-origin chunk, so the CSP holds.
   const { default: imageCompression } = await import("browser-image-compression");
+
   const compressed = await imageCompression(file, {
     maxSizeMB: 2,
     maxWidthOrHeight: maxDim,
@@ -11,6 +12,7 @@ export async function prepareUpload(file: File, maxDim: number): Promise<File> {
     useWebWorker: false,
     fileType: "image/jpeg",
   });
+
   return new File([compressed], file.name.replace(/\.[^.]+$/, "") + ".jpg", {
     type: "image/jpeg",
   });

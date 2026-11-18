@@ -20,6 +20,7 @@ const occ = (o: Partial<CalendarOccurrence>): CalendarOccurrence => ({
   ownScope: false,
   ...o,
 });
+
 const wrap = (ui: React.ReactNode) => render(<MemoryRouter>{ui}</MemoryRouter>);
 
 it("uses second-level day headings directly below the calendar page heading", () => {

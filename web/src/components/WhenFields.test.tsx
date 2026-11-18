@@ -1,3 +1,5 @@
+import { stubService } from "../test/service";
+import { Site } from "../api/site";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -5,13 +7,14 @@ import { useState } from "react";
 import { useWhenState, type WhenInit } from "../lib/useWhenState";
 import { WhenFields } from "./WhenFields";
 
-vi.mock("../api/site", () => ({ Site: { get: vi.fn().mockResolvedValue({ timezone: "America/Denver" }) } }));
+stubService(Site, () => ({ get: vi.fn().mockResolvedValue({ timezone: "America/Denver" }) }));
 
 function Harness({ init = {}, customRule, until }: { init?: Partial<WhenInit>; customRule?: boolean; until?: boolean }) {
   const when = useWhenState({ date: "2026-12-02", time: "19:00", duration: 90, recurring: false, days: [], ...init });
   const [tzid, setTzid] = useState("America/Denver");
   const [rule, setRule] = useState("FREQ=DAILY");
   const [end, setEnd] = useState("");
+
   return (
     <>
       <WhenFields

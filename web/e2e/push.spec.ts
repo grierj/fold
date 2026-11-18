@@ -1,3 +1,4 @@
+import * as schema from "valibot";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
 import { apiAs, email, PASSWORD, signIn, signOut, watchCSP } from "./helpers";
@@ -14,12 +15,20 @@ import { apiAs, email, PASSWORD, signIn, signOut, watchCSP } from "./helpers";
 const RFC_P256DH = "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4";
 const RFC_AUTH = "BTBZMqHH6r4Tts7J_aSIgg";
 
+declare global {
+  interface Window {
+    __registered?: [url: string, options: RegistrationOptions | undefined];
+  }
+}
+
 async function fakePush(context: BrowserContext, opts: { permission?: NotificationPermission; noPush?: boolean } = {}) {
   await context.addInitScript(({ p256dh, auth, permission, noPush }) => {
     if (noPush) {
-      delete (window as unknown as Record<string, unknown>).PushManager;
+      Reflect.deleteProperty(window, "PushManager");
+
       return;
     }
+
     // Headless Chromium reports "denied" even after grantPermissions, while
     // requestPermission answers from the grant. The page sees the answer.
     let state: NotificationPermission = permission ?? "default";
@@ -27,32 +36,43 @@ async function fakePush(context: BrowserContext, opts: { permission?: Notificati
     Object.defineProperty(Notification, "permission", { get: () => state, configurable: true });
     Notification.requestPermission = async () => (state = await ask());
     const endpoint = `https://fcm.googleapis.com/fcm/send/e2e-${Math.random().toString(36).slice(2)}`;
-    let current: unknown = null;
+    let current: ReturnType<typeof sub> | null = null;
+
     const sub = (key: ArrayBuffer) => ({
       endpoint, expirationTime: null, options: { userVisibleOnly: true, applicationServerKey: key },
       toJSON: () => ({ endpoint, expirationTime: null, keys: { p256dh, auth } }),
-      unsubscribe: async () => { current = null; return true; },
+      unsubscribe: async () => {
+        current = null;
+
+        return true;
+      },
     });
+
     const pushManager = {
       getSubscription: async () => current,
       subscribe: async (o: { applicationServerKey: Uint8Array }) => (current = sub(new Uint8Array(o.applicationServerKey).buffer)),
     };
+
     const registration = { scope: `${location.origin}/`, pushManager, getNotifications: async () => [] };
     let registered = false;
+
     const fake = {
-      register: async (url: string, o: unknown) => {
-        (window as unknown as { __registered: unknown }).__registered = [url, o];
+      register: async (url: string, o?: RegistrationOptions) => {
+        window.__registered = [url, o];
         registered = true;
+
         return registration;
       },
       getRegistration: async () => (registered ? registration : undefined),
       get ready() { return Promise.resolve(registration); },
     };
+
     Object.defineProperty(navigator, "serviceWorker", { get: () => fake, configurable: true });
   }, { p256dh: RFC_P256DH, auth: RFC_AUTH, permission: opts.permission, noPush: opts.noPush });
 }
 
 const login = `push-${Date.now() % 100000}`;
+
 test.beforeAll(async ({ request }) => {
   const admin = await apiAs(request, "grier");
   await admin("POST", "/admin/users", { name: "Push Member", email: email(login), password: PASSWORD, ageBand: "adult" });
@@ -62,7 +82,8 @@ const card = (page: Page) => page.getByRole("region", { name: "Notifications on 
 
 async function devices(page: Page) {
   const res = await page.request.get("/api/v1/me/notification-settings");
-  return ((await res.json()).settings.push.devices as { label: string }[]);
+
+  return (schema.parse(schema.array(schema.looseObject({ label: schema.string() })), (await res.json()).settings.push.devices));
 }
 
 // A 390px picture of the card for review, and axe on the page in that
@@ -70,6 +91,7 @@ async function devices(page: Page) {
 // Chromium shows without the stubs).
 async function shot(page: Page, name: string) {
   await card(page).screenshot({ path: test.info().outputPath(`push-card-${name}-390.png`) });
+
   for (const width of [1280, 390]) {
     await page.setViewportSize({ width, height: 900 });
     const { violations } = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]).analyze();
@@ -87,7 +109,7 @@ test("the card turns on, sends a test, turns off, and logout removes the device"
 
   const turnOn = card(page).getByRole("button", { name: "Turn on notifications" });
   await expect(turnOn).toBeVisible();
-  expect(await page.evaluate(() => (window as unknown as { __registered?: unknown }).__registered)).toBeUndefined();
+  expect(await page.evaluate(() => window.__registered)).toBeUndefined();
   await shot(page, "ready");
 
   const put = page.waitForRequest((r) => r.url().endsWith("/api/v1/push/subscriptions") && r.method() === "PUT");
@@ -95,7 +117,7 @@ test("the card turns on, sends a test, turns off, and logout removes the device"
   const body = (await put).postDataJSON();
   expect(body.endpoint).toMatch(/^https:\/\/fcm\.googleapis\.com\/fcm\/send\/e2e-/);
   expect(body.keys).toEqual({ p256dh: RFC_P256DH, auth: RFC_AUTH });
-  expect(await page.evaluate(() => (window as unknown as { __registered?: unknown }).__registered)).toEqual(["/sw.js", { scope: "/" }]);
+  expect(await page.evaluate(() => window.__registered)).toEqual(["/sw.js", { scope: "/" }]);
   await expect(card(page).getByText("Notifications are on for this device.", { exact: true })).toBeVisible();
   expect((await devices(page)).map((d) => d.label)).toEqual([expect.stringMatching(/^Chrome on /)]);
 
@@ -176,13 +198,16 @@ test("the real service worker registers and the manifest carries the church name
 
   await page.goto("/");
   await expect(page.locator('link[rel="manifest"]')).toHaveAttribute("href", "/manifest.webmanifest");
+
   const scope = await page.evaluate(async () => {
     const reg = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
     await navigator.serviceWorker.ready;
     const scope = reg.scope;
     await reg.unregister();
+
     return scope;
   });
+
   expect(scope).toBe(new URL("/", page.url()).href);
   expect(csp).toEqual([]);
 });

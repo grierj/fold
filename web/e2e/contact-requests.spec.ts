@@ -1,8 +1,8 @@
+import type { JsonValue } from "../src/lib/wireValues";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { apiAs, email, fromMore, PASSWORD, signInTo, soon } from "./helpers";
-// @ts-expect-error plain JS module shared with verify-ui
 import { measure } from "./ui-measure.mjs";
 
 test.use({ actionTimeout: 10_000 });
@@ -10,9 +10,11 @@ test.use({ actionTimeout: 10_000 });
 const adminName = process.env.VERIFY_URL ? "verify-admin" : "grier";
 const proof = process.env.CONTACT_PROOF_DIR;
 const results: unknown[] = [];
+
 async function capture(page: Page, name: string) {
   if (!proof) return;
   mkdirSync(proof, { recursive: true });
+
   for (const width of [390, 768, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     await page.waitForLoadState("networkidle");
@@ -26,7 +28,8 @@ async function capture(page: Page, name: string) {
     expect(layout.overflow).toBe(0); expect(layout.cutOff).toEqual([]); expect(layout.clipped).toEqual([]); expect(layout.under24).toEqual([]); expect(axe).toEqual([]);
   }
 }
-async function save(name: string, data: unknown) {
+
+async function save(name: string, data: JsonValue) {
   if (proof) { mkdirSync(proof, { recursive: true }); writeFileSync(`${proof}/${name}.json`, JSON.stringify(data, null, 2)); }
 }
 
@@ -36,17 +39,21 @@ test("hidden adult requests preserve failures, disclose only on explicit reveal,
   test.setTimeout(120_000);
   const admin = await apiAs(request, adminName);
   const ids: Record<string, number> = {};
+
   for (const [key, name] of [["requester", "Contact Lee"], ["adult", "Contact Pat"]]) {
     ids[key] = (await admin("POST", "/admin/users", { name, email: email(`contact-${key}`), password: PASSWORD, ageBand: "adult", phone: "2085550142" })).user.id;
   }
+
   const { group } = await admin("POST", "/groups", { name: "Contact study", description: "Contact request proof", visibility: "public", tags: [] });
   await admin("POST", `/admin/groups/${group.id}/members`, { userId: ids.requester, role: "leader" });
   await admin("POST", `/admin/groups/${group.id}/members`, { userId: ids.adult, role: "member" });
   const adult = await apiAs(request, "contact-adult");
   await adult("PUT", "/me", { hideContactFromLeaders: true });
   await signInTo(page, "contact-requester", `/groups/${group.id}`);
+
   const membersTab = page.getByRole("tablist", { name: "Group sections", exact: true })
     .getByRole("tab", { name: "Members", exact: true });
+
   await membersTab.click();
   await expect(membersTab).toHaveAttribute("aria-selected", "true");
   const membersPanel = page.getByRole("tabpanel", { name: "Members", exact: true });
@@ -82,7 +89,9 @@ test("hidden adult requests preserve failures, disclose only on explicit reveal,
   const detail = await (await page.request.get(`/api/v1${path}`)).json();
   const grants = await (await page.request.get("/api/v1/contact-grants")).json();
   expect(detail.request).not.toHaveProperty("email"); expect(detail.request).not.toHaveProperty("phone");
+
   for (const grant of grants.grants) { expect(grant).not.toHaveProperty("email"); expect(grant).not.toHaveProperty("phone"); }
+
   expect(JSON.stringify(detail)).not.toContain(email("contact-adult")); expect(JSON.stringify(grants)).not.toContain(email("contact-adult"));
   await save("adult-review-no-contacts", { detail, grants });
   await expect(page.getByRole("region", { name: "Revealed contact details" })).toHaveCount(0);
@@ -128,6 +137,7 @@ test("teen decisions work in both orders; guardian sees only active grants and c
   const { event: visibleEvent } = await adminAgain("POST", `/groups/${group.id}/events`, { title: "Contact teen date", startsLocal, durationMinutes: 60, tzid: "UTC" });
   const teenApi = await apiAs(request, "contact-teen");
   await teenApi("PUT", `/events/${visibleEvent.id}/registrations`, { date: startsLocal.slice(0, 10), status: "going" });
+
   for (const first of ["admin", "subject"] as const) {
     await signInTo(page, "contact-teen-leader", `/events/${visibleEvent.id}`);
     await fromMore(page, "Manage sign-ups", /More for/);
@@ -138,6 +148,7 @@ test("teen decisions work in both orders; guardian sees only active grants and c
     await (await soon(page.getByRole("button", { name: "Request direct contact" }))).click();
     await (await soon(page.getByLabel("Email and phone", { exact: true }))).check();
     await page.getByLabel(/Reason/).fill("Private teen request reason");
+
     if (first === "admin") await capture(page, "teen-event-compose");
     await page.getByRole("button", { name: "Send request" }).click();
     await page.getByRole("link", { name: "View request", exact: true }).click();
@@ -168,6 +179,7 @@ test("teen decisions work in both orders; guardian sees only active grants and c
     await expect(page.getByRole("button", { name: "Reveal contact details" })).toHaveCount(0);
     await expect(page.getByRole("link", { name: "View event" })).toHaveCount(0);
     await capture(page, `guardian-${first}-active-grant`);
+
     if (first === "admin") {
       await page.goto("/profile/requests");
       await (await soon(page.getByRole("link", { name: "Contact requests and access" }))).click();
@@ -183,9 +195,11 @@ test("teen decisions work in both orders; guardian sees only active grants and c
       page.once("dialog", (dialog) => dialog.accept());
       await page.getByRole("button", { name: "Revoke access" }).click();
     }
+
     await expect(await soon(page.getByText("Contact access is not available", { exact: true }))).toBeVisible();
     await save(`guardian-${first}-ended-omissions`, await (await page.request.get("/api/v1/contact-grants")).json());
   }
+
   const adminFinal = await apiAs(request, adminName);
   const { request: denied } = await adminFinal("POST", "/contact-requests", { subjectUserId: teen.id, contextType: "event", contextId: visibleEvent.id, fields: "phone" });
   await signInTo(page, "contact-teen", `/contact-requests/${denied.id}`);

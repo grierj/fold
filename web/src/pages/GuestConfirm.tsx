@@ -23,6 +23,7 @@ export function GuestConfirm() {
     setBusy(true);
     setError(null);
     setFull(false);
+
     try {
       setResult(await Guests.confirm(token));
     } catch (err) {
@@ -38,6 +39,7 @@ export function GuestConfirm() {
 
   const reg = result?.registration;
   const waitlisted = reg?.status === "waitlisted";
+
   return (
     <div className="fold-auth">
       <h1 className="text-3xl font-bold mb-6">Confirm your registration</h1>

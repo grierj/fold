@@ -1,3 +1,4 @@
+import { isNumber } from "../lib/wireValues";
 import { Form } from "./ui/Form";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Households, type HouseholdPersonInput } from "../api/households";
@@ -15,25 +16,36 @@ import { HouseholdSkeleton } from "./HouseholdSkeleton";
 // Children and teens wait for an admin to confirm the link (DEC-32).
 
 const KIND_LABEL: Record<HouseholdPerson["kind"], string> = { child: "Child", teen: "Teen", adult: "Adult" };
+
 const LINK_LABEL: Partial<Record<HouseholdPerson["linkStatus"], string>> = {
   pending: "Waiting for an admin to check",
   confirmed: "Confirmed",
   rejected: "Not confirmed",
   revoked: "Link ended",
 };
+
 const STONE = "inline-block rounded-full bg-sunken px-2 py-0.5 text-xs font-semibold text-text-muted";
 const VIOLET = "inline-block rounded-full bg-primary-subtle px-2 py-0.5 text-xs font-semibold text-primary-on-subtle";
 
 type Draft = { firstName: string; lastName: string; kind: HouseholdPerson["kind"]; birthDate: string; careNotes: string; photoConsent: boolean };
+
 const emptyDraft: Draft = { firstName: "", lastName: "", kind: "child", birthDate: "", careNotes: "", photoConsent: false };
 
 // personProblems checks a draft before it is sent. today is YYYY-MM-DD.
+interface PersonProblems {
+  firstName?: string;
+  birthDate?: string;
+}
+
 /** @public tested directly: draft validation rules. */
-export function personProblems(d: Draft, today: string): { firstName?: string; birthDate?: string } {
-  const out: { firstName?: string; birthDate?: string } = {};
+export function personProblems(d: Draft, today: string): PersonProblems {
+  const out: PersonProblems = {};
+
   if (!d.firstName.trim()) out.firstName = "Add a first name.";
+
   if (d.kind !== "adult" && !d.birthDate) out.birthDate = "Add a birth date for a child or teen.";
   else if (d.birthDate && d.birthDate > today) out.birthDate = "A birth date can't be in the future.";
+
   return out;
 }
 
@@ -62,13 +74,17 @@ function PersonForm({ initial, onSave, onCancel, heading, level, careVisible = t
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     const problems = personProblems(d, new Date().toISOString().slice(0, 10));
+
     if (problems.firstName || problems.birthDate) {
       showFieldErrors(formRef.current, () => setShown(problems));
+
       return;
     }
+
     setShown({});
     setBusy(true);
     setError(null);
+
     try {
       await onSave({
         firstName: d.firstName.trim(), lastName: d.lastName.trim(), kind: d.kind,
@@ -133,6 +149,7 @@ export function HouseholdCard({ showHeading = true }: { showHeading?: boolean })
 
   const load = useCallback(async () => {
     setLoadError(null);
+
     try {
       setHousehold((await Households.mine()).household);
     } catch (e) {
@@ -141,25 +158,30 @@ export function HouseholdCard({ showHeading = true }: { showHeading?: boolean })
       setLoading(false);
     }
   }, []);
+
   useEffect(() => { load(); }, [load]);
 
   useEffect(() => {
     const target = focusNext.current;
+
     if (target === null || editing !== null) return;
     focusNext.current = null;
     const root = cardRef.current;
+
     const el =
-      typeof target === "number"
+      isNumber(target)
         ? root?.querySelector<HTMLElement>(`[data-person="${target}"] button`)
         : target === "add"
           ? root?.querySelector<HTMLElement>("[data-add]")
           : root?.querySelector<HTMLElement>("#household-heading");
+
     (el ?? root?.querySelector<HTMLElement>("#household-heading") ?? root)?.focus();
   }, [household, editing, converting]);
 
   async function remove(p: HouseholdPerson) {
     if (!confirm(`Remove ${p.name} from your household?${p.conversion && p.conversion.state !== "awaiting_approval" ? " This also cancels their account invitation." : ""}`)) return;
     setError(null);
+
     try {
       await Households.removePerson(p.id);
       setStatus(`Removed ${p.name}.`);
@@ -171,6 +193,7 @@ export function HouseholdCard({ showHeading = true }: { showHeading?: boolean })
   }
 
   const people = household?.people ?? [];
+
   const addButton = (
     <span data-add>
       <Button variant={people.length ? "secondary" : "primary"} layout="mt-3" onClick={() => { setMetadata(false); setEditing("new"); }}>Add a household member</Button>
@@ -297,12 +320,15 @@ function ConversionForm({ person, onCancel, onSent }: { person: HouseholdPerson;
   const [busy, setBusy] = useState(false);
   const ref = useRef<HTMLFormElement>(null);
   useEffect(() => { ref.current?.querySelector("input")?.focus(); }, []);
+
   async function submit(e: React.FormEvent) {
     e.preventDefault(); setBusy(true); setError(null);
+
     try { await Households.convert(person.id, email.trim()); await onSent(); }
     catch (e) { showFieldErrors(ref.current, () => setError(errorText(e, "We couldn't send this invitation. Try again."))); }
     finally { setBusy(false); }
   }
+
   return <Form noValidate ref={ref} onSubmit={submit} className="mt-3 space-y-3" aria-label={`Create an account for ${person.name}`}>
     <p className="text-sm">Use their own email address. All past and upcoming sign-ups move after {person.kind === "teen" ? "an admin approves the account, consent is granted, and an admin confirms the new guardian link" : "an admin approves"}. Group memberships do not move.</p>
     <p className="text-sm">{person.kind === "teen" ? "Your household keeps managing their sign-ups until all checks are complete. The guardian link for the new account needs a fresh admin check." : "A church admin will approve their account before they can sign in."}</p>
@@ -314,14 +340,17 @@ function ConversionForm({ person, onCancel, onSent }: { person: HouseholdPerson;
 function ConversionActions({ person, onChanged }: { person: HouseholdPerson; onChanged: (message: string) => Promise<void> }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
   async function act(cancel: boolean) {
     setBusy(true); setError(null);
+
     try {
       if (cancel) await Households.cancelConversion(person.id); else await Households.resendConversion(person.id);
       await onChanged(cancel ? "Invitation cancelled. Their sign-ups are unchanged." : "Invitation resent. The previous link can no longer be used.");
     } catch (e) { setError(errorText(e, "We couldn't update the invitation. Try again.")); }
     finally { setBusy(false); }
   }
+
   return <div>
     <div className="flex flex-wrap gap-3"><Button variant="secondary" disabled={busy || !person.canConvert} onClick={() => void act(false)}>Resend invitation</Button><Button variant="danger-outline" disabled={busy} onClick={() => void act(true)}>Cancel invitation</Button></div>
     {error && <ErrorNotice message={error} />}
@@ -336,13 +365,22 @@ function HouseholdForm({ household, onSave, onCancel }: { household: Household; 
   const [nameError, setNameError] = useState<string | undefined>();
   const root = useRef<HTMLFormElement>(null);
   useEffect(() => { root.current?.querySelector("input")?.focus(); }, []);
+
   async function save(e: React.FormEvent) {
     e.preventDefault();
-    if (!name.trim() || [...name.trim()].length > 100) { showFieldErrors(root.current, () => setNameError("Enter a household name of 1 to 100 characters.")); return; }
+
+    if (!name.trim() || [...name.trim()].length > 100) {
+      showFieldErrors(root.current, () => setNameError("Enter a household name of 1 to 100 characters."));
+
+      return;
+    }
+
     setBusy(true); setError(null); setNameError(undefined);
+
     try { await onSave(name.trim(), address.trim()); }
     catch (e) { setError(errorText(e, "We couldn't save your household.")); setBusy(false); }
   }
+
   return <Form noValidate ref={root} aria-label="Edit household" onSubmit={save} className="mt-3 space-y-3 rounded-lg border border-border p-4">
     <Field label="Household name" hint="Required. Up to 100 characters." error={nameError}><Input value={name} onChange={(e) => setName(e.target.value)} required maxLength={100} /></Field>
     <Field label="Address" optional hint="Optional. Up to 500 characters."><Textarea value={address} onChange={(e) => setAddress(e.target.value)} rows={3} maxLength={500} /></Field>

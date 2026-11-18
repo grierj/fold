@@ -1,7 +1,8 @@
+import * as schema from "valibot";
+import { isNumber } from "../src/lib/wireValues";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type APIRequestContext, type Locator, type Page } from "@playwright/test";
 import { apiAs, email, nextFrames, PASSWORD, signIn } from "./helpers";
-// @ts-expect-error plain JS module shared with .cursor/skills/verify-ui
 import { measure } from "./ui-measure.mjs";
 
 const lineMessage = "This link can turn email off, but not back on.";
@@ -15,8 +16,10 @@ async function settingsPath(request: APIRequestContext, login: string) {
     const section = html.split("<section").find((s) => s.includes(`To: ${email(login)}`));
     const url = section?.match(/https?:[^\s<]+\/email-settings\/[A-Za-z0-9_-]+/)?.[0] ?? "";
     path = url ? new URL(url).pathname : "";
+
     return path;
   }).not.toBe("");
+
   return path;
 }
 
@@ -36,19 +39,24 @@ async function expectClearOfBars(page: Page, state: string, width: number, view:
     const header = document.querySelector("header");
     const tabs = document.querySelector('nav[aria-label="Tabs"]');
     const tabsTop = tabs ? tabs.getBoundingClientRect() : null;
+
     return {
       headerBottom: header ? header.getBoundingClientRect().bottom : 0,
       tabsTop: tabsTop && tabsTop.height > 0 ? tabsTop.top : null,
     };
   });
+
   for (const el of [view.target, ...(view.also ?? [])]) {
     const rect = await el.evaluate((node) => {
       const r = node.getBoundingClientRect();
       const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+
       return { top: r.top, bottom: r.bottom, onTop: !!hit && node.contains(hit) };
     });
+
     const what = `${state} ${view.name} at ${width}px`;
     expect.soft(rect.top, `${what}: under the sticky header`).toBeGreaterThanOrEqual(bars.headerBottom - 1);
+
     if (bars.tabsTop !== null) expect.soft(rect.bottom, `${what}: under the tab bar`).toBeLessThanOrEqual(bars.tabsTop + 1);
     expect.soft(rect.onTop, `${what}: something is painted over it`).toBe(true);
   }
@@ -58,9 +66,12 @@ async function checkUI(page: Page, state: string, options: { emailPreview?: bool
   for (const width of [390, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     await nextFrames(page);
+
     const wcagScan = new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]);
+
     const headingScan = new AxeBuilder({ page }).withRules(["heading-order"]);
+
     if (options.emailPreview) {
       const preview = page.locator(emailPreviewSelector);
       await expect(preview).toBeVisible();
@@ -73,11 +84,15 @@ async function checkUI(page: Page, state: string, options: { emailPreview?: bool
       wcagScan.exclude(emailPreviewSelector);
       headingScan.exclude(emailPreviewSelector);
     }
+
     const wcag = await wcagScan.analyze();
     const headings = await headingScan.analyze();
+
     const bad = [...wcag.violations, ...headings.violations]
       .filter((v) => v.impact === "moderate" || v.impact === "serious" || v.impact === "critical");
+
     expect.soft(bad.map((v) => `${v.id}: ${v.help}`), `${state} at ${width}px`).toEqual([]);
+
     const layout: {
       overflow: number;
       cutOff: unknown[];
@@ -85,15 +100,18 @@ async function checkUI(page: Page, state: string, options: { emailPreview?: bool
       under24: unknown[];
       under44: { el: string }[];
     } = await page.evaluate(measure);
+
     expect.soft(layout.overflow, `${state} at ${width}px: sideways scroll`).toBeLessThanOrEqual(0);
     expect.soft(layout.cutOff, `${state} at ${width}px: clipped controls`).toEqual([]);
     expect.soft(layout.clipped, `${state} at ${width}px: clipped choices`).toEqual([]);
     expect.soft(layout.under24, `${state} at ${width}px: targets under 24px`).toEqual([]);
     expect.soft(layout.under44.filter((t) => /^input\[(radio|checkbox)\]$/.test(t.el)), `${state} at ${width}px: rows under 44px`).toEqual([]);
+
     if (!options.views) {
       await page.screenshot({ path: test.info().outputPath(`${state}-${width}.png`), fullPage: true, animations: "disabled" });
       continue;
     }
+
     for (const view of options.views) {
       await view.target.evaluate((e, block) => e.scrollIntoView({ block }), view.block);
       await nextFrames(page);
@@ -117,7 +135,7 @@ test("an email's settings link works signed out and matches Me > Notifications",
   // Its own context: one request context holds one session.
   const memberContext = await browser.newContext({ baseURL: test.info().project.use.baseURL });
   const member = await apiAs(memberContext.request, login);
-  const { group } = (await member("POST", "/groups", { name: `Settings club ${login}`, description: "", tags: [], visibility: "public" })) as { group: { id: number } };
+  const { group } = schema.parse(schema.looseObject({ group: schema.looseObject({ id: schema.number() }) }), (await member("POST", "/groups", { name: `Settings club ${login}`, description: "", tags: [], visibility: "public" })));
   await admin("POST", `/admin/groups/${group.id}/approve`, {});
   await memberContext.close();
 
@@ -151,14 +169,17 @@ test("a new holder sees the address's effective choice and can turn event update
   const admin = await apiAs(request, "grier");
   const original = await admin("POST", "/admin/users", { name: "Original Email Holder", email: email(login), password: PASSWORD, ageBand: "adult" });
   const originalID: unknown = original.user.id;
-  if (typeof originalID !== "number") throw new Error("The original account needs a user id");
+
+  if (!isNumber(originalID)) throw new Error("The original account needs a user id");
   const originalContext = await browser.newContext({ baseURL: test.info().project.use.baseURL });
+
   try {
     const member = await apiAs(originalContext.request, login);
     await member("PUT", "/me/notification-settings", { category: "events", off: true });
   } finally {
     await originalContext.close();
   }
+
   await admin("DELETE", `/admin/users/${originalID}`);
   await admin("POST", "/admin/users", { name: "Current Email Holder", email: email(login), password: PASSWORD, ageBand: "adult" });
 
@@ -181,20 +202,24 @@ test("a moved-address link explains turn-off-only access, refuses turn-on and st
   const admin = await apiAs(request, "grier");
   const created = await admin("POST", "/admin/users", { name: "Moved Email Member", email: email(login), password: PASSWORD, ageBand: "adult" });
   const userID: unknown = created.user.id;
-  if (typeof userID !== "number") throw new Error("The member needs a user id");
+
+  if (!isNumber(userID)) throw new Error("The member needs a user id");
   const memberContext = await browser.newContext({ baseURL: test.info().project.use.baseURL });
   let groupID: number;
+
   try {
     const member = await apiAs(memberContext.request, login);
     await member("PUT", "/me/notification-settings", { category: "events", off: true });
     await member("PUT", "/me/notification-settings", { category: "messages", off: true });
     const createdGroup = await member("POST", "/groups", { name: `Club ${Date.now().toString(36)}`, description: "", tags: [], visibility: "public" });
     const id: unknown = createdGroup.group.id;
-    if (typeof id !== "number") throw new Error("The member needs a group id");
+
+    if (!isNumber(id)) throw new Error("The member needs a group id");
     groupID = id;
   } finally {
     await memberContext.close();
   }
+
   await admin("POST", `/admin/groups/${groupID}/approve`, {});
   const path = await settingsPath(request, login);
 
@@ -216,10 +241,12 @@ test("a moved-address link explains turn-off-only access, refuses turn-on and st
   // Use the keyboard: a rejected save must keep both state and focus.
   const refuseTurnOn = async () => {
     await events.focus();
+
     const [refused] = await Promise.all([
       page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1${path}` && response.request().method() === "PUT"),
       page.keyboard.press("Space"),
     ]);
+
     expect(refused.status()).toBe(403);
     expect(await refused.json()).toMatchObject({ code: "email_link_turn_on" });
     await expect(page.getByRole("alert")).toHaveText(refusedMessage);
@@ -227,6 +254,7 @@ test("a moved-address link explains turn-off-only access, refuses turn-on and st
     await expect(events).not.toBeChecked();
     await expect(events).toBeFocused();
   };
+
   await refuseTurnOn();
   await expect(page.getByText(lineMessage, { exact: true })).toHaveCount(0);
   await checkUI(page, "email-settings-turn-on-refused-after-load");

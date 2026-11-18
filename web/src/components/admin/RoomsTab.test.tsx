@@ -1,3 +1,4 @@
+import { stubService } from "../../test/service";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
@@ -8,17 +9,19 @@ import { ERROR_COPY } from "../../lib/errors";
 import type { Room } from "../../types";
 import { RoomsTab, sortRooms } from "./RoomsTab";
 
-vi.mock("../../api/rooms", async (actual) => ({ ...(await actual<typeof import("../../api/rooms")>()), AdminRooms: { list: vi.fn(), create: vi.fn(), update: vi.fn(), setEnabled: vi.fn(), getFeed: vi.fn(), makeFeed: vi.fn(), revokeFeed: vi.fn() } }));
+stubService(AdminRooms, () => ({ list: vi.fn(), create: vi.fn(), update: vi.fn(), setEnabled: vi.fn(), getFeed: vi.fn(), makeFeed: vi.fn(), revokeFeed: vi.fn() }));
 
 const room = (id: number, name: string, extra: Partial<Room> = {}): Room => ({
   id, name, building: "", capacity: null, features: "", notes: "", active: true, restricted: false,
   defaultSetupMinutes: 0, defaultTeardownMinutes: 0, ...extra,
 });
+
 const hall = room(1, "Fellowship Hall", { building: "Main", capacity: 80, features: "kitchen, projector", notes: "Ask Dana", defaultSetupMinutes: 30, defaultTeardownMinutes: 15 });
 
 // The page owns the list; this stands in for it.
 function Harness({ initial }: { initial: Room[] | null }) {
   const [rooms, setRooms] = useState(initial);
+
   return <RoomsTab rooms={rooms} error={null} reload={() => {}}
     onSaved={(r) => setRooms((prev) => sortRooms([...(prev ?? []).filter((x) => x.id !== r.id), r]))} />;
 }
@@ -176,6 +179,7 @@ describe("editing a room", () => {
   async function open() {
     render(<Harness initial={[hall, room(2, "Nursery", { restricted: true })]} />);
     await userEvent.click(screen.getByRole("button", { name: "Edit Fellowship Hall" }));
+
     return screen.getByRole("form", { name: "Edit Fellowship Hall" });
   }
 

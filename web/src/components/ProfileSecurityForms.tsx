@@ -23,8 +23,10 @@ export function ProfileEmailForm() {
     setEmailError(null);
     setEmailStatus(null);
     setEmailSaving(true);
+
     try {
       const res = await ProfileApi.update({ email: newEmail, currentPassword });
+
       if (res.verificationSent) {
         setEmailStatus(`Verification link sent to ${newEmail}. It expires in 24 hours.`);
         setNewEmail("");
@@ -82,22 +84,28 @@ export function ProfilePasswordForm() {
 
   if (!user) return null;
 
-  async function changePassword(e: React.FormEvent) {
+  async function changePassword(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setPasswordError(null);
     setPasswordSaved(false);
-    const form = e.currentTarget as HTMLFormElement;
+    const form = e.currentTarget;
     const lengthProblem = passwordProblem(newPassword);
+
     if (lengthProblem) {
       showFieldErrors(form, () => setPasswordFieldError({ field: "new", message: lengthProblem }));
+
       return;
     }
+
     if (newPassword !== confirmPassword) {
       showFieldErrors(form, () => setPasswordFieldError({ field: "confirm", message: "Passwords do not match." }));
+
       return;
     }
+
     setPasswordFieldError(null);
     setPasswordSaving(true);
+
     try {
       await ProfileApi.changePassword(currentPassword, newPassword);
       setCurrentPassword("");

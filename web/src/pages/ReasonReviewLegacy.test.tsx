@@ -1,4 +1,7 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { requiredElement } from "../test/dom";
+import { renderWithAuth } from "../test/auth";
+import { stubService } from "../test/service";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,15 +9,30 @@ import { AdminUsers } from "../api/adminUsers";
 import { ApiError } from "../api/core";
 import { needsRestoreReload, reloadStarted, reloadSucceeded } from "../lib/deleteReload";
 import { ERROR_COPY } from "../lib/errors";
-import type { ErasureReasonItem, ErasureReasonPage, LegacyDiscoveryAccount, LegacyReasonDiscovery } from "../types";
+import type { ErasureReasonItem, ErasureReasonPage, LegacyDiscoveryAccount, LegacyReasonDiscovery, User } from "../types";
 import { ReasonReviewLegacyPage } from "./ReasonReviewLegacy";
 
-type TestUser = { id: number; role: string; status: string; accountType: string; birthDate: string };
-const auth = vi.hoisted(() => ({ user: null as unknown, loading: false, isAdmin: true }));
-vi.mock("../auth", () => ({ useAuth: () => auth }));
-vi.mock("../api/adminUsers", async (actual) => ({
-  ...(await actual<typeof import("../api/adminUsers")>()),
-  AdminUsers: { legacyReasons: vi.fn(), legacyReasonsPage: vi.fn(), mintAttempt: vi.fn(), settleAttempt: vi.fn(), saveLegacyReasons: vi.fn() },
+type TestUser = Pick<User, "id" | "role" | "status" | "accountType" | "birthDate">;
+
+type TestSession = { user: TestUser | null; loading: boolean; isAdmin: boolean };
+
+const auth: TestSession = { user: null, loading: false, isAdmin: true };
+
+const render = renderWithAuth(() => auth);
+
+const realMintAttempt = AdminUsers.mintAttempt;
+const walk = vi.fn<typeof AdminUsers.legacyReasons>();
+const pageCall = vi.fn<typeof AdminUsers.legacyReasonsPage>();
+const mint = vi.fn<typeof AdminUsers.mintAttempt>();
+const put = vi.fn<typeof AdminUsers.saveLegacyReasons>();
+const settleCall = vi.fn<typeof AdminUsers.settleAttempt>();
+
+stubService(AdminUsers, () => ({
+  legacyReasons: walk,
+  legacyReasonsPage: pageCall,
+  mintAttempt: mint,
+  saveLegacyReasons: put,
+  settleAttempt: settleCall,
 }));
 
 const TITLE = "Deleted accounts with reasons to review";
@@ -26,20 +44,26 @@ const BUSY = ERROR_COPY.reason_review_busy;
 const NOT_ALLOWED = "Only an adult admin can review these reasons. Ask another adult admin to review them.";
 
 const admin: TestUser = { id: 1, role: "admin", status: "active", accountType: "adult", birthDate: "1980-01-01" };
+
 // Every account carries the same former name: only the id may tell them apart.
 const account = (userId: string, ...requestIds: string[]): LegacyDiscoveryAccount => ({ userId, name: "Ann Smith", items: requestIds.map((requestId) => ({ requestId })) });
 const unit = (next: string | null, ...accounts: LegacyDiscoveryAccount[]): LegacyReasonDiscovery => ({ accounts, next });
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
+  let reject!: (cause: unknown) => void;
+
   const promise = new Promise<T>((a, b) => {
     resolve = a;
     reject = b;
   });
+
   return { promise, resolve, reject };
 }
+
 // One undecided reason on a deleted account's page. The hash is 64 hex digits, as the server sends.
 const hash = (digit: string) => digit.repeat(64);
+
 const reason = (requestId: string, partyRef: string, over: Partial<ErasureReasonItem> = {}): ErasureReasonItem => ({
   requestId,
   reviewHash: hash("a"),
@@ -54,7 +78,7 @@ const reason = (requestId: string, partyRef: string, over: Partial<ErasureReason
   reason: `reason text ${requestId}`,
   ...over,
 });
-const walk = vi.mocked(AdminUsers.legacyReasons);
+
 const cursors = () => walk.mock.calls.map(([after]) => after);
 
 function mount(path = "/admin/deleted-reasons") {
@@ -66,22 +90,25 @@ function mount(path = "/admin/deleted-reasons") {
     </MemoryRouter>,
   );
 }
+
 const labels = () => screen.queryAllByRole("link").map((a) => a.textContent);
 
 beforeEach(() => {
   auth.user = admin;
   auth.loading = false;
   auth.isAdmin = true;
-  for (const fn of Object.values(AdminUsers)) vi.mocked(fn).mockReset();
+
+  for (const fn of Object.values(AdminUsers)) if (vi.isMockFunction(fn)) fn.mockReset();
   reloadSucceeded(reloadStarted()); // restore_detected is process-wide: start each test clean
 });
+
 afterEach(() => vi.restoreAllMocks());
 
 describe("who may open the page", () => {
   it.each([
     ["a member", { ...admin, role: "member" }, false],
-    ["an admin who is not active", { ...admin, status: "disabled" }, true],
-    ["a teen admin", { ...admin, accountType: "teen" }, true],
+    ["an admin who is not active", { ...admin, status: "disabled" as const }, true],
+    ["a teen admin", { ...admin, accountType: "teen" as const }, true],
   ])("shows %s only the admins-only page and asks for nothing", (_who, user, isAdmin) => {
     auth.user = user;
     auth.isAdmin = isAdmin;
@@ -345,16 +372,12 @@ describe("opening one account", () => {
     vi.mocked(AdminUsers.legacyReasonsPage).mockResolvedValue({ items: [], next: null });
     mount("/admin/deleted-reasons?account=9223372036854775807");
     const heading = screen.getByRole("heading", { level: 1 });
-    expect(within(heading.parentElement as HTMLElement).getByText("Deleted account · ref 9223372036854775807")).toBe(heading);
+    expect(within(requiredElement(heading.parentElement, HTMLElement)).getByText("Deleted account · ref 9223372036854775807")).toBe(heading);
   });
 });
 
 // ---- One account: choosing, saving and settling (T-302 S8) ----
 
-const pageCall = vi.mocked(AdminUsers.legacyReasonsPage);
-const mint = vi.mocked(AdminUsers.mintAttempt);
-const put = vi.mocked(AdminUsers.saveLegacyReasons);
-const settleCall = vi.mocked(AdminUsers.settleAttempt);
 const X1 = "ab".repeat(40);
 const X2 = "cd".repeat(40);
 const SAVED = "Saved.";
@@ -369,6 +392,7 @@ const DELETION_WORDING = /delete again|delete this account|delete request|Ask an
 const NOT_SAVED_WORDING = /weren't saved|wasn't saved|not saved|nothing was saved/i;
 
 const pageOf = (...items: ErasureReasonItem[]): ErasureReasonPage => ({ items, next: null, reviewRequired: true });
+
 // Three reasons on account 52 with distinct hashes.
 const three = () => [reason("1", "52", { reviewHash: hash("1") }), reason("2", "52", { reviewHash: hash("2") }), reason("3", "52", { reviewHash: hash("3"), purpose: "group_add" })];
 
@@ -382,26 +406,34 @@ function mountAccount(id = "52") {
     </MemoryRouter>,
   );
 }
+
 const saveButton = () => screen.getByRole("button", { name: "Save" });
+
 const radio = (ordinal: number, total: number, label: "Keep text" | "Blank text") =>
   within(screen.getByRole("group", { name: `Reason ${ordinal} of ${total}` })).getByRole("radio", { name: label });
+
 async function choose(ordinal: number, total: number, label: "Keep text" | "Blank text") {
   await userEvent.click(radio(ordinal, total, label));
 }
+
 async function chooseAll(total: number, label: "Keep text" | "Blank text" = "Keep text") {
   for (let i = 1; i <= total; i++) await choose(i, total, label);
 }
+
 async function pressSave() {
   await userEvent.click(saveButton());
 }
+
 // Opens account 52 with `items`, every one chosen as Keep, ready to save.
 async function readyToSave(items: ErasureReasonItem[] = three()) {
   pageCall.mockResolvedValueOnce(pageOf(...items));
   const view = mountAccount();
   await screen.findByRole("group", { name: `Reason 1 of ${items.length}` });
   await chooseAll(items.length, "Keep text");
+
   return view;
 }
+
 const expectedDecisions = (items: ErasureReasonItem[], choice: "keep" | "remove" = "keep") => items.map((i) => ({ requestId: i.requestId, reviewHash: i.reviewHash, choice }));
 const checkedRadios = () => screen.queryAllByRole("radio", { checked: true });
 const noDeletionWording = () => expect(document.body).not.toHaveTextContent(DELETION_WORDING);
@@ -552,6 +584,7 @@ describe("an account's reasons", () => {
   it("says there is nothing left when the page is empty, and the account leaves the list", async () => {
     pageCall.mockResolvedValue(pageOf());
     walk.mockResolvedValue(unit(null, account("52", "1"), account("63", "1")));
+
     const view = render(
       <MemoryRouter initialEntries={["/admin/deleted-reasons"]}>
         <Routes>
@@ -559,6 +592,7 @@ describe("an account's reasons", () => {
         </Routes>
       </MemoryRouter>,
     );
+
     await userEvent.click(await screen.findByRole("link", { name: "Deleted account · ref 52" }));
     const empty = await screen.findByText(ACCOUNT_EMPTY);
     expect(empty.closest("div")?.className).not.toMatch(/danger/);
@@ -589,7 +623,7 @@ describe("a page that cannot be trusted or read", () => {
 
   it.each([
     ["a reason about another account", () => [reason("1", "52"), reason("2", "99")]],
-    ["a reason with no account", () => [reason("1", "52"), { ...reason("2", "52"), partyRef: undefined } as ErasureReasonItem]],
+    ["a reason with no account", () => [reason("1", "52"), { ...reason("2", "52"), partyRef: undefined }]],
     ["more than 100 reasons", () => Array.from({ length: 101 }, (_, i) => reason(String(i + 1), "52"))],
     ["a repeated request", () => [reason("1", "52"), reason("1", "52")]],
   ])("fails closed on %s, shows no reason and asks again from the same request", async (_name, bad) => {
@@ -667,10 +701,12 @@ describe("pressing Save", () => {
     await pressSave();
     await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
     expect(saveButton()).toBeDisabled();
+
     for (let i = 1; i <= 3; i++) {
       expect(radio(i, 3, "Keep text")).toBeDisabled();
       expect(radio(i, 3, "Blank text")).toBeDisabled();
     }
+
     await userEvent.click(radio(2, 3, "Blank text"));
     expect(radio(2, 3, "Keep text")).toBeChecked();
     await userEvent.click(saveButton());
@@ -857,7 +893,7 @@ describe("an answer that does not say what happened", () => {
     await readyToSave(items);
     mint.mockResolvedValueOnce({ attemptId: X1 });
     put.mockRejectedValueOnce(failure);
-    settleCall.mockReturnValueOnce(answer.promise as never);
+    settleCall.mockReturnValueOnce(answer.promise);
     pageCall.mockResolvedValue(pageOf());
     await pressSave();
     await waitFor(() => expect(settleCall).toHaveBeenCalledTimes(1));
@@ -883,6 +919,7 @@ describe("an answer that does not say what happened", () => {
       await readyToSave(items);
       mint.mockResolvedValueOnce({ attemptId: X1 }).mockResolvedValueOnce({ attemptId: X2 });
       put.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+
       return items;
     }
 
@@ -956,9 +993,9 @@ describe("an answer that does not say what happened", () => {
 
     it.each([
       ["checking", () => settleCall.mockResolvedValueOnce({ result: "checking" })],
-      ["a body with no result", () => settleCall.mockResolvedValueOnce({} as never)],
-      ["an unknown result", () => settleCall.mockResolvedValueOnce({ result: "done" } as never)],
-      ["a body that is not an object", () => settleCall.mockResolvedValueOnce(null as never)],
+      ["a body with no result", () => settleCall.mockResolvedValueOnce({})],
+      ["an unknown result", () => settleCall.mockResolvedValueOnce({ result: "done" })],
+      ["a body that is not an object", () => settleCall.mockResolvedValueOnce(null)],
       ["a dropped connection", () => settleCall.mockRejectedValueOnce(new TypeError("Failed to fetch"))],
       ["a malformed answer", () => settleCall.mockRejectedValueOnce(new ApiError(502, "unexpected"))],
       ["a gateway page", () => settleCall.mockRejectedValueOnce(new ApiError(503, "<html>", {}, true))],
@@ -984,7 +1021,7 @@ describe("an answer that does not say what happened", () => {
     it("runs one settle for a double click of Check again, and the button is gone while it is in flight", async () => {
       await uncertainSave();
       const second = deferred<{ result: string }>();
-      settleCall.mockResolvedValueOnce({ result: "checking" }).mockReturnValueOnce(second.promise as never);
+      settleCall.mockResolvedValueOnce({ result: "checking" }).mockReturnValueOnce(second.promise);
       await pressSave();
       const again = await screen.findByRole("button", { name: "Check again" });
       act(() => {
@@ -1179,7 +1216,7 @@ describe("leaving, switching and late answers", () => {
     await readyToSave();
     mint.mockResolvedValueOnce({ attemptId: X1 });
     put.mockRejectedValueOnce(new TypeError("Failed to fetch"));
-    settleCall.mockReturnValueOnce(answer.promise as never);
+    settleCall.mockReturnValueOnce(answer.promise);
     await pressSave();
     await waitFor(() => expect(settleCall).toHaveBeenCalledTimes(1));
     await userEvent.click(screen.getByRole("link", { name: TITLE }));
@@ -1214,13 +1251,13 @@ describe("leaving, switching and late answers", () => {
 
 describe("an account id too large for the mint", () => {
   it("lists and reads the full-width id as a string, refuses to save with no PUT, settle or request, and keeps the choices", async () => {
-    const real = await vi.importActual<typeof import("../api/adminUsers")>("../api/adminUsers");
     const fetchSpy = vi.fn(() => Promise.reject(new Error("no request may be sent")));
     vi.stubGlobal("fetch", fetchSpy);
+
     try {
       const big = "9007199254740993";
       walk.mockResolvedValue(unit(null, account(big, "1"), account("9007199254740992", "1")));
-      mint.mockImplementation(real.AdminUsers.mintAttempt);
+      mint.mockImplementation(realMintAttempt);
       pageCall.mockResolvedValueOnce(pageOf(reason("1", big)));
       mountAccount(big);
       expect(await screen.findByRole("heading", { level: 1, name: `Deleted account · ref ${big}` })).toBeInTheDocument();

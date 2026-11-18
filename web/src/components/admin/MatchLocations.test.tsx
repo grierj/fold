@@ -1,3 +1,5 @@
+import { requiredElement } from "../../test/dom";
+import { stubService } from "../../test/service";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
@@ -7,12 +9,13 @@ import { ApiError } from "../../api/core";
 import type { Room, TypedLocation } from "../../types";
 import { MatchLocations } from "./MatchLocations";
 
-vi.mock("../../api/rooms", async (actual) => ({ ...(await actual<typeof import("../../api/rooms")>()), AdminRooms: { locations: vi.fn(), matchLocation: vi.fn() } }));
+stubService(AdminRooms, () => ({ locations: vi.fn(), matchLocation: vi.fn() }));
 
 const room = (id: number, name: string, extra: Partial<Room> = {}): Room => ({
   id, name, building: "", capacity: null, features: "", notes: "", active: true, restricted: false,
   defaultSetupMinutes: 0, defaultTeardownMinutes: 0, ...extra,
 });
+
 const hall = room(1, "Fellowship Hall", { building: "Main" });
 const chapel = room(2, "Chapel");
 const nursery = room(3, "Nursery", { restricted: true });
@@ -27,13 +30,15 @@ const noBusy = { booked: 1, busy: [], busyTotal: 0, series: 0 };
 function show(list: Room[] | null = rooms) {
   return render(<MemoryRouter><MatchLocations rooms={list} /></MemoryRouter>);
 }
-const row = (location: string) => screen.getByText(location).closest("li") as HTMLElement;
+
+const row = (location: string) => requiredElement(screen.getByText(location).closest("li"), HTMLElement);
 const btn = (location: string) => within(row(location)).getByRole("button");
 const choose = (location: string, roomId: string) => userEvent.selectOptions(within(row(location)).getByRole("combobox"), roomId);
 
 function deferred<T>() {
   let resolve!: (v: T) => void;
   const promise = new Promise<T>((r) => { resolve = r; });
+
   return { promise, resolve };
 }
 
@@ -52,7 +57,7 @@ describe("MatchLocations", () => {
     expect(within(row("The gym")).getByText("1 upcoming date in 1 event")).toBeInTheDocument();
     const select = within(a).getByRole("combobox", { name: "Room for “fellowship hall”" });
     // Active rooms only, restricted ones included (admins may book them).
-    expect(Array.from((select as HTMLSelectElement).options).map((o) => o.textContent)).toEqual([
+    expect(Array.from(requiredElement(select, HTMLSelectElement).options).map((o) => o.textContent)).toEqual([
       "Choose a room", "Fellowship Hall · Main", "Chapel", "Nursery",
     ]);
   });

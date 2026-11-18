@@ -9,18 +9,22 @@ import { apiAs, email, LONG_GROUP_NAME, PASSWORD } from "./helpers";
 // re-enabling them left both out of the group (DEC-47).
 setup("first-run setup and seed data", async ({ page, request }) => {
   await page.goto("/setup");
+
   for (const width of [390, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     const { violations } = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]).analyze();
     expect(violations.filter((v) => v.impact === "moderate" || v.impact === "serious" || v.impact === "critical").map((v) => v.id), `setup code at ${width}px`).toEqual([]);
+
     if (process.env.SCREENS_DIR) await page.screenshot({ path: `${process.env.SCREENS_DIR}/setup-code-${width}.png`, fullPage: true });
   }
+
   await page.getByLabel("Setup code").fill("wrong");
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.getByRole("alert")).toContainText("doesn't match");
   await page.getByLabel("Setup code").fill("a".repeat(64));
   await page.getByRole("button", { name: "Continue" }).click();
   await expect(page.locator("[name=site_name]")).toBeVisible();
+
   // The setup page is only reachable now, so its axe scan and screenshots
   // (when SCREENS_DIR is set, as in screens.spec.ts) happen here.
   for (const width of [390, 1280]) {
@@ -28,12 +32,14 @@ setup("first-run setup and seed data", async ({ page, request }) => {
     const { violations } = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]).analyze();
     expect(violations.filter((v) => v.impact === "moderate" || v.impact === "serious" || v.impact === "critical").map((v) => v.id), `setup at ${width}px`).toEqual([]);
   }
+
   if (process.env.SCREENS_DIR) {
     for (const w of [390, 768, 1280]) {
       await page.setViewportSize({ width: w, height: 900 });
       await page.screenshot({ path: `${process.env.SCREENS_DIR}/setup-${w}.png`, fullPage: true, animations: "disabled", caret: "hide" });
     }
   }
+
   await page.locator("[name=site_name]").fill("Fold e2e");
   await page.locator("[name=timezone]").fill("America/Boise");
   await page.locator("[name=name]").fill("Grier");
@@ -60,12 +66,15 @@ setup("first-run setup and seed data", async ({ page, request }) => {
   await expect(page.locator("[name=password]")).toHaveValue("");
   await expect(page.locator("[name=password_confirm]")).toHaveValue("");
   await expect(page.locator("[name=site_name]")).toHaveValue("Fold e2e");
+
   for (const width of [390, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     const { violations } = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]).analyze();
     expect(violations.filter((v) => v.impact === "moderate" || v.impact === "serious" || v.impact === "critical").map((v) => v.id), `generic setup error at ${width}px`).toEqual([]);
+
     if (process.env.SCREENS_DIR) await page.screenshot({ path: `${process.env.SCREENS_DIR}/setup-generic-error-${width}.png`, fullPage: true });
   }
+
   await page.getByRole("link", { name: "Return to the setup form to try again" }).click();
   await expect(page.locator("form")).toBeFocused();
   await page.locator("[name=name]").fill("Grier");
@@ -76,21 +85,27 @@ setup("first-run setup and seed data", async ({ page, request }) => {
 
   const admin = await apiAs(request, "grier");
   const ids: Record<string, number> = {};
+
   for (const [name, full] of [["lee", "Lee Leader"], ["sam", "Sam Member"], ["pat", "Pat Returner"], ["quinn", "Quinn Returner"]]) {
     const { user } = await admin("POST", "/admin/users", { ageBand: "adult", email: email(name), name: full, password: PASSWORD, role: "member" });
     ids[name] = user.id;
   }
+
   const { group } = await admin("POST", "/groups", {
     name: "Room 201 class", description: "A class in a small room.", tags: ["class"],
     imageUrl: "", location: "Room 201", visibility: "public", memberLimit: null,
   });
+
   await admin("POST", `/admin/groups/${group.id}/members`, { userId: ids.lee, role: "leader" });
+
   for (const name of ["pat", "quinn"]) {
     await admin("POST", `/admin/groups/${group.id}/members`, { userId: ids[name], role: "member" });
     await admin("PUT", `/admin/users/${ids[name]}`, { status: "disabled" });
   }
+
   await admin("POST", `/admin/groups/${group.id}/members`, { userId: ids.sam, role: "member" });
   await admin("PUT", `/groups/${group.id}`, { memberLimit: 3 });
+
   for (const name of ["pat", "quinn"]) await admin("PUT", `/admin/users/${ids[name]}`, { status: "active" });
 
   // Groups only a signed-in member may see (session.spec.ts checks logout
@@ -99,14 +114,17 @@ setup("first-run setup and seed data", async ({ page, request }) => {
     const { group: g } = await admin("POST", "/groups", {
       name, description: "Not for visitors.", tags: [], imageUrl: "", location: "", visibility, memberLimit: null,
     });
+
     await admin("POST", `/admin/groups/${g.id}/members`, { userId: ids.sam, role: "member" });
   }
+
   // A long-named group for the composer's long-name UI check (#288), led by Lee.
   // It is made here, once, not in uiPages(), which every layout and a11y shard
   // runs at the same time. Invite-only keeps it off the directory and home pages.
   const { group: longGroup } = await admin("POST", "/groups", {
     name: LONG_GROUP_NAME, description: "Not for visitors.", tags: [], imageUrl: "", location: "", visibility: "invite_only", memberLimit: null,
   });
+
   await admin("POST", `/admin/groups/${longGroup.id}/members`, { userId: ids.lee, role: "leader" });
   // Dedicated household fixtures leave the existing account-only flows intact.
   await admin("POST", "/admin/users", { ageBand: "adult", name: "Household Parent", email: email("household-parent"), password: PASSWORD, role: "member" });

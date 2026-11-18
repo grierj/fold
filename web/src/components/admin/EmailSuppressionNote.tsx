@@ -16,6 +16,7 @@ function suppressionLabel(reason: EmailSuppression["reason"]): string {
 
 function explanation(s: EmailSuppression): string {
   const day = formatEventDay(s.since);
+
   switch (s.reason) {
     case "hard_bounce":
       return `Fold stopped emailing this address on ${day} because it bounced. If the address works again, clear this; if you changed their email, there's nothing to clear. If your church uses Postmark, reactivate the address there too.`;

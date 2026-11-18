@@ -1,3 +1,5 @@
+import { testSite } from "../test/fixtures";
+import { stubService } from "../test/service";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
@@ -7,8 +9,9 @@ import { Join } from "./Join";
 import { ApiError } from "../api/core";
 import { Site } from "../api/site";
 
-vi.mock("../api/site", () => ({ Site: { get: vi.fn() } }));
-beforeEach(() => vi.mocked(Site.get).mockResolvedValue({ name: "Grace", selfSignup: "off" } as never));
+stubService(Site, () => ({ get: vi.fn() }));
+
+beforeEach(() => vi.mocked(Site.get).mockResolvedValue(testSite({ name: "Grace", selfSignup: "off" })));
 
 it("explains the steps and points someone who has an account to log in", async () => {
   render(<MemoryRouter><Join /></MemoryRouter>);
@@ -21,7 +24,7 @@ it("explains the steps and points someone who has an account to log in", async (
 });
 
 it("says so, with a retry, and shows no form when the church's signup setting can't be read", async () => {
-  vi.mocked(Site.get).mockRejectedValueOnce(new ApiError(500, "x")).mockResolvedValue({ name: "Grace", selfSignup: "request" } as never);
+  vi.mocked(Site.get).mockRejectedValueOnce(new ApiError(500, "x")).mockResolvedValue(testSite({ name: "Grace", selfSignup: "request" }));
   render(<MemoryRouter><Join /></MemoryRouter>);
   expect(await screen.findByRole("alert")).toHaveTextContent("We couldn't check whether this church takes account requests.");
   expect(screen.queryByRole("button", { name: "Request an account" })).not.toBeInTheDocument();

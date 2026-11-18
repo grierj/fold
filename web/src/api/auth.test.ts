@@ -22,10 +22,11 @@ it("fetches a fresh CSRF token after signing in, because the server rotates it",
   const { Auth } = await import("./auth");
   const { api } = await import("./core");
   let minted = 0;
-  const sent: string[] = [];
+  const sent: Array<string | null> = [];
   vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL, opts?: RequestInit) => {
     if (String(url) === "/api/v1/auth/csrf") return new Response(JSON.stringify({ csrfToken: `token-${++minted}` }), { status: 200 });
-    sent.push((opts?.headers as Record<string, string>)["X-CSRF-Token"]);
+    sent.push(new Headers(opts?.headers).get("X-CSRF-Token"));
+
     return new Response(JSON.stringify({ user: {} }), { status: 200 });
   }));
   await Auth.login("pat@example.com", "password1234");

@@ -1,3 +1,4 @@
+import { isNumber, isObject } from "../lib/wireValues";
 import { Form } from "./ui/Form";
 import { Link } from "react-router-dom";
 import { ChildcareRequestField, childcareCountProblem } from "./ChildcareRequestField";
@@ -26,6 +27,7 @@ const MODES: { value: AttendanceMode; label: string }[] = [
 ];
 
 type SeriesAnswer = RsvpAnswer;
+
 type SeriesFeedbackReporter = (eventId: number, date: string, actorResults: ActorRsvpResult[]) => void;
 
 const humanDays = (days: string[]) => days.map(formatCalendarDay).join(" and ");
@@ -36,16 +38,21 @@ function resultSummary(result: SeriesRegistrationResponse, prefix = "") {
   const declined = result.results.filter((row) => row.after.status === "declined").length;
   const waitlisted = result.results.filter((row) => row.after.status === "waitlisted").map((row) => row.date);
   const parts = [going ? `Going to ${going} ${going === 1 ? "date" : "dates"}` : "", maybe ? `Maybe for ${maybe} ${maybe === 1 ? "date" : "dates"}` : "", declined ? `Can't go to ${declined} ${declined === 1 ? "date" : "dates"}` : ""].filter(Boolean);
+
   if (waitlisted.length) parts.push(`waitlisted for ${humanDays(waitlisted)}`);
+
   if (result.refusals.length) parts.push(`${result.refusals.length} ${result.refusals.length === 1 ? "date was" : "dates were"} left unchanged`);
+
   if (result.capacityLoss?.length) parts.push(`a seat was no longer available for ${humanDays(result.capacityLoss)}`);
   const fallback = prefix && result.results.length ? `Restored previous answers for ${result.results.length} ${result.results.length === 1 ? "date" : "dates"}.` : "No dates changed.";
+
   return `${prefix}${parts.join(" · ") || fallback}`;
 }
 
 const TERMINAL_UNDO_CODES = new Set([
   "undo_changed", "undo_authority_revoked", "undo_date_ended", "undo_not_found", "undo_expired", "undo_used",
 ]);
+
 const REFRESH_UNDO_CODES = new Set([
   "undo_changed", "undo_authority_revoked", "undo_date_ended", "undo_not_found", "undo_used",
 ]);
@@ -73,10 +80,12 @@ function useActorSeriesRsvp({
 
   useEffect(() => {
     if (!undo) return;
+
     const timer = window.setTimeout(() => {
       setUndo(null);
       setStatusMessage((message) => `${message} · The 10-second Undo time has ended. You can change your answers again from the event.`);
     }, Math.max(0, undo.expiresAt - Date.now()));
+
     return () => window.clearTimeout(timer);
   }, [undo]);
 
@@ -97,22 +106,27 @@ function useActorSeriesRsvp({
   async function applySeries(answer: SeriesAnswer, scope: Exclude<SeriesRsvpScope, "just_this_date">): Promise<boolean> {
     if (answer.status === "declined" && !window.confirm("Can't go to these dates? They will be removed from your calendar and personal feed.")) return false;
     const release = mutationGate.acquire();
+
     if (!release) return false;
     setError(null);
+
     try {
       const result = await Events.registerSeries(instance.eventId, {
         ...registerBody(instance, answer),
         scope,
-        ...(scope === "this_and_following" ? { date: instance.date } : {}),
+        date: scope === "this_and_following" ? instance.date : undefined,
       });
+
       setStatusMessage(resultSummary(result));
       setUndo(result.undoToken && result.undoExpiresAt ? { token: result.undoToken, expiresAt: new Date(result.undoExpiresAt).getTime() } : null);
       onSeriesFeedback?.(instance.eventId, instance.date, result.results.map(({ date, after }) => ({ date, after })));
       onChange({ registration: null, people: [] });
       queueMicrotask(() => statusRef.current?.focus());
+
       return true;
     } catch (e) {
       setError(errorText(e, "We couldn't save your series answer."));
+
       return false;
     } finally {
       release();
@@ -122,8 +136,10 @@ function useActorSeriesRsvp({
   async function undoSeries() {
     if (!undo) return;
     const release = mutationGate.acquire();
+
     if (!release) return;
     setError(null);
+
     try {
       const result = await Events.undoSeriesRegistration(instance.eventId, undo.token);
       setUndo(null);
@@ -133,12 +149,15 @@ function useActorSeriesRsvp({
       queueMicrotask(() => statusRef.current?.focus());
     } catch (e) {
       const code = errorCode(e);
+
       if (TERMINAL_UNDO_CODES.has(code)) {
         setUndo(null);
         setStatusMessage("");
         queueMicrotask(() => statusRef.current?.focus());
       }
+
       setError(errorText(e, "We couldn't undo that answer."));
+
       if (REFRESH_UNDO_CODES.has(code)) onTerminalRefresh?.();
     } finally {
       release();
@@ -176,10 +195,13 @@ function SeriesScopeDialog({ series, onJustThisDate, onApplied }: {
   onApplied?: () => void;
 }) {
   if (!series.pending) return null;
+
   return <SeriesRsvpDialog answer={registrationStatusLabel(series.pending.status)} disabled={series.mutationBusy} onCancel={() => series.setPending(null)} onChoose={(scope) => {
     const answer = series.pending;
     series.setPending(null);
+
     if (!answer) return;
+
     if (scope === "just_this_date") onJustThisDate(answer);
     else void series.applySeries(answer, scope).then((applied) => { if (applied) onApplied?.(); });
   }} />;
@@ -196,14 +218,18 @@ function useActorDraftReconciliation(instance: EventOccurrence, seriesFeedback: 
   reconcileRef.current = reconcile;
   useEffect(() => {
     const feedbackChanged = seriesFeedback?.revision !== undefined && seriesFeedback.revision !== actorRefreshRevision.current;
+
     const actorResult = seriesFeedback?.eventId === instance.eventId
       ? seriesFeedback.actorResults.find((row) => row.date === instance.date)
       : undefined;
+
     const actorRefresh = !!actorResult && feedbackChanged;
     const nextSaved = actorRefresh ? savedAnswerFromState(actorResult.after) : savedAnswer(instance);
     const savedChanged = !sameSavedAnswer(savedActor.current, nextSaved);
     savedActor.current = nextSaved;
+
     if (seriesFeedback?.revision !== undefined) actorRefreshRevision.current = seriesFeedback.revision;
+
     if (savedChanged || actorRefresh) reconcileRef.current(nextSaved);
   }, [instance.date, instance.eventId, instance.myAttendanceMode, instance.myChildcareAgesNote, instance.myChildcareCount,
     instance.myGuestCount, instance.myRegistration, seriesFeedback]);
@@ -245,6 +271,7 @@ function SingleRsvpButtons({
   useEffect(() => {
     const target = careFocus.current;
     careFocus.current = null;
+
     if (target === "field") careRef.current?.querySelector<HTMLElement>("input")?.focus();
     else if (target === "toggle") careRef.current?.querySelector<HTMLElement>("button")?.focus();
   }, [editingCare]);
@@ -265,11 +292,13 @@ function SingleRsvpButtons({
   const fullNoWaitlist = full && !instance.waitlistEnabled && !(mine === "going" && myMode === mode) && mine !== "waitlisted";
   const remoteFull = mode === "remote" && full && !(mine === "going" && myMode === mode);
   const inPersonFull = poolFull(instance, "in_person");
+
   const remoteFullMessage = inPersonFull
     ? `Remote seats are full.${instance.waitlistEnabled ? " You can join the remote waitlist." : ""}`
     : instance.waitlistEnabled
       ? "Remote seats are full. You can still come in person, or join the remote waitlist."
       : "Remote seats are full. You can still come in person.";
+
   const disabled = mutationGate.busy;
 
   const answerFor = (status: AnswerStatus, attendanceMode = mode,
@@ -280,22 +309,28 @@ function SingleRsvpButtons({
   async function choose(answer: SeriesAnswer, switching = false, singleDate = false) {
     if (instance.recurrenceRule && !switching && !singleDate) {
       series.setPending(answer);
+
       return;
     }
+
     const release = mutationGate.acquire();
+
     if (!release) return;
     setBusy(answer.status);
     setError(null);
     setChildcareError(null);
     setChildcareFullError(false);
     let focusChildcareError = false;
+
     try {
       const result = await Events.register(instance.eventId, { ...registerBody(instance, answer), date: instance.date });
       const registration: RegistrationResponse | null = result.registration;
+
       if (!registration) return;
       series.reportDateMutation(registration);
       onChange(result);
       setEditingCare(false);
+
       if (switching) {
         series.announce(registration.status === "waitlisted"
           ? `You're on the ${answer.attendanceMode === "remote" ? "remote" : "in-person"} waitlist.`
@@ -312,6 +347,7 @@ function SingleRsvpButtons({
       }
     } catch (e) {
       if (switching) setMode(myMode);
+
       if (errorCode(e) === "childcare_full") {
         showFieldErrors(root.current, () => {
           setBusy(null);
@@ -319,24 +355,30 @@ function SingleRsvpButtons({
           setChildcareFullError(true);
         });
         focusChildcareError = true;
+
         return;
       }
+
       setError(answer.attendanceMode === "remote" && errorCode(e) === "event_full"
         ? remoteFullMessage
         : errorText(e, "We couldn't save your answer."));
     } finally {
       setBusy(null);
       release();
+
       if (focusChildcareError) queueMicrotask(() => focusFirstInvalid(root.current));
     }
   }
 
   function saveChildcare() {
     const problem = childcareCountProblem(children);
+
     if (problem) {
       showFieldErrors(root.current, () => setChildcareError(problem));
+
       return;
     }
+
     void choose(answerFor("going", mode, { childcareCount: Number(children), childcareAgesNote: ages.trim() }));
   }
 
@@ -367,7 +409,11 @@ function SingleRsvpButtons({
     {remoteOffered && <div className="mb-2">
       <Choices legend="How you'll attend">
         {MODES.map((m) => <Radio key={m.value} name={modeName} label={m.label} checked={mode === m.value} disabled={disabled}
-          onChange={() => { setMode(m.value); if (mine === "going") void choose(answerFor("going", m.value), true); }} />)}
+          onChange={() => {
+            setMode(m.value);
+
+            if (mine === "going") void choose(answerFor("going", m.value), true);
+          }} />)}
       </Choices>
       <div aria-live="polite" className="text-sm text-text-muted mt-2">
         {mine !== "going" && `Tap Going to attend ${mode === "remote" ? "remotely" : "in person"}.`}
@@ -377,6 +423,7 @@ function SingleRsvpButtons({
       <div role="group" aria-label="Your answer" className="flex w-full sm:max-w-sm">
         {OPTIONS.map((value) => {
           const active = mine === value || (value === "going" && mine === "waitlisted");
+
           return <SegmentButton key={value} pressed={active} disabled={disabled || (value === "going" && fullNoWaitlist)}
             onClick={() => void choose(answerFor(value))}>{busy === value ? "…" : registrationStatusLabel(value)}</SegmentButton>;
         })}
@@ -420,11 +467,14 @@ export function RsvpButtons({ instance, people = [], onChange, seriesFeedback, o
   mutationGate: RsvpMutationGate;
 }) {
   if (!people.length) return <SingleRsvpButtons instance={instance} onChange={onChange} seriesFeedback={seriesFeedback} onSeriesFeedback={onSeriesFeedback} onTerminalRefresh={onTerminalRefresh} mutationGate={mutationGate} />;
+
   return <HouseholdRsvp instance={instance} people={people} headingLevel={headingLevel} onChange={onChange} seriesFeedback={seriesFeedback} onSeriesFeedback={onSeriesFeedback} onTerminalRefresh={onTerminalRefresh} mutationGate={mutationGate} />;
 }
 
 type Answer = { selected: boolean; status: AnswerStatus; mode: AttendanceMode; care: boolean };
+
 const draftAnswer = (status: string | null | undefined, mode: AttendanceMode = "in_person", care = false): Answer => ({ selected: status === "going" || status === "waitlisted" || status === "maybe", status: status === "maybe" ? "maybe" : "going", mode, care });
+
 const ELIGIBILITY: Record<HouseholdPerson["registrationEligibility"], string> = {
   eligible: "", link_pending: "Waiting for an admin to confirm", link_unconfirmed: "Ask your church office to confirm this household link.",
   birth_date_required: "Add a birth date in Profile before signing them up.", age_mismatch: "Check their birth date and kind in Profile.",
@@ -445,10 +495,13 @@ function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFee
   const Heading = headingLevel === 3 ? "h3" : "h4";
   const own: MyHouseholdRegistration[] = instance.myHouseholdRegistrations ?? [];
   const [me, setMe] = useState(() => draftAnswer(instance.myRegistration, instance.myAttendanceMode));
+
   const [drafts, setDrafts] = useState<Record<number, Answer>>(() => Object.fromEntries(people.map((p) => {
     const saved = own.find((r) => r.personId === p.id);
+
     return [p.id, draftAnswer(saved?.status, saved?.attendanceMode, saved?.childcareRequested)];
   })));
+
   const [guests, setGuests] = useState(instance.myGuestCount ?? 0);
   const [children, setChildren] = useState(String(instance.myChildcareCount ?? 0));
   const [ages, setAges] = useState(instance.myChildcareAgesNote ?? "");
@@ -467,34 +520,41 @@ function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFee
   const remoteOffered = offersRemote(instance);
   const series = useActorSeriesRsvp({ instance, onChange, seriesFeedback, onSeriesFeedback, onTerminalRefresh, mutationGate });
   const disabled = mutationGate.busy;
+
   const answerFor = (status: AnswerStatus = me.selected ? me.status : "declined"): SeriesAnswer => ({
     status,
     attendanceMode: me.mode,
     guestCount: status === "going" ? guests : 0,
-    ...(status === "going" && instance.childcareAvailable
-      ? { childcare: { childcareCount: Number(children), childcareAgesNote: ages.trim() } }
-      : {}),
+    childcare: status === "going" && instance.childcareAvailable
+      ? { childcareCount: Number(children), childcareAgesNote: ages.trim() }
+      : undefined,
   });
 
   function openActorScope() {
     if (me.selected && me.status === "going" && instance.childcareAvailable) {
       const problem = childcareCountProblem(children);
+
       if (problem) {
         showFieldErrors(root.current, () => setChildcareError(problem));
+
         return;
       }
     }
+
     setChildcareError(null);
     series.setPending(answerFor());
   }
 
   async function saveActorDate(answer: SeriesAnswer) {
     const release = mutationGate.acquire();
+
     if (!release) return;
     setBusy(true);
     setError(null);
+
     try {
       const result = await Events.register(instance.eventId, { ...registerBody(instance, answer), date: instance.date });
+
       if (!result.registration) return;
       const registration = result.registration;
       series.reportDateMutation(registration);
@@ -512,53 +572,80 @@ function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFee
   async function save(e: React.FormEvent) {
     e.preventDefault(); setError(null); setMessage("");
     const problem = childcareCountProblem(children);
-    if (problem) { showFieldErrors(root.current, () => setChildcareError(problem)); return; }
+
+    if (problem) {
+      showFieldErrors(root.current, () => setChildcareError(problem));
+
+      return;
+    }
+
     setChildcareError(null);
     const answers: HouseholdAnswer[] = [];
     const command: RegistrationCommand = { date: instance.date, people: answers };
+
     if (instance.myRegistration !== "removed" && (me.selected || ["going", "waitlisted", "maybe"].includes(instance.myRegistration ?? ""))) {
       command.status = me.selected ? me.status : "declined";
       command.attendanceMode = me.mode;
       command.guestCount = guests;
+
       if (instance.childcareAvailable) { command.childcareCount = Number(children); command.childcareAgesNote = ages.trim(); }
     }
+
     for (const person of people) {
       const d = drafts[person.id];
       const saved = own.find((r) => r.personId === person.id);
+
       if (person.registrationEligibility !== "eligible" || saved?.status === "removed" || saved?.unavailable) continue;
+
       if (d.selected || ["going", "waitlisted", "maybe"].includes(saved?.status ?? "")) answers.push({ personId: person.id, status: d.selected ? d.status : "declined", attendanceMode: d.mode, childcareRequested: d.care });
     }
-    if (!command.status && !command.people?.length) { setError("Choose at least one person to save an answer."); return; }
+
+    if (!command.status && !command.people?.length) {
+      setError("Choose at least one person to save an answer.");
+
+      return;
+    }
+
     const release = mutationGate.acquire();
+
     if (!release) return;
     setBusy(true);
     let personToFocus: number | undefined;
+
     try {
       const result = await Events.register(instance.eventId, command);
       const describe = (name: string, status: string, mode: AttendanceMode, position: number | null) => status === "waitlisted" ? name + ": waitlist position " + position : name + ": " + (status === "going" ? "going " + (mode === "remote" ? "remotely" : "in person") : status === "declined" ? "can't go" : "maybe");
       const outcomes = result.people.map((r: HouseholdRegistration) => describe(people.find((p) => p.id === r.personId)?.name ?? "Household member", r.status, r.attendanceMode, r.waitlistPosition));
+
       if (result.registration) { const r = result.registration; outcomes.unshift(describe("You", r.status, r.attendanceMode, r.waitlistPosition)); }
+
       if (command.status && result.registration) series.reportDateMutation(result.registration);
       setMessage(outcomes.join("; ")); onChange(result);
     } catch (e) {
       setError(errorText(e, "We couldn't save your answers."));
-      const personId = e && typeof e === "object" && "data" in e && e.data && typeof e.data === "object" && "personId" in e.data ? e.data.personId : undefined;
-      if (typeof personId === "number") {
+      const personId = e && isObject(e) && "data" in e && e.data && isObject(e.data) && "personId" in e.data ? e.data.personId : undefined;
+
+      if (isNumber(personId)) {
         showFieldErrors(root.current, () => setBusy(false));
         personToFocus = personId;
       }
     } finally {
       setBusy(false);
       release();
+
       if (personToFocus !== undefined) queueMicrotask(() => root.current?.querySelector<HTMLElement>(`[data-household-person="${personToFocus}"] input`)?.focus());
     }
   }
 
   const controls = (name: string, d: Answer, change: (patch: Partial<Answer>) => void, child = false) => <div className="space-y-3 mt-2">
-    <Field label={"Answer for " + name}><Select value={d.status} disabled={disabled} onChange={(e) => change({ status: e.target.value as Answer["status"] })}>
+    <Field label={"Answer for " + name}><Select value={d.status} disabled={disabled} onChange={(e) => {
+      const status = OPTIONS.find((option) => option === e.currentTarget.value);
+
+      if (status) change({ status });
+    }}>
       {OPTIONS.map((value) => <option key={value} value={value}>{registrationStatusLabel(value)}</option>)}
     </Select></Field>
-    {remoteOffered && <Choices legend={"How " + name + " will attend"}>{MODES.map((m) => <Radio key={m.value} name={group + name} label={m.label} checked={d.mode === m.value} disabled={disabled} onChange={() => change({ mode: m.value, ...(m.value === "remote" ? { care: false } : {}) })} />)}</Choices>}
+    {remoteOffered && <Choices legend={"How " + name + " will attend"}>{MODES.map((m) => <Radio key={m.value} name={group + name} label={m.label} checked={d.mode === m.value} disabled={disabled} onChange={() => change(m.value === "remote" ? { mode: m.value, care: false } : { mode: m.value })} />)}</Choices>}
     {child && d.mode === "in_person" && (instance.childcareAvailable || d.care) && <Checkbox label={"Childcare for " + name} checked={d.care} disabled={disabled || (!instance.childcareAvailable && !d.care)} onChange={(e) => change({ care: e.target.checked })} />}
     {child && d.mode === "remote" && <p className="text-sm text-text-muted">Remote attendees do not use childcare.</p>}
   </div>;
@@ -581,6 +668,7 @@ function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFee
     {people.map((p) => {
       const d = drafts[p.id]; const saved = own.find((r) => r.personId === p.id);
       const reason = saved?.status === "removed" ? "A leader removed this registration. Ask them to add this person back." : saved?.unavailable ? "The responsible account is unavailable. Ask your church office to check it." : ELIGIBILITY[p.registrationEligibility];
+
       return <div key={p.id} data-household-person={p.id} className="rounded-lg border border-border p-3">
         <Checkbox label={p.name} checked={d.selected} disabled={disabled || !!reason} onChange={(e) => patch(p.id, { selected: e.target.checked })} />
         <p className="text-sm text-text-muted">{p.kind === "child" ? "Child" : p.kind === "teen" ? "Teen" : "Adult"}{p.age !== undefined ? " · Age " + p.age : ""}</p>

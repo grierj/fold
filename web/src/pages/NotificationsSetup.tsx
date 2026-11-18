@@ -27,6 +27,7 @@ const MeNotifications = () => <Link to="/profile/notifications" className="font-
 
 function sections(church: string, site: string): Section[] {
   const b = (s: string) => <strong>{s}</strong>;
+
   return [
     {
       platform: "ios",
@@ -113,16 +114,20 @@ export function NotificationsSetupPage() {
     const env = readPushEnv();
     const device = deviceState(env);
     const known = { platform: env.platform, device, on: false, secure: env.secure, standalone: env.standalone };
+
     if (device === "available" && env.permission === "granted") {
       localSubscription().then((sub) => { if (alive) setHere({ ...known, on: !!sub }); });
     } else {
       setHere(known);
     }
+
     return () => { alive = false; };
   }, []);
 
   if (siteError) return <div className="fold-page fold-page-narrow"><ErrorNotice message={errorText(siteError, "We couldn't load the directions.")} onRetry={retry} /></div>;
+
   if (!site || !here) return <div className="fold-page fold-page-narrow"><Skeleton kind="page" label="Loading the directions…" /></div>;
+
   // The church turned notifications off (DEC-124): the page isn't there.
   if (site.pushEnabled === false) return <NotFound />;
 
@@ -176,23 +181,28 @@ export function NotificationsSetupPage() {
 // this device's undo steps), or not possible here.
 function HereLine({ here, section, church }: { here: Here; section: Section; church: string }) {
   const box = "space-y-2 rounded-lg border border-border bg-sunken p-4 text-text";
+
   if (here.on) {
     // The server may have lost the device since; the card has the truth.
     return <div className={box}><p>This browser is set up. Check <MeNotifications /> to send yourself a test.</p></div>;
   }
+
   if (here.device === "blocked") {
     return <div className={box}>
       <p className="font-semibold">This device is blocking notifications from {church}. To allow them again:</p>
       {section.blocked}
     </div>;
   }
+
   if (here.device === "unavailable_ios") {
     return <div className={box}><p>Notifications on an iPhone or iPad need iOS 16.4 or newer. Until you update, use email on this device.</p></div>;
   }
+
   if (here.device === "unavailable") {
     return <div className={box}><p>{here.secure
       ? "This browser can't receive notifications. Open Fold in another browser, or use email."
       : "This address isn't secure (https), so notifications can't work here. Open Fold at its https address, or use email."}</p></div>;
   }
+
   return null;
 }

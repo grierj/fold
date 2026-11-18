@@ -44,7 +44,8 @@ interface AuthState {
   canCompose: boolean;
 }
 
-const AuthContext = createContext<AuthState>({
+/** @public Allows component tests to supply a session through the real provider. */
+export const AuthContext = createContext<AuthState>({
   user: null,
   loading: true,
   login: async () => {},
@@ -60,6 +61,7 @@ const AuthContext = createContext<AuthState>({
 // only the profile page changes it. A failure keeps the church's zone.
 async function withZone(user: User): Promise<User> {
   if (user.timezone || user.status === "pending_consent") return user;
+
   try {
     return (await Profile.update({ timezone: browserTimeZone() })).user;
   } catch {
@@ -87,6 +89,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setCanCompose(false);
       setUser(null);
     };
+
     return () => {
       dropSession = () => {};
     };
@@ -112,6 +115,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signedIn = useCallback(async (result: SignInResult) => {
     await refresh();
+
     return waitingForConsent(result) ? "/waiting-for-consent" : "/";
   }, [refresh]);
 
@@ -123,6 +127,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (error) {
       // A verified pending-teen attempt clears any previous server login.
       if (errorCode(error) === "consent_required") { setCanCompose(false); setUser(null); }
+
       throw error;
     }
   }, []);

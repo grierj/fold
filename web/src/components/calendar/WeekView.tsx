@@ -13,12 +13,14 @@ export function WeekView({ days, byDay, today, selected, onSelect }: { days: str
   const [local, setLocal] = useState(today);
   const picked = selected ?? local;
   const day = days.includes(picked) ? picked : days[0];
+
   return (
     <>
       <div className="hidden sm:flex gap-0 border-y border-border">
         {days.map((d) => {
           const occs = byDay.get(d) ?? [];
           const empty = occs.length === 0;
+
           return (
             <section
               key={d}

@@ -1,10 +1,11 @@
+import { isString } from "../src/lib/wireValues";
+import type { JsonValue } from "../src/lib/wireValues";
 import AxeBuilder from "@axe-core/playwright";
 import { mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { digestPreimage, encodeChoices } from "../src/lib/reasonSetDigest";
 import { parseRoomLabel } from "../src/lib/roomLabels";
 import { expect, type APIRequestContext, type Locator, type Page } from "@playwright/test";
-// @ts-expect-error plain JS module shared with verify-ui
 import { measure } from "./ui-measure.mjs";
 
 export const PASSWORD = "password1234";
@@ -58,19 +59,37 @@ export async function signOut(page: Page) {
 // Clients made from one request context share its cookie jar, and each
 // sign-in replaces the session and rotates the CSRF token: finish with one
 // user's client before calling apiAs for the next.
+export async function csrfFor(request: APIRequestContext) {
+  const body = await (await request.get("/api/v1/auth/csrf")).json();
+
+  if (!isString(body.csrfToken) || !body.csrfToken) throw new Error("Expected a CSRF token");
+
+  return body.csrfToken;
+}
+
 export async function apiAs(request: APIRequestContext, name: string) {
-  const csrf = async () => (await (await request.get("/api/v1/auth/csrf")).json()).csrfToken as string;
+  const csrf = async () => csrfFor(request);
+
   const login = await request.post("/api/v1/auth/login", {
     headers: { "X-CSRF-Token": await csrf() },
     data: { email: email(name), password: PASSWORD },
   });
+
   expect(login.ok(), await login.text()).toBe(true);
   const token = await csrf();
-  return async (method: string, path: string, data?: unknown) => {
+
+  return async (method: string, path: string, data?: JsonValue) => {
     const res = await request.fetch(`/api/v1${path}`, { method, data, headers: { "X-CSRF-Token": token } });
     expect(res.ok(), `${method} ${path}: ${res.status()} ${await res.text()}`).toBe(true);
+
     return res.json();
   };
+}
+
+declare global {
+  interface Window {
+    __cspViolation?: (violation: string) => void;
+  }
 }
 
 // Collects CSP violations the browser reports, from the first script on.
@@ -79,7 +98,7 @@ export async function watchCSP(page: Page) {
   await page.exposeFunction("__cspViolation", (v: string) => seen.push(v));
   await page.addInitScript(() => {
     document.addEventListener("securitypolicyviolation", (e) =>
-      (window as unknown as { __cspViolation: (v: string) => void }).__cspViolation(
+      window.__cspViolation?.(
         `${e.violatedDirective} ${e.blockedURI} ${e.sourceFile}:${e.lineNumber}`
       )
     );
@@ -87,6 +106,7 @@ export async function watchCSP(page: Page) {
   page.on("console", (m) => {
     if (/Content Security Policy/i.test(m.text())) seen.push(m.text());
   });
+
   return seen;
 }
 
@@ -108,11 +128,13 @@ export async function signInTo(page: Page, name: string, path: string) {
   // "CSRF token invalid" (seen on contact-requests.spec.ts in CI).
   await page.goto("about:blank");
   await page.context().clearCookies();
-  const csrf = async () => (await (await page.request.get("/api/v1/auth/csrf")).json()).csrfToken as string;
+  const csrf = async () => csrfFor(page.request);
+
   const login = await page.request.post("/api/v1/auth/login", {
     headers: { "X-CSRF-Token": await csrf() },
     data: { email: email(name), password: PASSWORD },
   });
+
   expect(login.ok(), await login.text()).toBe(true);
   await gotoReady(page, path);
 }
@@ -132,8 +154,9 @@ export async function nextFrames(page: Page) {
 export async function appReady(page: Page) {
   await page.waitForFunction(() => {
     const main = document.querySelector("main#main");
+
     return !!main && main.children.length > 0
-      && ![...main.querySelectorAll('[role="status"]')].some((s) => /^Loading/.test(s.textContent ?? ""));
+      && ![...main.querySelectorAll('[role="status"]')].some((s) => s.textContent?.startsWith("Loading"));
   }, null, { timeout: 2_000 }).catch(() => undefined);
 }
 
@@ -151,11 +174,13 @@ export async function gotoReady(page: Page, path: string) {
 // and reports the failure.
 export async function soon<L extends Locator>(locator: L, timeout = 5_000): Promise<L> {
   const until = Date.now() + timeout;
+
   try {
     while (Date.now() < until && !(await locator.isVisible())) await new Promise((resolve) => setTimeout(resolve, 20));
   } catch {
     // A strict-mode clash or closed page: let the action or assertion report it.
   }
+
   return locator;
 }
 
@@ -173,16 +198,19 @@ export async function pickRoom(select: Locator, name: string) {
   await expect
     .poll(async () => {
       const options = await select.locator("option").evaluateAll((els) =>
-        els.map((el) => ({ value: (el as HTMLOptionElement).value, text: el.textContent ?? "", disabled: (el as HTMLOptionElement).disabled })),
+        els.flatMap((el) => el instanceof HTMLOptionElement ? [{ value: el.value, text: el.textContent ?? "", disabled: el.disabled }] : []),
       );
+
       seen = options.map((o) => o.text);
       values = options
         .filter((o) => {
           if (o.disabled) return false;
           const got = parseRoomLabel(o.text);
+
           return got.room === wanted.room && (wanted.seats === null || wanted.seats === got.seats);
         })
         .map((o) => o.value);
+
       return values.length;
     }, { message: `one enabled option for room "${name}"` })
     .toBe(1)
@@ -202,6 +230,7 @@ export function keepAllReview(items: Array<{ requestId: string; reviewHash: stri
   const hashes = new Uint8Array(sorted.length * 32);
   sorted.forEach((it, i) => hashes.set(Buffer.from(it.reviewHash, "hex"), i * 32));
   const digest = createHash("sha256").update(digestPreimage(sorted.map((it) => it.requestId), hashes, sorted.length)).digest("hex");
+
   return { format: "set-v1", count: String(sorted.length), digest, choices: encodeChoices(new Uint8Array(sorted.length).fill(1), sorted.length) };
 }
 
@@ -210,16 +239,19 @@ export function keepAllReview(items: Array<{ requestId: string; reviewHash: stri
 // keep them all, and send that review with the DELETE. An account with no
 // reasons omits reasonReview, as the panel does: the server refuses an empty
 // set-v1 envelope as an invalid review.
-export async function deleteAccountKeepingReasons(admin: (method: string, path: string, data?: unknown) => Promise<any>, userId: number) {
+export async function deleteAccountKeepingReasons(admin: Awaited<ReturnType<typeof apiAs>>, userId: number) {
   const items: Array<{ requestId: string; reviewHash: string }> = [];
   let after: string | null = null;
+
   do {
     const page: { items: Array<{ requestId: string; reviewHash: string }>; next: string | null } = await admin("POST", `/admin/users/${userId}/erasure-reasons/page`, { after });
     items.push(...page.items.map((it) => ({ requestId: it.requestId, reviewHash: it.reviewHash })));
     after = page.next;
   } while (after);
-  const body: Record<string, unknown> = { successors: {}, hostSuccessors: {} };
-  if (items.length > 0) body.reasonReview = keepAllReview(items);
+
+  const handoff = { successors: {}, hostSuccessors: {} };
+  const body = items.length ? { ...handoff, reasonReview: keepAllReview(items) } : handoff;
+
   return admin("DELETE", `/admin/users/${userId}`, body);
 }
 
@@ -242,6 +274,7 @@ export async function checkState(page: Page, screenshotPrefix: string, state: st
   expect(layout.clipped, `${state} at ${width}px: clipped select`).toEqual([]);
   expect(layout.under24, `${state} at ${width}px: targets under 24px`).toEqual([]);
   const proof = process.env.SCREENS_DIR;
+
   if (proof) {
     mkdirSync(proof, { recursive: true });
     await page.screenshot({ path: `${proof}/${screenshotPrefix}-${state}-${width}.png`, fullPage: true, animations: "disabled" });

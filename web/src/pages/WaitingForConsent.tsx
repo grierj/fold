@@ -6,7 +6,9 @@ import { ButtonLink } from "../components/ui/Button";
 // holding screen. The shared shell keeps public groups and events available.
 export function WaitingForConsentPage() {
   const { user } = useAuth();
+
   if (user) return <Navigate to="/" replace />;
+
   return <div className="fold-auth space-y-4">
     <h1 className="text-3xl font-bold">Your account is almost ready</h1>
     <p>Your account needs a parent or guardian's consent before you can log in. Your church office can help with the next step.</p>

@@ -1,4 +1,7 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { renderWithAuth } from "../test/auth";
+import { stubService } from "../test/service";
+import { Site } from "../api/site";
+import { act, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -8,12 +11,16 @@ import { composeOptions, message, reminderMessage } from "../test/compose";
 import { MessagesPage } from "./Messages";
 
 const actor = vi.hoisted(() => ({ canCompose: true, isAdmin: false }));
-vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2, name: "Lee Leader", displayName: "" }, loading: false, isAdmin: actor.isAdmin, canCompose: actor.canCompose }) }));
-vi.mock("../api/messages", () => ({ Messages: { list: vi.fn(), options: vi.fn() } }));
-vi.mock("../api/site", async (importActual) => ({ ...(await importActual<typeof import("../api/site")>()), Site: { get: vi.fn().mockResolvedValue({ name: "Grace", timezone: "America/Boise" }) } }));
+
+const render = renderWithAuth(() => ({ user: { id: 2, name: "Lee Leader", displayName: "" }, loading: false, isAdmin: actor.isAdmin, canCompose: actor.canCompose }));
+
+stubService(Messages, () => ({ list: vi.fn(), options: vi.fn() }));
+
+stubService(Site, () => ({ get: vi.fn().mockResolvedValue({ name: "Grace", timezone: "America/Boise" }) }));
 
 const firstPage = { limit: 25, cursor: "", search: "", status: "" };
 const open = () => render(<MemoryRouter><MessagesPage /></MemoryRouter>);
+
 afterEach(() => { vi.useRealTimers(); vi.clearAllMocks(); actor.canCompose = true; actor.isAdmin = false; });
 
 describe("MessagesPage", () => {
@@ -72,6 +79,7 @@ describe("MessagesPage", () => {
     open();
     await screen.findByRole("button", { name: "Older messages" });
     vi.useFakeTimers();
+
     try {
       fireEvent.change(screen.getByRole("searchbox"), { target: { value: "Needle" } });
       const older = screen.getByRole("button", { name: "Older messages" });

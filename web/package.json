@@ -7,10 +7,12 @@
     "browser-image-compression": "^2.0.2",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "react-router-dom": "^7.18.5"
+    "react-router-dom": "^7.18.5",
+    "valibot": "1.5.0"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.14.0",
+    "@oxlint/plugins": "1.94.0",
     "@playwright/test": "^1.65.0",
     "@tailwindcss/vite": "^4.3.4",
     "@testing-library/dom": "^10.4.2",
@@ -22,6 +24,7 @@
     "@vitejs/plugin-react": "^6.2.1",
     "jsdom": "^31.0.0",
     "knip": "6.44.1",
+    "oxlint": "1.94.0",
     "tailwindcss": "^4.3.3",
     "typescript": "~7.0.2",
     "vite": "^8.3.6",
@@ -30,9 +33,10 @@
   "name": "fold-web",
   "private": true,
   "scripts": {
-    "build": "tsc --noEmit -p tsconfig.build.json && vite build",
+    "build": "tsc --noEmit -p tsconfig.build.json && vite build && vite build --mode service-worker",
     "dev": "vite",
     "preview": "vite preview",
+    "lint:anti-slop": "oxlint",
     "test": "TZ=America/Boise NODE_OPTIONS=--no-experimental-webstorage vitest run",
     "e2e": "playwright test",
     "contrast": "node --test scripts/token-contrast.test.mjs && node scripts/token-contrast.mjs",

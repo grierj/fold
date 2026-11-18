@@ -1,4 +1,10 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { renderWithAuth } from "../test/auth";
+import { stubService } from "../test/service";
+import { Groups } from "../api/groups";
+import { Events } from "../api/events";
+import { Site } from "../api/site";
+import { Calendar } from "../api/calendar";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,7 +16,7 @@ function group(id: number, name: string, tags: string[]): GroupSummary {
     id, name, description: "", tags, imageUrl: "", coverFocalX: 50, coverFocalY: 50,
     location: "", leaderName: "Grier", memberCount: 1, nextEventAt: null, status: "active",
     leaderId: 1, visibility: "public", deletionRequested: false, memberLimit: null,
-  } as GroupSummary;
+  };
 }
 
 const all = [
@@ -25,13 +31,20 @@ const all = [
 const { list, auth, site, calendar, openEvents } = vi.hoisted(() => ({
   list: vi.fn(), auth: vi.fn(), site: vi.fn(), calendar: vi.fn(), openEvents: vi.fn(),
 }));
-vi.mock("../auth", () => ({ useAuth: auth }));
-vi.mock("../api/groups", () => ({ Groups: { list } }));
-vi.mock("../api/events", () => ({ Events: { listOpen: openEvents } }));
-vi.mock("../api/site", () => ({ Site: { get: site } }));
-vi.mock("../api/calendar", () => ({ Calendar: { list: calendar } }));
+
+const render = renderWithAuth(auth);
+
+stubService(Groups, () => ({ list }));
+
+stubService(Events, () => ({ listOpen: openEvents }));
+
+stubService(Site, () => ({ get: site }));
+
+stubService(Calendar, () => ({ list: calendar }));
+
 function listLikeTheAPI(search = "", tags: string[] = []) {
   const want = tags.map((t) => t.toLowerCase());
+
   return Promise.resolve({
     groups: all.filter(
       (g) =>
@@ -52,9 +65,11 @@ function renderHome(path = "/") {
 // All tags live in a disclosure; selected tags also remain inline.
 async function chips() {
   const toggle = await screen.findByRole("button", { name: /^Filters/ });
+
   if (toggle.getAttribute("aria-expanded") === "false") await userEvent.click(toggle);
   await screen.findByRole("button", { name: "All" });
   await screen.findAllByRole("button", { name: "prayer" });
+
   return within(screen.getByRole("button", { name: "All" }).parentElement!);
 }
 
@@ -136,6 +151,7 @@ describe("Home tag filters", () => {
   it("keeps all three selected tags available to remove", async () => {
     renderHome("/?tag=choir&tag=youth&tag=band");
     await chips();
+
     for (const tag of ["choir", "youth", "band"]) expect(within(summary()).getByRole("button", { name: `Remove ${tag} filter` })).toBeVisible();
   });
 
@@ -252,6 +268,7 @@ describe("Home signed out (DEC-94)", () => {
 
 function occ(n: number, extra: Partial<CalendarOccurrence> = {}): CalendarOccurrence {
   const day = String(10 + n).padStart(2, "0");
+
   return {
     eventId: n, date: `2030-01-${day}`, startsAt: `2030-01-${day}T19:00:00Z`, endsAt: `2030-01-${day}T20:00:00Z`,
     title: `Event ${n}`, location: "", groupId: 1, groupName: "Youth Choir", churchWide: false,

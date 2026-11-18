@@ -21,10 +21,13 @@ export function CompactDates({ dates, requested, requestVersion = 0, loadedOnly 
   const handledRequest = useRef("");
   const [visited, setVisited] = useState<Set<number>>(() => new Set());
   const dense = dates.length > 6;
+
   const labels = useMemo(() => new Map(dates.map((d) => {
     const when = dateLine(d.startsAt, d.endsAt), place = placeLine(d.room, d.location);
+
     return [d.id, { when, place, search: `${d.title} ${d.date} ${when} ${place}`.toLowerCase() }] as const;
   })), [dates]);
+
   const matching = dates.filter((d) => labels.get(d.id)!.search.includes(query.trim().toLowerCase()));
   const paging = usePage(matching, query, 12);
   const visible = new Set(paging.rows.map((d) => d.id));
@@ -34,15 +37,24 @@ export function CompactDates({ dates, requested, requestVersion = 0, loadedOnly 
   }, [dense, dates]);
   useEffect(() => {
     const key = `${requested}:${requestVersion}`;
+
     if (!requested || handledRequest.current === key) return;
-    if (query) { setQuery(""); return; }
+
+    if (query) {
+      setQuery("");
+
+      return;
+    }
+
     const index = dates.findIndex((d) => d.date === requested);
+
     if (index < 0) return;
     handledRequest.current = key;
     setExpanded(dates[index].id);
     setVisited((old) => new Set(old).add(dates[index].id));
     paging.go(Math.floor(index / 12) + 1);
   }, [requested, requestVersion, query, dates, paging]);
+
   return <div className={dense ? undefined : "space-y-4"}>
     {dense && <>
     <SearchBox label={loadedOnly ? "Search loaded events or dates" : "Search events or dates"} value={query} onChange={setQuery} />
@@ -53,6 +65,7 @@ export function CompactDates({ dates, requested, requestVersion = 0, loadedOnly 
     {dates.map((d) => {
       const opened = open === d.id;
       const { when, place } = labels.get(d.id)!;
+
       return <div key={d.id} hidden={dense && !visible.has(d.id)} className={dense ? "border-b border-border py-3" : undefined}>
         {dense && <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 break-words">

@@ -1,3 +1,4 @@
+import * as schema from "valibot";
 import { expect, test } from "@playwright/test";
 import { apiAs } from "./helpers";
 
@@ -10,9 +11,10 @@ import { apiAs } from "./helpers";
 test("guest form: age gate keeps the typed fields, then the uniform thanks", async ({ page, request }) => {
   const admin = await apiAs(request, "grier");
   const { groups } = await admin("GET", "/groups");
-  const group = (groups as { id: number; name: string }[]).find((g) => g.name === "Room 201 class");
+  const group = schema.parse(schema.array(schema.looseObject({ id: schema.number(), name: schema.string() })), groups).find((g) => g.name === "Room 201 class");
   expect(group, "seed group").toBeTruthy();
   const when = new Date(Date.now() + 21 * 24 * 60 * 60 * 1000);
+
   const { event } = await admin("POST", `/groups/${group!.id}/events`, {
     title: "Guest welcome night",
     startsLocal: `${when.toISOString().slice(0, 10)}T19:00`,

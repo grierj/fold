@@ -1,3 +1,5 @@
+import type { JsonObject } from "../src/lib/wireValues";
+import * as schema from "valibot";
 import { expect, type APIRequestContext, type Locator, type Page, type Request } from "@playwright/test";
 import { apiAs, email, fromMore, LONG_GROUP_NAME } from "./helpers";
 import { uiLegacyAccount } from "./legacy-reasons";
@@ -8,34 +10,39 @@ export type UIPage = { id: string; who: string | null; path: string; ready: (p: 
 
 export async function uiPages(request: APIRequestContext): Promise<UIPage[]> {
   const admin = await apiAs(request, "grier");
-  const { groups } = (await admin("GET", "/groups")) as { groups: { id: number; name: string }[] };
+  const { groups } = schema.parse(schema.looseObject({ groups: schema.array(schema.looseObject({ id: schema.number(), name: schema.string() })) }), (await admin("GET", "/groups")));
   const room = groups.find((g) => g.name === "Room 201 class")!;
   const long = groups.find((g) => g.name === LONG_GROUP_NAME)!;
   const householdEvents = await admin("GET", `/groups/${room.id}/events`);
-  const householdEvent = (householdEvents.events as { id: number; title: string }[]).find((e) => e.title === "Household check night")!;
+  const householdEvent = schema.parse(schema.array(schema.looseObject({ id: schema.number(), title: schema.string() })), householdEvents.events).find((e) => e.title === "Household check night")!;
   const lee = await apiAs(request, "lee");
-  const { events = [] } = (await lee("GET", `/groups/${room.id}/events`)) as { events?: { id: number; title: string }[] };
+  const { events = [] } = schema.parse(schema.looseObject({ events: schema.optional(schema.array(schema.looseObject({ id: schema.number(), title: schema.string() }))) }), (await lee("GET", `/groups/${room.id}/events`)));
   let event = events.find((e) => e.title === "UI check night");
+
   if (!event) {
     const d = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10);
-    ({ event } = (await lee("POST", `/groups/${room.id}/events`, {
+    ({ event } = schema.parse(schema.looseObject({ event: schema.looseObject({ id: schema.number(), title: schema.string() }) }), (await lee("POST", `/groups/${room.id}/events`, {
       title: "UI check night", startsLocal: `${d}T19:00`, durationMinutes: 90, tzid: "America/Boise",
       location: "Room 201", recurrenceRule: "FREQ=WEEKLY;COUNT=4",
-    })) as { event: { id: number; title: string } });
+    }))));
   }
+
   // An announcement to read as it was sent (M3.13d2): its author may read
   // their own, so a draft serves without waiting on a send.
-  const { messages = [] } = (await lee("GET", "/messages?category=announcement")) as { messages?: { id: number; subject: string }[] };
+  const { messages = [] } = schema.parse(schema.looseObject({ messages: schema.optional(schema.array(schema.looseObject({ id: schema.number(), subject: schema.string() }))) }), (await lee("GET", "/messages?category=announcement")));
   let note = messages.find((m) => m.subject === "UI check announcement");
+
   if (!note) {
-    ({ message: note } = (await lee("POST", "/messages", {
+    ({ message: note } = schema.parse(schema.looseObject({ message: schema.looseObject({ id: schema.number(), subject: schema.string() }) }), (await lee("POST", "/messages", {
       channel: "email", subject: "UI check announcement", audience: { type: "group", groupId: room.id }, pushAlert: true,
       bodyHtml: "<p>Hi {{first_name}}, we're meeting in <strong>Room 104</strong> this week.</p><ul><li>Bring a friend</li><li>Snacks at 6:45</li></ul>",
-    })) as { message: { id: number; subject: string } });
+    }))));
   }
+
   // A deleted account with undecided reasons, through the test binary's seed route (legacy-reasons.ts).
   const legacy = await uiLegacyAccount(request);
   const heading = (name: string) => (p: Page) => p.getByRole("heading", { name, level: 1 });
+
   return [
     { id: "home-signed-out", who: null, path: "/", ready: (p) => p.getByText("Room 201 class").first() },
     { id: "login", who: null, path: "/login", ready: heading("Log in to") },
@@ -85,10 +92,11 @@ export async function uiPages(request: APIRequestContext): Promise<UIPage[]> {
     // the seed needs no contact requests; the real route is exercised by admin-delete-user.spec.ts.
     { id: "admin-user-delete-reasons", who: "grier", path: "/admin?tab=users", ready: (p) => p.getByRole("button", { name: "New user" }),
       prepare: async (p) => {
-        const item = (id: string, over: Record<string, unknown>) => ({
+        const item = (id: string, over: JsonObject) => ({
           requestId: id, reviewHash: id.padEnd(64, "a"), role: "subject", purpose: "contact", status: "pending", createdAt: "2026-11-01T12:00:00Z",
           counterpartName: "Lee Leader", counterpartDeleted: false, reviewerIsParty: false, reason: "Could you share your email so I can send the ride schedule?", ...over,
         });
+
         await p.route("**/api/v1/admin/users/*/erasure-reasons/page", (route) =>
           route.fulfill({ json: { reviewRequired: true, next: null, items: [
             item("1", {}),
@@ -142,6 +150,7 @@ export async function uiPages(request: APIRequestContext): Promise<UIPage[]> {
 
 export async function open(page: Page, ui: UIPage) {
   const quiet = trackRequests(page);
+
   try {
     await page.goto(ui.path);
     await expect(ui.ready(page)).toBeVisible();
@@ -149,6 +158,7 @@ export async function open(page: Page, ui: UIPage) {
   } finally {
     quiet.stop();
   }
+
   await ui.prepare?.(page);
 }
 
@@ -163,18 +173,22 @@ function trackRequests(page: Page) {
   let lastChange = Date.now();
   const start = (r: Request) => { inFlight.set(r, Date.now()); lastChange = Date.now(); };
   const end = (r: Request) => { inFlight.delete(r); lastChange = Date.now(); };
+
   page.on("request", start);
   page.on("requestfinished", end);
   page.on("requestfailed", end);
   const open = () => [...inFlight.values()].some((at) => Date.now() - at < 2_000);
+
   const quiet = async () => {
     await expect.poll(() => !open() && Date.now() - lastChange >= 150, { intervals: [25] }).toBe(true);
   };
+
   quiet.stop = () => {
     page.off("request", start);
     page.off("requestfinished", end);
     page.off("requestfailed", end);
   };
+
   return quiet;
 }
 
@@ -194,6 +208,7 @@ export function uiPart<T>(list: T[], part: number): T[] {
 // every part runs.
 export function partSelected(spec: string, part: number | "rest"): boolean {
   const parts = process.env.E2E_PARTS;
+
   return parts === undefined || parts.split(/\s+/).includes(`${spec}:${part}`);
 }
 
@@ -201,6 +216,7 @@ export function partSelected(spec: string, part: number | "rest"): boolean {
 // trackRequests), for specs that check every page they open.
 export async function gotoSettled(page: Page, path: string) {
   const quiet = trackRequests(page);
+
   try {
     await page.goto(path);
     await quiet();

@@ -22,17 +22,21 @@ export function seatsFrom(capacity: number | null, waitlist: boolean, guests: nu
 // a whole number from 1 to 100,000. The server checks again.
 export function seatsProblem(v: SeatsValue): string | null {
   const cap = v.capacity.trim();
+
   if (cap === "") return null;
+
   if (!/^\d+$/.test(cap) || Number(cap) < 1 || Number(cap) > 100000) {
     return "The seat limit needs to be a whole number from 1 to 100,000, or leave it empty for no limit.";
   }
+
   return null;
 }
 
-export const isSeatsError = (err: unknown) => errorCode(err) === "invalid_capacity";
+export const isSeatsError = (cause: unknown) => errorCode(cause) === "invalid_capacity";
 
 export function seatsBody(v: SeatsValue) {
   const cap = v.capacity.trim();
+
   return { capacity: cap === "" ? null : Number(cap), waitlistEnabled: v.waitlist, guestsAllowed: v.guests };
 }
 

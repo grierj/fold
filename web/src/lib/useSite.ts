@@ -37,12 +37,13 @@ function load() {
   set({ ...state, error: null, loading: true });
   Site.get().then(
     (site) => { if (mine === generation) set({ site, error: null, loading: false }); },
-    (error: unknown) => { if (mine === generation) set({ site: null, error, loading: false }); },
+    (cause: unknown) => { if (mine === generation) set({ site: null, error: cause, loading: false }); },
   );
 }
 
 function subscribe(listener: () => void) {
   listeners.add(listener);
+
   return () => { listeners.delete(listener); };
 }
 
@@ -52,6 +53,7 @@ function subscribe(listener: () => void) {
 // with nothing on screen the next mount asks afresh.
 export function invalidateSite(saved?: Partial<SiteInfo>) {
   if (saved && state.site) set({ ...state, site: { ...state.site, ...saved } });
+
   if (listeners.size > 0) load();
   else { generation++; set({ site: null, error: null, loading: false }); }
 }
@@ -63,7 +65,7 @@ export function forgetSite() {
   set({ site: null, error: null, loading: false });
 }
 
-export function useSite(): { site: SiteInfo | null; error: unknown; loading: boolean; retry: () => void } {
+export function useSite() {
   const s = useSyncExternalStore(subscribe, () => state);
   // On mount only: a failed read is retried by the next mount or by retry(),
   // never by a loop.
@@ -71,6 +73,7 @@ export function useSite(): { site: SiteInfo | null; error: unknown; loading: boo
     if (!state.site && !state.loading) load();
   }, []);
   const retry = useCallback(() => load(), []);
+
   // Loading means nothing to show yet: a refresh behind a shown answer is not loading.
   return { site: s.site, error: s.error, loading: !s.site && (s.loading || !s.error), retry };
 }
@@ -84,8 +87,9 @@ export function churchName(site: { name: string } | null | undefined): string {
 // The church's time zone and whether /site has answered (done is true after
 // a failure too, with zone null), for screens that must wait for the zone
 // rather than briefly use the browser's.
-export function useChurchZoneLoad(): { zone: string | null; done: boolean } {
+export function useChurchZoneLoad() {
   const { site, error } = useSite();
+
   return { zone: site?.timezone || null, done: !!site || !!error };
 }
 
@@ -98,12 +102,15 @@ export function useChurchZone(): string | null {
 // flashing and vanishing, and false when the read fails.
 export function usePushEnabled(): boolean {
   const { site } = useSite();
+
   return !!site && site.pushEnabled !== false;
 }
 
 // Whether rooms are on: null until /site answers, false when it fails.
 export function useRoomsEnabled(): boolean | null {
   const { site, error } = useSite();
+
   if (site) return site.roomsEnabled === true;
+
   return error ? false : null;
 }

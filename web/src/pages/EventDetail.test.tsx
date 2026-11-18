@@ -1,4 +1,7 @@
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { requiredElement } from "../test/dom";
+import { renderWithAuth } from "../test/auth";
+import { stubService } from "../test/service";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, RouterProvider, Routes, createMemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,10 +15,12 @@ import { occurrence } from "../test/occurrence";
 import { EventDetail } from "./EventDetail";
 
 const composer = vi.hoisted(() => ({ on: false, admin: false }));
-vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2 }, loading: false, isAdmin: composer.admin, canCompose: composer.on }) }));
-vi.mock("../api/core", async (importActual) => ({ ...(await importActual<typeof import("../api/core")>()), ApiError: (await importActual<typeof import("../api/core")>()).ApiError }));
-vi.mock("../api/households", async (importActual) => ({ ...(await importActual<typeof import("../api/households")>()), Households: { mine: vi.fn().mockResolvedValue({ household: null }) } }));
-vi.mock("../api/events", async (importActual) => ({ ...(await importActual<typeof import("../api/events")>()), Events: { get: vi.fn(), updateOccurrence: vi.fn(), register: vi.fn(), registerSeries: vi.fn(), undoSeriesRegistration: vi.fn() } }));
+
+const render = renderWithAuth(() => ({ user: { id: 2 }, loading: false, isAdmin: composer.admin, canCompose: composer.on }));
+
+stubService(Households, () => ({ mine: vi.fn().mockResolvedValue({ household: null }) }));
+
+stubService(Events, () => ({ get: vi.fn(), updateOccurrence: vi.fn(), register: vi.fn(), registerSeries: vi.fn(), undoSeriesRegistration: vi.fn() }));
 
 const page: EventDetailResponse = {
   event: {
@@ -40,8 +45,9 @@ function renderPage(path = "/events/7") {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
+  let reject!: (cause: unknown) => void;
   const promise = new Promise<T>((accept, decline) => { resolve = accept; reject = decline; });
+
   return { promise, resolve, reject };
 }
 
@@ -51,6 +57,7 @@ async function answerAll(group: HTMLElement, name: "Going" | "Maybe" | "Can't go
   await userEvent.click(within(group).getByRole("button", { name }));
   await userEvent.click(screen.getByRole("button", { name: "All future dates" }));
 }
+
 async function chooseDatesForMe(form: HTMLElement) {
   await userEvent.click(within(form).getByRole("button", { name: "Choose dates for my answer" }));
   await userEvent.click(screen.getByRole("button", { name: "All future dates" }));
@@ -60,6 +67,7 @@ async function editDate() {
   renderPage();
   await userEvent.click(await screen.findByRole("button", { name: "More for 2026-12-01" }));
   await userEvent.click(screen.getByRole("menuitem", { name: "Edit this date" }));
+
   return screen.getByRole("textbox", { name: /^Remote seat limit for this date/ });
 }
 
@@ -87,6 +95,7 @@ describe("EventDetail remote seats", () => {
   it.each([["0", 0], ["8", 8], ["", null]] as const)("saves the per-date limit %s", async (text, limit) => {
     const input = await editDate();
     await userEvent.clear(input);
+
     if (text) await userEvent.type(input, text);
     await userEvent.click(screen.getByRole("button", { name: "Save this date" }));
     expect(Events.updateOccurrence).toHaveBeenCalledWith(7, "2026-12-01", { remoteCapacityOverride: limit });
@@ -201,13 +210,17 @@ it("uses series Apply results before its parent GET and rejects that older GET a
   const first = occurrence({ recurrenceRule: "FREQ=WEEKLY", remoteAvailable: true, remoteCapacity: 10,
     childcareAvailable: true, guestsAllowed: 2, myRegistration: "going", myAttendanceMode: "remote",
     myGuestCount: 2, myChildcareCount: 2, myChildcareAgesNote: "4 and 6" });
+
   const second = occurrence({ id: 2, date: "2026-12-08", recurrenceRule: "FREQ=WEEKLY", remoteAvailable: true,
     remoteCapacity: 10, childcareAvailable: true, guestsAllowed: 2, myRegistration: "going",
     myAttendanceMode: "in_person", myGuestCount: 0, myChildcareCount: 0, myChildcareAgesNote: "" });
+
   const stalePage = { ...page, event: { ...page.event, recurrenceRule: "FREQ=WEEKLY", childcareAvailable: true,
     guestsAllowed: 2, remoteAvailable: true, remoteCapacity: 10 }, occurrences: [first, second] };
+
   const appliedRows = [first, second].map((row) => ({ ...row, myAttendanceMode: "remote" as const,
     myGuestCount: 2, myChildcareCount: 2, myChildcareAgesNote: "4 and 6" }));
+
   const appliedPage = { ...stalePage, occurrences: appliedRows };
   const held = deferred<EventDetailResponse>();
   vi.mocked(Events.get).mockResolvedValueOnce(stalePage).mockReturnValueOnce(held.promise).mockResolvedValue(appliedPage);
@@ -257,10 +270,13 @@ it("maps series Undo to not answered before its parent GET and cannot stale-save
       remoteCapacity: 10, childcareAvailable: true, guestsAllowed: 2, myRegistration: "going",
       myAttendanceMode: "remote", myGuestCount: 2, myChildcareCount: 2, myChildcareAgesNote: "4 and 6" }),
   ];
+
   const appliedPage = { ...page, event: { ...page.event, recurrenceRule: "FREQ=WEEKLY", childcareAvailable: true,
     guestsAllowed: 2, remoteAvailable: true, remoteCapacity: 10 }, occurrences: appliedRows };
+
   const maybeRows = appliedRows.map((row, index) => index === 1 ? ({ ...row, myRegistration: "maybe" as const,
     myAttendanceMode: "in_person" as const, myGuestCount: 0, myChildcareCount: 0, myChildcareAgesNote: "" }) : row);
+
   const held = deferred<EventDetailResponse>();
   vi.mocked(Events.get).mockResolvedValueOnce(appliedPage).mockResolvedValueOnce(appliedPage)
     .mockReturnValueOnce(held.promise).mockResolvedValue({ ...appliedPage, occurrences: maybeRows });
@@ -288,9 +304,11 @@ it("maps series Undo to not answered before its parent GET and cannot stale-save
   await answerAll(cards[0], "Going");
   await userEvent.click(await first.findByRole("button", { name: "Undo" }));
   await waitFor(() => expect(Events.get).toHaveBeenCalledTimes(3));
+
   for (const name of ["Going", "Maybe", "Can't go"]) {
     expect(sibling.getByRole("button", { name })).toHaveAttribute("aria-pressed", "false");
   }
+
   expect(sibling.queryByLabelText(/^Children needing childcare/)).not.toBeInTheDocument();
 
   await userEvent.click(sibling.getByRole("button", { name: "Maybe" }));
@@ -308,16 +326,21 @@ it("uses series Apply results in household forms while the parent GET is held an
   vi.mocked(Households.mine).mockResolvedValue({ household: { id: 1, name: "Family", address: "", createdBy: 2,
     accounts: [], people: [{ id: 3, householdId: 1, canConvert: false, firstName: "Mary", lastName: "", name: "Mary",
       kind: "adult", photoConsent: false, linkStatus: "none", registrationEligibility: "eligible", createdBy: 2 }] } });
+
   const first = occurrence({ recurrenceRule: "FREQ=WEEKLY", remoteAvailable: true, remoteCapacity: 10,
     childcareAvailable: true, guestsAllowed: 2, myRegistration: "going", myAttendanceMode: "remote",
     myGuestCount: 2, myChildcareCount: 2, myChildcareAgesNote: "4 and 6" });
+
   const second = occurrence({ id: 2, date: "2026-12-08", recurrenceRule: "FREQ=WEEKLY", remoteAvailable: true,
     remoteCapacity: 10, childcareAvailable: true, guestsAllowed: 2, myRegistration: "going",
     myAttendanceMode: "in_person", myGuestCount: 0, myChildcareCount: 0, myChildcareAgesNote: "" });
+
   const stalePage = { ...page, event: { ...page.event, recurrenceRule: "FREQ=WEEKLY", childcareAvailable: true,
     guestsAllowed: 2, remoteAvailable: true, remoteCapacity: 10 }, occurrences: [first, second] };
+
   const appliedRows = [first, second].map((row) => ({ ...row, myAttendanceMode: "remote" as const,
     myGuestCount: 2, myChildcareCount: 2, myChildcareAgesNote: "4 and 6" }));
+
   const appliedPage = { ...stalePage, occurrences: appliedRows };
   const held = deferred<EventDetailResponse>();
   vi.mocked(Events.get).mockResolvedValueOnce(stalePage).mockReturnValueOnce(held.promise).mockResolvedValue(appliedPage);
@@ -363,6 +386,7 @@ it("maps series Undo to no answer in household forms before the parent GET and s
   vi.mocked(Households.mine).mockResolvedValue({ household: { id: 1, name: "Family", address: "", createdBy: 2,
     accounts: [], people: [{ id: 3, householdId: 1, canConvert: false, firstName: "Mary", lastName: "", name: "Mary",
       kind: "adult", photoConsent: false, linkStatus: "none", registrationEligibility: "eligible", createdBy: 2 }] } });
+
   const appliedRows = [
     occurrence({ recurrenceRule: "FREQ=WEEKLY", remoteAvailable: true, remoteCapacity: 10, childcareAvailable: true,
       guestsAllowed: 2, myRegistration: "going", myAttendanceMode: "remote", myGuestCount: 2,
@@ -371,10 +395,13 @@ it("maps series Undo to no answer in household forms before the parent GET and s
       remoteCapacity: 10, childcareAvailable: true, guestsAllowed: 2, myRegistration: "going",
       myAttendanceMode: "remote", myGuestCount: 2, myChildcareCount: 2, myChildcareAgesNote: "4 and 6" }),
   ];
+
   const appliedPage = { ...page, event: { ...page.event, recurrenceRule: "FREQ=WEEKLY", childcareAvailable: true,
     guestsAllowed: 2, remoteAvailable: true, remoteCapacity: 10 }, occurrences: appliedRows };
+
   const savedRows = appliedRows.map((row, index) => index === 1 ? ({ ...row, myRegistration: "going" as const,
     myAttendanceMode: "in_person" as const, myGuestCount: 0, myChildcareCount: 0, myChildcareAgesNote: "" }) : row);
+
   const held = deferred<EventDetailResponse>();
   vi.mocked(Events.get).mockResolvedValueOnce(appliedPage).mockResolvedValueOnce(appliedPage)
     .mockReturnValueOnce(held.promise).mockResolvedValue({ ...appliedPage, occurrences: savedRows });
@@ -543,6 +570,7 @@ describe("EventDetail when line and date actions (DEC-92, DEC-93)", () => {
       "/api/v1/events/7/dates/2026-12-01/calendar.ics",
       "/api/v1/events/7/dates/2026-12-08/calendar.ics",
     ]);
+
     for (const link of links) expect(link.closest("article")).not.toBeNull();
   });
 
@@ -608,7 +636,7 @@ describe("EventDetail header actions and ?manage (DEC-99)", () => {
     renderPage();
     const edit = await screen.findByRole("button", { name: "Edit event" });
     const more = screen.getByRole("button", { name: "More event actions" });
-    const row = edit.parentElement as HTMLElement;
+    const row = requiredElement(edit.parentElement, HTMLElement);
     expect(row).toContainElement(more);
   });
 
@@ -687,6 +715,7 @@ describe("EventDetail dates that need a room", () => {
       occurrence({ id: 2, date: "2026-12-08", startsLocal: "2026-12-08T19:00", recurrenceRule: "FREQ=WEEKLY;BYDAY=TU" }),
     ],
   };
+
   const needs = (...rows: NeedsRoom[]) =>
     vi.spyOn(SeriesRooms, "list").mockResolvedValue({ rooms: [], dates: 2, defaultRoom: null, needsRoom: rows, pending: 0 });
 
@@ -747,6 +776,7 @@ describe("Email people going (M3.4c)", () => {
 
   it("writes to the whole event from its menu, and to one date from that date's menu", async () => {
     composer.on = true;
+
     try {
       vi.mocked(Events.get).mockResolvedValue({ ...page, event: { ...page.event, recurrenceRule: "FREQ=WEEKLY" }, occurrences: [occurrence({ id: 41, recurrenceRule: "FREQ=WEEKLY" }), occurrence({ id: 42, date: "2026-12-08", recurrenceRule: "FREQ=WEEKLY" })] });
       const router = createMemoryRouter([{ path: "/events/:id", element: <EventDetail /> }, { path: "/messages/new", element: <p>Composer</p> }], { initialEntries: ["/events/7"] });

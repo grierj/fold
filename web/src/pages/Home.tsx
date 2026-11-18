@@ -30,6 +30,7 @@ export function Home() {
       .then(({ events }) => { if (alive) setOpenEvents(events); })
       .catch(() => { if (alive) setOpenEvents([]); })
       .finally(() => { if (alive) setEventsReady(true); });
+
     return () => { alive = false; };
   }, [user]);
 
@@ -41,6 +42,7 @@ export function Home() {
   // ongoing or the whole schedule starts beyond the calendar's usual 30 days.
   const churchFrom = openEvents.length ? dayOf(openEvents[0].startsAt) : "";
   const churchDays = openEvents.length ? Math.max(30, daysBetween(churchFrom, dayOf(openEvents[openEvents.length - 1].startsAt)) + 1) : 30;
+
   return (
     <div className="fold-page">
       {user ? (

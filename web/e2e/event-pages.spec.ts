@@ -1,5 +1,5 @@
+import * as schema from "valibot";
 import { expect, test } from "@playwright/test";
-import type { GroupDetailResponse } from "../src/types";
 import { apiAs, signIn } from "./helpers";
 
 // UI makeover PR 6 (DEC-63): one primary action per view with the rest in
@@ -8,14 +8,16 @@ import { apiAs, signIn } from "./helpers";
 // Can't go where Can't go never lists anyone.
 async function seriesGroup(request: Parameters<typeof apiAs>[0]) {
   const admin = await apiAs(request, "grier");
-  const { groups } = (await admin("GET", "/groups")) as { groups: { id: number; name: string }[] };
+  const { groups } = schema.parse(schema.looseObject({ groups: schema.array(schema.looseObject({ id: schema.number(), name: schema.string() })) }), (await admin("GET", "/groups")));
   const room = groups.find((g) => g.name === "Room 201 class")!;
   const lee = await apiAs(request, "lee");
   const d = new Date(Date.now() + 9 * 864e5).toISOString().slice(0, 10);
-  const { event } = (await lee("POST", `/groups/${room.id}/events`, {
+
+  const { event } = schema.parse(schema.looseObject({ event: schema.looseObject({ id: schema.number() }) }), (await lee("POST", `/groups/${room.id}/events`, {
     title: "Segmented night", startsLocal: `${d}T19:00`, durationMinutes: 60, tzid: "America/Boise",
     location: "Room 201", recurrenceRule: "FREQ=WEEKLY;COUNT=3",
-  })) as { event: { id: number } };
+  })));
+
   return { room, event };
 }
 
@@ -35,6 +37,7 @@ test("the leader group page at 390 shows one primary action and a keyboard-frien
 
   // Header: Schedule event is the primary; Edit group and the cover live in More.
   await expect(page.getByRole("link", { name: "Schedule event" })).toBeVisible();
+
   for (const name of ["Edit group", "Cover photo", "Leave group", "Edit this date", "Edit series"]) {
     await expect(page.getByRole("button", { name, exact: true })).toHaveCount(0);
   }
@@ -54,6 +57,7 @@ test("the leader group page at 390 shows one primary action and a keyboard-frien
   const menu = page.getByRole("menu", { name: "More group actions" });
   await expect(menu.getByRole("menuitem", { name: "Edit group" })).toBeFocused();
   await expect(menu).toBeInViewport({ ratio: 1 });
+
   for (const item of await menu.getByRole("menuitem").all()) expect((await item.boundingBox())!.height).toBeGreaterThanOrEqual(44);
   await page.keyboard.press("ArrowDown");
   await expect(menu.getByRole("menuitem", { name: "Email members" })).toBeFocused();
@@ -83,9 +87,11 @@ test("the leader group page at 390 shows one primary action and a keyboard-frien
 
 test("group dates continue across page boundaries to exhaustion without duplicates", async ({ page, request }) => {
   const admin = await apiAs(request, "grier");
-  const { group } = (await admin("POST", "/groups", {
+
+  const { group } = schema.parse(schema.looseObject({ group: schema.looseObject({ id: schema.number() }) }), (await admin("POST", "/groups", {
     name: "Continuation group", visibility: "public", tags: [],
-  })) as { group: { id: number } };
+  })));
+
   const dates = Array.from({ length: 55 }, (_, i) => new Date(Date.now() + (i + 2) * 864e5).toISOString().slice(0, 10));
   // All dates fit inside the upcoming window. Earlier hidden dates must not
   // consume the visible page's 25 slots or appear in its loaded counts.
@@ -93,31 +99,37 @@ test("group dates continue across page boundaries to exhaustion without duplicat
     title: "Hidden daily series", startsLocal: `${dates[0]}T17:00`, durationMinutes: 60,
     tzid: "UTC", recurrenceRule: "FREQ=DAILY;COUNT=55", visibility: "invite_only",
   });
-  const { event } = (await admin("POST", `/groups/${group.id}/events`, {
+
+  const { event } = schema.parse(schema.looseObject({ event: schema.looseObject({ id: schema.number() }) }), (await admin("POST", `/groups/${group.id}/events`, {
     title: "Visible daily series", startsLocal: `${dates[0]}T19:00`, durationMinutes: 60,
     tzid: "UTC", recurrenceRule: "FREQ=DAILY;COUNT=55", visibility: "public",
-  })) as { event: { id: number } };
+  })));
 
   await page.setViewportSize({ width: 390, height: 844 });
   await signIn(page, "sam");
+
   const groupResponse = () => page.waitForResponse((response) =>
     new URL(response.url()).pathname === `/api/v1/groups/${group.id}` && response.request().method() === "GET");
+
   let response = groupResponse();
   await page.goto(`/groups/${group.id}`);
   const seenIDs = new Set<number>();
   const card = page.getByRole("article", { name: "Visible daily series", exact: true });
   const loadMore = page.getByRole("button", { name: "Load more dates", exact: true });
+
   for (const [index, size] of [25, 25, 5].entries()) {
     const result = await response;
     expect(result.ok()).toBe(true);
-    const body = await result.json() as GroupDetailResponse;
+    const body = schema.parse(schema.looseObject({ upcomingEvents: schema.array(schema.looseObject({ id: schema.number(), eventId: schema.number(), date: schema.string() })) }), await result.json());
     expect(body.upcomingEvents).toHaveLength(size);
     expect(body.upcomingEvents.map((date) => date.date)).toEqual(dates.slice(index * 25, index * 25 + size));
+
     for (const date of body.upcomingEvents) {
       expect(date.eventId).toBe(event.id);
       expect(seenIDs.has(date.id)).toBe(false);
       seenIDs.add(date.id);
     }
+
     const hasMore = index < 2;
     expect(body.hasMore).toBe(hasMore);
     expect(body.nextCursor !== "").toBe(hasMore);
@@ -126,12 +138,14 @@ test("group dates continue across page boundaries to exhaustion without duplicat
     // A truncated list says "See more dates"; "See all N" only once every date is loaded (DEC-99).
     await expect(card.getByRole("link", { name: hasMore ? "See more dates" : `See all ${seenIDs.size} dates`, exact: true })).toBeVisible();
     await expect(page.getByText("Hidden daily series", { exact: true })).toHaveCount(0);
+
     if (hasMore) {
       await expect(loadMore).toBeVisible();
       response = groupResponse();
       await loadMore.click();
     }
   }
+
   expect(seenIDs.size).toBe(55);
   await expect(loadMore).toHaveCount(0);
 });
@@ -143,11 +157,13 @@ test("RSVP is a segmented control, counts come first, and Can't go never lists a
   await page.goto(`/events/${event.id}`);
   const first = page.getByRole("article", { name: "Segmented night", exact: true }).first();
   const answer = first.getByRole("group", { name: "Your answer" });
+
   for (const name of ["Going", "Maybe", "Can't go"]) {
     const b = answer.getByRole("button", { name });
     await expect(b).toHaveAttribute("aria-pressed", "false");
     expect((await b.boundingBox())!.height).toBeGreaterThanOrEqual(44);
   }
+
   await expect(first.getByText("No one yet")).toBeVisible();
 
   await answer.getByRole("button", { name: "Maybe" }).click();
@@ -163,9 +179,11 @@ test("RSVP is a segmented control, counts come first, and Can't go never lists a
   expect(groupBox.width).toBeGreaterThan(cardBox.width - 40);
   await expect(first.getByText("0 going · 1 maybe")).toBeVisible();
   const secondAnswer = page.getByRole("group", { name: "Your answer" }).nth(1);
+
   for (const name of ["Going", "Maybe", "Can't go"]) {
     await expect(secondAnswer.getByRole("button", { name })).toHaveAttribute("aria-pressed", "false");
   }
+
   const show = first.getByRole("button", { name: "Show who's coming" });
   await expect(show).toHaveAttribute("aria-expanded", "false");
   await show.click();
@@ -180,9 +198,11 @@ test("RSVP is a segmented control, counts come first, and Can't go never lists a
   await expect(declineJustThisDate).toBeFocused();
   await declineJustThisDate.click();
   await expect(answer.getByRole("button", { name: "Can't go" })).toHaveAttribute("aria-pressed", "true");
+
   for (const name of ["Going", "Maybe", "Can't go"]) {
     await expect(secondAnswer.getByRole("button", { name })).toHaveAttribute("aria-pressed", "false");
   }
+
   await expect(first.getByText("No one yet")).toBeVisible();
   await expect(first.getByText(/can.t go/i).and(first.locator(":not(button)"))).toHaveCount(0);
   await expect(first.getByText("Sam Member")).toHaveCount(0);
@@ -192,14 +212,15 @@ test("RSVP is a segmented control, counts come first, and Can't go never lists a
 // date page tells them when it goes out.
 test("a leader sets the reminder in Edit series and sees when it goes out on a date page", async ({ page, request }) => {
   const admin = await apiAs(request, "grier");
-  const { groups } = (await admin("GET", "/groups")) as { groups: { id: number; name: string }[] };
+  const { groups } = schema.parse(schema.looseObject({ groups: schema.array(schema.looseObject({ id: schema.number(), name: schema.string() })) }), (await admin("GET", "/groups")));
   const room = groups.find((g) => g.name === "Room 201 class")!;
   const lee = await apiAs(request, "lee");
   const d = new Date(Date.now() + 9 * 864e5).toISOString().slice(0, 10);
-  const { event } = (await lee("POST", `/groups/${room.id}/events`, {
+
+  const { event } = schema.parse(schema.looseObject({ event: schema.looseObject({ id: schema.number() }) }), (await lee("POST", `/groups/${room.id}/events`, {
     title: "Reminder night", startsLocal: `${d}T19:00`, durationMinutes: 60, tzid: "America/Boise",
     location: "Room 201", recurrenceRule: "FREQ=WEEKLY;COUNT=3",
-  })) as { event: { id: number } };
+  })));
 
   await signIn(page, "lee");
   await page.goto(`/events/${event.id}`);
@@ -214,7 +235,7 @@ test("a leader sets the reminder in Edit series and sees when it goes out on a d
   await push.uncheck();
   await page.getByRole("button", { name: "Save series" }).click();
   // The button reads "Saving…" while it saves, so wait for what was saved.
-  const saved = async () => ((await lee("GET", `/events/${event.id}`)) as { event: { reminderEmailMinutes: number; reminderPush: boolean } }).event;
+  const saved = async () => (schema.parse(schema.looseObject({ event: schema.looseObject({ reminderEmailMinutes: schema.number(), reminderPush: schema.boolean() }) }), (await lee("GET", `/events/${event.id}`)))).event;
   await expect.poll(saved).toMatchObject({ reminderEmailMinutes: 2880, reminderPush: false });
   await expect(page.getByRole("button", { name: "Save series" })).toHaveCount(0);
 

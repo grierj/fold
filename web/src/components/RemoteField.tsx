@@ -22,21 +22,27 @@ export function remoteFrom(available?: boolean, capacity?: number | null): Remot
 export function remoteProblem(v: RemoteValue, allowZero = false): string | null {
   if (!v.available) return null;
   const cap = v.capacity.trim();
+
   if (cap === "") return null;
+
   if (!/^\d+$/.test(cap) || !Number.isSafeInteger(Number(cap)) || Number(cap) > 100000) {
     return `The remote seat limit needs to be a whole number from ${allowZero ? 0 : 1} to 100,000, or leave it empty.`;
   }
+
   if (!allowZero && Number(cap) === 0) return "Uncheck remote attendance instead of a 0 remote seat limit.";
+
   return null;
 }
 
-export const isRemoteError = (err: unknown) => {
-  const code = errorCode(err);
+export const isRemoteError = (cause: unknown) => {
+  const code = errorCode(cause);
+
   return code === "invalid_remote_capacity" || code === "invalid_remote_capacity_override" || code === "remote_capacity_zero";
 };
 
-export function remoteBody(v: RemoteValue): { remoteAvailable: boolean; remoteCapacity: number | null } {
+export function remoteBody(v: RemoteValue) {
   const cap = v.capacity.trim();
+
   return { remoteAvailable: v.available, remoteCapacity: !v.available || cap === "" ? null : Number(cap) };
 }
 

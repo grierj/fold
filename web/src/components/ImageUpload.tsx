@@ -46,9 +46,11 @@ export function ImageUpload({
   async function pick(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
     e.target.value = "";
+
     if (!f) return;
     setBusy(true);
     setError(null);
+
     try {
       const resized = await prepareUpload(f, maxDim);
       const url = URL.createObjectURL(resized);
@@ -68,10 +70,12 @@ export function ImageUpload({
 
   function setPoint(e: React.MouseEvent<HTMLDivElement>) {
     const rect = e.currentTarget.getBoundingClientRect();
+
     const next = {
       x: Math.min(100, Math.max(0, Math.round(((e.clientX - rect.left) / rect.width) * 100))),
       y: Math.min(100, Math.max(0, Math.round(((e.clientY - rect.top) / rect.height) * 100))),
     };
+
     setFocal(next);
     onFocal(next);
   }

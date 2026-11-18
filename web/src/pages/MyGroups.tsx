@@ -1,3 +1,4 @@
+import { isObject, isString } from "../lib/wireValues";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { Groups } from "../api/groups";
 import { usePage } from "../lib/usePage";
@@ -22,9 +23,11 @@ const SOON_LIMIT = 3;
 function MeetingSoon() {
   const load = useLoad(async () => (await Groups.list()).groups.filter((g) => g.nextEventAt && !g.myRole).slice(0, SOON_LIMIT), []);
   const groups = load.data ?? null;
+
   // Nothing is shown until we know something qualifies, so the heading never
   // flashes in and vanishes.
   if (!groups || groups.length === 0) return null;
+
   return (
     <section aria-labelledby="meeting-soon" className="fold-section mt-8">
       <h2 id="meeting-soon" className="text-xl font-bold mb-4">
@@ -42,14 +45,21 @@ export function MyGroups() {
   const location = useLocation();
   const [params, setParams] = useSearchParams();
   const query = params.get("search") ?? "";
-  const departureStatus = (location.state as { departureStatus?: string } | null)?.departureStatus;
+  const state: unknown = location.state;
+  const departureStatus = isObject(state) && "departureStatus" in state && isString(state.departureStatus) ? state.departureStatus : undefined;
   const mine = useLoad(async () => (await Groups.mine()).groups, [user?.id], { enabled: !authLoading && !!user });
   const groups = mine.data ?? [];
   const loading = authLoading ? true : !!user && mine.loading;
   const error = mine.error ? errorText(mine.error, "We couldn't load your groups.") : null;
 
   const matching = groups.filter((g) => `${g.name} ${g.description}`.toLowerCase().includes(query.trim().toLowerCase()));
-  const paging = usePage(matching, query, 12, { page: Number(params.get("page")) || 1, onChange: (page) => setParams((old) => { const next = new URLSearchParams(old); next.set("page", String(page)); return next; }) });
+
+  const paging = usePage(matching, query, 12, { page: Number(params.get("page")) || 1, onChange: (page) => setParams((old) => {
+    const next = new URLSearchParams(old);
+    next.set("page", String(page));
+
+    return next;
+  }) });
 
   return (
     <div className="fold-page-narrow">
@@ -86,7 +96,14 @@ export function MyGroups() {
       )}
       {!loading && !error && groups.length > 0 && (
         <div>
-          <SearchBox label="Search your groups" value={query} onChange={(value) => setParams((old) => { const next = new URLSearchParams(old); if (value) next.set("search", value); else next.delete("search"); next.delete("page"); return next; }, { replace: true })} />
+          <SearchBox label="Search your groups" value={query} onChange={(value) => setParams((old) => {
+            const next = new URLSearchParams(old);
+
+            if (value) next.set("search", value); else next.delete("search");
+            next.delete("page");
+
+            return next;
+          }, { replace: true })} />
           <PageCount paging={paging} noun="groups" size={12} />
           {matching.length === 0 && <EmptyState title="No groups match" body="Try another group name or a shorter search." />}
           <div className="fold-list">

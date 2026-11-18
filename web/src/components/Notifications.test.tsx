@@ -1,3 +1,7 @@
+import { stubService } from "../test/service";
+import { Notifications } from "../api/notifications";
+import { Admin } from "../api/admin";
+import { AdminAccountRequests } from "../api/accountRequests";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
@@ -13,22 +17,14 @@ const api = vi.hoisted(() => ({
   readAll: vi.fn(),
   archive: vi.fn(),
 }));
+
 const approve = vi.hoisted(() => vi.fn());
-vi.mock("../api/notifications", () => ({ Notifications: api }));
-vi.mock("../api/admin", () => ({ Admin: { approve } }));
-vi.mock("../api/accountRequests", () => ({ AdminAccountRequests: { approve } }));
-vi.mock("../api/core", () => {
-  class ApiError extends Error {
-    status: number;
-    data: Record<string, unknown>;
-    constructor(status: number, message: string, data: Record<string, unknown> = {}) {
-      super(message);
-      this.status = status;
-      this.data = data;
-    }
-  }
-  return { ApiError };
-});
+
+stubService(Notifications, () => api);
+
+stubService(Admin, () => ({ approve }));
+
+stubService(AdminAccountRequests, () => ({ approve }));
 
 const item = (over: Partial<Notification>): Notification => ({
   id: 1, kind: "group.leadership_changed", category: "admin", title: "Pat made Sam a leader", body: "Youth",
@@ -45,6 +41,7 @@ const task = item({
 function Bell() {
   return <NotificationBell badge={useBadge("")} />;
 }
+
 function Tab() {
   return <NotificationTab badge={useBadge("")} className={() => ""} />;
 }
@@ -64,6 +61,7 @@ beforeEach(() => {
   api.list.mockResolvedValue({ waiting: [task], waitingTotal: 1, notifications: [item({})], next: "" });
   localStorage.clear();
 });
+
 afterEach(() => vi.useRealTimers());
 
 it("includes the phone tab's visible count and caption in its accessible name", async () => {
@@ -101,6 +99,7 @@ describe("NotificationBell", () => {
     const set = vi.fn(async () => {});
     const clear = vi.fn(async () => {});
     Object.assign(navigator, { setAppBadge: set, clearAppBadge: clear });
+
     try {
       const { unmount } = renderBell();
       await screen.findByText("2");
@@ -111,8 +110,8 @@ describe("NotificationBell", () => {
       await screen.findByRole("button", { name: "Alerts" });
       expect(clear).toHaveBeenCalled();
     } finally {
-      delete (navigator as unknown as Record<string, unknown>).setAppBadge;
-      delete (navigator as unknown as Record<string, unknown>).clearAppBadge;
+      Reflect.deleteProperty(navigator, "setAppBadge");
+      Reflect.deleteProperty(navigator, "clearAppBadge");
     }
   });
 
@@ -149,6 +148,7 @@ describe("NotificationBell", () => {
       // The server now has it resolved by me; the refetch shows that.
       const done = { ...task, waiting: false, actions: [], resolution: { outcome: "approved", by: "Me", byMe: true, at: "" } };
       api.list.mockResolvedValue({ waiting: [], waitingTotal: 0, notifications: [done, item({})], next: "" });
+
       return {};
     });
     renderBell();

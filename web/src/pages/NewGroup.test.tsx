@@ -1,4 +1,6 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { renderWithAuth } from "../test/auth";
+import { stubService } from "../test/service";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, RouterProvider, Routes, createMemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -8,20 +10,31 @@ import { UnsavedChangesBlocker } from "../lib/unsavedChanges";
 import { NewGroup } from "./NewGroup";
 
 const auth = vi.hoisted(() => ({ isAdmin: false }));
-vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2 }, loading: false, isAdmin: auth.isAdmin }) }));
-vi.mock("../api/groups", async (actual) => ({ ...(await actual<typeof import("../api/groups")>()), Groups: { create: vi.fn(), update: vi.fn() } }));
 
-const made = (status: string): { group: GroupSummary } => ({ group: { id: 9, name: "Sam's study", status } as GroupSummary });
+const render = renderWithAuth(() => ({ user: { id: 2 }, loading: false, isAdmin: auth.isAdmin }));
+
+stubService(Groups, () => ({ create: vi.fn(), update: vi.fn() }));
+
+const made = (status: string) => ({
+  group: {
+    id: 9, name: "Sam's study", description: "", tags: [], imageUrl: "", coverFocalX: 50, coverFocalY: 50,
+    location: "", leaderName: "Sam", memberCount: 1, nextEventAt: null, status, leaderId: 2,
+    visibility: "public", deletionRequested: false, memberLimit: null,
+  } satisfies GroupSummary,
+});
+
 function open() {
   render(<MemoryRouter initialEntries={["/groups/new"]}><Routes>
     <Route path="/groups/new" element={<NewGroup />} />
     <Route path="/" element={<h1>Home page</h1>} />
   </Routes></MemoryRouter>);
 }
+
 async function submit(name = "Sam's study") {
   await userEvent.type(screen.getByLabelText("Group name"), name);
   await userEvent.click(screen.getByRole("button", { name: "Create group" }));
 }
+
 beforeEach(() => { vi.resetAllMocks(); auth.isAdmin = false; });
 
 it("tells a non-admin that an admin reviews new groups first", () => {
@@ -37,6 +50,7 @@ it("leaves the review line off for an admin", () => {
 
 it("keeps name, description, location and visibility visible, and tucks the rest under More options", async () => {
   open();
+
   for (const label of ["Group name", "Description (optional)", "Location (optional)"]) expect(screen.getByLabelText(label)).toBeVisible();
   expect(screen.getByRole("radio", { name: /^Public/ })).toBeVisible();
   const more = screen.getByRole("button", { name: "More options" });
@@ -108,10 +122,12 @@ it("keeps the form and its edits when creating fails", async () => {
 
 it("asks before Cancel throws away a half-filled new group, but not an empty form", async () => {
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+
   const router = createMemoryRouter([
     { path: "/groups/new", element: <><UnsavedChangesBlocker /><NewGroup /></> },
     { path: "/", element: <h1>Home page</h1> },
   ], { initialEntries: ["/groups/new"] });
+
   render(<RouterProvider router={router} />);
   await userEvent.type(screen.getByLabelText("Group name"), "Half");
   await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
@@ -125,10 +141,12 @@ it("asks before Cancel throws away a half-filled new group, but not an empty for
 it("lets a created group's screen go on without the leave prompt", async () => {
   vi.mocked(Groups.create).mockResolvedValue(made("pending"));
   const confirm = vi.spyOn(window, "confirm");
+
   const router = createMemoryRouter([
     { path: "/groups/new", element: <><UnsavedChangesBlocker /><NewGroup /></> },
     { path: "/", element: <h1>Home page</h1> },
   ], { initialEntries: ["/groups/new"] });
+
   render(<RouterProvider router={router} />);
   await submit();
   await userEvent.click(await screen.findByRole("link", { name: "Back to Home" }));

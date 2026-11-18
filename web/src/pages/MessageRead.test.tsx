@@ -1,4 +1,6 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { stubService } from "../test/service";
+import { renderWithAuth } from "../test/auth";
+import { cleanup, screen } from "@testing-library/react";
 import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../api/core";
@@ -6,11 +8,14 @@ import { Messages } from "../api/messages";
 import { polyfillEditorLayout } from "../test/editor";
 import { MessageReadPage } from "./MessageRead";
 
-vi.mock("../api/messages", () => ({ Messages: { read: vi.fn() } }));
+stubService(Messages, () => ({ read: vi.fn() }));
+
 const viewer = vi.hoisted(() => ({ isAdmin: false, canCompose: false }));
-vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 3, name: "Sam" }, loading: false, ...viewer }) }));
+
+const render = renderWithAuth(() => ({ user: { id: 3, name: "Sam" }, loading: false, ...viewer }));
 
 beforeAll(polyfillEditorLayout);
+
 afterEach(() => { vi.clearAllMocks(); viewer.isAdmin = false; viewer.canCompose = false; });
 
 function open(path = "/messages/5/read") {

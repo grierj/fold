@@ -1,3 +1,4 @@
+import { csrfFor } from "./helpers";
 import { expect, test } from "@playwright/test";
 import { signIn, signOut } from "./helpers";
 
@@ -11,13 +12,11 @@ import { signIn, signOut } from "./helpers";
 // Marks the admin's notifications read through the API, leaving the
 // bell clean for the specs that count waiting and unread items.
 async function markAllRead(page: import("@playwright/test").Page) {
-  await page.evaluate(async () => {
-    const csrf = (await (await fetch("/api/v1/auth/csrf")).json()).csrfToken as string;
-    await fetch("/api/v1/notifications/read-all", {
-      method: "POST",
-      headers: { "X-CSRF-Token": csrf },
-    });
+  const response = await page.request.post("/api/v1/notifications/read-all", {
+    headers: { "X-CSRF-Token": await csrfFor(page.request) },
   });
+
+  expect(response.ok()).toBe(true);
 }
 
 test("join page: age gate, self wording, and a stored request", async ({ page }) => {

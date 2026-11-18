@@ -21,6 +21,7 @@ export const DEFAULT_REMINDER_MINUTES = 1440;
 export function reminderSummary(minutes: number, push?: boolean): string {
   const choice = REMINDER_CHOICES.find((c) => c.minutes === minutes);
   const email = minutes === 0 ? (push ? "No reminder email" : "No reminder") : choice ? `Reminder ${choice.label}` : "Reminder";
+
   return push ? `${email} · Push reminder` : email;
 }
 
