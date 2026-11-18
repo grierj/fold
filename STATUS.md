@@ -93,7 +93,7 @@ narratives and follow-up lists, is kept in
 | M8.3 Directory finder in 10 seconds (Phase 8) | Not started; the directory slice of M7.9 (R15-3, R15-5), pulled forward — M7.9's other slices keep their own place | |
 | M8.4 Attendance 30-second roll (Phase 8) | Not started; this is M6.3 sequenced here (brief R10); M6.2 sign-up sheets follow it immediately | |
 | M8.5 GroupDetail and Home pulse (Phase 8) | Not started; existing data only, brief needed | |
-| M8.6 Announcements vs discussion (Phase 8) | Not started; new surface — needs proposed DEC-153 approved and a brief first; absorbs M6.6 | |
+| M8.6 Announcements vs discussion (Phase 8) | Not started; new surface — DEC-153 rescinded DEC-145, so the freeze no longer applies; needs a brief first; absorbs M6.6 | |
 | M8.7 Calendar subscribe surfacing (Phase 8) | Not started; feeds built in M1.7, this is visibility and revocation surfacing only | |
 | M8.8 Moats named in-product (Phase 8) | Not started; presentation only, no privacy, consent or room behaviour change | |
 | Simplicity: drop `pending_return` (DEC-47), event visibility on the event (DEC-48) | Done | #43 |

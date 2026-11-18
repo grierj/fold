@@ -156,10 +156,11 @@ prioritised recommendations from Winston's Nov 3, 2026 competitor teardown
 ([`research/competitor-teardown-2026-11.md`](research/competitor-teardown-2026-11.md)),
 promoted to high priority now that the simple deployment path works. It sequences
 existing milestones (M6.3, and the directory slice of M7.9) together with new
-milestones M8.1–M8.8, states each item's end goal in specific user-visible terms,
-and proposes DEC-153 to lift the DEC-145 surface freeze for its one new surface
-(M8.6) only. Until DEC-153 lands in [`decisions.md`](decisions.md), the freeze
-still governs M8.6.
+milestones M8.1–M8.8, and states each item's end goal in specific user-visible terms.
+DEC-153 (Nov 18, 2026, in [`decisions.md`](decisions.md)) rescinds DEC-145: the
+surface freeze is lifted in full, the initial deployment capability being
+sufficient to allow future work on product surface; DEC-145's R7/R8 rejections
+stand, and DEC-141's separate freeze is unchanged.
 
 ### 14.1 Rules for every milestone
 
@@ -227,6 +228,4 @@ Every decision is in [decisions.md](decisions.md).
 - Notice email timing (R6 open question 3): whether a non-urgent notice's email waits 15 minutes
   and is skipped if the person has already seen or read it in the app. M3.12 plans it; today
   `notify.deliver` sends at once.
-- Proposed DEC-153 (Nov 18, 2026, in [14.11](milestones/phase-8.md)): lift the DEC-145 surface
-  freeze for M8.6 (announcements vs discussion) only. Awaiting Grier's decision; the rest of
-  Phase 8 needs no new decision.
+- DEC-145's surface freeze: rescinded by DEC-153 (Nov 18, 2026). No longer open.

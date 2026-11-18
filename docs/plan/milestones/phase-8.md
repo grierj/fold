@@ -27,14 +27,18 @@ tests; this phase owns the sequence and adds the end-state criteria the
 brief does not cover. Where no brief exists, a brief at the R10/R14 level is
 written and approved before building starts.
 
-**Freeze note — proposed DEC-153 (for Grier to approve; not in force until
-it lands in [`decisions.md`](../decisions.md)):** DEC-145's "no new product
-surface until a first church is live" is lifted for the two named items in
-this phase that are new surface — M8.6 (announcements vs discussion) and the
-discussion lane it creates — and for no other surface. Every other item in
-this phase is a change to existing surface, a promotion of an already
+**Freeze note — DEC-153 (Grier, Nov 18, 2026, in
+[`decisions.md`](../decisions.md)):** DEC-145 is rescinded and its "no new
+product surface until a first church is live" freeze is lifted in full —
+the initial deployment capability is sufficient, in Grier's judgement, to
+allow future work on product surface. M8.6, this phase's one new surface,
+therefore needs no further permission, only its brief. DEC-153 does not
+reopen DEC-145's R7/R8 rejections, and DEC-141's separate freeze (room
+suggestions, direct-contact machinery) stands unchanged. Every other item
+in this phase is a change to existing surface, a promotion of an already
 approved milestone, or presentation of already-built behaviour. The
-candidates in "Not promoted" below stay out.
+candidates in "Not promoted" below stay out — for the reasons given
+there, not because of a freeze.
 
 #### Order, and the two deliberate swaps
 
@@ -48,8 +52,9 @@ Two swaps against the teardown's original P1/P2 tiers, made deliberately:
 - **M8.4 attendance (originally P2) builds before M8.5 pulse and M8.6
   announcements (originally P1).** Attendance is fully briefed (R10),
   was already pulled ahead by DEC-145, and needs no new decision. Pulse
-  has no brief yet, and announcements is new surface that needs DEC-153
-  and a brief first. A ready item does not wait behind unbriefed ones.
+  has no brief yet, and announcements is new surface that needed the
+  freeze lifted (DEC-153, done Nov 18, 2026) and still needs a brief
+  first. A ready item does not wait behind unbriefed ones.
 - **Sign-up sheets (M6.2, R14) keep their existing place immediately
   after attendance.** Sheets were a teardown finding, not one of the
   eight recommendations, so they get no M8 number — but the leader's
@@ -238,9 +243,9 @@ comes, is M8.6's lane, not this page's). Hidden contacts stay hidden
 in every pulse sentence; teen rules apply unchanged.
 
 **M8.6 — Announcements are not discussion (teardown P1; BAND, WhatsApp Communities)**
-New surface. Requires DEC-153 (proposed above) and a brief before
-building. Absorbs M6.6 (group discussions): M6.6 does not also get
-built as a separate, undifferentiated board.
+New surface, permitted by DEC-153 (DEC-145 rescinded, above). Requires
+a brief before building. Absorbs M6.6 (group discussions): M6.6 does
+not also get built as a separate, undifferentiated board.
 
 End goal — inside a group there are two lanes a member can tell apart
 at a glance, by label and by treatment:
