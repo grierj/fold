@@ -23,5 +23,8 @@ services:
     pull_policy: never
     ports:
       - "127.0.0.1:18080:8080"
+  backup:
+    # Same for ghcr.io/grierj/fold-backup:ci.
+    pull_policy: never
   caddy:
     profiles: ["never"]

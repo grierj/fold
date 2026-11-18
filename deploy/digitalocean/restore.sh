@@ -96,7 +96,7 @@ fi
 if (( ! DRY )) && [[ "$MODE" != status ]]; then
   ops_lock_acquire "$DIR" "restore-$MODE" || exit $?
 fi
-for name in compose_in dc pg recovery_ids runtime_tools recovery_classify recovery_accepts image_recovery_level commit_recovery_level host_recovery_floor write_recovery_floor backup_coord_acquire backup_coord_release backup_service_defined backup_coordination_check backup_scheduler_select image_restore_uploads commit_restore_uploads; do
+for name in compose_in dc pg recovery_ids runtime_tools recovery_classify recovery_accepts image_recovery_level commit_recovery_level host_recovery_floor write_recovery_floor backup_coord_acquire backup_coord_release backup_service_defined backup_coordination_check backup_scheduler_select image_restore_uploads commit_restore_uploads assert_image; do
   declare -F "$name" >/dev/null || fail "checks.sh lacks $name; run the current provision.sh --deploy-dir $DIR to install the complete tool set"
 done
 for name in $(runtime_tools); do

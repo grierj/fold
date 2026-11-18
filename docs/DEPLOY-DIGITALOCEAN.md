@@ -33,8 +33,8 @@ The database is Postgres in the Compose file (`postgres:16-alpine`, user
 
 ## Size
 
-This repo's `docker-compose.yml` pulls the published image
-`ghcr.io/grierj/fold:${FOLD_VERSION}` (`--image`); it does not build.
+This repo's `docker-compose.yml` pulls the matching published app and backup
+images at `FOLD_VERSION` (`--image`); it does not build.
 With a pulled image the 1 GB size, with swap, is the floor and 2 GB stays
 the recommendation. Building the Node and Go stages on a 1 GB machine can
 run out of memory, so the on-droplet build (`--allow-onbox-build`, which
@@ -56,10 +56,9 @@ number). `docs/API.md` has the details; the droplet check stays a check to
 run on the real machine (`docs/FIRST-CHURCH-CHECKS.md`). The floor stays 1 GB
 with swap.
 
-**No release is published yet.** Until the first release exists there is
-no image to pull: use the 2 GB size with `--allow-onbox-build`, as the
-commands below do, and switch to `--image ghcr.io/grierj/fold:x.y.z` when
-a release is announced.
+Until a paired app and backup release is published, use the 2 GB size with
+`--allow-onbox-build`, as the commands below do. Switch to `--image
+ghcr.io/grierj/fold:x.y.z` when a paired release is announced.
 
 | Droplet | Slug | Disk / transfer | When |
 |---|---|---|---|
@@ -173,15 +172,18 @@ Preview the whole plan:
   --allow-onbox-build
 ```
 
-`--allow-onbox-build` is the path until the first release is published:
+`--allow-onbox-build` is the path until a paired release is published:
 it copies `docker-compose.build.yml`, sets `COMPOSE_FILE` in `.env` so
 plain `docker compose` commands include it, and Compose builds the image
-on the droplet. Once `ghcr.io/grierj/fold` has a release, drop that flag
+on the droplet. Once the app and backup images have a paired release, drop that flag
 and pass `--image ghcr.io/grierj/fold:x.y.z` instead; the tag becomes
 `FOLD_VERSION` in `.env`, the build override is removed, and nothing builds
 on the droplet. Pin the exact version (`0.5.0`, not the moving `0.5`; the
 scripts refuse it). Do not deploy `:latest`. Each GitHub release lists the
-image digest and a link to its build provenance.
+image digests and links to their build provenance. For an older app tag without
+a matching backup image, set `FOLD_BACKUP_VERSION` in `/opt/fold/.env` to a
+published backup version yourself. Clear that override when upgrading to a
+paired release so both images follow `FOLD_VERSION`.
 
 Apply it:
 
@@ -825,8 +827,8 @@ runs that copy's provisioner. A target checkout supplies build inputs, never
 the provisioner. A script run by hand from an older checkout can bypass these
 checks. Do not use it to recover a deployment.
 
-On a pulled image (this changes `FOLD_VERSION` in `/opt/fold/.env`; there is
-no image to pull until the first release is published):
+On pulled images (this changes `FOLD_VERSION` in `/opt/fold/.env`; use a
+published paired release):
 
 ```bash
 sudo /opt/fold/upgrade.sh \
@@ -1053,6 +1055,6 @@ The script does not call the Hetzner API and does not create servers.
 
 ## Decisions
 
-- **Images.** Pull a published, pinned release (`--image ghcr.io/grierj/fold:x.y.z`, from the GitHub release workflow). Until the first release exists, build on the droplet with `--allow-onbox-build` on the 2 GB size. No separate build setup.
+- **Images.** Pull a published, pinned paired release (`--image ghcr.io/grierj/fold:x.y.z`, from the GitHub release workflow). Until one exists, build on the droplet with `--allow-onbox-build` on the 2 GB size. No separate build setup.
 - **Ubuntu.** The create command uses `ubuntu-26-04-x64`. The script also runs on 24.04 (`ubuntu-24-04-x64`). Hetzner uses the same script on those Ubuntu images.
 - **Services.** Postmark is the email recommendation; any SMTP host works. Telnyx is the SMS recommendation when a church wants texting; Fold runs without it. Encrypted offsite backups remain optional and deferred (DEC-152).
