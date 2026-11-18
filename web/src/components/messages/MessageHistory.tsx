@@ -14,11 +14,14 @@ import { FormError } from "../ui/Field";
 // copy by name (the API decides, DEC-132).
 
 const POLL_MS = 5000;
+
 // Checks stop after this long with nothing changing; the page offers to
 // check again.
 const QUIET_MS = 30 * 60_000;
+
 // The sender may pick a message up a little early by the browser's clock.
 const EARLY_MS = 60_000;
+
 // The longest single wait for a scheduled time; a later one waits again.
 const MAX_WAIT_MS = 24 * 60 * 60_000;
 
@@ -55,6 +58,7 @@ export function useMessageHistory(message: Message | null, onMessage: (m: Messag
   useEffect(() => {
     if (at === null || live) return;
     const timer = window.setTimeout(() => setClock((n) => n + 1), Math.min(Math.max(at - Date.now(), 0), MAX_WAIT_MS));
+
     return () => window.clearTimeout(timer);
   }, [at, live, clock]);
 
@@ -63,53 +67,72 @@ export function useMessageHistory(message: Message | null, onMessage: (m: Messag
     setStale(false);
     const settledNow = !!id && wasLive.current?.id === id && wasLive.current.live && !live;
     wasLive.current = id ? { id, live } : null;
+
     // Checks starting again (after Try again): the settle is said afresh.
     if (live) setAnnounce("");
+
     if (!id || (!shows && !live)) return;
     let alive = true;
     let timer: number | undefined;
     let paused = false;
     let lastChange = Date.now();
     let seen = "";
+
     async function refresh(first: boolean) {
       try {
         if (!first) {
           const { message: m } = await Messages.get(id!);
+
           if (!alive) return;
+
           if (m.status !== status || m.updatedAt !== updatedAt) {
             latest.current(m); // this effect runs again for the new state
+
             return;
           }
         }
+
         if (shows) {
           const h = await Messages.recipients(id!);
+
           if (!alive) return;
           const counts = JSON.stringify(h.counts);
+
           if (counts !== seen) {
             seen = counts;
             lastChange = Date.now();
           }
+
           setLoaded({ id: id!, history: h });
           setFailed(false);
+
           if (first && settledNow) setAnnounce(status === "failed" ? "This message didn't go out" : historyLine(h, { status: status!, sentAt: null }));
         }
       } catch {
         if (alive) setFailed(true);
       }
+
       next();
     }
+
     function next() {
       if (!alive || !live) return;
+
       if (Date.now() - lastChange > QUIET_MS) {
         setStale(true);
+
         return;
       }
+
       if (document.hidden) {
         paused = true;
+
         return;
       }
+
       timer = window.setTimeout(() => void refresh(false), POLL_MS);
     }
+
     function onVisible() {
       if (alive && paused && !document.hidden) {
         paused = false;
@@ -118,8 +141,10 @@ export function useMessageHistory(message: Message | null, onMessage: (m: Messag
         void refresh(false);
       }
     }
+
     document.addEventListener("visibilitychange", onVisible);
     void refresh(true);
+
     return () => {
       alive = false;
       window.clearTimeout(timer);
@@ -150,12 +175,15 @@ export function SendProblem({ message, history, busy, error, onRetry }: {
   onRetry: () => void;
 }) {
   const failedAll = message.status === "failed";
+
   if (!history || (!failedAll && !(message.status === "sent" && message.failedCount > 0))) return null;
   const canRetry = history.canRetry;
   const title = failedAll ? "This message didn't go out" : failedLine(history.counts.failed, history.counts.guardianCopiesFailed);
+
   const box = failedAll
     ? "border-danger-border bg-danger-subtle text-danger-on-subtle" // danger-ok: a send that failed is an error
     : "border-warning-border bg-warning-subtle text-warning-on-subtle";
+
   return (
     <div className={`space-y-3 rounded-lg border p-4 ${box}`}>
       <div role={failedAll ? "alert" : "status"} className="space-y-1">
@@ -177,7 +205,9 @@ export function SendProblem({ message, history, busy, error, onRetry }: {
 // reminder (M3.13d3), with no email rows, lists its pushes.
 const totalOf = (c: MessageRecipientCounts, withCopies: boolean) => {
   const email = c.sent + c.delivered + c.bounced + c.complained + c.failed + c.skipped + c.queued + (withCopies ? c.guardianCopies : 0);
+
   if (email > 0 || !c.push) return email;
+
   return c.push.sent + c.push.waiting.reduce((n, w) => n + w.n, 0) + Object.values(c.push.missed).reduce((n, k) => n + k, 0);
 };
 
@@ -185,7 +215,9 @@ const totalOf = (c: MessageRecipientCounts, withCopies: boolean) => {
 // admin's has guardian copies (withCopies); a leader's counts them above.
 export function WhoGotIt({ history, withCopies }: { history: MessageRecipients; withCopies: boolean }) {
   const total = totalOf(history.counts, withCopies);
+
   if (history.recipients.length === 0) return null;
+
   return (
     <details>
       <summary className="inline-flex min-h-11 cursor-pointer items-center text-sm font-semibold text-primary">See who got it</summary>
@@ -203,6 +235,7 @@ export function WhoGotIt({ history, withCopies }: { history: MessageRecipients; 
 // "Push waiting until 8:00 AM". One row a person, however they got it.
 function HistoryRow({ r }: { r: MessageHistoryRecipient }) {
   const missed = r.status === "missed";
+
   return (
     <li className="flex flex-wrap items-center gap-2 px-3 py-2">
       <span className={missed ? "text-text-muted" : "text-text"}>{r.name}</span>

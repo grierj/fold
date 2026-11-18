@@ -29,6 +29,7 @@ describe("GroupCard", () => {
     expect(image).toHaveAttribute("height", "112");
     expect(image).toHaveAttribute("alt", "");
     expect(image).toHaveStyle({ objectPosition: "50% 50%" });
+
     if (imageUrl) expect(image).toHaveAttribute("src", imageUrl);
     view.unmount();
 
@@ -53,6 +54,7 @@ describe("GroupCard", () => {
 
   it("shows Today in the success tone with a separate time, and Tonight from 5 PM", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
+
     try {
       vi.setSystemTime(new Date("2035-06-15T15:00:00Z")); // 9 AM in Boise
       const { unmount } = renderCard({ group: { ...group, nextEventAt: "2035-06-15T22:01:00Z" } }); // 4:01 PM

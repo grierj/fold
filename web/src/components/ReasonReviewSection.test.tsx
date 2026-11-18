@@ -1,7 +1,8 @@
+import { requiredElement } from "../test/dom";
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import { Profiler } from "react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { KEEP, REMOVE, ReasonReviewStore } from "../lib/reasonReviewStore";
 import type { ErasureReasonItem } from "../types";
 import { QC1_WEB } from "../test/qc1Facts";
@@ -10,9 +11,25 @@ import { ReasonProgress, ReasonReviewSection, ReasonSummary } from "./ReasonRevi
 // Reasons shown per page.
 const DISPLAY_PAGE = 50;
 
-// Counts how many times a row renders: each row formats its date once per render.
-const rowRenders = vi.hoisted(() => ({ n: 0 }));
-vi.mock("../lib/when", async (orig) => ({ ...(await orig<typeof import("../lib/when")>()), formatShortDay: () => { rowRenders.n++; return "Nov 1"; } }));
+const rowRenders = { n: 0 };
+const dateFormat = Object.getOwnPropertyDescriptor(Intl.DateTimeFormat.prototype, "format");
+
+if (!dateFormat?.get) throw new Error("Intl.DateTimeFormat.format is unavailable");
+
+const getFormat = dateFormat.get;
+
+beforeEach(() => {
+  Object.defineProperty(Intl.DateTimeFormat.prototype, "format", {
+    ...dateFormat,
+    get(this: Intl.DateTimeFormat) {
+      const { month, day } = this.resolvedOptions();
+
+      if (month === "short" && day === "numeric") rowRenders.n++;
+
+      return getFormat.call(this);
+    },
+  });
+});
 
 const item = (id: number): ErasureReasonItem => ({
   requestId: String(id), reviewHash: (id % 0xffff).toString(16).padStart(4, "0").repeat(16), role: "subject", purpose: "contact", status: "pending",
@@ -21,7 +38,9 @@ const item = (id: number): ErasureReasonItem => ({
 
 function filled(n: number): ReasonReviewStore {
   const store = new ReasonReviewStore();
+
   for (let from = 1; from <= n; from += 100) store.appendPage(Array.from({ length: Math.min(100, n - from + 1) }, (_, i) => item(from + i)));
+
   return store;
 }
 
@@ -37,6 +56,7 @@ function show(store: ReasonReviewStore, props: Partial<React.ComponentProps<type
 
 afterEach(() => {
   cleanup();
+  Object.defineProperty(Intl.DateTimeFormat.prototype, "format", dateFormat);
   rowRenders.n = 0;
 });
 
@@ -45,6 +65,7 @@ describe("ReasonReviewSection", () => {
     show(filled(120));
     expect(screen.getByText("Reasons 1 to 50 of 120")).toBeInTheDocument();
     expect(screen.getAllByRole("radio")).toHaveLength(2 * DISPLAY_PAGE);
+
     for (const r of screen.getAllByRole("radio")) expect(r).not.toBeChecked();
     expect(screen.getByRole("group", { name: "Reason 1 of 120" })).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "Reason 50 of 120" })).toBeInTheDocument();
@@ -97,6 +118,7 @@ describe("ReasonReviewSection", () => {
 
   it("goes to the next reason without a choice, then says every reason has one", async () => {
     const store = filled(120);
+
     for (let i = 0; i < 120; i++) if (i !== 64 && i !== 3) store.choose(i, KEEP);
     show(store);
     await userEvent.click(screen.getByRole("button", { name: "Next reason without a choice" }));
@@ -139,9 +161,11 @@ describe("ReasonReviewSection", () => {
   it("a click commits the section, the progress line and the summary once each, and renders one row", async () => {
     const store = filled(2000);
     const commits: Record<string, number> = {};
+
     const count = (id: string) => {
       commits[id] = (commits[id] ?? 0) + 1;
     };
+
     render(
       <>
         <Profiler id="section" onRender={count}>
@@ -155,6 +179,7 @@ describe("ReasonReviewSection", () => {
         </Profiler>
       </>,
     );
+
     for (const k of Object.keys(commits)) commits[k] = 0;
     rowRenders.n = 0;
     await userEvent.click(within(screen.getByRole("group", { name: "Reason 3 of 2000" })).getByRole("radio", { name: "Keep text" }));
@@ -167,6 +192,7 @@ describe("ReasonReviewSection", () => {
 
   it("disables every radio while a press is in flight", () => {
     show(filled(60), { disabled: true });
+
     for (const r of screen.getAllByRole("radio")) expect(r).toBeDisabled();
   });
 
@@ -192,6 +218,7 @@ describe("ReasonProgress and ReasonSummary", () => {
 
   it("is told to assistive tech only after two quiet seconds, never once per click", () => {
     vi.useFakeTimers();
+
     try {
       const store = filled(3);
       render(<ReasonProgress store={store} done />);
@@ -231,6 +258,7 @@ describe("what the QC-1 harness drives in the reason review", () => {
     expect(rows).toHaveLength(F.displayPage);
     expect(rows[0].getAttribute(F.reasonIdAttr)).toBe("1");
     expect(rows[0].querySelector(`[${F.reasonHeadingAttr}="0"]`)).not.toBeNull();
+
     // Nothing is preselected, and every row says so in the words the harness waits to disappear.
     for (const row of rows) expect(row.textContent).toContain(F.copy.notChosen);
     // The harness holds the reason's text to the database's: each row has exactly one element for it, and its text is the reason and nothing else.
@@ -273,7 +301,7 @@ describe("what the QC-1 harness drives in the reason review", () => {
 
   it("gives every row the Keep and Blank radios the harness checks, and a remove value it can click", () => {
     show(filled(120));
-    const row = document.querySelector(F.reasonRows) as HTMLElement;
+    const row = requiredElement(document.querySelector(F.reasonRows), HTMLElement);
     expect(within(row).getByRole("radio", { name: F.labels.keepText })).toBeInTheDocument();
     expect(within(row).getByRole("radio", { name: F.labels.blankText })).toBeInTheDocument();
     expect(row.querySelector(`input[type="radio"][value="${F.radioRemoveValue}"]`)).not.toBeNull();

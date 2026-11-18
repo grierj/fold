@@ -11,6 +11,7 @@ import { Field, Select } from "../ui/Field";
 
 // How long the picker waits after a change before counting again.
 const COUNT_DELAY_MS = 300;
+
 // GET /messages/compose lists each event's next 10 dates (maxComposeDates).
 const LISTED_DATES = 10;
 
@@ -41,12 +42,15 @@ export function AudiencePicker({ options, choice, onChange, error, id, push = fa
 
   useEffect(() => {
     latest.current = key;
+
     if (!audience) return;
+
     const timer = setTimeout(() => {
       Messages.audiencePreview(audience)
         .then(({ summary: s }) => { if (latest.current === key) setSummary({ key, summary: s }); })
         .catch((e) => { if (latest.current === key) setCountError({ key, text: errorText(e, "We couldn't count who gets this.") }); });
     }, COUNT_DELAY_MS);
+
     return () => clearTimeout(timer);
     // audience is derived from key, so key alone says when to count again.
   }, [key]);
@@ -54,9 +58,11 @@ export function AudiencePicker({ options, choice, onChange, error, id, push = fa
   const listed = (target: string) => {
     const [k, v] = target.split(":");
     const n = Number(v);
+
     return target === "" || (target === "all" && options.canMessageEveryone) ||
       (k === "group" && options.groups.some((g) => g.id === n)) || (k === "event" && options.events.some((e) => e.id === n));
   };
+
   // The chosen label in full, for the select's title, and its shortened form
   // as an option shows it. The full name also goes on a line under the select
   // when the option had to be cut.
@@ -75,9 +81,21 @@ export function AudiencePicker({ options, choice, onChange, error, id, push = fa
   const isGroup = kind === "group";
   const chips = isGroup ? ROLE_CHOICES : STATUS_CHOICES;
   const picked: string[] = isGroup ? choice.roles : choice.statuses;
+
   const toggle = (value: string) => {
-    const next = picked.includes(value) ? picked.filter((v) => v !== value) : [...picked, value];
-    onChange(isGroup ? { ...choice, roles: next as AudienceChoice["roles"] } : { ...choice, statuses: next as AudienceChoice["statuses"] });
+    if (isGroup) {
+      const role = ROLE_CHOICES.find((chip) => chip.id === value)?.id;
+
+      if (!role) return;
+      const roles = choice.roles.includes(role) ? choice.roles.filter((item) => item !== role) : [...choice.roles, role];
+      onChange({ ...choice, roles });
+    } else {
+      const status = STATUS_CHOICES.find((chip) => chip.id === value)?.id;
+
+      if (!status) return;
+      const statuses = choice.statuses.includes(status) ? choice.statuses.filter((item) => item !== status) : [...choice.statuses, status];
+      onChange({ ...choice, statuses });
+    }
   };
 
   return (
@@ -162,6 +180,7 @@ export function AudiencePicker({ options, choice, onChange, error, id, push = fa
 function RecipientRow({ r, push }: { r: AudienceRecipient; push: boolean }) {
   const pushed = push && !!r.push;
   const what = pushed ? "the email" : "this";
+
   return (
     <li className="flex flex-wrap items-center gap-2 px-3 py-2">
       <span className={r.skipped ? "text-text-muted" : "text-text"}>{r.name}</span>

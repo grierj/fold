@@ -1,3 +1,4 @@
+import * as schema from "valibot";
 import { expect, test } from "@playwright/test";
 import { apiAs, signIn } from "./helpers";
 
@@ -6,25 +7,31 @@ import { apiAs, signIn } from "./helpers";
 // the second is going with one bell item.
 test("the waitlist arc: capacity 1, position 1, cancel, promoted", async ({ page, request }) => {
   const admin = await apiAs(request, "grier");
-  const { group } = (await admin("POST", "/groups", {
+
+  const { group } = schema.parse(schema.looseObject({ group: schema.looseObject({ id: schema.number() }) }), (await admin("POST", "/groups", {
     name: "Waitlist club", description: "", tags: [], imageUrl: "", location: "Hall",
     visibility: "public", memberLimit: null,
-  })) as { group: { id: number } };
-  const { users } = (await admin("GET", "/admin/users")) as { users: { id: number; email: string }[] };
+  })));
+
+  const { users } = schema.parse(schema.looseObject({ users: schema.array(schema.looseObject({ id: schema.number(), email: schema.string() })) }), (await admin("GET", "/admin/users")));
   const id = (name: string) => users.find((u) => u.email === `${name}@example.com`)!.id;
+
   for (const name of ["sam", "lee"]) {
     await admin("POST", `/admin/groups/${group.id}/members`, { userId: id(name), role: "member" });
   }
+
   const when = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
   const ymd = when.toISOString().slice(0, 10);
-  const { event } = (await admin("POST", `/groups/${group.id}/events`, {
+
+  const { event } = schema.parse(schema.looseObject({ event: schema.looseObject({ id: schema.number() }) }), (await admin("POST", `/groups/${group.id}/events`, {
     title: "Tiny supper",
     startsLocal: `${ymd}T19:00`,
     durationMinutes: 60,
     tzid: "UTC",
     capacity: 1,
     waitlistEnabled: true,
-  })) as { event: { id: number } };
+  })));
+
   const url = `/events/${event.id}`;
 
   // Sam takes the one seat.

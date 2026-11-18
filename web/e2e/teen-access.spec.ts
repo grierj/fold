@@ -4,6 +4,7 @@ import { apiAs, attemptPendingSignIn, email, PASSWORD, signIn, signOut } from ".
 
 async function capture(page: import("@playwright/test").Page, name: string) {
   if (!process.env.SCREENS_DIR) return;
+
   for (const width of [390, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     await page.screenshot({ path: `${process.env.SCREENS_DIR}/${name}-${width}.png`, fullPage: true });
@@ -37,14 +38,17 @@ test("a teen created through the admin form browses publicly but cannot sign in 
   await page.reload();
   await expect(page.getByRole("heading", { name: "Calendar", exact: true })).toBeVisible();
   await capture(page, "teen-public-calendar");
+
   for (const path of ["/site", "/groups", "/calendar", "/events"]) {
     const response = await page.request.get(`/api/v1${path}`);
     expect(response.status()).toBe(200);
     expect(response.headers()["cache-control"]).toBe("no-store");
   }
+
   for (const path of ["/auth/me", "/me/household", "/notifications", "/admin/users"]) {
     expect((await page.request.get(`/api/v1${path}`)).status()).toBe(401);
   }
+
   await signIn(page, "sam");
   await page.getByRole("searchbox", { name: "Search groups" }).fill("Members-only circle");
   await expect(page.getByRole("heading", { name: "Members-only circle" })).toBeVisible();
@@ -62,6 +66,7 @@ test("an ordinary invitation asks the recipient's age without logging in a pendi
     const html = await (await request.get("/dev/outbox")).text();
     const section = html.split("<section").find((part) => part.includes(`To: ${email("invited-teen")}`));
     link = section?.match(/https?:[^\s<]+\/invite\?token=[A-Za-z0-9_-]+/)?.[0] ?? "";
+
     return link;
   }).not.toBe("");
   await page.goto(new URL(link).pathname + new URL(link).search);

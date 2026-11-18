@@ -28,9 +28,9 @@ describe("api", () => {
     vi.stubGlobal("fetch", fetcher);
     await api("/things");
     await api("/things", { method: "POST", body: { a: 1 } });
-    const calls = fetcher.mock.calls as unknown as [string, RequestInit][];
+    const calls = fetcher.mock.calls;
     expect(calls.map(([url]) => url)).toEqual(["/api/v1/things", "/api/v1/auth/csrf", "/api/v1/things"]);
-    expect(calls[0][1].headers).not.toHaveProperty("X-CSRF-Token");
+    expect(calls[0][1]?.headers).not.toHaveProperty("X-CSRF-Token");
     expect(calls[2][1]).toMatchObject({ method: "POST", credentials: "include", body: '{"a":1}', headers: { "X-CSRF-Token": "test-csrf", "Content-Type": "application/json" } });
   });
 
@@ -53,9 +53,10 @@ describe("api", () => {
     vi.resetModules();
     const { api } = await import("./core");
     let minted = 0;
-    const sent: string[] = [];
+    const sent: Array<string | null> = [];
     vi.stubGlobal("fetch", csrfOr((_url, init) => {
-      sent.push((init?.headers as Record<string, string>)["X-CSRF-Token"]);
+      sent.push(new Headers(init?.headers).get("X-CSRF-Token"));
+
       return new Response("{}");
     }, () => `token-${++minted}`));
     await api("/a", { method: "POST", rotatesCsrf: true });
@@ -66,11 +67,14 @@ describe("api", () => {
   it("only passes the status and an unreadable flag when the body is not a JSON object", async () => {
     const fail = async (response: Response) => {
       vi.stubGlobal("fetch", vi.fn(async () => response));
-      return api("/x").catch((e: unknown) => e);
+
+      return api("/x").catch((cause: unknown) => cause);
     };
+
     for (const make of [() => new Response("<html>bad gateway</html>", { status: 400 }), () => new Response("", { status: 400 }), () => new Response("[]", { status: 400 }), () => new Response("null", { status: 400 })]) {
       expect(await fail(make())).toMatchObject({ status: 400, unreadable: true });
     }
+
     expect(await fail(new Response(JSON.stringify({ error: "no", code: "last_admin" }), { status: 400 }))).toMatchObject({ status: 400, code: "last_admin", unreadable: false });
     expect(await fail(new Response("proxy", { status: 502 }))).toMatchObject({ status: 502, code: "server_error", unreadable: true });
   });
@@ -93,7 +97,9 @@ describe("apiUpload", () => {
     const fetcher = csrfOr(() => new Response(JSON.stringify({ avatarUrl: "/u/1" })));
     vi.stubGlobal("fetch", fetcher);
     expect(await apiUpload("/me/avatar", "avatar", file())).toEqual({ avatarUrl: "/u/1" });
-    const [, init] = fetcher.mock.calls[fetcher.mock.calls.length - 1] as unknown as [string, RequestInit];
+    const [, init] = fetcher.mock.calls[fetcher.mock.calls.length - 1];
+
+    if (!init) throw new Error("Expected request options");
     expect(init.body).toBeInstanceOf(FormData);
     expect(init.headers).toMatchObject({ "X-CSRF-Token": expect.any(String), Accept: "application/json" });
     expect(init.headers).not.toHaveProperty("Content-Type");
@@ -140,7 +146,7 @@ describe("apiIfChanged", () => {
     vi.stubGlobal("fetch", fetcher);
     expect(await apiIfChanged("/n", "")).toEqual({ data: { unread: 2 }, etag: '"2-0"' });
     expect(await apiIfChanged("/n", '"2-0"')).toBeNull();
-    expect(fetcher.mock.calls[0][1].headers).not.toHaveProperty("If-None-Match");
+    expect(fetcher.mock.calls[0][1]?.headers).not.toHaveProperty("If-None-Match");
     expect(fetcher.mock.calls[1][1].headers).toMatchObject({ "If-None-Match": '"2-0"' });
   });
 

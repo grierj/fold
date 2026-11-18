@@ -1,4 +1,8 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { testEvent, testGroupDetail, testSite } from "../test/fixtures";
+import { renderWithAuth } from "../test/auth";
+import { stubService } from "../test/service";
+import { Events } from "../api/events";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,14 +12,15 @@ import { Site } from "../api/site";
 import { UnsavedChangesBlocker } from "../lib/unsavedChanges";
 import { NewEvent } from "./NewEvent";
 
-vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2 }, loading: false, isAdmin: false }) }));
-vi.mock("../api/groups", async (importActual) => ({ ...(await importActual<typeof import("../api/groups")>()), Groups: {
-    get: vi.fn(),
-    createEvent: vi.fn(),
-  } }));
-vi.mock("../api/rooms", async (importActual) => ({ ...(await importActual<typeof import("../api/rooms")>()), SeriesRooms: { check: vi.fn() } }));
-vi.mock("../api/site", async (importActual) => ({ ...(await importActual<typeof import("../api/site")>()), Site: { get: vi.fn().mockResolvedValue({ timezone: "America/Denver" }) } }));
-vi.mock("../api/events", async (importActual) => ({ ...(await importActual<typeof import("../api/events")>()), Events: { generateJitsi: vi.fn() } }));
+const render = renderWithAuth(() => ({ user: { id: 2 }, loading: false, isAdmin: false }));
+
+stubService(Groups, () => ({ get: vi.fn(), createEvent: vi.fn() }));
+
+stubService(SeriesRooms, () => ({ check: vi.fn() }));
+
+stubService(Site, () => ({ get: vi.fn().mockResolvedValue({ timezone: "America/Denver" }) }));
+
+stubService(Events, () => ({ generateJitsi: vi.fn() }));
 
 function renderForm() {
   const router = createMemoryRouter(
@@ -27,7 +32,9 @@ function renderForm() {
     ],
     { initialEntries: ["/groups/5/events/new"] },
   );
+
   render(<RouterProvider router={router} />);
+
   return router;
 }
 
@@ -38,12 +45,9 @@ async function ready() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(Groups.get).mockResolvedValue({
-    group: { name: "Choir", location: "Hall", visibility: "public", status: "active" },
-    canManage: true,
-  } as never);
-  vi.mocked(Groups.createEvent).mockResolvedValue({ event: { id: 9 } } as never);
-  vi.mocked(Site.get).mockResolvedValue({ timezone: "America/Denver" } as never);
+  vi.mocked(Groups.get).mockResolvedValue(testGroupDetail({ name: "Choir", location: "Hall", visibility: "public", status: "active" }));
+  vi.mocked(Groups.createEvent).mockResolvedValue({ event: testEvent(9) });
+  vi.mocked(Site.get).mockResolvedValue(testSite({ timezone: "America/Denver" }));
 });
 
 describe("NewEvent", () => {
@@ -51,10 +55,7 @@ describe("NewEvent", () => {
     ["pending", /once an admin approves it/],
     ["archived", /is archived, so it can't schedule new events/],
   ])("explains instead of showing the form for a %s group (DEC-147)", async (status, sentence) => {
-    vi.mocked(Groups.get).mockResolvedValue({
-      group: { name: "Choir", location: "Hall", visibility: "public", status },
-      canManage: true,
-    } as never);
+    vi.mocked(Groups.get).mockResolvedValue(testGroupDetail({ name: "Choir", location: "Hall", visibility: "public", status }));
     renderForm();
     expect(await screen.findByText(sentence)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Back to group" })).toHaveAttribute("href", "/groups/5");
@@ -67,14 +68,18 @@ describe("NewEvent", () => {
     await ready();
     const form = document.querySelector("form")!;
     const labels = ["Title", "Description", "When", "Date", "Start time", "Duration", "Repeats", "Location", "More options"];
+
     const found = labels.map((l) => {
       const el = Array.from(form.querySelectorAll("label, h2, p, button")).find((n) => n.textContent?.replace(/\s*\(optional\)/, "").trim().startsWith(l) && (l !== "Title" || n.tagName === "LABEL"));
       expect(el, l).toBeTruthy();
+
       return el!;
     });
+
     for (let i = 1; i < found.length; i++) {
       expect(found[i - 1].compareDocumentPosition(found[i]) & Node.DOCUMENT_POSITION_FOLLOWING, labels[i]).toBeTruthy();
     }
+
     expect(screen.getByText("Mountain time")).toBeInTheDocument();
   });
 
@@ -137,7 +142,7 @@ describe("NewEvent", () => {
   });
 
   it("hides the push reminder when the church turned notifications off", async () => {
-    vi.mocked(Site.get).mockResolvedValue({ timezone: "America/Denver", pushEnabled: false } as never);
+    vi.mocked(Site.get).mockResolvedValue(testSite({ timezone: "America/Denver", pushEnabled: false }));
     renderForm();
     await ready();
     await userEvent.click(screen.getByRole("button", { name: "More options" }));
@@ -219,8 +224,9 @@ describe("NewEvent", () => {
     expect(within(document.querySelector("form")!).queryByRole("button", { name: "Change time zone" })).not.toBeInTheDocument();
   });
   const hall = { id: 3, name: "Fellowship Hall", building: "Main", capacity: 80, features: "", restricted: false, busyDates: 0, tooSmall: false };
+
   const roomsOn = (rooms: typeof hall[], dates: number) => {
-    vi.mocked(Site.get).mockResolvedValue({ timezone: "America/Denver", roomsEnabled: true } as never);
+    vi.mocked(Site.get).mockResolvedValue(testSite({ timezone: "America/Denver", roomsEnabled: true }));
     vi.mocked(SeriesRooms.check).mockResolvedValue({ rooms, dates });
   };
 

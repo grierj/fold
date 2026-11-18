@@ -1,3 +1,4 @@
+import { stubService } from "../../test/service";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -6,25 +7,34 @@ import type { PeopleSearchResponse, PersonSearchResult } from "../../types";
 import { Field } from "./Field";
 import { PeoplePicker } from "./PeoplePicker";
 
-vi.mock("../../api/people", async (actual) => ({ ...(await actual<typeof import("../../api/people")>()), People: { search: vi.fn() } }));
+stubService(People, () => ({ search: vi.fn() }));
+
 const pat: PersonSearchResult = { selectionId: "opaque-pat", displayName: "Pat Lee", teen: false, sharedGroups: ["Choir"], otherGroups: ["Walking"] };
+
 function Harness({ eligible = true }: { eligible?: boolean }) {
   const [value, setValue] = useState<PersonSearchResult | null>(null);
+
   return eligible ? <Field label="Find a person" hint="Search by name"><PeoplePicker value={value} onChange={setValue} /></Field> : null;
 }
+
 const box = () => screen.getByRole("combobox", { name: "Find a person" });
+
 async function query(text: string) {
   fireEvent.focus(box());
   fireEvent.change(box(), { target: { value: text } });
   await act(() => vi.advanceTimersByTimeAsync(300));
 }
+
 function deferred() {
   let resolve!: (value: PeopleSearchResponse) => void;
   let reject!: (reason: Error) => void;
   const promise = new Promise<PeopleSearchResponse>((yes, no) => { resolve = yes; reject = no; });
+
   return { promise, resolve, reject };
 }
+
 beforeEach(() => { vi.useFakeTimers(); vi.mocked(People.search).mockReset().mockResolvedValue({ state: "results", people: [pat] }); });
+
 afterEach(() => { vi.useRealTimers(); });
 
 it("labels the combobox, hints without browsing, and debounces two Unicode code points", async () => {

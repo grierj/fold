@@ -49,6 +49,7 @@ export function MonthView({
 
   function onKey(e: KeyboardEvent<HTMLButtonElement>, d: string) {
     const week = weeks.find((w) => w.includes(d))!;
+
     const target = {
       ArrowLeft: addDays(d, -1),
       ArrowRight: addDays(d, 1),
@@ -59,12 +60,15 @@ export function MonthView({
       PageUp: addMonths(d, -1),
       PageDown: addMonths(d, 1),
     }[e.key];
+
     if (!target) return;
     e.preventDefault();
     moved.current = true;
+
     if (weeks.some((w) => w.includes(target)) && !e.key.startsWith("Page")) setFocusDay(target);
     else onNavigate(target);
   }
+
   return (
     <>
       <table ref={table} className="w-full table-fixed border-collapse">
@@ -86,12 +90,16 @@ export function MonthView({
                 const inMonth = d.slice(0, 7) === month;
                 const isToday = d === today;
                 const stateCounts = new Map<string, number>();
+
                 for (const occ of occs) {
                   const label = calendarStateLabel(occ);
+
                   if (label) stateCounts.set(label.toLowerCase(), (stateCounts.get(label.toLowerCase()) ?? 0) + 1);
                 }
+
                 const states = [...stateCounts].map(([state, count]) => `${count} ${state}`).join(", ");
                 const label = `${formatDayLong(d)}, ${occs.length} ${occs.length === 1 ? "event" : "events"}${isToday ? ", today" : ""}${states ? `, ${states}` : ""}`;
+
                 const number = (
                   <span
                     className={`inline-flex h-7 w-7 items-center justify-center text-sm ${isToday ? "rounded-full bg-primary text-primary-foreground" : ""}`}
@@ -99,6 +107,7 @@ export function MonthView({
                     {Number(d.slice(8))}
                   </span>
                 );
+
                 return (
                   <td key={d} className={`border border-border p-0 align-top sm:p-1 ${inMonth ? "bg-surface text-text" : "bg-page text-text-muted"}`}>
                     <DayButton
@@ -115,6 +124,7 @@ export function MonthView({
                       <span aria-hidden="true" className="flex h-1.5 gap-0.5">
                         {occs.slice(0, MAX_CHIPS).map((o) => {
                           const state = calendarState(o);
+
                           const dot = state === "going"
                             ? "border-primary bg-primary"
                             : state === "maybe" || state === "waitlisted" || state === "not_answered"
@@ -122,6 +132,7 @@ export function MonthView({
                               : state === "declined"
                                 ? "border-border-strong bg-transparent"
                                 : "border-border-strong bg-border-strong";
+
                           return <span key={`${o.eventId}-${o.date}`} className={`h-1.5 w-1.5 rounded-full border ${dot}`} />;
                         })}
                       </span>

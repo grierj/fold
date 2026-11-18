@@ -1,3 +1,4 @@
+import * as schema from "valibot";
 import { expect, test, type Page } from "@playwright/test";
 import { apiAs, signIn, fromMore } from "./helpers";
 
@@ -22,12 +23,14 @@ async function expectBrowserZoneFirst(page: Page, id: string, church = true, rev
   const options = page.getByRole("listbox").getByRole("option");
   await expect(options.first()).toContainText("Knox, Indiana (Central)");
   await expect(options.first()).toContainText("Yours");
+
   if (church) {
     await expect(options.nth(1)).toContainText("Boise (Mountain)");
     await expect(options.nth(1)).toContainText("Church");
   } else {
     await expect(page.getByRole("option", { name: /Church/ })).toHaveCount(0);
   }
+
   await expect(page.getByRole("option", { name: /^Boise \(Mountain\)/ })).toHaveCount(1);
   await box.press("Escape");
   await expect(page.getByRole("listbox")).toHaveCount(0);
@@ -62,13 +65,16 @@ test("typing filters by region and the keyboard picks a zone", async ({ page }) 
 
 test("series edit form lists the browser zone first", async ({ page, request }) => {
   const admin = await apiAs(request, "grier");
-  const { group } = (await admin("POST", "/groups", {
+
+  const { group } = schema.parse(schema.looseObject({ group: schema.looseObject({ id: schema.number() }) }), (await admin("POST", "/groups", {
     name: "Zone club", description: "", tags: [], location: "", visibility: "public", memberLimit: null,
-  })) as { group: { id: number } };
-  const { event } = (await admin("POST", `/groups/${group.id}/events`, {
+  })));
+
+  const { event } = schema.parse(schema.looseObject({ event: schema.looseObject({ id: schema.number() }) }), (await admin("POST", `/groups/${group.id}/events`, {
     title: "Zone night", startsLocal: `${futureDate(5)}T19:00`, durationMinutes: 60, tzid: "America/Boise",
     location: "", recurrenceRule: "FREQ=WEEKLY",
-  })) as { event: { id: number } };
+  })));
+
   await signIn(page, "grier");
   await page.goto(`/groups/${group.id}`);
   await fromMore(page, "Edit series");
@@ -81,10 +87,12 @@ test("series edit form lists the browser zone first", async ({ page, request }) 
   await page.goto(`/events/${event.id}`);
   await page.getByRole("button", { name: "Edit series" }).click();
   await expectBrowserZoneFirst(page, `s-ev${event.id}-tz`);
+
   // Same shared editor as the group page: visible labels, same fields.
   for (const label of ["First date", "Start time", "Title", "Location", "Description", "Repeat until (optional)"]) {
     await expect(page.locator("label", { hasText: label }).first()).toBeVisible();
   }
+
   await expect(page.getByRole("group", { name: "Duration" })).toBeVisible();
   await expect(page.getByRole("button", { name: "More options" })).toHaveAttribute("aria-expanded", "true");
 });

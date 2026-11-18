@@ -18,6 +18,7 @@ export function ForgotPassword() {
     e.preventDefault();
     setBusy(true);
     setError(null);
+
     try {
       const res = await AuthApi.requestPasswordReset(email);
       setMessage(res.message);

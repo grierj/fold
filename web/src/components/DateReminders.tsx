@@ -10,8 +10,10 @@ import { browserTimeZone } from "../lib/when";
 // managers only. The push reminder (M3.13d3) has its own lines.
 export function DateReminderLines({ reminders }: { reminders: DateReminders }) {
   const church = useChurchZoneLoad();
+
   if (!church.done) return null;
   const lines = reminderLines(reminders, church.zone ?? browserTimeZone());
+
   return (
     <div className="space-y-1 border-t border-border pt-3">
       <h2 className="text-base font-semibold">Reminders</h2>

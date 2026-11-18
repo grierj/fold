@@ -9,6 +9,7 @@ function Editor({ label = "Edit" }: { label?: string }) {
   const [dirty, setDirty] = useState(false);
   const { guard, markSaved } = useUnsavedChanges(dirty);
   const navigate = useNavigate();
+
   return <>
     {guard}
     <button type="button" onClick={() => setDirty(true)}>{label}</button>
@@ -26,7 +27,9 @@ function renderAt(page = <Editor />) {
       { path: "/done", element: <p>Saved page</p> },
     ],
   }]);
+
   render(<RouterProvider router={router} />);
+
   return router;
 }
 

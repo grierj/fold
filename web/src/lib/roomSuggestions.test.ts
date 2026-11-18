@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { suggestedRooms } from "./roomSuggestions";
 
 const rooms = [{ id: 1 }, { id: 2 }, { id: 3 }];
+
 const s = (ids: number[], otherKinds = false) => ({
   rooms: ids.map((roomId, i) => ({ roomId, uses: i + 1, reason: `Used ${i + 1} times`, busyDates: 0 })),
   otherKinds,

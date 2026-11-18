@@ -1,3 +1,5 @@
+import { testContactRequest } from "../test/fixtures";
+import { stubService } from "../test/service";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
@@ -6,13 +8,15 @@ import { ApiError } from "../api/core";
 import { Contacts } from "../api/contacts";
 import { ContactRequestForm } from "./ContactRequestForm";
 
-vi.mock("../api/contacts", () => ({ Contacts: { create: vi.fn() } }));
+stubService(Contacts, () => ({ create: vi.fn() }));
+
 beforeEach(() => vi.clearAllMocks());
+
 const props = { subjectUserId: 2, subjectName: "Pat", contextType: "group" as const, contextId: 3, onClose: vi.fn() };
 const mount = () => render(<MemoryRouter><ContactRequestForm {...props} /></MemoryRouter>);
 
 it("creates an adult request with the exact context and optional reason, without revealing", async () => {
-  vi.mocked(Contacts.create).mockResolvedValue({ request: { id: 12 } as never });
+  vi.mocked(Contacts.create).mockResolvedValue({ request: testContactRequest(12) });
   mount();
   await userEvent.click(screen.getByLabelText("Email and phone"));
   await userEvent.type(screen.getByLabelText(/Reason/), "To coordinate rides");

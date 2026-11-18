@@ -1,34 +1,45 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { stubService } from "../test/service";
+import { CalendarFeeds } from "../api/profile";
+import { Households } from "../api/households";
+import { Guardians } from "../api/guardians";
+import { NotificationSettings } from "../api/notifications";
+import { renderWithAuth } from "../test/auth";
+import { act, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { User } from "../types";
 
-const actor = vi.hoisted(() => ({ user: null as User | null, refresh: vi.fn() }));
-const chunk = vi.hoisted(() => {
-  let finish = () => {};
-  const ready = new Promise<void>((resolve) => { finish = resolve; });
-  return { ready, finish: () => finish() };
-});
-vi.mock("../components/HouseholdCard", async () => {
-  await chunk.ready;
-  return { HouseholdCard: () => <div>Household loaded</div> };
-});
-vi.mock("../components/GuardianConsentCard", () => ({ GuardianConsentCard: () => <div>Guardian links loaded</div> }));
+type TestSession = { user: User | null; refresh: ReturnType<typeof vi.fn<() => Promise<void>>> };
+
+const actor: TestSession = { user: null, refresh: vi.fn<() => Promise<void>>() };
+
 const get = vi.fn();
-vi.mock("../api/profile", async (orig) => ({ ...(await orig<typeof import("../api/profile")>()), CalendarFeeds: { get: () => get(), create: vi.fn(), setScope: vi.fn(), revoke: vi.fn() }, Profile: { update: vi.fn(), changePassword: vi.fn() } }));
-vi.mock("../api/notifications", async (orig) => ({ ...(await orig<typeof import("../api/notifications")>()), NotificationSettings: { get: () => Promise.resolve({ settings: { optionalEmailOff: true, kinds: [{ category: "groups", off: true }] } }), update: vi.fn() } }));
-vi.mock("../auth", () => ({ useAuth: () => ({ user: actor.user, loading: false, refresh: actor.refresh, logout: vi.fn(), isAdmin: false }) }));
+
+stubService(Households, () => ({ mine: vi.fn(async () => ({ household: null })) }));
+
+stubService(Guardians, () => ({ teens: vi.fn() }));
+
+stubService(CalendarFeeds, () => ({ get: () => get(), create: vi.fn(), setScope: vi.fn(), revoke: vi.fn() }));
+
+stubService(Profile, () => ({ update: vi.fn(), changePassword: vi.fn() }));
+
+stubService(NotificationSettings, () => ({ get: () => Promise.resolve({ settings: { optionalEmailOff: true, kinds: [{ category: "groups", off: true }] } }), update: vi.fn() }));
+
+const render = renderWithAuth(() => ({ user: actor.user, loading: false, refresh: actor.refresh, logout: vi.fn(), isAdmin: false }));
 
 import { ApiError } from "../api/core";
 import { Profile } from "../api/profile";
 import { ProfilePage } from "./Profile";
+
 const adult: User = { id: 1, name: "Pat Smith", displayName: "Pat", email: "pat@example.com", phone: "208-555-0100", hideContactFromLeaders: false, avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50, role: "member", status: "active", hasPassword: true, accountType: "adult", timezone: "America/Boise" };
 const privacyLabel = /^Hide my contact info from group leaders/;
 const renderProfile = (path = "/profile") => render(<MemoryRouter initialEntries={[path]}><Routes><Route path="/profile/:section?" element={<ProfilePage />} /></Routes></MemoryRouter>);
 
 beforeEach(() => {
   actor.user = { ...adult };
+  vi.mocked(Households.mine).mockClear();
+  vi.mocked(Guardians.teens).mockClear();
   actor.refresh.mockReset().mockResolvedValue(undefined);
   vi.mocked(Profile.update).mockReset().mockResolvedValue({ user: adult });
   vi.mocked(Profile.changePassword).mockReset().mockResolvedValue({});
@@ -39,27 +50,33 @@ it("opens a short hub without mounting forms or fetching the calendar feed", () 
   renderProfile();
   expect(screen.getByRole("heading", { level: 1, name: "Your profile" })).toBeInTheDocument();
   expect(screen.getByText("Pat")).toBeInTheDocument();
+
   for (const name of ["Profile details", "Privacy", "Notifications", "Email and password", "Calendar feed", "Household", "Parent or guardian link", "Invite someone", "Contact and add requests"]) {
     expect(screen.getByRole("link", { name: new RegExp(`^${name}`) })).toBeInTheDocument();
   }
+
   expect(screen.queryByRole("link", { name: "Requests" })).not.toBeInTheDocument();
   expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
-  expect(screen.queryByText("Household loaded")).not.toBeInTheDocument();
-  expect(screen.queryByText("Guardian links loaded")).not.toBeInTheDocument();
+  expect(Households.mine).not.toHaveBeenCalled();
+  expect(Guardians.teens).not.toHaveBeenCalled();
   expect(get).not.toHaveBeenCalled();
 });
 
 it("groups the rows under You, Family and Sharing, each with a one-line description", () => {
   renderProfile();
-  const rows: Record<string, [string, string][]> = {
+
+  const rows = {
     You: [["Profile details", "Name, photo and time zone"], ["Email and password", "How you sign in"], ["Privacy", "Hide your contact info from leaders"], ["Notifications", "Email and notifications on your devices"]],
     Family: [["Household", "Family members you sign up with you"], ["Parent or guardian link", "Connect a parent or guardian"]],
     Sharing: [["Calendar feed", "Add Fold dates to your phone's calendar"], ["Invite someone", "Ask an admin to let someone in"], ["Contact and add requests", "Requests to reach or add you"]],
   };
+
   expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(["You", "Family", "Sharing"]);
+
   for (const [heading, links] of Object.entries(rows)) {
     const group = screen.getByRole("group", { name: heading });
     expect(within(group).getAllByRole("link").map((l) => l.textContent?.replace("›", ""))).toEqual(links.map(([label, description]) => `${label} ${description}`));
+
     for (const [label, description] of links) expect(within(group).getByRole("link", { name: `${label} ${description}` })).toBeInTheDocument();
   }
 });
@@ -125,8 +142,7 @@ it("sends the current password for an email change and clears only the secret af
 it("shows the household loading placeholder only when its section is opened and the lazy chunk is slow", async () => {
   renderProfile("/profile/household");
   expect(screen.getByRole("region", { name: "My household loading" })).toBeInTheDocument();
-  await act(async () => { chunk.finish(); await chunk.ready; });
-  expect(await screen.findByText("Household loaded")).toBeInTheDocument();
+  expect(await screen.findByText("No one in your household yet")).toBeInTheDocument();
 });
 
 it("saves details without silently submitting a privacy choice", async () => {
@@ -179,6 +195,7 @@ it("puts the privacy box back and says what went wrong when saving fails, withou
 
 it("disables the privacy box while it saves, so a second change waits for the first", async () => {
   let finish: (v: { user: User }) => void = () => {};
+
   vi.mocked(Profile.update).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
   renderProfile("/profile/privacy");
   const toggle = screen.getByRole("checkbox", { name: privacyLabel });
@@ -193,7 +210,14 @@ it("disables the privacy box while it saves, so a second change waits for the fi
 
 it("does not count trailing spaces as unsaved profile edits", async () => {
   renderProfile("/profile/details");
-  const closing = () => { const e = new Event("beforeunload", { cancelable: true }); window.dispatchEvent(e); return e.defaultPrevented; };
+
+  const closing = () => {
+    const e = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(e);
+
+    return e.defaultPrevented;
+  };
+
   await userEvent.type(screen.getByLabelText("Full name"), "   ");
   expect(closing()).toBe(false);
   await userEvent.type(screen.getByLabelText("Full name"), "x");
@@ -225,7 +249,14 @@ it("saves a changed preferred name under the same API key", async () => {
 
 it("asks before the tab closes while profile details have unsaved edits", async () => {
   renderProfile("/profile/details");
-  const closing = () => { const e = new Event("beforeunload", { cancelable: true }); window.dispatchEvent(e); return e.defaultPrevented; };
+
+  const closing = () => {
+    const e = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(e);
+
+    return e.defaultPrevented;
+  };
+
   expect(closing()).toBe(false);
   await userEvent.type(screen.getByLabelText("Full name"), "x");
   expect(closing()).toBe(true);
@@ -240,8 +271,7 @@ it("shows the invite hints and the review line", () => {
 
 it("embeds the household under its own h1 without a second heading", async () => {
   renderProfile("/profile/household");
-  await act(async () => { chunk.finish(); await chunk.ready; });
-  expect(await screen.findByText("Household loaded")).toBeInTheDocument();
+  expect(await screen.findByText("No one in your household yet")).toBeInTheDocument();
   expect(screen.getAllByRole("heading", { level: 1 }).map((h) => h.textContent)).toEqual(["Household"]);
   expect(screen.queryByRole("heading", { name: "My household" })).not.toBeInTheDocument();
 });
@@ -267,9 +297,10 @@ it.each(["household", "guardian", "invite", "unknown"])("returns a teen's unavai
   actor.user = { ...adult, accountType: "teen", hideContactFromLeaders: true };
   renderProfile(`/profile/${section}`);
   expect(screen.getByRole("heading", { level: 1, name: "Your profile" })).toBeInTheDocument();
+
   for (const name of ["Household", "Parent or guardian link", "Invite someone"]) expect(screen.queryByRole("link", { name: new RegExp(`^${name}`) })).not.toBeInTheDocument();
-  expect(screen.queryByText("Household loaded")).not.toBeInTheDocument();
-  expect(screen.queryByText("Guardian links loaded")).not.toBeInTheDocument();
+  expect(Households.mine).not.toHaveBeenCalled();
+  expect(Guardians.teens).not.toHaveBeenCalled();
   expect(Profile.update).not.toHaveBeenCalled();
 });
 

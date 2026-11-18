@@ -1,3 +1,4 @@
+import { isString } from "../../lib/wireValues";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { ApiError } from "../../api/core";
@@ -23,11 +24,13 @@ const dateCount = (n: number) => count(n, "date");
 // in the viewer's zone.
 function datesLine(r: RoomRequest): string {
   const first = `${formatDayLong(dayOf(r.firstStartsAt))} at ${formatTime(r.firstStartsAt)}`;
+
   return r.series ? `Every date from ${first} (${dateCount(r.dates)})` : first;
 }
 
 function busyLine(r: RoomRequest): string {
   if (r.dates === 1) return "This date is now taken.";
+
   return `${r.busyDates} of these dates ${r.busyDates === 1 ? "is" : "are"} now taken.`;
 }
 
@@ -35,14 +38,21 @@ function approvedMessage(room: string, title: string, res: { confirmed: number; 
   const total = res.confirmed + res.overlapped;
   const back = res.lost.length;
   const backText = `${dateCount(back)} went back to ${WHO}.`;
+
   if (total === 0) return `Nothing was booked for ${title}: ${backText}`;
+
   const base = res.overlapped > 0
     ? `Approved ${room} for ${title}: ${dateCount(total)}, ${res.overlapped} of them double-booked.`
     : `Approved ${room} for ${title}: ${dateCount(total)}.`;
+
   return back > 0 ? `${base} ${backText}` : base;
 }
 
-const OUTCOME: Record<string, string> = { confirmed: "approved", rejected: "rejected", withdrawn: "withdrawn" };
+const OUTCOME = new Map<string, string>([
+  ["confirmed", "approved"],
+  ["rejected", "rejected"],
+  ["withdrawn", "withdrawn"],
+]);
 
 // One open request: Approve and Reject. A request with busy dates explains
 // what Approve does to them first (DEC-106), and Reject takes an optional
@@ -79,6 +89,7 @@ function RequestRow({ request: r, onDone, onStale }: {
     setError(null);
     setMode(next);
   }
+
   function close() {
     if (mode !== "idle") setReturnTo(mode);
     setMode("idle");
@@ -87,31 +98,37 @@ function RequestRow({ request: r, onDone, onStale }: {
   async function run(action: () => Promise<string>) {
     setBusy(true);
     setError(null);
+
     try {
       onDone(r.id, await action());
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
         // Lost the race: not an error, someone else handled it.
-        const raw = typeof e.data.resolution === "string" ? e.data.resolution : "";
-        const outcome = OUTCOME[raw] ?? (raw || "handled");
-        const by = typeof e.data.resolvedBy === "string" && e.data.resolvedBy ? e.data.resolvedBy : "someone";
+        const raw = isString(e.data.resolution) ? e.data.resolution : "";
+        const outcome = OUTCOME.get(raw) ?? (raw || "handled");
+        const by = isString(e.data.resolvedBy) && e.data.resolvedBy ? e.data.resolvedBy : "someone";
         onStale(r.id, `Already ${outcome} by ${by}.`);
+
         return;
       }
+
       setError(errorText(e, mode === "reject" ? "We couldn't send that." : "We couldn't approve that."));
       setBusy(false);
     }
   }
 
   const approve = () => run(async () => approvedMessage(room, title, await RoomRequests.confirm(r.id, reason.trim() || undefined)));
+
   const reject = () => run(async () => {
     await RoomRequests.reject(r.id, reason.trim() || undefined);
+
     return `Rejected ${room} for ${title}. The people running it were told.`;
   });
 
   // Names for a screen reader, which hears these buttons in a list of cards.
   const forTitle = <>{" "}<span className="sr-only">for {title}</span></>;
   const idBase = `room-request-${r.id}`;
+
   return (
     <li ref={root} className="bg-surface rounded-lg border border-border p-6 space-y-3" data-request={r.id}>
       <div>
@@ -186,6 +203,7 @@ export function RoomRequestsList({ requests, needApproval, error, reload, onRemo
 
   const say = (text: string) => setStatus((s) => ({ text, n: s.n + 1 }));
   const shown = (requests?.length ?? 0) > 0 || needApproval === true || error !== null || status.n > 0;
+
   return (
     <div className="space-y-8">
       {shown && <section aria-labelledby="room-requests-heading" className="space-y-3">

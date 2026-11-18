@@ -1,3 +1,4 @@
+import * as schema from "valibot";
 import { expect, test } from "@playwright/test";
 import { apiAs, email, signIn, signOut, fromMore } from "./helpers";
 
@@ -11,6 +12,7 @@ test("an admin schedules a church-wide event in the church time zone", async ({ 
   // Make this date fall outside the four-date preview without relying on
   // another spec having seeded earlier church events.
   const admin = await apiAs(request, "grier");
+
   for (let i = 0; i < 5; i++) await admin("POST", "/events", {
     title: `Earlier church gathering ${i + 1}`, startsLocal: `${futureDate(2 + i)}T18:00`,
     durationMinutes: 60, tzid: "UTC", visibility: "public",
@@ -53,11 +55,11 @@ test("an admin schedules a church-wide event in the church time zone", async ({ 
 test("opening an invite-only group's event hides the group and the names", async ({ page, request }) => {
   test.setTimeout(30_000);
   const admin = await apiAs(request, "grier");
-  const { users } = (await admin("GET", "/admin/users")) as { users: { id: number; email: string }[] };
+  const { users } = schema.parse(schema.looseObject({ users: schema.array(schema.looseObject({ id: schema.number(), email: schema.string() })) }), (await admin("GET", "/admin/users")));
   const sam = users.find((u) => u.email === email("sam"));
   expect(sam).toBeTruthy();
 
-  const { group } = (await admin("POST", "/groups", {
+  const { group } = schema.parse(schema.looseObject({ group: schema.looseObject({ id: schema.number() }) }), (await admin("POST", "/groups", {
     name: "Hidden Care",
     description: "Not for visitors.",
     tags: [],
@@ -65,18 +67,21 @@ test("opening an invite-only group's event hides the group and the names", async
     location: "",
     visibility: "invite_only",
     memberLimit: null,
-  })) as { group: { id: number } };
+  })));
+
   await admin("POST", `/admin/groups/${group.id}/members`, { userId: sam!.id, role: "member" });
 
   const date = futureDate(21);
-  const { event } = (await admin("POST", `/groups/${group.id}/events`, {
+
+  const { event } = schema.parse(schema.looseObject({ event: schema.looseObject({ id: schema.number() }) }), (await admin("POST", `/groups/${group.id}/events`, {
     title: "Quiet supper",
     startsLocal: `${date}T18:00`,
     durationMinutes: 60,
     tzid: "America/Boise",
     location: "",
     recurrenceRule: "",
-  })) as { event: { id: number } };
+  })));
+
   await (await apiAs(request, "sam"))("PUT", `/events/${event.id}/registrations`, { status: "going", date });
 
   await signIn(page, "grier");
@@ -89,9 +94,11 @@ test("opening an invite-only group's event hides the group and the names", async
   const saved = page.waitForResponse((r) => r.url().includes("/visibility") && r.request().method() === "PUT");
   await page.getByRole("button", { name: "Save visibility" }).click();
   expect((await saved).ok()).toBe(true);
+
   if ((await page.getByRole("group", { name: "Who can see this event" }).count()) === 0) {
     await fromMore(page, "Edit event");
   }
+
   await expect(page.getByRole("radio", { name: /^Public/ })).toBeChecked();
 
   await signOut(page);
@@ -111,8 +118,9 @@ test("opening an invite-only group's event hides the group and the names", async
 test("an admin edits one date, cancels a date, and deletes a church-wide event", async ({ page, request }) => {
   page.on("dialog", (d) => d.accept());
   const admin = await apiAs(request, "grier");
+
   const mk = async (title: string, days: number) =>
-    ((await admin("POST", "/events", {
+    (schema.parse(schema.looseObject({ event: schema.looseObject({ id: schema.number() }) }), (await admin("POST", "/events", {
       title,
       startsLocal: `${futureDate(days)}T19:00`,
       durationMinutes: 60,
@@ -121,7 +129,7 @@ test("an admin edits one date, cancels a date, and deletes a church-wide event",
       visibility: "public",
       hosts: [],
       recurrenceRule: "",
-    })) as { event: { id: number } }).event;
+    })))).event;
 
   // Per-date edit: only that date changes.
   const edited = await mk("Date night", 26);
@@ -158,7 +166,8 @@ test("an admin edits one date, cancels a date, and deletes a church-wide event",
 test("a non-admin host can edit the church-wide event they host", async ({ page, request }) => {
   const admin = await apiAs(request, "grier");
   const date = futureDate(24);
-  const { event } = (await admin("POST", "/events", {
+
+  const { event } = schema.parse(schema.looseObject({ event: schema.looseObject({ id: schema.number() }) }), (await admin("POST", "/events", {
     title: "Host night",
     startsLocal: `${date}T19:00`,
     durationMinutes: 60,
@@ -167,7 +176,7 @@ test("a non-admin host can edit the church-wide event they host", async ({ page,
     visibility: "public",
     hosts: [email("lee")],
     recurrenceRule: "",
-  })) as { event: { id: number } };
+  })));
 
   await signIn(page, "lee");
   await page.goto(`/events/${event.id}`);

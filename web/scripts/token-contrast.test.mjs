@@ -12,9 +12,11 @@ const source = await readFile(sourcePath, "utf8");
 
 async function check(css) {
   const dir = await mkdtemp(path.join(tmpdir(), "fold-token-contrast-"));
+
   try {
     const fixture = path.join(dir, "index.css");
     await writeFile(fixture, css);
+
     return spawnSync(process.execPath, [script, fixture], { encoding: "utf8" });
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -30,6 +32,7 @@ test("rejects color transitions across enabled and disabled button pairs", async
   const fixture = source
     .replace("text-primary-foreground hover:bg-primary-hover", "text-primary-foreground transition-colors hover:bg-primary-hover")
     .replace("text-danger-foreground hover:bg-danger-hover", "text-danger-foreground transition-all hover:bg-danger-hover");
+
   const result = await check(fixture);
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stdout, /FAIL \.btn-primary animates both disabled text and background/);

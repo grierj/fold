@@ -1,10 +1,13 @@
-import { render, screen } from "@testing-library/react";
+import { renderWithAuth } from "../test/auth";
+import { screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 import { WaitingForConsentPage } from "./WaitingForConsent";
 
 const { auth } = vi.hoisted(() => ({ auth: vi.fn() }));
-vi.mock("../auth", () => ({ useAuth: auth }));
+
+const render = renderWithAuth(auth);
+
 beforeEach(() => { auth.mockReturnValue({ user: null }); });
 
 it("explains consent without locking public browsing behind a session", () => {

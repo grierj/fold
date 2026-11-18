@@ -21,14 +21,18 @@ export function suggestedRooms<R extends { id: number }>(rooms: R[], suggestions
   const seen = new Set<number>();
   const suggested: { room: R; reason: string }[] = [];
   const best: RoomSuggestion[] = suggestions.rooms;
+
   for (const s of best) {
     const room = byId.get(s.roomId);
+
     // A suggestion for a room this picker doesn't list can't be picked here.
     if (!room || seen.has(room.id)) continue;
     seen.add(room.id);
     suggested.push({ room, reason: s.reason });
   }
+
   if (suggested.length === 0) return null;
+
   return {
     label: suggestions.otherKinds ? "Used by other kinds of events" : "Suggested",
     suggested,

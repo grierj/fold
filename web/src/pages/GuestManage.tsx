@@ -36,6 +36,7 @@ export function GuestManage() {
     if (!reg || !confirm(`Cancel your registration for ${reg.title}?`)) return;
     setBusy(true);
     setError(null);
+
     try {
       const res = await Guests.cancelManage(token);
       setReg(res.registration);

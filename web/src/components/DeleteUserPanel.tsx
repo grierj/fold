@@ -1,9 +1,10 @@
+import { isBoolean, isJsonObject, isNumber, isString, type JsonObject, type JsonValue } from "../lib/wireValues";
 import { publicName } from "../lib/can";
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
 import { AdminUsers } from "../api/adminUsers";
 import { ApiError } from "../api/core";
 import { useAuth } from "../auth";
-import type { ErasureReasonItem, ErasureReasonPage, ErasureReport, HandoffCandidate, SoleHostedEvent, SoleLedGroup, User } from "../types";
+import type { ErasureReasonPage, ErasureReport, HandoffCandidate, SoleHostedEvent, SoleLedGroup, User } from "../types";
 import { ERROR_COPY, errorCode, errorText } from "../lib/errors";
 import { needsReload, needsRestoreReload, requireReload, requireRestoreReload } from "../lib/deleteReload";
 import { formatEventDay } from "../lib/when";
@@ -54,8 +55,10 @@ const NO_ACCOUNT_COPY = "This account no longer exists.";
 // the owner decisions require; the rest says where the admin stands.
 const REVIEW_INTRO =
   "Before you delete this account, choose for each contact-request reason below whether Fold keeps the text or blanks it. Reasons can mention other people. Blanking removes only the text; the request and its decisions stay.";
+
 const REVIEW_LIMIT =
   "Fold lists only requests this person made or was asked about. Reasons in other people's requests that mention them aren't listed here.";
+
 const REVIEW_MEMORY = "Your choices stay on this page only until you delete or close it.";
 const REVIEW_NONE = "No reasons to review.";
 const REVIEW_CHECKING = "Checking their contact-request reasons…";
@@ -65,6 +68,7 @@ const HASH_TRANSIENT = "Fold couldn't prepare your choices just now. Try again."
 const HASH_PERMANENT = "This browser can't prepare the review safely. Open this page in a current browser.";
 const STORE_CHANGED = "The reasons changed while Fold was preparing your choices. Check them and try again.";
 const REVIEW_IRREVERSIBLE = "Blanked text can't be brought back in Fold. Backups made before now still contain it.";
+
 // Shown when a DELETE answers needs_reason_review: the panel has already
 // reloaded the review, so ERROR_COPY's "reload this page" would be wrong here.
 const REVIEW_NEEDED = "This person has contact-request reasons to review before the account can be deleted. They are listed below.";
@@ -79,6 +83,7 @@ const REVIEW_NEEDED = "This person has contact-request reasons to review before 
 // take it out only when that is no longer true, never because the count came
 // back as 0.
 const REACH_LEAD = "A delete doesn't reach everything. Here is what can remain, so you know what to expect:";
+
 const REACH_ROWS = [
   {
     row: "RS-1",
@@ -123,9 +128,11 @@ const REACH_ROWS = [
     text: "Messages they wrote, including drafts and ones that never went out, keep their text in the church's message history.",
   },
 ] as const;
+
 // The two counts the delete answers with, in words (account_erasure_report.go;
 // inventory "Report semantics": a count of entries, never proof of ownership).
 const KEPT_HOUSEHOLDS = "Fold left these households as they were, because other people still share them or it couldn't tell whose they were.";
+
 const KEPT_ACTIVITY =
   "These are activity-log entries linked to this person that Fold kept. Some may have no network address. Fold counts entries, not addresses, and a 0 doesn't promise none remain.";
 
@@ -171,68 +178,76 @@ const BUSY_CODES = ["delete_timed_out", "delete_household_busy", "delete_reason_
 
 // Answers that end the attempt on any of the three calls: a restore was seen,
 // the session ended, or this admin may not do it.
-function endingCopy(e: unknown): string | null {
-  if (!(e instanceof ApiError)) return null;
-  if (errorCode(e) === "restore_detected") return ERROR_COPY.restore_detected;
-  if (e.status === 401) return ERROR_COPY.signed_out;
-  if (e.status === 403) return ERROR_COPY.not_allowed;
+function endingCopy(cause: unknown): string | null {
+  if (!(cause instanceof ApiError)) return null;
+
+  if (errorCode(cause) === "restore_detected") return ERROR_COPY.restore_detected;
+
+  if (cause.status === 401) return ERROR_COPY.signed_out;
+
+  if (cause.status === 403) return ERROR_COPY.not_allowed;
+
   return null;
 }
 
-function noteRestore(e: unknown): void {
-  if (errorCode(e) === "restore_detected") requireRestoreReload();
+function noteRestore(cause: unknown): void {
+  if (errorCode(cause) === "restore_detected") requireRestoreReload();
 }
 
-function failureOf(e: unknown): Failure {
-  if (!(e instanceof ApiError)) return UNCERTAIN; // a dropped connection or an aborted fetch
+function failureOf(cause: unknown): Failure {
+  if (!(cause instanceof ApiError)) return UNCERTAIN; // a dropped connection or an aborted fetch
+
   // A failure status whose body is not JSON (a gateway page, nothing at all) is
   // not the server's refusal, whatever its status: it may have deleted.
-  if (e.unreadable) return UNCERTAIN;
-  const code = errorCode(e);
+  if (cause.unreadable) return UNCERTAIN;
+  const code = errorCode(cause);
+
   if (code === "attempt_closed" || code === "attempt_expired") return { kind: "uncertain", text: ERROR_COPY[code] };
+
   if (code === "delete_outcome_unknown") return UNCERTAIN;
+
   // The reason review's three refusals are definitive (the server ended the id first).
   if (code === "needs_reason_review") return { kind: "review", text: REVIEW_NEEDED };
+
   if (code === "reason_review_changed") return { kind: "review", text: ERROR_COPY.reason_review_changed };
+
   if (code === "reason_review_outdated") return { kind: "outdated", text: ERROR_COPY.reason_review_outdated };
+
   if (code === "reason_review_not_allowed") return { kind: "locked", text: ERROR_COPY.reason_review_not_allowed, reload: false };
-  const ending = endingCopy(e);
+  const ending = endingCopy(cause);
+
   if (ending !== null) return { kind: "locked", text: ending, reload: code === "restore_detected" };
-  if (e.status === 404) return { kind: "locked", text: NO_ACCOUNT_COPY, reload: true };
+
+  if (cause.status === 404) return { kind: "locked", text: NO_ACCOUNT_COPY, reload: true };
+
   for (const busy of BUSY_CODES) if (code === busy) return { kind: "retry", text: ERROR_COPY[busy] };
+
   // The deletion's own validation answers (last admin, your own account,
   // successors, hosts) are 400s the server sent before it changed anything.
-  if (e.status === 400) return { kind: "retry", text: errorText(e, "That didn't work.") };
+  if (cause.status === 400) return { kind: "retry", text: errorText(cause, "That didn't work.") };
+
   // A 5xx with no code, a page from a proxy, any status or code not named
   // above: the server may have deleted the account.
   return UNCERTAIN;
 }
 
-const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
-
-function isReasonItem(v: unknown): v is ErasureReasonItem {
-  return isRecord(v) && ["requestId", "reviewHash", "role", "purpose", "status", "createdAt", "counterpartName", "reason"].every((k) => typeof v[k] === "string")
-    && typeof v.counterpartDeleted === "boolean" && typeof v.reviewerIsParty === "boolean";
-}
-
-// A page the panel can rely on: anything else is a failed page, retried from
-// the same cursor, never read as "no reasons".
-function isReasonPage(v: unknown): v is ErasureReasonPage {
-  return isRecord(v) && Array.isArray(v.items) && v.items.every(isReasonItem) && (v.next === null || typeof v.next === "string");
-}
-
 // What a failed review page means. Only a failure that retrying cannot fix
 // locks the panel; every other one offers Try again from the same cursor.
-function pageFailureOf(e: unknown): Failure {
-  if (e instanceof ApiError && !e.unreadable) {
-    const code = errorCode(e);
+function pageFailureOf(cause: unknown): Failure {
+  if (cause instanceof ApiError && !cause.unreadable) {
+    const code = errorCode(cause);
+
     if (code === "reason_review_not_allowed") return { kind: "locked", text: ERROR_COPY.reason_review_not_allowed, reload: false };
-    const ending = endingCopy(e);
+    const ending = endingCopy(cause);
+
     if (ending !== null) return { kind: "locked", text: ending, reload: code === "restore_detected" };
-    if (e.status === 404) return { kind: "locked", text: NO_ACCOUNT_COPY, reload: true };
+
+    if (cause.status === 404) return { kind: "locked", text: NO_ACCOUNT_COPY, reload: true };
+
     // The page route repeats the deletion's own refusals (your own account, the last admin).
-    if (e.status === 400) return { kind: "locked", text: errorText(e, "That didn't work."), reload: false };
+    if (cause.status === 400) return { kind: "locked", text: errorText(cause, "That didn't work."), reload: false };
   }
+
   return { kind: "retry", text: ERROR_COPY.reason_review_busy };
 }
 
@@ -242,21 +257,23 @@ const reasonsWord = (n: number) => `${numbers.format(n)} ${n === 1 ? "reason" : 
 function reasonCounts(erasure: ErasureReport | null): string | null {
   if (!erasure || erasure.reasonsKept + erasure.reasonsRemoved === 0) return null;
   const { reasonsKept: k, reasonsRemoved: r } = erasure;
+
   return `${r === 1 ? "1 reason was" : `${r} reasons were`} blanked and ${k} kept.`;
 }
 
-function isCandidate(v: unknown): v is HandoffCandidate {
-  return isRecord(v) && typeof v.id === "number" && typeof v.name === "string" && typeof v.admin === "boolean";
+function isCandidate(v: JsonValue): v is JsonValue & HandoffCandidate {
+  return isJsonObject(v) && isNumber(v.id) && isString(v.name) && isBoolean(v.admin);
 }
 
 // An event row from a 400 body; the date is dropped unless it is a string.
-function soleEventFrom(v: unknown): SoleHostedEvent | null {
-  if (!isRecord(v) || typeof v.id !== "number" || typeof v.title !== "string") return null;
-  return typeof v.nextStartsAt === "string" ? { id: v.id, title: v.title, nextStartsAt: v.nextStartsAt } : { id: v.id, title: v.title };
+function soleEventFrom(v: JsonValue): SoleHostedEvent | null {
+  if (!isJsonObject(v) || !isNumber(v.id) || !isString(v.title)) return null;
+
+  return isString(v.nextStartsAt) ? { id: v.id, title: v.title, nextStartsAt: v.nextStartsAt } : { id: v.id, title: v.title };
 }
 
-function isSoleLedGroup(v: unknown): v is SoleLedGroup {
-  return isRecord(v) && typeof v.id === "number" && typeof v.name === "string" && typeof v.status === "string"
+function isSoleLedGroup(v: JsonValue): v is JsonValue & SoleLedGroup {
+  return isJsonObject(v) && isNumber(v.id) && isString(v.name) && isString(v.status)
     && Array.isArray(v.candidates) && v.candidates.every(isCandidate);
 }
 
@@ -265,12 +282,15 @@ function groupPick(g: SoleLedGroup, meId: number | undefined): number | undefine
   return (g.candidates.find((c) => c.id === meId) ?? g.candidates[0])?.id;
 }
 
-function initialGroupPicks(groups: SoleLedGroup[], meId: number | undefined): Record<string, number> {
+function initialGroupPicks(groups: SoleLedGroup[], meId: number | undefined) {
   const picks: Record<string, number> = {};
+
   for (const g of groups) {
     const pick = groupPick(g, meId);
+
     if (pick !== undefined) picks[String(g.id)] = pick;
   }
+
   return picks;
 }
 
@@ -281,6 +301,11 @@ type PanelProps = {
   target: User;
   action: "delete" | "disable";
   onDone: (done: boolean) => void;
+  // Lets tests drive changes during a review and exercise digest failures.
+  reviewDeps?: {
+    createStore: () => ReasonReviewStore;
+    buildBody: typeof reasonReviewBody;
+  };
 };
 
 // A new person or a new action is a new panel: its state, its attempt id and
@@ -290,7 +315,7 @@ export function DeleteUserPanel(props: PanelProps) {
   return <PanelBody key={`${props.target.id}:${props.action}`} {...props} />;
 }
 
-function PanelBody({ target, action, onDone }: PanelProps) {
+function PanelBody({ target, action, onDone, reviewDeps }: PanelProps) {
   const { user: me } = useAuth();
   const meId = me?.id;
   const deleting = action === "delete";
@@ -306,19 +331,23 @@ function PanelBody({ target, action, onDone }: PanelProps) {
   // panel (lib/deleteReload.ts).
   const heldFor = action === "delete" ? (needsReload(target.id) ? "history" : needsRestoreReload() ? "restore" : null) : null;
   const [error, setError] = useState<string | null>(() => (heldFor === "restore" ? ERROR_COPY.restore_detected : null));
+
   const [phase, setPhase] = useState<Phase>(() =>
     heldFor === "history" ? { kind: "history" } : heldFor === "restore" ? { kind: "locked", reload: true } : { kind: "idle" },
   );
+
   const [focusTick, setFocusTick] = useState(0);
+
   // The reason review. `choices` and `changed` are keyed by request id. They
   // are memory only: closing the panel drops them (REVIEW_MEMORY says so).
   const [review, setReview] = useState<ReviewState>({
     phase: deleting && heldFor === null ? "loading" : "idle", failure: null, finished: 0,
   });
+
   // The walk's result and every choice: a store, not React state, so a click
   // re-renders one row (lib/reasonReviewStore.ts). The panel reads only the few
   // facts it needs, as primitives, so it re-renders when they change.
-  const [store] = useState(() => new ReasonReviewStore());
+  const [store] = useState(() => reviewDeps?.createStore() ?? new ReasonReviewStore());
   const reasonTotal = useSyncExternalStore(store.subscribe, () => store.total);
   const allChosen = useSyncExternalStore(store.subscribe, () => store.getSnapshot().unchosen === 0);
   // Where the display should jump (after a reload), and the cursor to continue
@@ -343,6 +372,7 @@ function PanelBody({ target, action, onDone }: PanelProps) {
 
   useEffect(() => {
     mounted.current = true;
+
     return () => {
       mounted.current = false;
       attempt.current = null;
@@ -359,54 +389,65 @@ function PanelBody({ target, action, onDone }: PanelProps) {
   async function walk(from: string | null, fresh = false) {
     const run = ++walkRun.current;
     const live = () => mounted.current && walkRun.current === run;
+
     if (from === null) {
       // A reload sets the choices aside; an item keeps its one only when its hash is unchanged.
       store.reset(fresh ? store.carry() : null);
       cursor.current = null;
     }
+
     setReview((r) => ({ ...r, phase: "loading", failure: null }));
     const seen = new Set<string>();
     let at = from;
+
     for (;;) {
       let page: ErasureReasonPage;
+
       try {
         page = await AdminUsers.erasureReasonsPage(target.id, at);
       } catch (e) {
         if (live()) reviewFailed(e);
+
         return;
       }
+
       if (!live()) return;
-      if (!isReasonPage(page)) {
-        reviewFailed(new Error("unexpected answer to a reason page"));
-        return;
-      }
+
       try {
         store.appendPage(page.items);
       } catch (e) {
         // A page out of order, with a repeated id or a malformed hash cannot be
         // trusted: it fails like any unexpected answer and Delete stays off.
         reviewFailed(e);
+
         return;
       }
+
       cursor.current = page.next;
+
       if (page.next === null) {
         setReview((r) => ({ ...r, phase: "done", finished: r.finished + 1 }));
+
         return;
       }
+
       // A cursor that does not move would loop for ever.
       if (page.next === at || seen.has(page.next)) {
         reviewFailed(new Error("the review cursor did not advance"));
+
         return;
       }
+
       seen.add(page.next);
       at = page.next;
     }
   }
 
-  function reviewFailed(e: unknown) {
-    const failure = pageFailureOf(e);
+  function reviewFailed(cause: unknown) {
+    const failure = pageFailureOf(cause);
+
     if (failure.kind === "locked") {
-      noteRestore(e);
+      noteRestore(cause);
       setError(failure.text);
       setPhase({ kind: "locked", reload: failure.reload });
       setReview((r) => ({ ...r, phase: "blocked", failure: null }));
@@ -432,6 +473,7 @@ function PanelBody({ target, action, onDone }: PanelProps) {
     if (review.finished === 0 || !refocus.current) return;
     refocus.current = false;
     const first = store.nextChanged(-1);
+
     if (first >= 0) setJump((j) => ({ ordinal: first, tick: (j?.tick ?? 0) + 1 }));
     else alertBox.current?.focus();
   }, [review.finished]);
@@ -445,6 +487,7 @@ function PanelBody({ target, action, onDone }: PanelProps) {
         if (!live) return;
         setGroups(led.groups);
         setPicks(initialGroupPicks(led.groups, meId));
+
         if (hostedEvents) {
           setEvents(hostedEvents.events);
           setCandidates(hostedEvents.candidates);
@@ -453,6 +496,7 @@ function PanelBody({ target, action, onDone }: PanelProps) {
       .catch((e) => {
         if (live) setError(errorText(e, deleting ? "We couldn't load their groups and events." : "We couldn't load the groups."));
       });
+
     return () => {
       live = false;
     };
@@ -474,15 +518,18 @@ function PanelBody({ target, action, onDone }: PanelProps) {
 
   // The server's list of events and candidates changed under us. Keep a pick
   // only while its event and its person both still appear.
-  function applyStaleHosts(data: Record<string, unknown>) {
+  function applyStaleHosts(data: JsonObject) {
     if (!Array.isArray(data.events) || !Array.isArray(data.candidates)) return;
     const nextEvents = data.events.flatMap((v) => soleEventFrom(v) ?? []);
     const nextCandidates = data.candidates.filter(isCandidate);
     const kept: HostPicks = {};
+
     for (const ev of nextEvents) {
       const pick = hostPicks[String(ev.id)];
+
       if (pick !== undefined && nextCandidates.some((c) => c.id === pick)) kept[String(ev.id)] = pick;
     }
+
     setEvents(nextEvents);
     setCandidates(nextCandidates);
     setHostPicks(kept);
@@ -490,23 +537,28 @@ function PanelBody({ target, action, onDone }: PanelProps) {
     setFocusTick((n) => n + 1);
   }
 
-  function applyStaleGroups(data: Record<string, unknown>) {
+  function applyStaleGroups(data: JsonObject) {
     if (!Array.isArray(data.groups)) return;
     const next = data.groups.filter(isSoleLedGroup);
     const kept: Record<string, number> = {};
+
     for (const g of next) {
       const old = picks[String(g.id)];
       const pick = old !== undefined && g.candidates.some((c) => c.id === old) ? old : groupPick(g, meId);
+
       if (pick !== undefined) kept[String(g.id)] = pick;
     }
+
     setGroups(next);
     setPicks(kept);
   }
 
   function chooseEvery(value: string) {
     setEveryHost(value);
+
     if (value === "") return;
     const all: HostPicks = {};
+
     for (const ev of events ?? []) all[String(ev.id)] = Number(value);
     setHostPicks(all);
   }
@@ -515,17 +567,23 @@ function PanelBody({ target, action, onDone }: PanelProps) {
     setEveryHost("");
     setHostPicks((p) => {
       const next = { ...p };
+
       if (value === "") delete next[String(eventId)];
       else next[String(eventId)] = Number(value);
+
       return next;
     });
   }
 
   async function settle(id: string, press: number, text = CHECKING_COPY) {
     setPhase({ kind: "checking", text });
+
     try {
-      const res = await AdminUsers.settleAttempt(id, target.id);
+      const answer = await AdminUsers.settleAttempt(id, target.id);
+      const res = isJsonObject(answer) ? answer : {};
+
       if (!isCurrent(press)) return;
+
       if (res.result === "applied") {
         attempt.current = null;
         setPhase({ kind: "done", erasure: null });
@@ -542,6 +600,7 @@ function PanelBody({ target, action, onDone }: PanelProps) {
     } catch (e) {
       if (!isCurrent(press)) return;
       const ending = endingCopy(e);
+
       if (ending === null) {
         setPhase({ kind: "still", text: STILL_CHECKING_COPY });
       } else if (errorCode(e) === "restore_detected") {
@@ -560,19 +619,22 @@ function PanelBody({ target, action, onDone }: PanelProps) {
     if (attempt.current !== null) await settle(attempt.current, presses.current);
   }
 
-  function applyStale(e: unknown) {
-    if (!(e instanceof ApiError)) return;
-    const code = errorCode(e);
-    if (code === "needs_host_successor") applyStaleHosts(e.data);
-    else if (code === "needs_successor") applyStaleGroups(e.data);
+  function applyStale(cause: unknown) {
+    if (!(cause instanceof ApiError)) return;
+    const code = errorCode(cause);
+
+    if (code === "needs_host_successor") applyStaleHosts(cause.data);
+    else if (code === "needs_successor") applyStaleGroups(cause.data);
   }
 
   async function disable() {
     const press = ++presses.current;
     setBusy(true);
     setError(null);
+
     try {
       await AdminUsers.update(target.id, { status: "disabled", successors: picks });
+
       if (isCurrent(press)) onDone(true);
     } catch (e) {
       if (!isCurrent(press)) return;
@@ -585,6 +647,7 @@ function PanelBody({ target, action, onDone }: PanelProps) {
 
   async function remove() {
     if (!deleting) return disable();
+
     // Nothing is minted or sent while a reason still has no choice.
     if (review.phase !== "done" || store.getSnapshot().unchosen !== 0 || hashBroken) return;
     const press = ++presses.current;
@@ -594,70 +657,92 @@ function PanelBody({ target, action, onDone }: PanelProps) {
     setPhase({ kind: "idle" });
     const frozen = store.freeze();
     let reasonReview: ReasonReviewBody | undefined;
+
     if (frozen.count > 0) {
       // 2. Hash the reviewed set. This runs before any id is minted: a failure
       // here sends nothing and leaves the choices as they are.
       setPreparing(true);
+
       try {
-        reasonReview = await reasonReviewBody(frozen.ids, frozen.hashes, frozen.choices, frozen.count);
+        const buildBody = reviewDeps?.buildBody ?? reasonReviewBody;
+        reasonReview = await buildBody(frozen.ids, frozen.hashes, frozen.choices, frozen.count);
       } catch (e) {
         if (!isCurrent(press)) return;
         setPreparing(false);
         setBusy(false);
+
         if (e instanceof DigestUnavailableError) setHashBroken(true);
         setError(e instanceof DigestUnavailableError ? HASH_PERMANENT : HASH_TRANSIENT);
+
         return;
       }
+
       if (!isCurrent(press)) return;
       setPreparing(false);
+
       // 3. Nothing may have changed while the digest was made.
       if (store.getVersion() !== frozen.version) {
         setBusy(false);
         setError(STORE_CHANGED);
+
         return;
       }
     }
+
     try {
       // One fresh id per press. The mint reads no database; if it fails, no
       // DELETE has been sent, so nothing can have happened.
       let id: string;
+
       try {
         id = (await AdminUsers.mintAttempt(target.id)).attemptId;
+
         if (!id) throw new Error("no attempt id"); // never send a DELETE without one
       } catch (e) {
         if (!isCurrent(press)) return;
         const ending = endingCopy(e);
         setError(ending ?? errorText(e, "That didn't work."));
+
         if (ending !== null) {
           noteRestore(e);
           setPhase({ kind: "locked", reload: errorCode(e) === "restore_detected" });
         }
+
         return;
       }
+
       if (!isCurrent(press)) return;
       attempt.current = id;
+
       // The count, the set digest and every choice travel in the review. No
       // reasons loaded: no review in the body, and the server ignores one anyway.
       const res = reasonReview
         ? await AdminUsers.remove(target.id, picks, hostPicks, id, reasonReview)
         : await AdminUsers.remove(target.id, picks, hostPicks, id);
+
       if (!isCurrent(press)) return;
       attempt.current = null;
       setPhase({ kind: "done", erasure: res.erasure ?? null });
     } catch (e) {
       if (!isCurrent(press)) return;
       const failure = failureOf(e);
+
       if (failure.kind === "uncertain") {
         // Never a not-deleted message before the settle answer.
         if (attempt.current !== null) void settle(attempt.current, press, failure.text);
+
         return;
       }
+
       attempt.current = null;
       noteRestore(e);
       applyStale(e);
       setError(failure.text);
+
       if (failure.kind === "locked") setPhase({ kind: "locked", reload: failure.reload });
+
       if (failure.kind === "outdated") setPhase({ kind: "outdated" });
+
       // The server ended the id before it answered, so the next press mints a
       // fresh one; first the review is read again and the admin chooses again
       // where it changed.
@@ -684,6 +769,7 @@ function PanelBody({ target, action, onDone }: PanelProps) {
   // counts what is left; `kept` and `removed` are what the press would do.
   const reviewDone = !deleting || (review.phase === "done" && allChosen);
   const hasReasons = reasonTotal > 0;
+
   return (
     <div ref={panel} className="mt-3 rounded-md border border-danger-border bg-danger-subtle p-4 text-sm space-y-3">
       {!finished && (
@@ -874,6 +960,7 @@ function PanelBody({ target, action, onDone }: PanelProps) {
 // The note that blanked text cannot come back, only when a reason is to be blanked.
 function Irreversible({ store }: { store: ReasonReviewStore }) {
   const remove = useSyncExternalStore(store.subscribe, () => store.getSnapshot().remove);
+
   return remove > 0 ? (
     <p className="text-text-muted" data-residue="RS-1">
       {REVIEW_IRREVERSIBLE}
@@ -885,6 +972,7 @@ function Irreversible({ store }: { store: ReasonReviewStore }) {
 // box takes focus when Delete goes away, so the answer is read.
 function Outcome({ phase, statusBox }: { phase: Phase; statusBox: RefObject<HTMLDivElement | null> }) {
   let body: ReactNode = null;
+
   switch (phase.kind) {
     case "checking":
     case "still":
@@ -917,6 +1005,7 @@ function Outcome({ phase, statusBox }: { phase: Phase; statusBox: RefObject<HTML
     default:
       return null;
   }
+
   return (
     <div ref={statusBox} role="status" tabIndex={-1} className="space-y-1">
       {body}
@@ -939,6 +1028,7 @@ function KeptNotes() {
 
 function Reach() {
   const lead = useId();
+
   return (
     <div className="space-y-1 text-text-muted">
       <p id={lead}>{REACH_LEAD}</p>

@@ -73,6 +73,7 @@ export type AttendanceMode = "in_person" | "remote";
 // Video links (5.8, M1.8): a pasted link or a generated Jitsi room, and
 // who may see it. videoUrl arrives only when the viewer may see it.
 export type VideoProvider = "none" | "link" | "jitsi";
+
 export type VideoReveal = "always" | "registered_only";
 
 export interface Member {
@@ -511,6 +512,7 @@ export interface HouseholdConversion {
   expiresAt: string;
   state: "pending" | "expired" | "awaiting_approval" | "awaiting_consent";
 }
+
 /** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
 export type AccountRequestStatus = "pending" | "approved" | "rejected" | "expired" | "withdrawn";
 
@@ -1150,8 +1152,11 @@ export interface AdminJob {
 
 
 type MessageStatus = "draft" | "scheduled" | "sending" | "sent" | "failed" | "cancelled";
+
 type AudienceType = "occurrence" | "event_series" | "events" | "group" | "all_members" | "users";
+
 export type AudienceStatus = "going" | "maybe" | "waitlisted";
+
 export type AudienceRole = "member" | "leader";
 
 // Who a message goes to (PLAN 7.2). Only the fields its type uses are set.

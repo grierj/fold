@@ -18,11 +18,11 @@ const NOT_CHOSEN_COPY = "Not chosen yet";
 const PARTY_COPY = "You're part of this request";
 const OCCURRENCE_ADD_NOTE = "This reason wasn't shown to the people who decided this request.";
 
-const PURPOSES: Record<string, string> = {
-  contact: "Request for contact details",
-  group_add: "Request to add to a group",
-  occurrence_add: "Request to sign up for a date",
-};
+const PURPOSES = new Map<string, string>([
+  ["contact", "Request for contact details"],
+  ["group_add", "Request to add to a group"],
+  ["occurrence_add", "Request to sign up for a date"],
+]);
 
 // A deleted account is never named, only told apart by its reference (R4-C07).
 // The one spelling, shared by the reasons, the deleted-accounts list and its
@@ -38,6 +38,7 @@ function counterpartLabel(item: ErasureReasonItem): string {
 
 function whoDid(item: ErasureReasonItem): string {
   const other = counterpartLabel(item);
+
   return item.role === "requester" ? `They made this request about ${other}.` : `${other} made this request about them.`;
 }
 
@@ -72,6 +73,7 @@ type RowProps = {
 // row and not the other forty-nine.
 const ReasonReviewRow = memo(function ReasonReviewRow({ item, chosen, isChanged, ordinal, total, group, disabled, onChoose }: RowProps) {
   const status = contactRequestStatusLabel(item.status);
+
   return (
     <li
       data-reason-id={item.requestId}
@@ -80,7 +82,7 @@ const ReasonReviewRow = memo(function ReasonReviewRow({ item, chosen, isChanged,
     >
       <div className="flex flex-wrap items-center gap-2">
         <span tabIndex={-1} data-reason-heading={ordinal} className="font-semibold">
-          {PURPOSES[item.purpose] ?? "Request"}
+          {PURPOSES.get(item.purpose) ?? "Request"}
         </span>
         {item.reviewerIsParty && <Badge>{PARTY_COPY}</Badge>}
         {chosen === undefined && !isChanged && <Badge>{NOT_CHOSEN_COPY}</Badge>}
@@ -120,10 +122,12 @@ const ReasonReviewRow = memo(function ReasonReviewRow({ item, chosen, isChanged,
 
 export function ReasonReviewList({ items, choices, changed, onChoose, disabled, firstOrdinal = 0, total }: Props) {
   const group = useId();
+
   return (
     <ul aria-label="Contact-request reasons" className="space-y-3">
       {items.map((item, i) => {
         const chosen = choices[item.requestId];
+
         return (
           <ReasonReviewRow
             key={item.requestId}

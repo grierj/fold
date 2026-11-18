@@ -19,6 +19,7 @@ export function PeopleList<T extends { name: string }>({ rows, noun, filters = [
   const matching = ordered.filter((r) => r.name.toLowerCase().includes(query.trim().toLowerCase()) && (!selected || selected.matches(r)));
   const paging = usePage(matching, query + ":" + filter);
   const visible = new Set(paging.rows);
+
   return <div className="space-y-2">
     <div className="flex flex-wrap items-end gap-3">
       <div className="min-w-48 flex-1"><SearchBox label={`Search ${noun} by name`} value={query} onChange={setQuery} /></div>

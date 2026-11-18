@@ -1,3 +1,4 @@
+import { isString, type JsonValue } from "./wireValues";
 import type { ErasureReasonItem } from "../types";
 
 // The walk's result for the contact-request reason review (T07B-2, F6): a
@@ -11,6 +12,7 @@ import type { ErasureReasonItem } from "../types";
 
 export const KEEP = 1;
 export const REMOVE = 2;
+
 export type ChoiceCode = typeof KEEP | typeof REMOVE;
 
 const INT64_MIN = -(2n ** 63n);
@@ -26,20 +28,22 @@ const LOWER_HEX = /^[0-9a-f]+$/;
  * trip. No line terminator, space, sign other than "-", leading zero or "-0"
  * survives it.
  */
-function canonicalId(id: unknown): bigint | null {
-  if (typeof id !== "string") return null;
+function canonicalId(id: string): bigint | null {
   let v: bigint;
+
   try {
     v = BigInt(id);
   } catch {
     return null;
   }
+
   if (v.toString() !== id || v < INT64_MIN || v > INT64_MAX) return null;
+
   return v;
 }
 
 /** A review hash is exactly 64 lowercase hex characters (the length is checked, not implied by a pattern's end). */
-const validHash = (h: unknown): h is string => typeof h === "string" && h.length === HASH_LENGTH && LOWER_HEX.test(h);
+const validHash = (h: unknown): h is string => isString(h) && h.length === HASH_LENGTH && LOWER_HEX.test(h);
 
 /** Thrown for a page the walk cannot trust (order, duplicates, ids, hashes). */
 /** @public tested directly: the store's refusals. */
@@ -70,6 +74,11 @@ export interface FrozenReview {
 }
 
 const hexByte = (s: string, i: number) => parseInt(s.slice(i * 2, i * 2 + 2), 16);
+
+type UncheckedReason = Omit<ErasureReasonItem, "requestId" | "reviewHash"> & {
+  requestId: JsonValue | undefined;
+  reviewHash: JsonValue | undefined;
+};
 
 export class ReasonReviewStore {
   private ids: string[] = [];
@@ -112,11 +121,13 @@ export class ReasonReviewStore {
       const total = this.ids.length;
       this.cached = { version: this.version, total, keep: this.keep, remove: this.remove, unchosen: total - this.keep - this.remove, changedOpen: this.changedOpen };
     }
+
     return this.cached;
   };
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
+
     return () => this.listeners.delete(listener);
   };
 
@@ -124,21 +135,27 @@ export class ReasonReviewStore {
     // The pages are final once appended, so a lookup is a binary search over their starts.
     let lo = 0;
     let hi = this.starts.length - 1;
+
     while (lo < hi) {
       const mid = (lo + hi + 1) >> 1;
+
       if (this.starts[mid] <= ordinal) lo = mid;
       else hi = mid - 1;
     }
+
     return this.pages[lo]?.[ordinal - this.starts[lo]];
   }
 
   slice(from: number, to: number): ErasureReasonItem[] {
     const out: ErasureReasonItem[] = [];
+
     for (let i = Math.max(0, from); i < Math.min(to, this.ids.length); i++) {
       const it = this.itemAt(i);
+
       if (it) out.push(it);
       this.ops++;
     }
+
     return out;
   }
 
@@ -147,6 +164,7 @@ export class ReasonReviewStore {
   }
 
   choiceAt(ordinal: number): 0 | ChoiceCode {
+    // SAFETY: choose writes only KEEP or REMOVE, and an untouched slot is zero.
     return (this.choices[ordinal] ?? 0) as 0 | ChoiceCode;
   }
 
@@ -157,11 +175,14 @@ export class ReasonReviewStore {
   /** The next ordinal after `from` (wrapping once) for which `want` holds, or -1. */
   private nextWhere(from: number, want: (i: number) => boolean): number {
     const n = this.ids.length;
+
     for (let step = 1; step <= n; step++) {
       this.ops++;
       const i = (from + step + n) % n;
+
       if (want(i)) return i;
     }
+
     return -1;
   }
 
@@ -176,7 +197,8 @@ export class ReasonReviewStore {
 
   private bump(): void {
     this.version++;
-    for (const l of [...this.listeners]) l();
+
+    for (const l of Array.from(this.listeners)) l();
   }
 
   /** Starts a walk over. `prior` is what a reload may keep: an item keeps its choice only when its hash is unchanged. */
@@ -196,11 +218,14 @@ export class ReasonReviewStore {
 
   carry(): Map<string, PriorChoice> {
     const m = new Map<string, PriorChoice>();
+
     for (let i = 0; i < this.ids.length; i++) {
       this.ops++;
       const c = this.choices[i];
+
       if (c === KEEP || c === REMOVE) m.set(this.ids[i], { hash: this.hashHex(i), choice: c });
     }
+
     return m;
   }
 
@@ -211,6 +236,7 @@ export class ReasonReviewStore {
   private grow(need: number): void {
     if (need <= this.choices.length) return;
     let cap = this.choices.length;
+
     while (cap < need) cap *= 2;
     const hashes = new Uint8Array(cap * 32);
     hashes.set(this.hashes);
@@ -229,33 +255,46 @@ export class ReasonReviewStore {
    * walk, hashes are 64 lowercase hex. Anything else throws ReasonStoreError and
    * leaves the store as it was.
    */
-  appendPage(items: ErasureReasonItem[]): void {
+  appendPage(items: UncheckedReason[]): void {
     if (items.length === 0) return;
     let prev = this.last;
     const seen = new Set<string>();
+
     for (const it of items) {
+      if (!isString(it.requestId)) throw new ReasonStoreError("a request id is not a canonical 64-bit integer");
       const v = canonicalId(it.requestId);
+
       if (v === null) throw new ReasonStoreError("a request id is not a canonical 64-bit integer");
+
       if (prev !== null && v <= prev) throw new ReasonStoreError("the reasons are not in ascending order");
+
       if (seen.has(it.requestId) || this.index.has(it.requestId)) throw new ReasonStoreError("a request id appears twice");
+
       if (!validHash(it.reviewHash)) throw new ReasonStoreError("a review hash is not 64 lowercase hex characters");
       seen.add(it.requestId);
       prev = v;
     }
+
     const base = this.ids.length;
     this.grow(base + items.length);
     this.starts.push(base);
-    this.pages.push(items);
-    items.forEach((it, k) => {
+    // SAFETY: Every requestId and reviewHash was validated above. The other fields are already typed.
+    const page = items as ErasureReasonItem[];
+    this.pages.push(page);
+    page.forEach((it, k) => {
       this.ops++;
       const at = base + k;
       this.ids.push(it.requestId);
       this.index.set(it.requestId, at);
+
       for (let b = 0; b < 32; b++) this.hashes[at * 32 + b] = hexByte(it.reviewHash, b);
+
       if (this.prior) {
         const old = this.prior.get(it.requestId);
+
         if (old && old.hash === it.reviewHash) {
           this.choices[at] = old.choice;
+
           if (old.choice === KEEP) this.keep++;
           else this.remove++;
         } else {
@@ -272,22 +311,28 @@ export class ReasonReviewStore {
     if (ordinal < 0 || ordinal >= this.ids.length) return;
     this.ops++;
     const old = this.choices[ordinal];
+
     if (old === choice) return;
+
     if (old === KEEP) this.keep--;
     else if (old === REMOVE) this.remove--;
+
     if (choice === KEEP) this.keep++;
     else this.remove++;
     this.choices[ordinal] = choice;
+
     if (this.changed[ordinal] === 1) {
       this.changed[ordinal] = 0;
       this.changedOpen--;
     }
+
     this.bump();
   }
 
   /** The press's snapshot. The walk cannot run during a press, so the views stay valid. */
   freeze(): FrozenReview {
     const n = this.ids.length;
+
     return { version: this.version, count: n, ids: this.ids, hashes: this.hashes.subarray(0, n * 32), choices: this.choices.slice(0, n) };
   }
 }

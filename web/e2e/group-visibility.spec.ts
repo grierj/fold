@@ -1,3 +1,4 @@
+import * as schema from "valibot";
 import { expect, test } from "@playwright/test";
 import { apiAs, signIn, fromMore } from "./helpers";
 
@@ -11,15 +12,19 @@ function futureDate(days: number): string {
 test("making a group invite-only reviews its events before saving", async ({ page, request }) => {
   test.setTimeout(30_000);
   const admin = await apiAs(request, "grier");
-  const { group } = (await admin("POST", "/groups", {
+
+  const { group } = schema.parse(schema.looseObject({ group: schema.looseObject({ id: schema.number() }) }), (await admin("POST", "/groups", {
     name: "Supper club", description: "", tags: [], imageUrl: "", location: "Fellowship hall",
     visibility: "private", memberLimit: null,
-  })) as { group: { id: number } };
+  })));
+
   const date = futureDate(20);
+
   const make = async (title: string) =>
-    ((await admin("POST", `/groups/${group.id}/events`, {
+    (schema.parse(schema.looseObject({ event: schema.looseObject({ id: schema.number() }) }), (await admin("POST", `/groups/${group.id}/events`, {
       title, startsLocal: `${date}T18:00`, durationMinutes: 60, tzid: "America/Boise", location: "", recurrenceRule: "",
-    })) as { event: { id: number } }).event.id;
+    })))).event.id;
+
   const soup = await make("Soup night");
   const bake = await make("Bake sale");
   await admin("PUT", `/events/${bake}/visibility`, { visibility: "public", reason: "neighbors welcome" });
@@ -40,13 +45,13 @@ test("making a group invite-only reviews its events before saving", async ({ pag
   const confirm = review.getByRole("button", { name: "Make the group invite-only" });
   await expect(confirm).toBeDisabled();
   // Nothing is saved while the leader decides.
-  expect(((await grier("GET", `/groups/${group.id}`)) as { group: { visibility: string } }).group.visibility).toBe("private");
+  expect((schema.parse(schema.looseObject({ group: schema.looseObject({ visibility: schema.string() }) }), (await grier("GET", `/groups/${group.id}`)))).group.visibility).toBe("private");
 
   await review.getByTestId(`opened-${bake}`).getByRole("radio", { name: /Keep it public/ }).check();
   await confirm.click();
   await expect(review).toHaveCount(0);
 
-  const vis = async (id: number) => ((await grier("GET", `/events/${id}`)) as { event: { visibility: string } }).event.visibility;
+  const vis = async (id: number) => (schema.parse(schema.looseObject({ event: schema.looseObject({ visibility: schema.string() }) }), (await grier("GET", `/events/${id}`)))).event.visibility;
   expect(await vis(soup)).toBe("invite_only");
   expect(await vis(bake)).toBe("public");
 

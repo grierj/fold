@@ -1,3 +1,4 @@
+import { stubService } from "../test/service";
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
@@ -7,9 +8,12 @@ import { ApiError } from "../api/core";
 import { addRequest } from "../test/addRequest";
 import { AddRequestForm } from "./AddRequestForm";
 
-vi.mock("../api/adds", () => ({ Adds: { create: vi.fn() } }));
+stubService(Adds, () => ({ create: vi.fn() }));
+
 const person = { selectionId: "opaque", displayName: "Teen Pat", teen: true, sharedGroups: [], otherGroups: [] };
+
 beforeEach(() => { vi.resetAllMocks(); vi.mocked(Adds.create).mockResolvedValue({ request: addRequest() }); vi.spyOn(window, "confirm").mockReturnValue(true); });
+
 function mount(group = true, full = false) { render(<MemoryRouter><AddRequestForm person={person} scope={group ? { contextType: "group", contextId: 3 } : { contextType: "event", contextId: 4, occurrenceId: 41, attendanceMode: "remote", guestCount: 2 }} full={full} onClose={() => {}} /></MemoryRouter>); }
 
 it.each([true, false])("sends explicit %s group/date asks, not direct contact, without implicit override", async (group) => {

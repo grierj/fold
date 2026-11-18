@@ -6,9 +6,11 @@ import { RemoteField, remoteBody, remoteFrom, remoteProblem, type RemoteValue } 
 describe("RemoteField", () => {
   it("shows the capacity only when remote attendance is on", async () => {
     const onChange = vi.fn();
+
     const { rerender } = render(
       <RemoteField idPrefix="t" value={{ available: false, capacity: "" }} onChange={onChange} />
     );
+
     expect(screen.getByLabelText(/^Remote attendance/)).not.toBeChecked();
     expect(screen.queryByLabelText(/^Remote seat limit/)).not.toBeInTheDocument();
 
@@ -16,8 +18,8 @@ describe("RemoteField", () => {
     expect(onChange).toHaveBeenCalledWith({ available: true, capacity: "" });
 
     rerender(<RemoteField idPrefix="t" value={{ available: true, capacity: "12" }} onChange={onChange} />);
-    const cap = screen.getByLabelText(/^Remote seat limit/) as HTMLInputElement;
-    expect(cap.value).toBe("12");
+    const cap = screen.getByLabelText(/^Remote seat limit/);
+    expect(cap).toHaveValue("12");
     expect(screen.getByText(/Leave it blank for no limit/)).toBeInTheDocument();
   });
 

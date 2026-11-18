@@ -19,6 +19,7 @@ export function OccurrenceCard({ at, title, meta, menu, notice, compact, heading
 }) {
   const heading = useId();
   const Heading = headingLevel === 2 ? "h2" : "h3";
+
   if (compact) {
     return <article aria-labelledby={heading} className="fold-list-row border-t border-border wrap-anywhere">
       <Heading id={heading} className="sr-only">{title}</Heading>
@@ -29,6 +30,7 @@ export function OccurrenceCard({ at, title, meta, menu, notice, compact, heading
       <div className="space-y-3">{children}</div>
     </article>;
   }
+
   return <article aria-labelledby={heading} className="fold-list-row wrap-anywhere sm:grid sm:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)] sm:gap-6">
     <div className="flex gap-3">
       <DateBadge at={at} />

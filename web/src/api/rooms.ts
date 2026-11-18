@@ -79,6 +79,16 @@ export const DateRooms = {
 // future date; dates the room is busy on come back in `lost` and in the
 // event's needsRoom list (DEC-103). roomId null stops the series room. Only
 // an admin's overlapReason double-books busy dates instead.
+interface RoomAvailabilityInput {
+  startsLocal: string;
+  durationMinutes: number;
+  tzid: string;
+  recurrenceRule: string;
+  capacity: number | null;
+  groupId?: number;
+  visibility?: string;
+}
+
 export const SeriesRooms = {
   list: (eventId: Id) => api<SeriesRoomsResponse>(path`/events/${eventId}/rooms`),
   set: (eventId: Id, body: { roomId: number | null; overlapReason?: string }) =>
@@ -86,5 +96,5 @@ export const SeriesRooms = {
   // Rooms for an event not yet created: the create form sends its date
   // fields (and groupId for a group event, and the visibility chosen, which
   // room suggestions use) and books with roomId on create.
-  check: (body: Record<string, unknown>) => api<RoomsCheckResponse>("/rooms/check", { method: "POST", body }),
+  check: (body: RoomAvailabilityInput) => api<RoomsCheckResponse>("/rooms/check", { method: "POST", body }),
 };

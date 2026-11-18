@@ -1,13 +1,20 @@
+import { testUser } from "./test/fixtures";
+import { stubService } from "./test/service";
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Auth as AuthApi } from "./api/auth";
 import { ApiError } from "./api/core";
 import { AuthProvider, clearClientData, endSession, useAuth } from "./auth";
 import type { User } from "./types";
 import { fakeSub, installBrowser, uninstallBrowser } from "./test/push";
 
-vi.mock("./api/auth", async (actual) => ({ ...(await actual<typeof import("./api/auth")>()), Auth: { me: vi.fn(), login: vi.fn(), logout: vi.fn() } }));
-vi.mock("./api/core", async (actual) => ({ ...(await actual<typeof import("./api/core")>()), ensureCsrf: vi.fn(async () => {}) }));
+stubService(AuthApi, () => ({ me: vi.fn(), login: vi.fn(), logout: vi.fn() }));
+
+beforeEach(() => {
+  vi.stubGlobal("fetch", vi.fn(async () => Response.json({ csrfToken: "test-csrf" })));
+});
+
+afterEach(() => vi.unstubAllGlobals());
 
 it("clears stale adult auth when a pending-teen login ends the server session", async () => {
   const adult: User = { id: 1, name: "Pat", displayName: "Pat", email: "pat@example.com", phone: "", hideContactFromLeaders: false, avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50, role: "member", status: "active", hasPassword: true, accountType: "adult", timezone: "UTC" };
@@ -61,9 +68,17 @@ describe("logout", () => {
     const sub = fakeSub("https://fcm.googleapis.com/fcm/send/logout-test");
     const browser = installBrowser({ permission: "granted", subscription: sub });
     const order: string[] = [];
-    vi.mocked(AuthApi.me).mockResolvedValue({ user: null as unknown as User });
-    vi.mocked(AuthApi.logout).mockImplementation(async () => { order.push("logout"); return {}; });
-    sub.unsubscribe.mockImplementation(async () => { order.push("unsubscribe"); return true; });
+    vi.mocked(AuthApi.me).mockRejectedValue(new ApiError(401, "signed out"));
+    vi.mocked(AuthApi.logout).mockImplementation(async () => {
+      order.push("logout");
+
+      return {};
+    });
+    sub.unsubscribe.mockImplementation(async () => {
+      order.push("unsubscribe");
+
+      return true;
+    });
     vi.spyOn(console, "error").mockImplementation(() => {}); // jsdom: "navigation not implemented"
     const { result } = renderHook(useAuth, { wrapper: AuthProvider });
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -75,7 +90,7 @@ describe("logout", () => {
   });
 
   it("sends no endpoint from a browser without notifications", async () => {
-    vi.mocked(AuthApi.me).mockResolvedValue({ user: null as unknown as User });
+    vi.mocked(AuthApi.me).mockRejectedValue(new ApiError(401, "signed out"));
     vi.mocked(AuthApi.logout).mockResolvedValue({});
     vi.spyOn(console, "error").mockImplementation(() => {}); // jsdom: "navigation not implemented"
     const { result } = renderHook(useAuth, { wrapper: AuthProvider });
@@ -86,8 +101,8 @@ describe("logout", () => {
 });
 
 it("signedIn loads the new session and sends a pending teen to wait, however the server said so", async () => {
-  const teen = { id: 2, status: "pending_consent" } as User;
-  vi.mocked(AuthApi.me).mockResolvedValue({ user: null as unknown as User });
+  const teen = testUser({ id: 2, status: "pending_consent", accountType: "teen" });
+  vi.mocked(AuthApi.me).mockRejectedValue(new ApiError(401, "signed out"));
   const { result } = renderHook(useAuth, { wrapper: AuthProvider });
   await waitFor(() => expect(result.current.loading).toBe(false));
   vi.mocked(AuthApi.me).mockResolvedValue({ user: teen });

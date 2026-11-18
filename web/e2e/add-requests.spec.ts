@@ -2,15 +2,16 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { apiAs, email, fromMore, PASSWORD, signInTo, soon } from "./helpers";
-// @ts-expect-error plain JS module shared with verify-ui
 import { measure } from "./ui-measure.mjs";
 
 const adminName = process.env.VERIFY_URL ? "verify-admin" : "grier";
 const proof = process.env.ADD_PROOF_DIR;
 const results: unknown[] = [];
+
 async function capture(page: Page, name: string) {
   if (!proof) return;
   mkdirSync(proof, { recursive: true });
+
   for (const width of [390, 768, 1280]) {
     await page.setViewportSize({ width, height: 900 }); await page.waitForLoadState("networkidle");
     await page.evaluate(() => window.scrollTo(0, 0));
@@ -30,8 +31,10 @@ test("group teen ask uses opaque selection, both approvals and neutral hidden pr
   await admin("POST", `/admin/users/${teen.id}/teen-consents`, { scope: "account", status: "granted", evidenceText: "Parent signed the account consent form" });
   const { group } = await admin("POST", "/groups", { name: "Private ask group", visibility: "invite_only", tags: [] });
   await signInTo(page, adminName, `/groups/${group.id}`);
+
   const membersTab = page.getByRole("tablist", { name: "Group sections", exact: true })
     .getByRole("tab", { name: "Members", exact: true });
+
   await membersTab.click();
   await expect(membersTab).toHaveAttribute("aria-selected", "true");
   const membersPanel = page.getByRole("tabpanel", { name: "Members", exact: true });
@@ -59,8 +62,10 @@ test("group teen ask uses opaque selection, both approvals and neutral hidden pr
   await expect(page.getByText("Private ask group", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("link", { name: "View group" })).toHaveCount(0);
   const detail = await (await page.request.get(`/api/v1${path}`)).json();
+
   for (const key of ["contextId", "groupName", "requesterName", "subjectName", "email", "phone"]) expect(detail.request).not.toHaveProperty(key);
   expect((await page.request.get(`/api/v1/groups/${group.id}`)).status()).toBe(404);
+
   if (proof) writeFileSync(`${proof}/hidden-preview.json`, JSON.stringify(detail, null, 2));
   await capture(page, "teen-hidden-group-review");
   await page.getByRole("button", { name: "Approve adding" }).click();
@@ -97,11 +102,13 @@ test("hidden date adult add offers an explicit ask and a title/time-only review 
   await expect(page.getByRole("button", { name: "Approve adding" })).toBeVisible();
   await expect(page.getByText("Requested date title", { exact: true })).toBeVisible();
   const detail = await (await page.request.get(`/api/v1${path}`)).json();
+
   for (const key of ["contextId", "groupName", "requesterName", "subjectName", "location", "hosts", "email", "phone", "occurrenceId"]) expect(detail.request).not.toHaveProperty(key);
   expect(detail.request.reason).toBe("");
   expect((await page.request.get(`/api/v1/events/${event.id}`)).status()).toBe(404);
   expect((await page.request.get(`/api/v1/groups/${group.id}`)).status()).toBe(404);
   await expect(page.getByRole("link", { name: /View event|View group/ })).toHaveCount(0);
+
   if (proof) writeFileSync(`${proof}/date-preview.json`, JSON.stringify(detail, null, 2));
   await capture(page, "date-title-time-review");
   await page.getByRole("button", { name: "Approve adding" }).click();

@@ -20,7 +20,7 @@ export function actorResultFromRegistration(registration: RegistrationResponse):
       attendanceMode: registration.attendanceMode,
       childcareCount: registration.childcareCount,
       childcareAgesNote: registration.childcareAgesNote,
-      ...(registration.waitlistPosition == null ? {} : { waitlistPosition: registration.waitlistPosition }),
+      waitlistPosition: registration.waitlistPosition ?? undefined,
     },
   };
 }
@@ -28,10 +28,12 @@ export function actorResultFromRegistration(registration: RegistrationResponse):
 export function applyActorRsvpResults(instance: EventOccurrence, eventId: number, actorResults: ActorRsvpResult[]): EventOccurrence {
   if (instance.eventId !== eventId) return instance;
   const result = actorResults.find((row) => row.date === instance.date);
+
   if (!result) return instance;
   const { after } = result;
   const saved = savedAnswerFromState(after);
   const hasRegistration = saved.status !== null;
+
   return {
     ...instance,
     myRegistration: saved.status,

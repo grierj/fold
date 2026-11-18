@@ -11,5 +11,6 @@ export function useHousehold(user: User | null) {
     [user?.id, user?.accountType],
     { enabled: isNotTeen(user) },
   );
+
   return { people: load.data ?? [], error: load.error ? errorText(load.error, "We couldn't load your household.") : null, retry: load.retry };
 }

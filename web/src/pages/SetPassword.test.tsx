@@ -1,4 +1,7 @@
-import { render, screen } from "@testing-library/react";
+import { testUser } from "../test/fixtures";
+import { renderWithAuth } from "../test/auth";
+import { stubService } from "../test/service";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -7,8 +10,10 @@ import { ApiError } from "../api/core";
 import { SetPassword } from "./SetPassword";
 
 const signedIn = vi.fn();
-vi.mock("../auth", () => ({ useAuth: () => ({ signedIn }) }));
-vi.mock("../api/accountRequests", () => ({ AccountRequests: { confirm: vi.fn() } }));
+
+const render = renderWithAuth(() => ({ signedIn }));
+
+stubService(AccountRequests, () => ({ confirm: vi.fn() }));
 
 function renderAt(path: string) {
   return render(
@@ -41,7 +46,7 @@ it("sends a link with no token back to log in", () => {
 });
 
 it("sends the token with the first password and goes where signedIn says (a teen waits for consent)", async () => {
-  vi.mocked(AccountRequests.confirm).mockResolvedValue({ user: { id: 1 } } as never);
+  vi.mocked(AccountRequests.confirm).mockResolvedValue({ user: testUser(), pendingConsent: false });
   signedIn.mockResolvedValue("/waiting");
   renderAt("/set-password?token=tok-1");
   await fillAndSubmit("a long enough password");

@@ -14,6 +14,7 @@ const UA = {
 function envFor(ua: string, touchPoints = 0) {
   vi.spyOn(navigator, "userAgent", "get").mockReturnValue(ua);
   Object.defineProperty(navigator, "maxTouchPoints", { value: touchPoints, configurable: true });
+
   return readPushEnv();
 }
 
@@ -73,7 +74,7 @@ describe("cardState", () => {
 });
 
 it("matches a subscription to the church's current key", () => {
-  const sub = (key: number[] | null) => ({ options: { applicationServerKey: key && new Uint8Array(key).buffer } }) as unknown as PushSubscription;
+  const sub = (key: number[] | null) => ({ options: { userVisibleOnly: true, applicationServerKey: key && new Uint8Array(key).buffer } });
   expect(sameKey(sub([1, 2, 3]), "AQID")).toBe(true);
   expect(sameKey(sub([1, 2, 4]), "AQID")).toBe(false);
   expect(sameKey(sub(null), "AQID")).toBe(true);

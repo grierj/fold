@@ -18,6 +18,7 @@ const source = readFileSync(resolve(brand, "fold-icon-1.svg"), "utf8");
 
 // fullBleed drops the background's rounded corners.
 const fullBleed = (svg) => svg.replace(/(<rect\b[^>]*?)\s+rx="[^"]*"/, "$1");
+
 // safeZone also shrinks the mark about the centre (viewBox 0 0 32 32).
 const safeZone = (svg, scale) =>
   fullBleed(svg).replace(/(<g\b[\s\S]*<\/g>)/, `<g transform="translate(16 16) scale(${scale}) translate(-16 -16)">$1</g>`);
@@ -30,6 +31,7 @@ const icons = [
 ];
 
 const browser = await chromium.launch();
+
 try {
   for (const icon of icons) {
     const page = await browser.newPage({ viewport: { width: icon.size, height: icon.size }, deviceScaleFactor: 1 });

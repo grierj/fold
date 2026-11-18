@@ -1,3 +1,5 @@
+import { stubService } from "../../test/service";
+import { Admin } from "../../api/admin";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
@@ -5,10 +7,8 @@ import { beforeEach, expect, it, vi } from "vitest";
 
 const churchAddress = vi.fn();
 const setChurchAddress = vi.fn();
-vi.mock("../../api/admin", async (orig) => {
-  const real = await orig<typeof import("../../api/admin")>();
-  return { ...real, Admin: { ...real.Admin, churchAddress: () => churchAddress(), setChurchAddress: (a: string) => setChurchAddress(a) } };
-});
+
+stubService(Admin, () => ({ churchAddress: () => churchAddress(), setChurchAddress: (a: string) => setChurchAddress(a) }));
 
 import { ApiError } from "../../api/core";
 import { ChurchAddressSetting } from "./ChurchAddressSetting";

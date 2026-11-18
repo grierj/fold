@@ -7,36 +7,50 @@
 // no-store (10.1). Messages from pages are ignored. The decisions live in
 // logic.ts.
 import { clickPath, fromPush, openOrFocus, resubscribe, type WindowLike } from "./logic";
+import { isObject, isString } from "../lib/wireValues";
 
 // The project's types are the page's (lib DOM), so the worker's own global
 // is described here rather than mixing in lib WebWorker.
-interface WaitEvent extends Event {
+interface WaitEvent {
   waitUntil(p: Promise<unknown>): void;
 }
+
 interface PushEventLike extends WaitEvent {
   data: { text(): string } | null;
 }
+
 interface ClickEventLike extends WaitEvent {
-  notification: Notification;
+  notification: Pick<Notification, "close" | "data">;
 }
+
 interface SubscriptionChangeLike extends WaitEvent {
   newSubscription?: PushSubscription | null;
 }
+
+/** @public The worker test uses this to dispatch typed event fixtures. */
+export interface WorkerEvents {
+  install: WaitEvent;
+  activate: WaitEvent;
+  push: PushEventLike;
+  notificationclick: ClickEventLike;
+  pushsubscriptionchange: SubscriptionChangeLike;
+}
+
 export interface WorkerScope {
   location: { origin: string };
-  registration: ServiceWorkerRegistration;
+  registration: {
+    showNotification: ServiceWorkerRegistration["showNotification"];
+    pushManager: Pick<PushManager, "subscribe">;
+  };
   navigator: { setAppBadge?: (n?: number) => Promise<void>; clearAppBadge?: () => Promise<void> };
   clients: {
     matchAll(o: { type: "window"; includeUncontrolled: boolean }): Promise<WindowLike[]>;
-    openWindow(url: string): Promise<unknown>;
+    openWindow(url: string): Promise<WindowLike | null>;
     claim(): Promise<void>;
   };
   skipWaiting(): Promise<void>;
   fetch: typeof fetch;
-  addEventListener(type: "install" | "activate", fn: (e: WaitEvent) => void): void;
-  addEventListener(type: "push", fn: (e: PushEventLike) => void): void;
-  addEventListener(type: "notificationclick", fn: (e: ClickEventLike) => void): void;
-  addEventListener(type: "pushsubscriptionchange", fn: (e: SubscriptionChangeLike) => void): void;
+  addEventListener<Type extends keyof WorkerEvents>(type: Type, fn: (e: WorkerEvents[Type]) => void): void;
 }
 
 export function wire(sw: WorkerScope) {
@@ -55,21 +69,26 @@ export function wire(sw: WorkerScope) {
 
   sw.addEventListener("push", (event) => {
     let text: string | null = null;
+
     try {
       text = event.data ? event.data.text() : null;
     } catch {
       text = null;
     }
+
     const shown = fromPush(text, origin);
+
     const badge = shown.appBadge === undefined ? Promise.resolve()
       : (shown.appBadge > 0 ? sw.navigator.setAppBadge?.(shown.appBadge) : sw.navigator.clearAppBadge?.())?.catch(() => {});
+
     event.waitUntil(Promise.all([sw.registration.showNotification(shown.title, shown.options), badge]));
   });
 
   sw.addEventListener("notificationclick", (event) => {
     event.notification.close();
-    const data = event.notification.data as { navigate?: unknown } | null;
-    const target = clickPath(data?.navigate, origin);
+    const data: unknown = event.notification.data;
+    const navigate = isObject(data) && "navigate" in data && isString(data.navigate) ? data.navigate : undefined;
+    const target = clickPath(navigate, origin);
     event.waitUntil(
       sw.clients.matchAll({ type: "window", includeUncontrolled: true })
         .then((windows) => openOrFocus(target, origin, windows, (url) => sw.clients.openWindow(url))),

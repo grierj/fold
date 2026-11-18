@@ -6,7 +6,9 @@ import { email, signIn, signOut } from "./helpers";
 // SCREENS_DIR set, each state is also captured at 390 and 1280 px.
 async function shoot(page: Page, name: string) {
   const dir = process.env.SCREENS_DIR;
+
   if (!dir) return;
+
   for (const w of [390, 1280]) {
     await page.setViewportSize({ width: w, height: 900 });
     await page.evaluate(() => window.scrollTo(0, 0));

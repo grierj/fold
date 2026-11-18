@@ -13,7 +13,7 @@ export function ContactHistoryPersonPicker({ value, name, error, onChange, onPic
   // Called when a person is chosen from the list, so the page can show their history at once.
   onPick?: (id: string) => void;
   onKnown: (person: ContactHistoryPerson) => void;
-  onFailure: (error: unknown) => void;
+  onFailure: (cause: unknown) => void;
 }) {
   const [query, setQuery] = useState("");
   const [people, setPeople] = useState<ContactHistoryPerson[]>([]);
@@ -25,39 +25,46 @@ export function ContactHistoryPersonPicker({ value, name, error, onChange, onPic
     let active = true;
     setBusy(true);
     setPeople([]);
+
     const timer = window.setTimeout(() => {
       ContactHistory.people({ q: query.trim() }).then((data) => {
         if (active) setPeople(data.people);
-      }).catch((e: unknown) => {
-        if (active) onFailure(e);
+      }).catch((cause: unknown) => {
+        if (active) onFailure(cause);
       }).finally(() => {
         if (active) setBusy(false);
       });
     }, query.trim() ? 250 : 0);
+
     return () => { active = false; window.clearTimeout(timer); };
   }, [query, onFailure]);
 
   useEffect(() => {
     const id = retainedPersonId(value);
+
     if (!id || name) return;
     let active = true;
+
     const timer = window.setTimeout(() => {
       ContactHistory.people({ id }).then((data) => {
         if (active && data.people[0]) {
           setResolved(data.people[0]);
           onKnown(data.people[0]);
         }
-      }).catch((e: unknown) => {
-        if (active) onFailure(e);
+      }).catch((cause: unknown) => {
+        if (active) onFailure(cause);
       });
     }, 250);
+
     return () => { active = false; window.clearTimeout(timer); };
   }, [value, name, onKnown, onFailure]);
 
   const selected = people.find((p) => p.id === value) ?? (resolved?.id === value ? resolved : null);
   const selectedLabel = selected || name ? "Selected person" : "Saved person ID";
   const options = [{ value: "", label: busy ? "Searching…" : "Choose a person" }, ...people.map((p) => ({ value: p.id, label: p.id === value ? selectedLabel : `${p.name} — ${p.email}` }))];
+
   if (value && !people.some((p) => p.id === value)) options.splice(1, 0, { value, label: selectedLabel });
+
   const selectedHint = value && <span className="block wrap-anywhere">
     {selected ? <><span className="block font-medium text-text">{selected.name}</span>{" "}<span className="block">{selected.email}</span></> : name ? <span className="block font-medium text-text">{name}</span> : `Saved person ID: ${value}`}
   </span>;
@@ -70,11 +77,14 @@ export function ContactHistoryPersonPicker({ value, name, error, onChange, onPic
       <Select required value={value} options={options} onChange={(e) => {
         const id = e.target.value;
         const person = people.find((p) => p.id === id);
+
         if (person) {
           setResolved(person);
           onKnown(person);
         }
+
         onChange(id);
+
         if (id) onPick?.(id);
       }} />
     </Field>

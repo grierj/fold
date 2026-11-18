@@ -6,6 +6,7 @@ import { Tabs } from "./Tabs";
 
 function Example({ variant }: { variant?: "chips" | "underline" }) {
   const [value, setValue] = useState("events");
+
   return <Tabs label="Group sections" value={value} onChange={setValue} variant={variant} options={[
     { id: "events", label: "Events" }, { id: "about", label: "About" }, { id: "members", label: "Members" },
   ]}>{value} content</Tabs>;

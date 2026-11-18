@@ -1,4 +1,8 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { requiredElement } from "../test/dom";
+import { testSite } from "../test/fixtures";
+import { renderWithAuth } from "../test/auth";
+import { stubService } from "../test/service";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,12 +20,12 @@ import { MessageComposerPage } from "./MessageComposer";
 const soonDay = () => wallClock(new Date(Date.now() + 2 * 864e5).toISOString(), "America/Boise").day;
 
 const viewer = vi.hoisted(() => ({ isAdmin: false }));
-vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2, name: "Lee Leader", displayName: "", email: "lee@example.com" }, loading: false, isAdmin: viewer.isAdmin, canCompose: true }) }));
-vi.mock("../api/site", async (importActual) => ({ ...(await importActual<typeof import("../api/site")>()), Site: { get: vi.fn().mockResolvedValue({ name: "Grace", timezone: "America/Boise" }) } }));
-vi.mock("../api/messages", () => ({ previewHTMLPath: (id: number) => `/api/v1/messages/${id}/preview.html`, Messages: {
-    options: vi.fn(), audiencePreview: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(),
-    schedule: vi.fn(), cancel: vi.fn(), preview: vi.fn(), test: vi.fn(), recipients: vi.fn(), retry: vi.fn(), uploadImage: vi.fn(),
-  } }));
+
+const render = renderWithAuth(() => ({ user: { id: 2, name: "Lee Leader", displayName: "", email: "lee@example.com" }, loading: false, isAdmin: viewer.isAdmin, canCompose: true }));
+
+stubService(Site, () => ({ get: vi.fn().mockResolvedValue({ name: "Grace", timezone: "America/Boise" }) }));
+
+stubService(Messages, () => ({ options: vi.fn(), audiencePreview: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), schedule: vi.fn(), cancel: vi.fn(), preview: vi.fn(), test: vi.fn(), recipients: vi.fn(), retry: vi.fn(), uploadImage: vi.fn() }));
 
 beforeAll(polyfillEditorLayout);
 
@@ -34,7 +38,9 @@ function open(path: string) {
     ],
     { initialEntries: [path] },
   );
+
   render(<RouterProvider router={router} />);
+
   return router;
 }
 
@@ -48,6 +54,7 @@ beforeEach(() => {
   vi.mocked(Messages.test).mockResolvedValue({ ok: true });
   vi.mocked(Messages.recipients).mockResolvedValue(recipients());
 });
+
 afterEach(() => { vi.clearAllMocks(); viewer.isAdmin = false; });
 
 const editorReady = () => screen.findByRole("textbox", { name: "Message" });
@@ -315,19 +322,19 @@ describe("MessageComposerPage", () => {
 
   it("waits for the church's zone before filling a scheduled time", async () => {
     const user = userEvent.setup();
-    let answer!: (v: unknown) => void;
-    const site = new Promise((r) => { answer = r; });
-    vi.mocked(Site.get).mockReturnValue(site as never);
+    let answer!: (value: Awaited<ReturnType<typeof Site.get>>) => void;
+    const site = new Promise<Awaited<ReturnType<typeof Site.get>>>((r) => { answer = r; });
+    vi.mocked(Site.get).mockReturnValue(site);
     vi.mocked(Messages.get).mockResolvedValue({ message: message({ status: "scheduled", scheduledAt: "2030-11-05T16:30:00Z" }) });
     open("/messages/5");
     await waitFor(() => expect(Messages.get).toHaveBeenCalled());
     expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
-    await act(async () => { answer({ name: "Grace", timezone: "Asia/Kolkata" }); });
+    await act(async () => { answer({ name: "Grace", timezone: "Asia/Kolkata", selfSignup: "off", roomsEnabled: false, pushEnabled: false }); });
     await user.click(await screen.findByRole("button", { name: "Edit" }));
     await editorReady();
     expect(screen.getByLabelText("Date")).toHaveValue("2030-11-05");
     expect(screen.getByLabelText("Time")).toHaveValue("22:00");
-    vi.mocked(Site.get).mockResolvedValue({ name: "Grace", timezone: "America/Boise" } as never);
+    vi.mocked(Site.get).mockResolvedValue(testSite({ name: "Grace", timezone: "America/Boise" }));
   });
 
   it("discards a saved draft after asking", async () => {
@@ -420,6 +427,7 @@ describe("MessageComposerPage", () => {
 describe("a sent message's history", () => {
   const sent = (over: Partial<Parameters<typeof message>[0]> = {}) =>
     message({ status: "sent", sentAt: "2026-10-30T16:30:00Z", editable: false, ...over });
+
   const counts = (over: Partial<ReturnType<typeof recipients>["counts"]>) => ({ ...recipients().counts, ...over });
 
   it("words the counts and lists who got it with Teen badges, guardian copies only as a count", async () => {
@@ -468,7 +476,7 @@ describe("a sent message's history", () => {
     }));
     open("/messages/5");
     // The problem is announced; Try again sits outside the announced part.
-    const alert = (await screen.findByText("This message didn't go out")).closest("[role=alert]") as HTMLElement;
+    const alert = requiredElement((await screen.findByText("This message didn't go out")).closest("[role=alert]"), HTMLElement);
     expect(alert).toHaveTextContent("The email service didn't take it.");
     expect(within(alert).queryByRole("button")).toBeNull();
     expect(screen.getByText("Failed")).toBeInTheDocument();
@@ -524,6 +532,7 @@ describe("a sent message's history", () => {
 
   it("checks every 5 seconds while sending, and says once that it settled", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
+
     try {
       vi.mocked(Messages.get).mockResolvedValue({ message: message({ status: "sending", editable: false }) });
       vi.mocked(Messages.recipients).mockResolvedValue(recipients({ counts: counts({ sent: 1, queued: 2, skipped: 0 }) }));
@@ -550,6 +559,7 @@ describe("a sent message's history", () => {
   it("waits while the tab is hidden and checks again when it comes back", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+
     try {
       vi.mocked(Messages.get).mockResolvedValue({ message: message({ status: "sending", editable: false }) });
       open("/messages/5");
@@ -568,6 +578,7 @@ describe("a sent message's history", () => {
 
   it("starts checking when a scheduled message comes due with the page open", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
+
     try {
       const at = new Date(Date.now() + 10 * 60_000).toISOString();
       vi.mocked(Messages.get).mockResolvedValue({ message: message({ status: "scheduled", scheduledAt: at, editable: true }) });
@@ -589,6 +600,7 @@ describe("a sent message's history", () => {
   it("stops after 30 minutes with nothing changing and offers to check again", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     vi.useFakeTimers({ shouldAdvanceTime: true });
+
     try {
       vi.mocked(Messages.get).mockResolvedValue({ message: message({ status: "sending", editable: false }) });
       open("/messages/5");
@@ -609,6 +621,7 @@ describe("a sent message's history", () => {
 
   it("stops checking when the page goes away", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
+
     try {
       vi.mocked(Messages.get).mockResolvedValue({ message: message({ status: "sending", editable: false }) });
       const router = open("/messages/5");

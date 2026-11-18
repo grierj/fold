@@ -18,14 +18,20 @@ export type RsvpAnswer = {
 // date with childcare sends an explicit "none" so the server records a choice.
 export function registerBody(instance: EventOccurrence, answer: RsvpAnswer) {
   const going = answer.status === "going";
-  return {
+
+  const body = {
     status: answer.status,
     guestCount: going ? answer.guestCount : 0,
     attendanceMode: instance.remoteAvailable ? answer.attendanceMode : undefined,
-    ...(going && instance.childcareAvailable
-      ? answer.childcare ?? (instance.myRegistration !== "going" ? { childcareCount: 0, childcareAgesNote: "" } : {})
-      : {}),
   };
+
+  if (!going || !instance.childcareAvailable) return body;
+
+  if (answer.childcare) return { ...body, ...answer.childcare };
+
+  if (instance.myRegistration !== "going") return { ...body, childcareCount: 0, childcareAgesNote: "" };
+
+  return body;
 }
 
 // Whether a person can pick remote: the event offers it and the date has seats.
@@ -58,6 +64,7 @@ export function savedAnswer(instance: EventOccurrence): SavedAnswer {
 // so every detail is its default.
 export function savedAnswerFromState(state: SeriesRegistrationState): SavedAnswer {
   const has = !!state.status;
+
   return {
     status: state.status ?? null,
     mode: has ? state.attendanceMode ?? "in_person" : "in_person",

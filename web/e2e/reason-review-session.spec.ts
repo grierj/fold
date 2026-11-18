@@ -1,3 +1,4 @@
+import { isString } from "../src/lib/wireValues";
 import { expect, test, type APIRequestContext, type Locator, type Page, type Request, type Route } from "@playwright/test";
 import { apiAs, checkState, fromMore, PASSWORD, signInTo } from "./helpers";
 import { decideElsewhere, makeMany, makeLegacy, makePerson, pageOf, recordOf, stringAt, type Many } from "./legacy-reasons";
@@ -34,7 +35,6 @@ const LEGACY = "/api/v1/admin/erasure-reasons/legacy";
 const TITLE = "Deleted accounts with reasons to review";
 const SAVED = "Saved.";
 const ACCOUNT_EMPTY = "This account has no reasons left to review.";
-const CHECKING = "Checking what happened to this save…";
 const STILL = "Still checking. Fold can't tell yet whether your choices were saved. Check again in a moment.";
 const NOT_APPLIED = "These choices weren't saved. Reload to see what's left.";
 const HISTORY = "Fold can't tell whether your earlier save finished. Reload to see what's left.";
@@ -43,7 +43,6 @@ const NOT_SAVED = /weren't saved|not saved|wasn't saved|was not saved/i;
 const SIGNED_OUT = /signed out|sign in/i;
 
 const DELETED = "The account was deleted.";
-const DEL_CHECKING = "Checking what happened to this delete request…";
 const DEL_STILL = "Still checking. Fold can't tell yet whether the account was deleted. Check again in a moment.";
 const DEL_NOTHING = "Nothing was deleted by this attempt.";
 const DEL_CHANGED = "Some reasons changed since you loaded them. Check the marked ones, then delete again.";
@@ -54,6 +53,7 @@ const WALK_FAILED = "Fold couldn't load the reasons just now. Try again in a min
 const MARKED = "Changed since you looked: choose again";
 
 type Pick = "keep" | "remove";
+
 // A fixed mix, the same for every test: every third reason is blanked.
 const pickOf = (i: number): Pick => (i % 3 === 0 ? "remove" : "keep");
 
@@ -61,16 +61,20 @@ const pickOf = (i: number): Pick => (i % 3 === 0 ? "remove" : "keep");
 function kept(event: string, surface: string, detail: string) {
   test.info().annotations.push({ type: "retention", description: `${event} | ${surface} | kept | ${detail}` });
 }
+
 function lost(event: string, surface: string, detail: string) {
   test.info().annotations.push({ type: "retention", description: `${event} | ${surface} | lost | ${detail}` });
 }
+
 function observed(label: string, ms: number) {
   test.info().annotations.push({ type: "observed-time", description: `${label} | ${Math.round(ms)} ms` });
 }
+
 async function timed<T>(label: string, run: () => Promise<T>): Promise<T> {
   const at = Date.now();
   const out = await run();
   observed(label, Date.now() - at);
+
   return out;
 }
 
@@ -110,16 +114,25 @@ async function chooseWithKeys(page: Page, n: number, pick: (i: number) => Pick =
 // The requests the legacy page sends: ids minted, what each PUT and settle carried,
 // and the page reads. An id is a capability, so it is compared and never printed.
 function watchSave(page: Page, id: string) {
-  const seen = { minted: 0, put: [] as string[], settled: [] as string[], pages: 0 };
+  const put: string[] = [];
+  const settled: string[] = [];
+  const seen = { minted: 0, put, settled, pages: 0 };
+
   const onRequest = (r: Request) => {
     const path = new URL(r.url()).pathname;
     const body = r.postData() ? recordOf(JSON.parse(r.postData() ?? "{}")) : {};
+
     if (r.method() === "POST" && path === MINT && body.kind === "legacy_reason_save") seen.minted++;
-    if (r.method() === "PUT" && path === `${LEGACY}/${id}` && typeof body.attemptId === "string") seen.put.push(body.attemptId);
-    if (r.method() === "POST" && path === SETTLE && typeof body.attemptId === "string") seen.settled.push(body.attemptId);
+
+    if (r.method() === "PUT" && path === `${LEGACY}/${id}` && isString(body.attemptId)) seen.put.push(body.attemptId);
+
+    if (r.method() === "POST" && path === SETTLE && isString(body.attemptId)) seen.settled.push(body.attemptId);
+
     if (r.method() === "POST" && path === `${LEGACY}/${id}/page`) seen.pages++;
   };
+
   page.on("request", onRequest);
+
   return { seen, stop: () => page.off("request", onRequest) };
 }
 
@@ -147,7 +160,6 @@ async function dropFirstSettle(page: Page) {
 
 const deletePanel = (page: Page, target: { email: string }) => page.getByRole("row").filter({ hasText: target.email });
 const panelItems = (row: Locator) => row.locator("li[data-reason-id]");
-const panelProgress = (row: Locator) => row.getByText(/reasons? chosen of \d+ so far\.|All \d+ reasons chosen\.|Choose Keep text or Blank text for [\d,]+ (more )?reasons?\./);
 
 async function openDeletePanel(page: Page, target: { email: string }, reasons: number): Promise<Locator> {
   const shown = Math.min(50, reasons);
@@ -155,20 +167,30 @@ async function openDeletePanel(page: Page, target: { email: string }, reasons: n
   const row = deletePanel(page, target);
   await fromMore(row, "Delete");
   await expect(row.getByText(`Reasons 1 to ${shown} of ${reasons}`, { exact: true })).toBeVisible({ timeout: 60_000 });
+
   return row;
 }
 
 function watchDelete(page: Page, id: number) {
-  const seen = { minted: 0, deleted: [] as string[], settled: [] as string[], pages: 0 };
+  const deleted: string[] = [];
+  const settled: string[] = [];
+  const seen = { minted: 0, deleted, settled, pages: 0 };
+
   const onRequest = (r: Request) => {
     const path = new URL(r.url()).pathname;
     const body = r.postData() ? recordOf(JSON.parse(r.postData() ?? "{}")) : {};
+
     if (r.method() === "POST" && path === MINT) seen.minted++;
-    if (r.method() === "DELETE" && path === `/api/v1/admin/users/${id}` && typeof body.attemptId === "string") seen.deleted.push(body.attemptId);
-    if (r.method() === "POST" && path === SETTLE && typeof body.attemptId === "string") seen.settled.push(body.attemptId);
+
+    if (r.method() === "DELETE" && path === `/api/v1/admin/users/${id}` && isString(body.attemptId)) seen.deleted.push(body.attemptId);
+
+    if (r.method() === "POST" && path === SETTLE && isString(body.attemptId)) seen.settled.push(body.attemptId);
+
     if (r.method() === "POST" && path === `/api/v1/admin/users/${id}/erasure-reasons/page`) seen.pages++;
   };
+
   page.on("request", onRequest);
+
   return { seen, stop: () => page.off("request", onRequest) };
 }
 
@@ -176,6 +198,7 @@ function watchDelete(page: Page, id: number) {
 async function chooseDisplayPageWithKeys(row: Locator, page: Page, first: number, count: number) {
   await row.locator(`[data-reason-heading="${first}"]`).focus();
   await page.keyboard.press("Tab");
+
   for (let i = 0; i < count; i++) {
     await page.keyboard.press(pickOf(first + i) === "remove" ? "ArrowDown" : "Space");
     await page.keyboard.press("Tab");
@@ -278,10 +301,12 @@ for (const width of [390, 1280]) test.describe(`long reason reviews at ${width}p
     // The server holds what the keys chose, on the first and the last reason of each page.
     const admin = await apiAs(request, adminName);
     const reasonOf = async (r: Many["reasons"][number]) => stringAt(await admin("GET", `/contact-requests/${r.requestId}`), "request", "reason");
+
     for (const [index, choice] of [[0, pickOf(0)], [98, pickOf(98)], [99, "keep"], [100, pickOf(1)], [199, pickOf(100)], [200, "keep"], [201, "remove"], [215, "remove"]] as const) {
       const r = fx.reasons[index];
       expect(await reasonOf(r), `reason ${index + 1}`).toBe(choice === "remove" ? "" : r.text);
     }
+
     kept("save, three pages in turn", "deleted-accounts page", "each Save sends one page of at most 100; the next page starts unchosen");
   });
 
@@ -374,11 +399,13 @@ for (const width of [390, 1280]) test.describe(`long reason reviews at ${width}p
     expect(watch.seen.settled).toEqual([]);
 
     const admin = await apiAs(request, adminName);
+
     for (const i of [0, 1, 3, 49, 50, 99, 100, 108, 109]) {
       const r = fx.reasons[i];
       const got = stringAt(await admin("GET", `/contact-requests/${r.requestId}`), "request", "reason");
       expect(got, `reason ${i + 1}`).toBe(pickOf(i) === "remove" ? "" : r.text);
     }
+
     kept("delete, 110 reasons by keyboard", "delete panel", "every choice reached the server on one DELETE");
   });
 
@@ -493,6 +520,7 @@ for (const width of [390, 1280]) test.describe(`long reason reviews at ${width}p
     let dropRead = true;
     await page.route(`**/api/v1/admin/users/${subject.id}/erasure-reasons/page`, async (route) => {
       const body = route.request().postData() ? recordOf(JSON.parse(route.request().postData() ?? "{}")) : {};
+
       if (!dropRead || body.after === null || body.after === undefined) return route.fallback();
       dropRead = false;
       await route.abort("failed");
@@ -521,6 +549,7 @@ for (const width of [390, 1280]) test.describe(`long reason reviews at ${width}p
         });
       }, Array.from({ length: n }, (_, i) => pickOf(offset + i)));
     };
+
     await chooseDisplayed(0);
     await row.getByRole("button", { name: "Next 50" }).click();
     await expect(row.getByText("Reasons 51 to 100 of 110", { exact: true })).toBeVisible();
@@ -579,6 +608,7 @@ for (const width of [390, 1280]) test.describe(`long reason reviews at ${width}p
     await expect(row.locator('[data-reason-heading="50"]')).toBeFocused();
     await expect(row.getByText("Showing reasons 51 to 100 of 110.", { exact: true })).toBeAttached();
     await expect(row.locator('[data-reason-heading="5"]')).toHaveCount(0);
+
     for (let i = 0; i < 3; i++) await page.keyboard.press("Shift+Tab");
     await expect(row.getByRole("button", { name: "Next changed reason" })).toBeFocused();
     await page.keyboard.press("Enter");
@@ -631,6 +661,7 @@ for (const width of [390, 1280]) test.describe(`long reason reviews at ${width}p
     const suffix = `${Date.now().toString(36)}${width}`;
     const fx = await makeLegacy(request, `${suffix}x`, `Xena Expired ${suffix}`, 3);
     await setClock(request, 0);
+
     try {
       await signInTo(page, adminName, accountPath(fx.id));
       await expect(reasonItems(page)).toHaveCount(3);
@@ -696,6 +727,7 @@ for (const width of [390, 1280]) test.describe(`long reason reviews at ${width}p
     const fx = await makeMany(request, `${suffix}z`, `Zed Panel ${suffix}`, { askers: 2, groups: 2, withdraw: false, deleted: false });
     const subject = { id: Number(fx.id), email: fx.subjectEmail };
     await setClock(request, 0);
+
     const chooseAllDisplayed = async (row: Locator) => {
       const n = await panelItems(row).count();
       await row.evaluate((el, picks) => {
@@ -703,6 +735,7 @@ for (const width of [390, 1280]) test.describe(`long reason reviews at ${width}p
       }, Array.from({ length: n }, (_, i) => pickOf(i)));
       await expect(row.getByText("All 4 reasons chosen.").first()).toBeVisible();
     };
+
     try {
       await signInTo(page, adminName, "/admin?tab=users");
       const watch = watchDelete(page, subject.id);
@@ -798,6 +831,7 @@ async function ageFirstPut(page: Page, id: string, request: APIRequestContext, s
     await route.fallback();
   });
 }
+
 async function ageFirstDelete(page: Page, id: number, request: APIRequestContext, seconds: number) {
   let first = true;
   await page.route(`**/api/v1/admin/users/${id}`, async (route) => {
@@ -816,5 +850,6 @@ async function holdSettle(page: Page) {
     await gate;
     await route.fallback();
   });
+
   return release;
 }

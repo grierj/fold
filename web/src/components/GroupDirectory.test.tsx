@@ -1,4 +1,6 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { renderWithAuth } from "../test/auth";
+import { stubService } from "../test/service";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -7,22 +9,37 @@ import { Groups } from "../api/groups";
 import { DirectoryPositionProvider } from "../lib/directoryPosition";
 import { GroupDirectory } from "./GroupDirectory";
 
-vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 1 } }) }));
-vi.mock("../api/groups", () => ({ Groups: { list: vi.fn() } }));
+const render = renderWithAuth(() => ({ user: { id: 1 } }));
+
+stubService(Groups, () => ({ list: vi.fn() }));
+
 const groups: GroupSummary[] = Array.from({ length: 50 }, (_, i) => ({
   id: i + 1, name: `Group ${String(i + 1).padStart(2, "0")}`, description: "", tags: [i % 2 ? "music" : "study"],
   imageUrl: "", coverFocalX: 50, coverFocalY: 50, location: "Hall", leaderName: "Lee", memberCount: 10,
   nextEventAt: null, status: "active", leaderId: 1, visibility: "public", deletionRequested: false, memberLimit: null,
 }));
+
 const jumped = vi.fn();
-function Location() { const loc = useLocation(); return <span data-testid="url">{loc.pathname}{loc.search}</span>; }
-function Detail() { const go = useNavigate(); return <button onClick={() => go(-1)}>Back to results</button>; }
+
+function Location() {
+  const loc = useLocation();
+
+  return <span data-testid="url">{loc.pathname}{loc.search}</span>;
+}
+
+function Detail() {
+  const go = useNavigate();
+
+  return <button onClick={() => go(-1)}>Back to results</button>;
+}
+
 function view(path = "/", ready = true) {
   return render(<MemoryRouter initialEntries={[path]}><DirectoryPositionProvider><Location /><Routes>
     <Route path="/" element={<GroupDirectory ready={ready} jump={false} onJumped={jumped} />} />
     <Route path="/groups/:id" element={<Detail />} />
   </Routes></DirectoryPositionProvider></MemoryRouter>);
 }
+
 beforeEach(() => {
   vi.resetAllMocks();
   window.scrollTo = vi.fn();
@@ -44,6 +61,7 @@ it("starts with twelve, appends in order and announces the exact total", async (
   expect(screen.getByTestId("url")).toHaveTextContent("shown=24");
   await userEvent.tab();
   expect(screen.getByRole("link", { name: /Group 13/ })).toHaveFocus();
+
   for (let i = 0; i < 3; i++) await userEvent.click(screen.getByRole("button", { name: "Show more groups" }));
   expect(screen.getAllByRole("heading", { level: 3 })).toHaveLength(50);
   expect(screen.getByRole("status")).toHaveTextContent("50 groups");

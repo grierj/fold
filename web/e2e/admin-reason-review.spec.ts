@@ -1,9 +1,9 @@
+import { isString } from "../src/lib/wireValues";
 import AxeBuilder from "@axe-core/playwright";
 import { mkdirSync } from "node:fs";
 import { expect, test, type APIRequestContext, type Page, type Request, type Route } from "@playwright/test";
 import { apiAs, nextFrames, signInTo } from "./helpers";
 import { makeLegacy, makePerson, numberAt, pageOf, rawAdmin, recordOf, stringAt, type Admin } from "./legacy-reasons";
-// @ts-expect-error plain JS module shared with verify-ui
 import { measure } from "./ui-measure.mjs";
 
 // The deleted-accounts review (M7.4 T07B-3b, T-302): the page an admin uses to
@@ -46,6 +46,7 @@ async function decideThroughApi(request: APIRequestContext, id: string, only: st
   const admin = await apiAs(request, adminName);
   const items = await pageOf(admin, id);
   const item = items.find((it) => it.reason.includes(only));
+
   if (!item) throw new Error(`no reason holding ${only}`);
   const minted = await admin("POST", "/admin/operation-attempts", { kind: "legacy_reason_save", subjectUserId: Number(id) });
   await admin("PUT", `/admin/erasure-reasons/legacy/${id}`, {
@@ -57,6 +58,7 @@ async function decideThroughApi(request: APIRequestContext, id: string, only: st
 // The reason a contact request holds now, as the admin reads it.
 async function reasonOf(request: APIRequestContext, requestId: number): Promise<string> {
   const admin = await apiAs(request, adminName);
+
   return stringAt(await admin("GET", `/contact-requests/${requestId}`), "request", "reason");
 }
 
@@ -74,16 +76,25 @@ async function choose(page: Page, text: string, choice: "Keep text" | "Blank tex
 // PUT and settle carried. An id is a capability, so it is compared here and
 // never printed.
 function watchSave(page: Page, id: string) {
-  const seen = { minted: 0, put: [] as string[], settled: [] as string[], pages: 0 };
+  const put: string[] = [];
+  const settled: string[] = [];
+  const seen = { minted: 0, put, settled, pages: 0 };
+
   const onRequest = (r: Request) => {
     const path = new URL(r.url()).pathname;
     const body = r.postData() ? recordOf(JSON.parse(r.postData() ?? "{}")) : {};
+
     if (r.method() === "POST" && path === MINT && body.kind === "legacy_reason_save") seen.minted++;
-    if (r.method() === "PUT" && path === `${LEGACY}/${id}` && typeof body.attemptId === "string") seen.put.push(body.attemptId);
-    if (r.method() === "POST" && path === SETTLE && typeof body.attemptId === "string") seen.settled.push(body.attemptId);
+
+    if (r.method() === "PUT" && path === `${LEGACY}/${id}` && isString(body.attemptId)) seen.put.push(body.attemptId);
+
+    if (r.method() === "POST" && path === SETTLE && isString(body.attemptId)) seen.settled.push(body.attemptId);
+
     if (r.method() === "POST" && path === `${LEGACY}/${id}/page`) seen.pages++;
   };
+
   page.on("request", onRequest);
+
   return { seen, stop: () => page.off("request", onRequest) };
 }
 
@@ -95,6 +106,7 @@ async function loseFirstPut(page: Page, id: string, run: boolean) {
   await page.route(`**${LEGACY}/${id}`, async (route: Route) => {
     if (route.request().method() !== "PUT" || !first) return route.fallback();
     first = false;
+
     if (run) await route.fetch();
     await route.abort("failed");
   });
@@ -108,6 +120,7 @@ async function holdSettle(page: Page) {
     await gate;
     await route.fallback();
   });
+
   return release;
 }
 
@@ -143,11 +156,13 @@ async function evidence(page: Page, state: string) {
     expect(layout.overflow, `${state} at ${width}px: sideways overflow`).toBeLessThanOrEqual(0);
     expect(layout.clipped, `${state} at ${width}px: clipped select`).toEqual([]);
     expect(layout.under24, `${state} at ${width}px: targets under 24px`).toEqual([]);
+
     if (proof) {
       mkdirSync(proof, { recursive: true });
       await page.screenshot({ path: `${proof}/admin-reason-review-${state}-${width}.png`, fullPage: true, animations: "disabled" });
     }
   }
+
   await page.setViewportSize({ width: 1280, height: 900 });
 }
 
@@ -190,6 +205,7 @@ test.describe("the deleted-accounts review", () => {
 
     await accountLink(page, a.id).click();
     await expect(refHeading(page, a.id)).toBeVisible();
+
     for (const text of a.texts) await expect(reasonItem(page, text)).toBeVisible();
     await expect(page.locator("body")).not.toContainText(former);
     // Nothing is chosen for the admin and nothing is bulk.
@@ -272,6 +288,7 @@ test.describe("the deleted-accounts review", () => {
     const fx = await makeLegacy(request, `${suffix}c`, `Cleo Changed ${suffix}`, 3);
     await signInTo(page, adminName, `/admin/deleted-reasons?account=${fx.id}`);
     await expect(refHeading(page, fx.id)).toBeVisible();
+
     for (const text of fx.texts) await expect(reasonItem(page, text)).toBeVisible();
     await choose(page, fx.texts[0], "Keep text");
     await choose(page, fx.texts[1], "Blank text");
@@ -367,6 +384,7 @@ test.describe("the deleted-accounts review", () => {
     const fx = await makeLegacy(request, `${suffix}o`, `Olga Old ${suffix}`, 1);
     const admin = await apiAs(request, adminName);
     await setClock(admin, 0);
+
     try {
       await signInTo(page, adminName, `/admin/deleted-reasons?account=${fx.id}`);
       await expect(reasonItem(page, fx.texts[0])).toBeVisible();
@@ -413,10 +431,12 @@ test.describe("the deleted-accounts review", () => {
       await expect(page.getByRole("status").filter({ hasText: "Checking what happened" })).toBeVisible();
       await page.getByRole("link", { name: TITLE }).click();
       await expect(page.getByRole("heading", { name: TITLE, level: 1 })).toBeVisible();
+
       const response = page.waitForResponse((r) =>
         new URL(r.url()).pathname === SETTLE && r.request().method() === "POST"
         && recordOf(JSON.parse(r.request().postData() ?? "{}")).attemptId === watch.seen.put[0],
       );
+
       release();
       const settled = await response;
       expect(await settled.finished()).toBeNull();
@@ -426,6 +446,7 @@ test.describe("the deleted-accounts review", () => {
     } finally {
       release();
     }
+
     expect(watch.seen.settled).toEqual([watch.seen.put[0]]);
     await expect(page.getByText(SAVED)).toHaveCount(0);
 
@@ -476,6 +497,7 @@ test.describe("the deleted-accounts review", () => {
     await page.route(`**${LEGACY}?**`, async (route) => {
       const url = new URL(route.request().url());
       seen.push(`${url.pathname}${url.search}`);
+
       return route.fallback();
     });
     await page.route(`**${LEGACY}`, async (route) => {

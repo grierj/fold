@@ -24,9 +24,11 @@ test("logout clears the session's data, including through back", async ({ page }
   // skeleton's label), which fails an unscoped status locator in strict
   // mode. Scope to the count line, whose text settles on the assertion.
   await expect(page.locator("#groups p[role='status']")).toHaveText(/\d+ groups?$/);
+
   for (const text of ["Members-only circle", "Invite-only circle", "Sam Member", "Log out"]) {
     await expect(page.getByText(text)).toHaveCount(0);
   }
+
   expect(await page.evaluate(() => localStorage.length + sessionStorage.length)).toBe(0);
   // The server session is over: the old cookie is gone (the fresh page got
   // a new anonymous one for its CSRF token) and the API sees no one.
@@ -41,6 +43,7 @@ test("logout clears the session's data, including through back", async ({ page }
     await page.goBack();
     await expect(page).toHaveURL(url);
     await expect(page.getByRole("link", { name: "Log in" })).toBeVisible();
+
     for (const text of ["Members-only circle", "Invite-only circle", "Sam Member"]) {
       await expect(page.getByText(text)).toHaveCount(0);
     }
@@ -82,6 +85,7 @@ test("an admin signing in after a member's new group sees the notice", async ({ 
   // Leave nothing pending for other specs.
   const again = await apiAs(request, "grier"); // the request context is Sam's now
   const left = await again("GET", "/admin/pending");
+
   for (const g of left.groups) await again("POST", `/admin/groups/${g.id}/approve`, {});
 });
 
