@@ -263,7 +263,7 @@ milestones M8.1–M8.8), in this order:
 | P1 Church Center finder filters | M8.3 (the directory slice of R15/M7.9, pulled forward; area and life stage are card information, not facets — see M8.3's scope boundary) |
 | P2 30-second attendance (BAND) | M8.4 (M6.3/R10, sequenced ahead of the two unbriefed P1 items — see phase-8.md's order note) |
 | P1 GroupDetail pulse (Heylo) | M8.5 (extended to signed-in Home's Coming Up) |
-| P1 Announcements vs discussion (BAND) | M8.6 (absorbs M6.6; needs proposed DEC-153 and a brief) |
+| P1 Announcements vs discussion (BAND) | M8.6 (absorbs M6.6; DEC-153 rescinded DEC-145 on Nov 18, 2026, so only a brief remains) |
 | P2 One-tap calendar subscribe (Luma) | M8.7 |
 | P2 Name and surface Fold's moats | M8.8 |
 

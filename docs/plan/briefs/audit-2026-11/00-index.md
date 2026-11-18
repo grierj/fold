@@ -90,7 +90,7 @@ shipped stack. Full evidence: `R1-deployment.md` Part 1.
 | DEC-142 | R1 | VPS + Compose recommended; Cloudflare supports only |
 | DEC-143 | R2 | Generic CSV import first (reverses DEC-15's gate) |
 | DEC-144 | R4 | Deleting an account erases the person |
-| DEC-145 | all | Disposition; R7/R8 rejected; surface freeze till live |
+| DEC-145 | all | Disposition; R7/R8 rejected; surface freeze till live (freeze rescinded by DEC-153, Nov 18, 2026; R7/R8 rejections stand) |
 
 ## Implementation waves
 
