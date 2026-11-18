@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     services:
       postgres:
         image: postgres:16
@@ -49,8 +49,10 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-      - name: Install shellcheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Install shellcheck and GNU coreutils
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck coreutils-from-gnu coreutils-from-uutils- --allow-remove-essential
       - run: make lint-sh lint-go deadcode
       # Known vulnerabilities in reachable Go code (DEC-37). Pinned version.
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
