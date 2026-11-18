@@ -62,6 +62,7 @@ function RoomFormPanel({ room, onSaved, onCancel }: {
   const [error, setError] = useState<string | null>(null);
   const [nameError, setNameError] = useState<string | null>(null);
   const formEl = useRef<HTMLFormElement>(null);
+  // SAFETY: initial contains only the RoomForm fields we build from the room.
   const dirty = (Object.keys(initial) as (keyof RoomForm)[]).some((k) => form[k] !== initial[k]);
   const { guard, markSaved } = useUnsavedChanges(dirty);
   const set = <K extends keyof RoomForm>(key: K, value: RoomForm[K]) => setForm((f) => ({ ...f, [key]: value }));
@@ -82,6 +83,7 @@ function RoomFormPanel({ room, onSaved, onCancel }: {
     setError(null);
     setNameError(null);
     const minutes = (value: string) => (value.trim() === "" ? undefined : Number(value));
+
     const body: RoomInput = {
       name: form.name.trim(),
       building: form.building.trim(),
@@ -89,6 +91,7 @@ function RoomFormPanel({ room, onSaved, onCancel }: {
       notes: form.notes.trim(),
       restricted: form.restricted,
     };
+
     if (room) {
       // Editing sends every field, so a cleared capacity goes as null and a
       // cleared padding goes back to 0.
@@ -99,9 +102,12 @@ function RoomFormPanel({ room, onSaved, onCancel }: {
       if (form.capacity.trim() !== "") body.capacity = Number(form.capacity);
       const setup = minutes(form.setup);
       const cleanup = minutes(form.cleanup);
+
       if (setup !== undefined) body.defaultSetupMinutes = setup;
+
       if (cleanup !== undefined) body.defaultTeardownMinutes = cleanup;
     }
+
     try {
       const saved = room ? await AdminRooms.update(room.id, body) : await AdminRooms.create(body);
       markSaved();
@@ -115,6 +121,7 @@ function RoomFormPanel({ room, onSaved, onCancel }: {
   }
 
   const idPrefix = room ? `room-${room.id}` : "room-new";
+
   return (
     <Form ref={formEl} aria-label={room ? `Edit ${room.name}` : "Add room"} noValidate onSubmit={save}
       className="bg-surface rounded-lg border border-border p-6 space-y-4 max-w-xl">
@@ -218,6 +225,7 @@ export function RoomsTab({ rooms, error, reload, onSaved }: {
     setBusyId(room.id);
     setActionError(null);
     setStatus("");
+
     try {
       const r = await AdminRooms.update(room.id, { active });
       onSaved(r.room);
@@ -232,6 +240,7 @@ export function RoomsTab({ rooms, error, reload, onSaved }: {
   const ordered = [...(rooms ?? [])].sort((a, b) => a.building.localeCompare(b.building) || Number(b.active) - Number(a.active) || a.name.localeCompare(b.name));
   const matching = ordered.filter((r) => (!building || r.building === building) && `${r.name} ${r.building} ${r.features}`.toLowerCase().includes(query.trim().toLowerCase()));
   const paging = usePage(matching, query + building);
+
   if (!rooms) return error ? <ErrorNotice message={error} onRetry={reload} /> : <Skeleton kind="lines" />;
 
   function startAdding() {

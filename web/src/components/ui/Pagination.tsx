@@ -11,6 +11,7 @@ export function PageCount({ paging, noun, size = 25, scrollMarginTop }: { paging
 
 export function Pagination({ paging, noun, disabled = false }: { paging: PageControls; noun: string; disabled?: boolean }) {
   if (paging.pages <= 1) return null;
+
   return <nav aria-label={`${noun} pages`} className="flex flex-wrap items-center gap-3 py-4">
     <Button variant="secondary" disabled={disabled || paging.page <= 1} onClick={() => paging.go(paging.page - 1)} aria-label={`Previous ${noun}`}>Previous</Button>
     <span className="text-sm text-text-muted">Page {paging.page} of {paging.pages}</span>

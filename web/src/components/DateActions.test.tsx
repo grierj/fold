@@ -15,10 +15,11 @@ const original = { share: navigator.share, clipboard: Object.getOwnPropertyDescr
 afterEach(() => {
   vi.useRealTimers();
   Object.defineProperty(navigator, "share", { value: original.share, configurable: true, writable: true });
+
   if (original.clipboard) Object.defineProperty(navigator, "clipboard", original.clipboard);
 });
 
-function setShare(value: unknown) {
+function setShare(value: Navigator["share"] | undefined) {
   Object.defineProperty(navigator, "share", { value, configurable: true, writable: true });
 }
 

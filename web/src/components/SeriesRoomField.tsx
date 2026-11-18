@@ -52,6 +52,7 @@ export function SeriesRoomField({ eventId, idPrefix, onChanged }: {
   // Each answer replaces the form's state in the same render that first sees it.
   const loaded = list.data;
   const [applied, setApplied] = useState(loaded);
+
   if (loaded && loaded !== applied) {
     setApplied(loaded);
     setRooms(loaded.rooms);
@@ -72,8 +73,10 @@ export function SeriesRoomField({ eventId, idPrefix, onChanged }: {
     setBusy(true);
     setError(null);
     setStatus("");
+
     try {
       const res = await SeriesRooms.set(eventId, overlapReason ? { roomId, overlapReason } : { roomId });
+
       if (!alive.current) return;
       setCurrent(res.defaultRoom);
       setPick(res.defaultRoom ? String(res.defaultRoom.id) : NO_ROOM);
@@ -101,17 +104,22 @@ export function SeriesRoomField({ eventId, idPrefix, onChanged }: {
 
   function apply() {
     if (busy || pick === value) return;
+
     if (pick === NO_ROOM) {
       void send(null);
+
       return;
     }
+
     const room = rooms.find((r) => String(r.id) === pick);
+
     if (room) void send(room.id);
   }
 
   function bookAnyway() {
     if (!pending) return;
     const why = overlap.read();
+
     if (why === null) return;
     void send(pending.roomId, why, pending.dates);
   }

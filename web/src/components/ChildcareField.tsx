@@ -17,9 +17,11 @@ export function childcareFrom(available = false, capacity?: number | null, ages 
 export function childcareProblem(value: ChildcareValue): string | null {
   if (!value.available || value.capacity.trim() === "") return null;
   const cap = value.capacity.trim();
+
   if (!/^\d+$/.test(cap) || !Number.isSafeInteger(Number(cap)) || Number(cap) > 100000) {
     return "The childcare limit needs to be a whole number from 1 to 100,000, or leave it empty.";
   }
+
   return Number(cap) === 0 ? "Uncheck childcare instead of a 0 childcare limit." : null;
 }
 
@@ -32,8 +34,9 @@ export function childcareBody(value: ChildcareValue) {
   };
 }
 
-export const isChildcareCapacityError = (err: unknown) => {
-  const code = errorCode(err);
+export const isChildcareCapacityError = (cause: unknown) => {
+  const code = errorCode(cause);
+
   return code === "invalid_childcare_capacity" || code === "childcare_capacity_zero";
 };
 

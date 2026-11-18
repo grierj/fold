@@ -12,6 +12,7 @@ import { Illustration } from "../components/ui/Illustration";
 import { Skeleton } from "../components/ui/Skeleton";
 
 const INVITE_EXPIRED = "This invitation has expired or was already used. Ask the person who invited you for a new one.";
+
 import { AccountAgeFields } from "../components/AccountAgeFields";
 import type { AgeBand, Invitation } from "../types";
 
@@ -36,8 +37,10 @@ export function Invite() {
   useEffect(() => {
     if (!token) {
       setLoading(false);
+
       return;
     }
+
     InvitationsApi.get(token)
       .then((res) => {
         setInvitation(res.invitation);
@@ -56,13 +59,21 @@ export function Invite() {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+
     if (!invitation?.conversion && ageBand === "under13") return;
     setBusy(true);
     setError(null);
+
     try {
       const result = await InvitationsApi.accept({ token, name, password, ageBand, birthDate: ageBand === "teen" ? birthDate : undefined });
       setPassword("");
-      if (result.pendingApproval) { setWaiting(true); return; }
+
+      if (result.pendingApproval) {
+        setWaiting(true);
+
+        return;
+      }
+
       navigate(await signedIn(result), { replace: true });
     } catch (e) {
       // "That email already has an account" (email_taken) stays: the
@@ -151,6 +162,7 @@ export function Invite() {
 function AccountWaiting({ teen = false }: { teen?: boolean }) {
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => heading.current?.focus(), []);
+
   return (
     <div className="fold-auth wrap-anywhere">
       <h1 ref={heading} tabIndex={-1} className="text-3xl font-bold mb-4 focus:outline-none">Your account is almost ready</h1>

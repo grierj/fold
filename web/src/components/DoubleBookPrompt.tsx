@@ -9,6 +9,7 @@ import { Field, Textarea } from "./ui/Field";
 export function useOverlapReason(reasonId: string) {
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
+
   return {
     reason, setReason, error,
     reset() {
@@ -21,7 +22,9 @@ export function useOverlapReason(reasonId: string) {
       const why = reason.trim();
       const problem = !why ? "Say why you are double-booking this room." : why.length > OVERLAP_REASON_MAX ? `Use ${OVERLAP_REASON_MAX} characters or fewer.` : null;
       setError(problem);
+
       if (problem) document.getElementById(reasonId)?.focus();
+
       return problem ? null : why;
     },
   };

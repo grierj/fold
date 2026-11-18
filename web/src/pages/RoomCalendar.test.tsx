@@ -1,4 +1,8 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { renderWithAuth } from "../test/auth";
+import { stubService } from "../test/service";
+import { Calendar } from "../api/calendar";
+import { Site } from "../api/site";
+import { fireEvent, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../api/core";
@@ -6,11 +10,15 @@ import type { RoomCalendar, RoomCalendarRoom } from "../types";
 import { RoomCalendarPage } from "./RoomCalendar";
 
 const { rooms, auth } = vi.hoisted(() => ({ rooms: vi.fn(), auth: vi.fn() }));
-vi.mock("../auth", () => ({ useAuth: auth }));
-vi.mock("../api/calendar", () => ({ Calendar: { rooms } }));
-vi.mock("../api/site", () => ({ Site: { get: vi.fn().mockResolvedValue({ roomsEnabled: true }) } }));
+
+const render = renderWithAuth(auth);
+
+stubService(Calendar, () => ({ rooms }));
+
+stubService(Site, () => ({ get: vi.fn().mockResolvedValue({ roomsEnabled: true }) }));
 
 const zone = "America/Denver";
+
 // 7:00–8:30 PM on Wednesday Oct 21 in Denver.
 const hall: RoomCalendarRoom = {
   id: 1, name: "Fellowship Hall", building: "Main", capacity: 80, restricted: false,
@@ -18,10 +26,12 @@ const hall: RoomCalendarRoom = {
     { startsAt: "2026-10-22T01:00:00Z", endsAt: "2026-10-22T02:30:00Z", eventId: 7, date: "2026-10-21", title: "Bible study", groupId: 3, groupName: "Men's group" },
   ],
 };
+
 const library: RoomCalendarRoom = {
   id: 2, name: "Library", building: "", capacity: 20, restricted: false,
   bookings: [{ startsAt: "2026-10-21T16:00:00Z", endsAt: "2026-10-21T17:00:00Z", reserved: true }],
 };
+
 const day = (o: Partial<RoomCalendar> = {}): RoomCalendar => ({ timezone: zone, from: "2026-10-21", to: "2026-10-21", rooms: [hall, library], truncated: false, ...o });
 
 const show = (path = "/calendar/rooms?date=2026-10-21") =>

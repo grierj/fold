@@ -1,3 +1,5 @@
+import { testEvent } from "../test/fixtures";
+import { stubService } from "../test/service";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { RouterProvider, createMemoryRouter } from "react-router-dom";
@@ -9,10 +11,13 @@ import { Events } from "../api/events";
 import { Site } from "../api/site";
 import { forgetSite } from "../lib/useSite";
 
-vi.mock("../api/rooms", () => ({ DateRooms: { list: vi.fn() }, SeriesRooms: { list: vi.fn() } }));
-vi.mock("../api/core", () => ({ ApiError: class extends Error {} }));
-vi.mock("../api/events", () => ({ Events: { update: vi.fn(), generateJitsi: vi.fn().mockResolvedValue({ url: "https://meet.jit.si/fold-abc123def4" }) } }));
-vi.mock("../api/site", () => ({ Site: { get: vi.fn().mockResolvedValue({ timezone: "UTC" }) } }));
+stubService(DateRooms, () => ({ list: vi.fn() }));
+
+stubService(SeriesRooms, () => ({ list: vi.fn() }));
+
+stubService(Events, () => ({ update: vi.fn(), generateJitsi: vi.fn().mockResolvedValue({ url: "https://meet.jit.si/fold-abc123def4" }) }));
+
+stubService(Site, () => ({ get: vi.fn().mockResolvedValue({ timezone: "UTC" }) }));
 
 describe("SeriesEditor", () => {
   it.each(["1e", "-2", "0"])("focuses the remote seat limit error for %s and keeps the other fields", async (capacity) => {
@@ -56,22 +61,22 @@ describe("SeriesEditor", () => {
         onSaved={() => {}}
       />
     );
-    const capacity = screen.getByLabelText(/^Seat limit/) as HTMLInputElement;
-    expect(capacity.value).toBe("20");
+    const capacity = screen.getByLabelText(/^Seat limit/);
+    expect(capacity).toHaveValue(20);
     expect(screen.getByText(/Seats per date/)).toBeInTheDocument();
-    const guests = screen.getByLabelText("Guests allowed") as HTMLInputElement;
-    expect(guests.value).toBe("2");
+    const guests = screen.getByLabelText("Guests allowed");
+    expect(guests).toHaveValue(2);
     expect(screen.getByText(/0–5/)).toBeInTheDocument();
     expect(screen.getByLabelText(/^Waitlist when full/)).toBeChecked();
     expect(screen.getByText(/refuses new registrations/)).toBeInTheDocument();
     // Remote attendance carries its own cap, separate from the room.
     expect(screen.getByLabelText(/^Remote attendance/)).toBeChecked();
-    expect((screen.getByLabelText(/^Remote seat limit/) as HTMLInputElement).value).toBe("15");
+    expect(screen.getByLabelText(/^Remote seat limit/)).toHaveValue("15");
     // The Video section carries the series' link and who may see it.
-    expect((screen.getByLabelText("Video link") as HTMLInputElement).value).toBe(
+    expect(screen.getByLabelText("Video link")).toHaveValue(
       "https://zoom.example.org/j/123"
     );
-    expect((screen.getByLabelText("Who sees the link") as HTMLSelectElement).value).toBe("registered_only");
+    expect(screen.getByLabelText("Who sees the link")).toHaveValue("registered_only");
   });
 
   it("shows an empty capacity as no limit", () => {
@@ -94,8 +99,8 @@ describe("SeriesEditor", () => {
         onSaved={() => {}}
       />
     );
-    const capacity = screen.getByLabelText(/^Seat limit/) as HTMLInputElement;
-    expect(capacity.value).toBe("");
+    const capacity = screen.getByLabelText(/^Seat limit/);
+    expect(capacity).toHaveValue(null);
     expect(capacity).toHaveAttribute("placeholder", "No limit");
   });
 });
@@ -138,6 +143,7 @@ describe("SeriesEditor form layout (DEC-95)", () => {
     const nodes = order.map((t) => Array.from(form.querySelectorAll("label, h2, h3, p, button")).find((n) => n.textContent?.trim().startsWith(t))!);
     nodes.forEach((n, i) => {
       expect(n, order[i]).toBeTruthy();
+
       if (i > 0) expect(nodes[i - 1].compareDocumentPosition(n) & Node.DOCUMENT_POSITION_FOLLOWING, order[i]).toBeTruthy();
     });
   });
@@ -156,7 +162,7 @@ describe("SeriesEditor form layout (DEC-95)", () => {
     vi.mocked(Events.update).mockClear();
     render(<SeriesEditor series={baseSeries} idPrefix="seats0" onSaved={() => {}} />);
     await userEvent.click(screen.getByRole("button", { name: "Save series" }));
-    const untouched = vi.mocked(Events.update).mock.calls[0][1] as Record<string, unknown>;
+    const untouched = vi.mocked(Events.update).mock.calls[0][1];
     expect(untouched).not.toHaveProperty("capacity");
     expect(untouched).not.toHaveProperty("waitlistEnabled");
   });
@@ -217,8 +223,9 @@ describe("SeriesEditor form layout (DEC-95)", () => {
   });
 
   it("asks before leaving unsaved edits, and not after a save", async () => {
-    vi.mocked(Events.update).mockReset().mockResolvedValue({} as never);
+    vi.mocked(Events.update).mockReset().mockResolvedValue({ event: testEvent(7) });
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+
     const router = createMemoryRouter(
       [
         { path: "/", element: <><UnsavedChangesBlocker /><SeriesEditor series={baseSeries} idPrefix="guard" onSaved={() => { void router.navigate("/done"); }} /></> },
@@ -226,6 +233,7 @@ describe("SeriesEditor form layout (DEC-95)", () => {
         { path: "/done", element: <p>Done page</p> },
       ],
     );
+
     render(<RouterProvider router={router} />);
     await userEvent.type(screen.getByRole("textbox", { name: "Title" }), "!");
     void router.navigate("/elsewhere");
@@ -239,6 +247,7 @@ describe("SeriesEditor form layout (DEC-95)", () => {
 
   describe("Room control (M2.1b)", () => {
     const single = { eventId: 7, startsLocal: "2026-12-01T19:00", durationMinutes: 60, tzid: "UTC", title: "Supper", description: "", location: "Hall", recurrenceRule: "", capacity: null, waitlistEnabled: false, guestsAllowed: 0 };
+
     const roomsOn = () => {
       vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: true, pushEnabled: true });
       vi.mocked(DateRooms.list).mockResolvedValue({ rooms: [], booking: null });

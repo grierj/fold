@@ -1,4 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import { renderWithAuth } from "../test/auth";
+import { stubService } from "../test/service";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -6,10 +8,13 @@ import { Invitations } from "../api/invitations";
 import { Invite } from "./Invite";
 
 const signedIn = vi.hoisted(() => vi.fn());
-vi.mock("../auth", () => ({ useAuth: () => ({ signedIn }) }));
-vi.mock("../api/invitations", async (actual) => ({ ...(await actual<typeof import("../api/invitations")>()), Invitations: { get: vi.fn(), accept: vi.fn() } }));
+
+const render = renderWithAuth(() => ({ signedIn }));
+
+stubService(Invitations, () => ({ get: vi.fn(), accept: vi.fn() }));
 
 beforeEach(() => { vi.resetAllMocks(); signedIn.mockResolvedValue("/"); });
+
 it("accepts a teen conversion into approval waiting without moving household sign-ups", async () => {
   vi.mocked(Invitations.get).mockResolvedValue({ site: "Our church", siteName: "Our church", inviterName: "Pat", invitation: { id: 1, name: "Taylor", email: "taylor@example.com", conversion: true, accountType: "teen", expiresAt: "2026-12-01T00:00:00Z" } });
   vi.mocked(Invitations.accept).mockResolvedValue({ pendingConsent: false, pendingApproval: true });

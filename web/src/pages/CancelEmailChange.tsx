@@ -30,6 +30,7 @@ function CancelEmailChangeForm({ token }: { token: string }) {
     event.preventDefault();
     setBusy(true);
     setError(null);
+
     try {
       await ProfileApi.cancelEmailChange(token);
       await refresh();

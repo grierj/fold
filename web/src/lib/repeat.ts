@@ -9,7 +9,8 @@ import { browserTimeZone, dayOf, formatEventDay, formatShortDay, formatTimeRange
 
 // Weekdays read Monday first ("Tuesday and Thursday").
 const READING_ORDER = [1, 2, 3, 4, 5, 6, 0];
-const ORDINALS: Record<number, string> = { 1: "First", 2: "Second", 3: "Third", 4: "Fourth" };
+const ORDINALS = ["", "First", "Second", "Third", "Fourth"];
+
 // Rule parts that don't change the wording (an end, a week start).
 const NEUTRAL = new Set(["UNTIL", "COUNT", "WKST"]);
 
@@ -21,12 +22,14 @@ export interface RepeatDate {
 
 function joinNames(names: string[]): string {
   if (names.length <= 1) return names.join("");
+
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
 
 function ordinalDay(n: number): string {
   const teen = n % 100 >= 11 && n % 100 <= 13;
-  const suffix = teen ? "th" : ({ 1: "st", 2: "nd", 3: "rd" } as Record<number, string>)[n % 10] ?? "th";
+  const suffix = teen ? "th" : ["th", "st", "nd", "rd"][n % 10] ?? "th";
+
   return `${n}${suffix}`;
 }
 
@@ -35,15 +38,19 @@ function ordinalDay(n: number): string {
 // another day or a clock change near midnight can't flip the whole line.
 function weekdayShift(dates: RepeatDate[], zone: string): number {
   const counts = new Map<number, number>();
+
   for (const d of dates) {
     const shift = (weekdayIndex(dayOf(d.startsAt, zone)) - weekdayIndex(d.date) + 7) % 7;
     counts.set(shift, (counts.get(shift) ?? 0) + 1);
   }
+
   let best = 0;
   let bestCount = 0;
+
   for (const [shift, count] of counts) {
     if (count > bestCount) { best = shift; bestCount = count; }
   }
+
   return best;
 }
 
@@ -56,6 +63,7 @@ export function repeatPattern(rule: string, dates: RepeatDate[], zone = browserT
   const first = dates[0];
   const interval = Number(parts.get("INTERVAL") ?? "1");
   const unsupported = [...parts.keys()].some((k) => !NEUTRAL.has(k) && !["FREQ", "INTERVAL", "BYDAY", "BYMONTHDAY", "BYSETPOS"].includes(k));
+
   if (!first || unsupported || !Number.isInteger(interval) || interval < 1) return "Repeats";
   const freq = parts.get("FREQ");
   const byday = (parts.get("BYDAY") ?? "").split(",").filter(Boolean);
@@ -64,11 +72,14 @@ export function repeatPattern(rule: string, dates: RepeatDate[], zone = browserT
     const wall = byday.length > 0
       ? byday.map((d) => WEEKDAY_CODES.indexOf(d.slice(-2)))
       : [weekdayIndex(first.date)];
+
     if (wall.some((i) => i < 0)) return "Repeats";
     const shift = weekdayShift(dates, zone);
     const days = new Set(wall.map((i) => (i + shift) % 7));
+
     if (days.size === 7) return interval === 1 ? "Every day" : "Repeats";
-    const names = READING_ORDER.filter((i) => days.has(i)).map(weekdayLongName);
+    const names = READING_ORDER.flatMap((i) => days.has(i) ? [weekdayLongName(i)] : []);
+
     return `Every ${interval === 2 ? "other " : ""}${joinNames(names)}`;
   }
 
@@ -78,21 +89,30 @@ export function repeatPattern(rule: string, dates: RepeatDate[], zone = browserT
 
   if (freq === "MONTHLY" && interval === 1) {
     const zoneDay = dayOf(first.startsAt, zone);
+
     if (byday.length === 1) {
       // "1SA" / "-1FR", or a bare weekday with BYSETPOS.
       const m = byday[0].match(/^([+-]?\d+)?([A-Z]{2})$/);
       const n = Number(m?.[1] ?? parts.get("BYSETPOS") ?? NaN);
+
       if (!m || WEEKDAY_CODES.indexOf(m[2]) < 0 || !Number.isInteger(n) || n < -1 || n === 0 || n > 4) return "Repeats";
+
       // A zone that moves the evening onto the next weekday makes "first
       // Saturday" a moving "first or second Sunday", so say less, not wrong.
       if (weekdayIndex(zoneDay) !== WEEKDAY_CODES.indexOf(m[2])) return "Repeats";
+
       return `${n === -1 ? "Last" : ORDINALS[n]} ${weekdayLongName(WEEKDAY_CODES.indexOf(m[2]))} of each month`;
     }
+
     if (byday.length > 1 || parts.has("BYSETPOS")) return "Repeats";
     const monthDays = (parts.get("BYMONTHDAY") ?? "").split(",").filter(Boolean);
+
     if (monthDays.length > 1) return "Repeats";
+
     if (monthDays[0] === "-1") return "Monthly on the last day";
+
     if (monthDays[0] && !/^\d+$/.test(monthDays[0])) return "Repeats";
+
     return `Monthly on the ${ordinalDay(Number(zoneDay.slice(8)))}`;
   }
 
@@ -113,10 +133,14 @@ export function whenLine(
   now = new Date(),
 ): string | null {
   const next = dates[0];
+
   if (!next) return null;
   const pattern = repeatPattern(rule, dates, zone);
+
   if (pattern === null) return dateLine(next.startsAt, next.endsAt, zone, now);
   const nextDay = `next ${formatShortDay(next.startsAt, zone, now)}`;
+
   if (pattern === "Repeats") return `${pattern} · ${nextDay}`;
+
   return `${pattern} · ${formatTimeRange(next.startsAt, next.endsAt, zone)} · ${nextDay}`;
 }

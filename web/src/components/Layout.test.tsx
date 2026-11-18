@@ -1,14 +1,21 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { renderWithAuth } from "../test/auth";
+import { stubService } from "../test/service";
+import { Notifications } from "../api/notifications";
+import { Site } from "../api/site";
+import { act, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 import { Layout } from "./Layout";
 
 const { auth } = vi.hoisted(() => ({ auth: vi.fn() }));
-vi.mock("../auth", () => ({ useAuth: auth }));
-vi.mock("../api/site", () => ({ Site: { get: () => Promise.resolve({ name: "Grace Community Church" }) } }));
-vi.mock("../lib/notifications", () => ({ useBadge: () => ({ unread: 0, waiting: 0, loaded: false }) }));
-vi.mock("./Notifications", () => ({ NotificationBell: () => null, NotificationTab: () => null }));
+
+const render = renderWithAuth(auth);
+
+stubService(Site, () => ({ get: () => Promise.resolve({ name: "Grace Community Church", timezone: "UTC", selfSignup: "off", roomsEnabled: false, pushEnabled: false }) }));
+
+stubService(Notifications, () => ({ badge: async () => null }));
+
 beforeEach(() => auth.mockReturnValue({ user: null, loading: false, logout: vi.fn(), isAdmin: false }));
 
 it("names the church, offers the skip link and main region, and shows signed-out controls", async () => {
@@ -49,6 +56,7 @@ it("keeps scroll offsets in sync with a wrapping header and cleans up", async ()
     observe() {}
     disconnect = disconnect;
   });
+
   try {
     const view = render(<MemoryRouter><Layout><h1>Welcome</h1></Layout></MemoryRouter>);
     await screen.findByText("Grace Community Church");
@@ -81,6 +89,7 @@ it("offers New group as a labelled link, not a bare icon", async () => {
   render(<MemoryRouter><Layout><h1>Welcome</h1></Layout></MemoryRouter>);
   await screen.findByText("Grace Community Church");
   const actions = screen.getAllByRole("link", { name: "New group" });
+
   for (const action of actions) expect(action).toHaveTextContent("New group");
 });
 

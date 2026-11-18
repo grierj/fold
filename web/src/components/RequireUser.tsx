@@ -7,6 +7,8 @@ import { useAuth } from "../auth";
 export function RequireUser({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
   const location = useLocation();
+
   if (!user) return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
+
   return <>{children}</>;
 }

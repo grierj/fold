@@ -3,6 +3,7 @@ import type { RoomCalendarRoom, RoomSlot } from "../types";
 import { hourRange, placeSlots, slotByline, slotLabel, slotLink, slotsByDay, viewDays } from "./roomCalendar";
 
 const zone = "America/Denver";
+
 // Denver is UTC-6 in October: 19:00 local is 01:00Z the next day.
 const slot = (start: string, end: string, o: Partial<RoomSlot> = {}): RoomSlot => ({ startsAt: start, endsAt: end, eventId: 1, title: "Bible study", ...o });
 const room = (bookings: RoomSlot[]): RoomCalendarRoom => ({ id: 1, name: "Hall", building: "", capacity: null, restricted: false, bookings });

@@ -15,12 +15,16 @@ import { SearchBox } from "./ui/SearchBox";
 import { Skeleton } from "./ui/Skeleton";
 
 const BATCH = 12;
+
 function tagsFromParams(params: URLSearchParams): string[] {
   const tags = new Map<string, string>();
+
   for (const raw of params.getAll("tag")) {
     const tag = raw.trim();
+
     if (tag && !tags.has(tag.toLowerCase())) tags.set(tag.toLowerCase(), tag);
   }
+
   return [...tags.values()];
 }
 
@@ -56,6 +60,7 @@ export function GroupDirectory({ ready, jump, onJumped }: { ready: boolean; jump
 
   useEffect(() => {
     const timer = setTimeout(() => setDebounced(search), 300);
+
     return () => clearTimeout(timer);
   }, [search]);
 
@@ -67,6 +72,7 @@ export function GroupDirectory({ ready, jump, onJumped }: { ready: boolean; jump
     const request = Groups.list();
     allGroups.current = request;
     request.then(({ groups }) => { if (alive) setChoices(groups.flatMap((g) => g.tags)); }).catch(() => {});
+
     return () => { alive = false; };
   }, []);
 
@@ -74,17 +80,21 @@ export function GroupDirectory({ ready, jump, onJumped }: { ready: boolean; jump
     let alive = true;
     setLoading(true);
     setError(null);
+
     const request = firstResults.current && !debounced && !tagKey && allGroups.current
       ? allGroups.current : Groups.list(debounced, tagKey ? tagKey.split("\u0000") : []);
+
     firstResults.current = false;
     request
       .then(({ groups }) => {
         if (!alive) return;
         setGroups(groups);
+
         if (!tagKey && !debounced) setChoices(groups.flatMap((g) => g.tags));
       })
       .catch((e) => { if (alive) setError(errorText(e, "We couldn't load the groups.")); })
       .finally(() => { if (alive) setLoading(false); });
+
     return () => { alive = false; };
   }, [debounced, tagKey, retry]);
 
@@ -92,17 +102,21 @@ export function GroupDirectory({ ready, jump, onJumped }: { ready: boolean; jump
   // agenda must not move the restored row or a #groups jump off screen.
   useEffect(() => {
     if (!ready || pending) return;
+
     if (jump) {
       section.current?.scrollIntoView?.({ block: "start" });
       section.current?.querySelector<HTMLElement>("h2")?.focus({ preventScroll: true });
       onJumped();
       restored.current = true;
+
       return;
     }
+
     if (restored.current) return;
     restored.current = true;
     const saved = initial.current.navigation === "POP" ? position?.current : null;
     const row = saved?.query === location.search ? document.getElementById(`directory-group-${saved.groupId}`) : null;
+
     if (row && saved) {
       window.scrollTo({ top: Math.max(0, window.scrollY + row.getBoundingClientRect().top - saved.offset) });
       row.querySelector<HTMLAnchorElement>("a")?.focus({ preventScroll: true });
@@ -117,6 +131,7 @@ export function GroupDirectory({ ready, jump, onJumped }: { ready: boolean; jump
     if (appendScroll.current === null) return;
     window.scrollTo({ top: appendScroll.current });
     appendScroll.current = null;
+
     // The final batch removes the button; give its keyboard focus a useful
     // destination instead of dropping it on the document body.
     if (shown >= groups.length && newResult.current !== null) {
@@ -131,24 +146,32 @@ export function GroupDirectory({ ready, jump, onJumped }: { ready: boolean; jump
       const next = new URLSearchParams(previous);
       update(next);
       next.delete("shown");
+
       return next;
     }, { replace: true });
   }
+
   function clearTags() { change((next) => next.delete("tag")); }
+
   function clearSelectedTags() {
     clearTags();
     filtersButton.current?.focus({ preventScroll: true });
   }
+
   function toggleTag(tag: string) {
     change((next) => {
       const current = tagsFromParams(next);
       const same = (t: string) => t.toLowerCase() === tag.toLowerCase();
       next.delete("tag");
+
       for (const t of current.filter((t) => !same(t))) next.append("tag", t);
+
       if (!current.some(same)) next.append("tag", tag);
     });
   }
+
   const byLower = new Map<string, string>();
+
   for (const tag of [...tags, ...choices]) if (!byLower.has(tag.toLowerCase())) byLower.set(tag.toLowerCase(), tag);
   const chips = [...byLower.values()].sort((a, b) => a.localeCompare(b));
   const clearTagsButton = <Button variant="link" onClick={clearSelectedTags}>Clear the tags</Button>;
@@ -162,6 +185,7 @@ export function GroupDirectory({ ready, jump, onJumped }: { ready: boolean; jump
           <div className="min-w-0 flex-1"><SearchBox id="group-search" label="Search groups" value={search} onChange={(value) => change((next) => { if (value) next.set("search", value); else next.delete("search"); })} /></div>
           <Button ref={filtersButton} variant="secondary" aria-expanded={filtersOpen} aria-controls={filtersId} onClick={() => {
             setFiltersOpen(!filtersOpen);
+
             if (!filtersOpen) section.current?.scrollIntoView?.({ block: "start" });
           }}>
             Filters{tags.length > 0 ? ` (${tags.length})` : ""}
@@ -207,10 +231,16 @@ export function GroupDirectory({ ready, jump, onJumped }: { ready: boolean; jump
         <Button variant="secondary" layout="mt-4 w-full sm:w-auto" disabled={pending} onClick={() => {
           newResult.current = groups[visible.length].id;
           appendScroll.current = window.scrollY;
-          setParams((previous) => { const next = new URLSearchParams(previous); next.set("shown", String(Math.min(groups.length, shown + BATCH))); return next; }, { replace: true });
+          setParams((previous) => {
+            const next = new URLSearchParams(previous);
+            next.set("shown", String(Math.min(groups.length, shown + BATCH)));
+
+            return next;
+          }, { replace: true });
         }} onKeyDown={(e) => {
           if (e.key === "Tab" && !e.shiftKey && newResult.current !== null) {
             const next = document.querySelector<HTMLAnchorElement>(`#directory-group-${newResult.current} a`);
+
             if (next) { e.preventDefault(); next.focus(); newResult.current = null; }
           }
         }}>Show more groups</Button>

@@ -649,6 +649,8 @@ without it; none is written before then.
 ## Frontend and e2e
 
 - `cd web && npm test` (Vitest).
+- `make lint-web` runs TypeScript, Knip, and Oxlint with the vendored rules. To run Oxlint on its
+  own, use `cd web && npm run lint:anti-slop`.
 - `make e2e` runs Playwright against the real binary (first run:
   `cd web && npx playwright install chromium`). `web/e2e/run.sh` splits specs across shards
   (`E2E_SHARDS`), each with its own server, database and seed; never rely on another spec having

@@ -5,6 +5,7 @@ import { NewPasswordForm } from "./NewPasswordForm";
 
 function setup(submit = vi.fn().mockResolvedValue(undefined)) {
   render(<NewPasswordForm idPrefix="t" passwordLabel="New password" confirmLabel="Confirm new password" submitLabel="Set it" submit={submit} describe={() => "Nope."} />);
+
   return submit;
 }
 

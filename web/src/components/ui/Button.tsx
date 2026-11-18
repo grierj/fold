@@ -48,6 +48,7 @@ export function ButtonLink({
       </a>
     );
   }
+
   return (
     <Link to={to} reloadDocument={reloadDocument} className={buttonClass(variant, size, layout)}>
       {children}

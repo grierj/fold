@@ -22,6 +22,7 @@ export function SeriesRsvpDialog({ answer, disabled = false, onChoose, onCancel 
     const behind = Array.from(document.body.children).filter((el) => el !== overlay.current && !el.hasAttribute("inert"));
     behind.forEach((el) => el.setAttribute("inert", ""));
     panel.current?.querySelector<HTMLElement>("button")?.focus();
+
     return () => {
       behind.forEach((el) => el.removeAttribute("inert"));
       returnTo?.focus();
@@ -32,13 +33,17 @@ export function SeriesRsvpDialog({ answer, disabled = false, onChoose, onCancel 
     if (event.key === "Escape") {
       event.preventDefault();
       onCancel();
+
       return;
     }
+
     if (event.key !== "Tab") return;
     const controls = Array.from(panel.current?.querySelectorAll<HTMLElement>('button:not([disabled])') ?? []);
+
     if (!controls.length) return;
     const firstControl = controls[0];
     const lastControl = controls[controls.length - 1];
+
     if (event.shiftKey && document.activeElement === firstControl) {
       event.preventDefault();
       lastControl.focus();

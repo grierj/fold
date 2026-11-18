@@ -20,22 +20,29 @@ export function Tabs<T extends string>({ label, options, value, onChange, varian
   // A bookmarked tab off the edge of a phone-width row scrolls into view.
   useEffect(() => {
     const row = list.current;
+
     if (!row) return;
+
     const reveal = () => {
       const tab = row.querySelector<HTMLElement>("[aria-selected=true]");
       const nav = row.parentElement;
+
       if (!tab || !nav) return;
       const t = tab.getBoundingClientRect(), n = nav.getBoundingClientRect();
+
       // Counts and conditionally available tabs can arrive after mount. Adjust
       // only this strip, never scroll the surrounding page during a refresh.
       if (t.left < n.left) nav.scrollLeft += t.left - n.left;
       else if (t.right > n.right) nav.scrollLeft += t.right - n.right;
     };
+
     reveal();
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(reveal);
     observer?.observe(row);
+
     return () => observer?.disconnect();
   }, [value]);
+
   function onKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
     const next = {
       ArrowRight: (index + 1) % options.length,
@@ -43,6 +50,7 @@ export function Tabs<T extends string>({ label, options, value, onChange, varian
       Home: 0,
       End: options.length - 1,
     }[event.key];
+
     if (next === undefined) return;
     event.preventDefault();
     onChange(options[next].id);
@@ -50,6 +58,7 @@ export function Tabs<T extends string>({ label, options, value, onChange, varian
     button?.focus();
     button?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
   }
+
   return <>
     <nav aria-label={label} className={`mb-6 overflow-x-auto border-b border-border${variant === "chips" ? " -mx-1" : ""}`}>
       <div ref={list} role="tablist" aria-label={label} className={variant === "chips"

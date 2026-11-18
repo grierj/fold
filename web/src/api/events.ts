@@ -1,3 +1,4 @@
+import { isString } from "../lib/wireValues";
 import type {
   AttendanceMode,
   DateRegistrationResponse,
@@ -53,7 +54,7 @@ export const Events = {
   promoteRegistration: (id: Id, date: string, registrationId: number) =>
     api<unknown>(path`/events/${id}/registrations/promote`, { method: "POST", body: { date, registrationId } }),
   addRegistration: (id: Id, date: string, target: string | { selectionId: string }, overCapacity?: boolean, childcare?: { childcareCount: number; childcareAgesNote: string }) =>
-    api<unknown>(path`/events/${id}/registrations/add`, { method: "POST", body: { date, ...(typeof target === "string" ? { email: target } : target), overCapacity, ...childcare } }),
+    api<unknown>(path`/events/${id}/registrations/add`, { method: "POST", body: { date, ...(isString(target) ? { email: target } : target), overCapacity, ...childcare } }),
   restoreRegistration: (id: Id, date: string, target: { userId: number } | { personId: number; registeredBy: number }, attendanceMode: AttendanceMode, overCapacity: boolean) =>
     api<unknown>(path`/events/${id}/registrations/add`, { method: "POST", body: { date, ...target, attendanceMode, overCapacity } }),
   cancelOccurrence: (id: Id, date: string) => api<unknown>(path`/events/${id}/cancel`, { method: "POST", body: { date } }),

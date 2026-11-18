@@ -1,4 +1,9 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { stubService } from "../test/service";
+import { Notifications } from "../api/notifications";
+import { Admin } from "../api/admin";
+import { AdminAccountRequests } from "../api/accountRequests";
+import { renderWithAuth } from "../test/auth";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -8,15 +13,16 @@ import { NotificationsPage } from "./Notifications";
 const api = vi.hoisted(() => ({
   list: vi.fn(), badge: vi.fn(), seen: vi.fn(), read: vi.fn(), readAll: vi.fn(), archive: vi.fn()
 }));
+
 const approve = vi.hoisted(() => vi.fn());
-vi.mock("../api/notifications", () => ({ Notifications: api }));
-vi.mock("../api/admin", () => ({ Admin: { approve } }));
-vi.mock("../api/accountRequests", () => ({ AdminAccountRequests: { approve } }));
-vi.mock("../api/core", () => {
-  class ApiError extends Error {}
-  return { ApiError };
-});
-vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2 }, loading: false, isAdmin: true }) }));
+
+stubService(Notifications, () => api);
+
+stubService(Admin, () => ({ approve }));
+
+stubService(AdminAccountRequests, () => ({ approve }));
+
+const render = renderWithAuth(() => ({ user: { id: 2 }, loading: false, isAdmin: true }));
 
 const item = (over: Partial<Notification>): Notification => ({
   id: 1, kind: "group.leadership_changed", category: "admin", title: "Pat made Sam a leader", body: "Youth",
@@ -27,6 +33,7 @@ const item = (over: Partial<Notification>): Notification => ({
 function open(path = "/notifications") {
   return render(<MemoryRouter initialEntries={[path]}><NotificationsPage /></MemoryRouter>);
 }
+
 function feed(notifications: Notification[], waiting: Notification[] = []) {
   api.list.mockResolvedValue({ waiting, waitingTotal: waiting.length, notifications, next: "" });
 }
@@ -51,6 +58,7 @@ it("puts the title and filter chips above the list, with All selected", async ()
 it("puts day and task sections directly under the page title", async () => {
   feed([item({}), item({ id: 2, updatedAt: "2020-01-01T12:00:00Z" })], [item({ id: 3, waiting: true })]);
   open();
+
   for (const name of ["Waiting on you", "Today", "Earlier"]) {
     expect(await screen.findByRole("heading", { name, level: 2 })).toBeInTheDocument();
   }
@@ -104,6 +112,7 @@ describe("icons by kind", () => {
     ["teen_consent.changed", "shield"], ["contact.admin_review", "shield"],
     ["something.new", "generic"],
   ];
+
   it.each(cases)("%s uses the %s icon", async (kind, icon) => {
     feed([item({ kind, title: `Row for ${kind}` })]);
     open();

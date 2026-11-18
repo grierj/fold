@@ -1,4 +1,7 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { stubService } from "../test/service";
+import { EmailSettingsLink } from "../api/notifications";
+import { renderWithAuth } from "../test/auth";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -7,13 +10,12 @@ import type { NotificationSettings } from "../types";
 
 const get = vi.fn<typeof import("../api/notifications").EmailSettingsLink.get>();
 const update = vi.fn<typeof import("../api/notifications").EmailSettingsLink.update>();
-vi.mock("../api/notifications", async (orig) => ({ ...(await orig<typeof import("../api/notifications")>()), EmailSettingsLink: { get: (t: string) => get(t), update: (t: string, c: EmailSettingsChange) => update(t, c) } }));
+
+stubService(EmailSettingsLink, () => ({ get: (t: string) => get(t), update: (t: string, c: EmailSettingsChange) => update(t, c) }));
 
 let signedIn = false;
-vi.mock("../auth", async (orig) => ({
-  ...(await orig<typeof import("../auth")>()),
-  useAuth: () => ({ user: signedIn ? { id: 1, name: "Sam" } : null }),
-}));
+
+const render = renderWithAuth(() => ({ user: signedIn ? { id: 1, name: "Sam" } : null }));
 
 import { ApiError } from "../api/core";
 import { EmailSettingsPage } from "./EmailSettings";
@@ -23,6 +25,7 @@ const kinds = [
   { category: "events", off: false },
   { category: "messages", off: false },
 ] satisfies NotificationSettings["kinds"];
+
 const lineMessage = "This link can turn email off, but not back on.";
 const refusedMessage = "We didn't turn email on. To turn it on, use your account settings or the link in a newer email from us.";
 const refusal = () => new ApiError(403, "not allowed", { code: "email_link_turn_on" });

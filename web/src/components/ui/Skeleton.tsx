@@ -29,6 +29,7 @@ export function Skeleton({ kind, count = 3, label = "Loading…" }: { kind: Skel
       </div>
     );
   }
+
   return (
     <div role="status">
       <span className="sr-only">{label}</span>

@@ -1,4 +1,6 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { renderWithAuth } from "../test/auth";
+import { stubService } from "../test/service";
+import { act, fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -8,10 +10,16 @@ import { addRequest } from "../test/addRequest";
 import { AddRequestsPage } from "./AddRequests";
 import { RequireUser } from "../components/RequireUser";
 
-const actor = vi.hoisted(() => ({ user: { id: 2 } as { id: number } | null }));
-vi.mock("../auth", () => ({ useAuth: () => actor }));
-vi.mock("../api/adds", () => ({ Adds: { request: vi.fn(), requests: vi.fn(), decide: vi.fn(), withdraw: vi.fn(), complete: vi.fn() } }));
+type TestSession = { user: { id: number } | null };
+
+const actor: TestSession = { user: { id: 2 } };
+
+const render = renderWithAuth(() => actor);
+
+stubService(Adds, () => ({ request: vi.fn(), requests: vi.fn(), decide: vi.fn(), withdraw: vi.fn(), complete: vi.fn() }));
+
 function mount(path = "/add-requests/7") { return render(<MemoryRouter initialEntries={[path]}><Routes><Route path="/add-requests" element={<RequireUser><AddRequestsPage /></RequireUser>} /><Route path="/add-requests/:id" element={<RequireUser><AddRequestsPage /></RequireUser>} /><Route path="/login" element={<p>Sign in first</p>} /></Routes></MemoryRouter>); }
+
 beforeEach(() => { vi.resetAllMocks(); actor.user = { id: 2 }; vi.mocked(Adds.request).mockResolvedValue({ request: addRequest() }); vi.mocked(Adds.requests).mockResolvedValue({ requests: [] }); });
 
 it.each(["group_add", "occurrence_add"] as const)("supports both teen decision orders in %s, including an admin requester without preapproval", async (purpose) => {
@@ -21,6 +29,7 @@ it.each(["group_add", "occurrence_add"] as const)("supports both teen decision o
     vi.mocked(Adds.decide).mockImplementation(async (_id, party, decision) => {
       const last = current.subjectDecision === "approved" || current.adminDecision === "approved";
       current = { ...current, [party === "subject" ? "subjectDecision" : "adminDecision"]: decision, canAdminDecide: !last && party !== "admin", canSubjectDecide: !last && party !== "subject", status: last ? "granted" : "pending" };
+
       return { request: current };
     });
     const view = mount();

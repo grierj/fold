@@ -10,6 +10,7 @@ import { FormActions } from "./ui/FormActions";
 import { Button } from "./ui/Button";
 import { ImageUpload } from "./ImageUpload";
 import { ChevronDownIcon } from "./icons";
+
 export interface GroupFormData {
   name: string;
   description: string;
@@ -59,13 +60,16 @@ export function GroupForm({
   const summaryId = useId();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
   const dirty = name !== initial.name || description !== initial.description || location !== initial.location
     || tags !== initial.tags.join(", ") || visibility !== (initial.visibility ?? "public") || memberLimit !== initialLimit
     || coverFile !== null || coverFocal !== null || removeCover;
+
   const { guard, markSaved } = useUnsavedChanges(dirty);
   // What a closed "More options" still tells you, so nothing in it is a surprise.
   const tagList = tags.split(",").map((t) => t.trim()).filter(Boolean);
   const hasPhoto = !!coverFile || (!!initial.imageUrl && !removeCover);
+
   const moreSummary = [
     tagList.length ? `Tags: ${tagList.join(", ")}` : "No tags",
     memberLimit.trim() ? `Limit ${memberLimit.trim()}` : "No member limit",
@@ -84,6 +88,7 @@ export function GroupForm({
         e.preventDefault();
         setBusy(true);
         setError(null);
+
         try {
           const saved = await onSaved({
             name,
@@ -99,6 +104,7 @@ export function GroupForm({
             visibility,
             memberLimit: memberLimit.trim() ? Number(memberLimit) : null,
           });
+
           if (saved !== false) markSaved();
         } catch (err) {
           setError(errorText(err, "We couldn't save your changes."));

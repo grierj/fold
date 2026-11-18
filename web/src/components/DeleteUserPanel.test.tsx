@@ -1,4 +1,8 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import type { JsonObject, JsonValue } from "../lib/wireValues";
+import { stubService } from "../test/service";
+import { cleanup, fireEvent, render as renderUI, screen, waitFor, within } from "@testing-library/react";
+import type { ReactNode } from "react";
+import { AuthContext } from "../auth";
 import userEvent from "@testing-library/user-event";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -7,33 +11,46 @@ import { AdminUsers } from "../api/adminUsers";
 import { ApiError } from "../api/core";
 import { reloadStarted, reloadSucceeded, requireReload } from "../lib/deleteReload";
 import { ERROR_COPY } from "../lib/errors";
-import type { AttemptSettleResponse, ErasureReasonItem, ErasureReasonPage, ErasureReport, HandoffCandidate, SoleHostedEvent, SoleHostedEventsResponse, SoleLedGroup, User } from "../types";
-import { REMOVE, type ReasonReviewStore } from "../lib/reasonReviewStore";
+import type { AttemptSettleResponse as SettleContract, ErasureReasonItem, ErasureReasonPage, ErasureReport, HandoffCandidate, SoleHostedEvent, SoleHostedEventsResponse, SoleLedGroup, User } from "../types";
+import { REMOVE, ReasonReviewStore } from "../lib/reasonReviewStore";
 import { DigestUnavailableError, lastDigestPath, reasonReviewBody, resetDigestChoice } from "../lib/reasonSetDigest";
 import { QC1_WEB } from "../test/qc1Facts";
 import { DeleteUserPanel } from "./DeleteUserPanel";
 
-// useAuth is read once per render of the panel's body, so its call count is the panel's render count.
-const auth = vi.hoisted(() => ({ calls: 0 }));
-vi.mock("../auth", () => ({ useAuth: () => ({ user: (auth.calls++, { id: 1, name: "Grier" }) }) }));
-// The panel's own store, caught as it is made, so a test can change it behind the panel's back.
-const made = vi.hoisted(() => ({ stores: [] as unknown[] }));
-vi.mock("../lib/reasonReviewStore", async (importActual) => {
-  const actual = await importActual<typeof import("../lib/reasonReviewStore")>();
-  class Caught extends actual.ReasonReviewStore {
-    constructor() {
-      super();
-      made.stores.push(this);
-    }
-  }
-  return { ...actual, ReasonReviewStore: Caught };
-});
-// The digest is the real one unless a test makes it fail (reasonReviewBody is the only call the panel makes).
-vi.mock("../lib/reasonSetDigest", async (importActual) => {
-  const actual = await importActual<typeof import("../lib/reasonSetDigest")>();
-  return { ...actual, reasonReviewBody: vi.fn(actual.reasonReviewBody) };
-});
-vi.mock("../api/adminUsers", async (importActual) => ({ ...(await importActual<typeof import("../api/adminUsers")>()), AdminUsers: { soleLeaderGroups: vi.fn(), soleHostEvents: vi.fn(), remove: vi.fn(), update: vi.fn(), mintAttempt: vi.fn(), settleAttempt: vi.fn(), erasureReasonsPage: vi.fn() } }));
+type AttemptSettleResponse = Pick<SettleContract, "result" | "subjectDeleted">;
+
+const auth = { calls: 0 };
+
+const viewer: User = {
+  id: 1, name: "Grier", displayName: "", email: "grier@example.com", phone: "", hideContactFromLeaders: false,
+  avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50, role: "admin", status: "active", hasPassword: true,
+  accountType: "adult", timezone: "UTC",
+};
+
+function render(ui: ReactNode) {
+  return renderUI(ui, {
+    wrapper({ children }) {
+      return <AuthContext.Provider value={{
+        get user() {
+          auth.calls++;
+
+          return viewer;
+        },
+        loading: false, isAdmin: true, canCompose: true,
+        login: async () => {}, logout: async () => {}, refresh: async () => {}, signedIn: async () => "/",
+      }}>{children}</AuthContext.Provider>;
+    },
+  });
+}
+
+const review = {
+  createStore: vi.fn(() => new ReasonReviewStore()),
+  buildBody: vi.fn(reasonReviewBody),
+};
+
+const realAdminUsers = { ...AdminUsers };
+
+stubService(AdminUsers, () => ({ soleLeaderGroups: vi.fn(), soleHostEvents: vi.fn(), remove: vi.fn(), update: vi.fn(), mintAttempt: vi.fn(), settleAttempt: vi.fn(), erasureReasonsPage: vi.fn() }));
 
 const target: User = {
   id: 9, name: "Hana Host", displayName: "", email: "hana@example.com", phone: "", hideContactFromLeaders: true,
@@ -41,32 +58,35 @@ const target: User = {
   accountType: "adult", timezone: "UTC",
 };
 
-const grier: HandoffCandidate = { id: 1, name: "Grier", admin: true };
-const ana: HandoffCandidate = { id: 2, name: "Ana", admin: false };
-const ben: HandoffCandidate = { id: 3, name: "Ben", admin: true };
-const cy: HandoffCandidate = { id: 4, name: "Cy", admin: false };
-const easter: SoleHostedEvent = { id: 10, title: "Easter breakfast", nextStartsAt: "2027-04-04T14:00:00Z" };
-const picnic: SoleHostedEvent = { id: 11, title: "Church picnic" };
+const grier = { id: 1, name: "Grier", admin: true } satisfies HandoffCandidate;
+const ana = { id: 2, name: "Ana", admin: false } satisfies HandoffCandidate;
+const ben = { id: 3, name: "Ben", admin: true } satisfies HandoffCandidate;
+const cy = { id: 4, name: "Cy", admin: false } satisfies HandoffCandidate;
+const easter = { id: 10, title: "Easter breakfast", nextStartsAt: "2027-04-04T14:00:00Z" } satisfies SoleHostedEvent;
+const picnic = { id: 11, title: "Church picnic" } satisfies SoleHostedEvent;
 
 const hosted = (events: SoleHostedEvent[], candidates: HandoffCandidate[]): SoleHostedEventsResponse => ({ events, candidates });
-const choir: SoleLedGroup = { id: 5, name: "Choir", status: "approved", candidates: [ana, grier] };
+const choir = { id: 5, name: "Choir", status: "approved", candidates: [ana, grier] } satisfies SoleLedGroup;
 
 function open(action: "delete" | "disable" = "delete", onDone = vi.fn()) {
-  render(<DeleteUserPanel target={target} action={action} onDone={onDone} />);
+  render(<DeleteUserPanel reviewDeps={review} target={target} action={action} onDone={onDone} />);
+
   return onDone;
 }
 
 // Like open, for the cases that close the panel: unmounting is closing.
 function openClosable() {
   const onDone = vi.fn();
-  const { unmount } = render(<DeleteUserPanel target={target} action="delete" onDone={onDone} />);
+  const { unmount } = render(<DeleteUserPanel reviewDeps={review} target={target} action="delete" onDone={onDone} />);
+
   return { onDone, close: unmount };
 }
 
 const eventSelect = (title: string) => screen.getByRole("combobox", { name: `New host for ${title}` });
+
 // The words the QC-1 harness presses and waits on are the ones in deploy/digitalocean/qc1/app-facts.json.
 const deleteButton = () => screen.getByRole("button", { name: QC1_WEB.labels.deleteAccount });
-const staleError = (data: Record<string, unknown>, code: string) => new ApiError(400, "stale", { code, ...data });
+const staleError = (data: JsonObject, code: string) => new ApiError(400, "stale", { code, ...data });
 
 const noErasure: ErasureReport = { householdsKept: 0, householdsScrubbed: 0, peopleAnonymized: 0, guardianLinksRevoked: 0, activityEntriesKept: 0, reasonsKept: 0, reasonsRemoved: 0 };
 let minted = 0;
@@ -81,6 +101,7 @@ beforeEach(() => {
   vi.mocked(AdminUsers.remove).mockResolvedValue({ erasure: noErasure });
   vi.mocked(AdminUsers.erasureReasonsPage).mockResolvedValue({ items: [], next: null });
 });
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
@@ -119,6 +140,7 @@ describe("DeleteUserPanel replacement hosts", () => {
     vi.mocked(AdminUsers.soleHostEvents).mockResolvedValue(hosted([easter, picnic], [grier, ana, ben]));
     open();
     expect(await screen.findByText("They are the only host of these church-wide events. Choose who hosts each one next:")).toBeInTheDocument();
+
     for (const title of ["Easter breakfast", "Church picnic"]) {
       const select = eventSelect(title);
       expect(select).toHaveValue("");
@@ -126,6 +148,7 @@ describe("DeleteUserPanel replacement hosts", () => {
       expect(options).toEqual(["Choose a host", "Me (Grier)", "Ana", "Ben · admin"]);
       expect(within(select).getByRole("option", { name: "Choose a host" })).toBeDisabled();
     }
+
     expect(screen.getByText(/^Next date: /)).toBeInTheDocument();
     expect(screen.getByText("No upcoming dates")).toBeInTheDocument();
   });
@@ -196,7 +219,7 @@ describe("DeleteUserPanel replacement hosts", () => {
   });
 
   it("on a stale host list, updates events and candidates, keeps the picks that still fit, and focuses the first open event", async () => {
-    const newer: SoleHostedEvent = { id: 12, title: "Newer event" };
+    const newer = { id: 12, title: "Newer event" } satisfies SoleHostedEvent;
     vi.mocked(AdminUsers.soleHostEvents).mockResolvedValue(hosted([easter, picnic], [ana, ben]));
     vi.mocked(AdminUsers.remove).mockRejectedValueOnce(staleError({ events: [easter, newer], candidates: [ana, cy] }, "needs_host_successor"));
     open();
@@ -236,7 +259,7 @@ describe("DeleteUserPanel replacement hosts", () => {
   });
 
   it("on a stale group list, updates the groups and preselects the admin for a new one", async () => {
-    const youth: SoleLedGroup = { id: 6, name: "Youth", status: "approved", candidates: [ben, grier] };
+    const youth = { id: 6, name: "Youth", status: "approved", candidates: [ben, grier] } satisfies SoleLedGroup;
     vi.mocked(AdminUsers.soleLeaderGroups).mockResolvedValue({ groups: [choir] });
     vi.mocked(AdminUsers.remove).mockRejectedValueOnce(staleError({ groups: [{ ...choir, candidates: [ana, ben] }, youth] }, "needs_successor"));
     open();
@@ -268,26 +291,27 @@ describe("DeleteUserPanel disable", () => {
   });
 });
 
-
 const NOTHING = "Nothing was deleted by this attempt.";
 const ALREADY = "The account is already deleted; this attempt did not delete it.";
 const HISTORY = QC1_WEB.copy.historyUnavailable;
 const CHECKING = "Checking what happened to this delete request…";
 const NOT_DELETED = /nothing was deleted|not deleted|wasn't deleted|was not deleted/i;
 
-const coded = (status: number, code: string, data: Record<string, unknown> = {}) => new ApiError(status, "server text", { code, ...data });
+const coded = (status: number, code: string, data: JsonObject = {}) => new ApiError(status, "server text", { code, ...data });
+
 const settleResult = (result: AttemptSettleResponse["result"], subjectDeleted?: boolean): AttemptSettleResponse =>
   subjectDeleted === undefined ? { result } : { result, subjectDeleted };
 
 // A settle call the test answers by hand, so the copy before the answer can be read.
 function heldSettle() {
   let answer!: (r: AttemptSettleResponse) => void;
-  let fail!: (e: unknown) => void;
+  let fail!: (cause: unknown) => void;
   vi.mocked(AdminUsers.settleAttempt).mockReturnValueOnce(new Promise<AttemptSettleResponse>((resolve, reject) => {
     answer = resolve;
     fail = reject;
   }));
-  return { answer: (r: AttemptSettleResponse) => answer(r), fail: (e: unknown) => fail(e) };
+
+  return { answer: (r: AttemptSettleResponse) => answer(r), fail: (cause: unknown) => fail(cause) };
 }
 
 async function press() {
@@ -353,7 +377,7 @@ describe("DeleteUserPanel attempt ids", () => {
 });
 
 describe("DeleteUserPanel uncertain answers settle the same id", () => {
-  const uncertain: [string, () => unknown, string][] = [
+  const uncertain: [string, () => Error | DOMException, string][] = [
     ["delete_outcome_unknown", () => coded(500, "delete_outcome_unknown"), CHECKING],
     ["attempt_closed", () => coded(409, "attempt_closed"), ERROR_COPY.attempt_closed],
     ["attempt_expired", () => coded(409, "attempt_expired"), ERROR_COPY.attempt_expired],
@@ -416,6 +440,7 @@ describe("DeleteUserPanel settle answers", () => {
     vi.mocked(AdminUsers.settleAttempt).mockResolvedValueOnce(answer);
     open("delete", onDone);
     await press();
+
     return onDone;
   }
 
@@ -491,7 +516,7 @@ describe("DeleteUserPanel settle answers", () => {
 
   it("an unrecognised settle result is treated as still checking", async () => {
     vi.mocked(AdminUsers.remove).mockRejectedValueOnce(coded(500, "delete_outcome_unknown"));
-    vi.mocked(AdminUsers.settleAttempt).mockResolvedValueOnce({ result: "mystery" } as unknown as AttemptSettleResponse);
+    vi.mocked(AdminUsers.settleAttempt).mockResolvedValueOnce({ result: "mystery" });
     open();
     await press();
     expect(await screen.findByText(/^Still checking\./)).toBeInTheDocument();
@@ -577,6 +602,7 @@ describe("DeleteUserPanel definitive answers", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(copy);
     expect(AdminUsers.settleAttempt).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: QC1_WEB.labels.checkAgain })).not.toBeInTheDocument();
+
     if (enabled) {
       expect(deleteButton()).toBeEnabled();
       await press();
@@ -627,6 +653,7 @@ describe("DeleteUserPanel definitive answers", () => {
     settle.answer(settleResult("checking"));
     await screen.findByText(/^Still checking\./);
     expect(deleteButton()).toBeDisabled();
+
     for (const button of screen.getAllByRole("button")) {
       if (button.textContent !== "Cancel" && button.textContent !== "Check again") expect(button).toBeDisabled();
     }
@@ -667,11 +694,13 @@ const REACH: ReadonlyArray<{ sentence: string; row: string; text: string }> = [
   { sentence: "D-9", row: "RS-9", text: "A record that names only an email address they used before, such as an invitation nobody accepted, can't be tied back to them, so Fold leaves it alone." },
   { sentence: "D-10", row: "RS-11", text: "Messages they wrote, including drafts and ones that never went out, keep their text in the church's message history." },
 ];
+
 // The sentences the answer and the reason review show; they are not in the list.
 const COUNT_NOTES = [
   { sentence: "D-11", row: "RS-4", text: "Fold left these households as they were, because other people still share them or it couldn't tell whose they were." },
   { sentence: "D-12", row: "RS-3", text: "These are activity-log entries linked to this person that Fold kept. Some may have no network address. Fold counts entries, not addresses, and a 0 doesn't promise none remain." },
 ];
+
 const REVIEW_NOTES = [
   { sentence: "D-13", row: "RS-7", text: "Reasons can mention other people." },
   { sentence: "D-14", row: "RS-7", text: "Blanking removes only the text; the request and its decisions stay." },
@@ -708,6 +737,7 @@ describe("DeleteUserPanel what a delete does not reach", () => {
     await waitFor(() => expect(deleteButton()).toBeEnabled());
     const rows = [...reachList().querySelectorAll("li[data-residue]")];
     expect(rows.map((li) => li.getAttribute("data-residue"))).toEqual(REACH.map((r) => r.row));
+
     for (const li of rows) expect(li.querySelector(".font-semibold")?.textContent).toMatch(/\.$/);
   });
 
@@ -729,9 +759,10 @@ describe("DeleteUserPanel what a delete does not reach", () => {
   it("keeps every sentence after the delete, including when the report counts nothing kept", async () => {
     for (const activityEntriesKept of [0, 3]) {
       vi.mocked(AdminUsers.remove).mockResolvedValue({ erasure: { ...noErasure, activityEntriesKept } });
-      const view = render(<DeleteUserPanel target={target} action="delete" onDone={vi.fn()} />);
+      const view = render(<DeleteUserPanel reviewDeps={review} target={target} action="delete" onDone={vi.fn()} />);
       await press();
       await screen.findByText("The account was deleted.");
+
       for (const { text } of REACH) expect(screen.getByText(text, { exact: false })).toBeInTheDocument();
       view.unmount();
     }
@@ -770,6 +801,7 @@ describe("DeleteUserPanel what a delete does not reach", () => {
 
     it("gives every sentence the dialog shows exactly one map line with the same row and words", () => {
       expect(mapRows.map((r) => r[0])).toEqual(shown.map((d) => d.sentence));
+
       for (const d of shown) {
         const line = mapRows.find((r) => r[0] === d.sentence);
         expect(line?.[1], d.sentence).toBe(d.row);
@@ -779,10 +811,13 @@ describe("DeleteUserPanel what a delete does not reach", () => {
 
     it("has a residue row for every row a sentence names, and each row names its sentences", () => {
       const rows = new Set(tableRows.map((r) => r[0]));
+
       for (const d of shown) expect(rows.has(d.row), d.row).toBe(true);
+
       for (const r of tableRows) {
         const named = r[4].match(/D-\d+/g) ?? [];
-        const mapped = shown.filter((d) => d.row === r[0]).map((d) => d.sentence);
+        const mapped = shown.flatMap((d) => d.row === r[0] ? [d.sentence] : []);
+
         if (named.length === 0) expect(mapped, r[0] + " is not told, so no sentence maps to it").toEqual([]);
         else expect(named.sort(), r[0]).toEqual(mapped.sort());
       }
@@ -808,11 +843,13 @@ describe("DeleteUserPanel what a delete does not reach", () => {
 describe("DeleteUserPanel after the panel closes", () => {
   function deferred<T>() {
     let resolve!: (v: T) => void;
-    let reject!: (e: unknown) => void;
+    let reject!: (cause: unknown) => void;
+
     const promise = new Promise<T>((res, rej) => {
       resolve = res;
       reject = rej;
     });
+
     return { promise, resolve, reject };
   }
 
@@ -883,29 +920,32 @@ describe("DeleteUserPanel after the panel closes", () => {
   });
 });
 
-
 describe("DeleteUserPanel through the real fetch wrapper", () => {
   const ID = "0123456789abcdef".repeat(5);
-  type Call = { method: string; path: string; body: Record<string, unknown> | undefined };
+
+  type Call = { method: string; path: string; body: JsonObject | undefined };
 
   // Routes the panel's three attempt calls to the real AdminUsers functions and
   // answers the network by hand.
   async function wire(answer: (call: Call) => Response) {
-    const real = await vi.importActual<typeof import("../api/adminUsers")>("../api/adminUsers");
-    vi.mocked(AdminUsers.mintAttempt).mockImplementation(real.AdminUsers.mintAttempt);
-    vi.mocked(AdminUsers.remove).mockImplementation(real.AdminUsers.remove);
-    vi.mocked(AdminUsers.settleAttempt).mockImplementation(real.AdminUsers.settleAttempt);
+    vi.mocked(AdminUsers.mintAttempt).mockImplementation(realAdminUsers.mintAttempt);
+    vi.mocked(AdminUsers.remove).mockImplementation(realAdminUsers.remove);
+    vi.mocked(AdminUsers.settleAttempt).mockImplementation(realAdminUsers.settleAttempt);
     const calls: Call[] = [];
     vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       const path = String(url).replace("/api/v1", "");
+
       if (path === "/auth/csrf") return new Response(JSON.stringify({ csrfToken: "csrf" }), { status: 200 });
-      const call: Call = { method: init?.method ?? "GET", path, body: init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined };
+      const call: Call = { method: init?.method ?? "GET", path, body: init?.body ? JSON.parse(String(init.body)) : undefined };
       calls.push(call);
+
       return answer(call);
     }));
+
     return calls;
   }
-  const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+
+  const json = (body: JsonValue, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
   const html = (status = 200) => new Response("<html>gateway</html>", { status, headers: { "Content-Type": "text/html" } });
   const MINT = "/admin/operation-attempts";
   const SETTLE = "/admin/operation-attempts/settle";
@@ -938,9 +978,12 @@ describe("DeleteUserPanel through the real fetch wrapper", () => {
   ])("does not say deleted when the DELETE answers 200 with %s; it settles the same id", async (_name, deleteAnswer) => {
     const calls = await wire((c) => {
       if (c.path === MINT) return json({ attemptId: ID });
+
       if (c.method === "DELETE") return deleteAnswer();
+
       return json({ result: "not_applied" });
     });
+
     open();
     await press();
     expect(await screen.findByText(NOTHING)).toBeInTheDocument();
@@ -959,14 +1002,19 @@ describe("DeleteUserPanel through the real fetch wrapper", () => {
     ["an HTML page with a 5xx status", () => html(502)],
   ])("a DELETE answered %s settles the retained id, with Delete off until the answer", async (_name, deleteAnswer) => {
     let answerSettle!: (r: Response) => void;
+
     const held = new Promise<Response>((resolve) => {
       answerSettle = resolve;
     });
+
     const calls = await wire((c) => {
       if (c.path === MINT) return json({ attemptId: ID });
+
       if (c.method === "DELETE") return deleteAnswer();
+
       return json({});
     });
+
     // Hold the settle by hand: the stub above answers synchronously.
     const base = vi.mocked(globalThis.fetch).getMockImplementation();
     vi.stubGlobal("fetch", vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => (String(url).endsWith(SETTLE) ? held : base?.(url, init))));
@@ -987,6 +1035,7 @@ describe("DeleteUserPanel through the real fetch wrapper", () => {
     const calls = await wire((c) =>
       c.path === MINT ? json({ attemptId: ID }) : json({ error: "cannot delete the last admin", code: "last_admin" }, 400),
     );
+
     open();
     await press();
     expect(await screen.findByRole("alert")).toHaveTextContent(ERROR_COPY.last_admin);
@@ -1007,6 +1056,7 @@ describe("DeleteUserPanel through the real fetch wrapper", () => {
     const calls = await wire((c) =>
       c.path === MINT ? json({ attemptId: ID }) : json({ erasure: { ...noErasure, householdsKept: 4, activityEntriesKept: 6 } }),
     );
+
     open();
     await press();
     expect(await screen.findByText("The account was deleted.")).toBeInTheDocument();
@@ -1023,17 +1073,21 @@ describe("DeleteUserPanel when the action or the person changes", () => {
 
   function openChangeable(action: "delete" | "disable" = "delete") {
     const onDone = vi.fn();
-    const view = render(<DeleteUserPanel target={target} action={action} onDone={onDone} />);
+    const view = render(<DeleteUserPanel reviewDeps={review} target={target} action={action} onDone={onDone} />);
+
     const change = (next: { target?: User; action?: "delete" | "disable" }) =>
-      view.rerender(<DeleteUserPanel target={next.target ?? target} action={next.action ?? action} onDone={onDone} />);
+      view.rerender(<DeleteUserPanel reviewDeps={review} target={next.target ?? target} action={next.action ?? action} onDone={onDone} />);
+
     return { onDone, change };
   }
 
   const deferred = <T,>() => {
     let resolve!: (v: T) => void;
+
     const promise = new Promise<T>((res) => {
       resolve = res;
     });
+
     return { promise, resolve };
   };
 
@@ -1120,9 +1174,10 @@ describe("DeleteUserPanel keeps Delete off until the list reloads after 'can't t
   async function reachHistory(person: User = target) {
     vi.mocked(AdminUsers.remove).mockRejectedValueOnce(coded(409, "attempt_expired"));
     vi.mocked(AdminUsers.settleAttempt).mockResolvedValueOnce(settleResult("history_unavailable"));
-    const view = render(<DeleteUserPanel target={person} action="delete" onDone={vi.fn()} />);
+    const view = render(<DeleteUserPanel reviewDeps={review} target={person} action="delete" onDone={vi.fn()} />);
     await press();
     await screen.findByText(HISTORY);
+
     return view;
   }
 
@@ -1130,7 +1185,7 @@ describe("DeleteUserPanel keeps Delete off until the list reloads after 'can't t
     const first = await reachHistory();
     first.unmount();
     vi.mocked(AdminUsers.mintAttempt).mockClear();
-    render(<DeleteUserPanel target={target} action="delete" onDone={vi.fn()} />);
+    render(<DeleteUserPanel reviewDeps={review} target={target} action="delete" onDone={vi.fn()} />);
     expect(await screen.findByText(HISTORY)).toBeInTheDocument();
     expect(deleteButton()).toBeDisabled();
     expect(AdminUsers.mintAttempt).not.toHaveBeenCalled();
@@ -1139,11 +1194,11 @@ describe("DeleteUserPanel keeps Delete off until the list reloads after 'can't t
   it("holds through another person's panel replacing it, and does not block that other person", async () => {
     const first = await reachHistory();
     first.unmount();
-    const second = render(<DeleteUserPanel target={bea} action="delete" onDone={vi.fn()} />);
+    const second = render(<DeleteUserPanel reviewDeps={review} target={bea} action="delete" onDone={vi.fn()} />);
     await waitFor(() => expect(deleteButton()).toBeEnabled());
     expect(screen.queryByText(HISTORY)).not.toBeInTheDocument();
     second.unmount();
-    render(<DeleteUserPanel target={target} action="delete" onDone={vi.fn()} />);
+    render(<DeleteUserPanel reviewDeps={review} target={target} action="delete" onDone={vi.fn()} />);
     expect(await screen.findByText(HISTORY)).toBeInTheDocument();
     expect(deleteButton()).toBeDisabled();
   });
@@ -1153,17 +1208,17 @@ describe("DeleteUserPanel keeps Delete off until the list reloads after 'can't t
     await userEvent.click(screen.getByRole("button", { name: "Close" }));
     first.unmount();
     // The parent's reload failed: nothing calls reloadSucceeded.
-    render(<DeleteUserPanel target={target} action="delete" onDone={vi.fn()} />);
+    render(<DeleteUserPanel reviewDeps={review} target={target} action="delete" onDone={vi.fn()} />);
     expect(await screen.findByText(HISTORY)).toBeInTheDocument();
     expect(deleteButton()).toBeDisabled();
     cleanup();
     // A load that began before the answer proves nothing about it.
     reloadSucceeded(0);
-    render(<DeleteUserPanel target={target} action="delete" onDone={vi.fn()} />);
+    render(<DeleteUserPanel reviewDeps={review} target={target} action="delete" onDone={vi.fn()} />);
     expect(await screen.findByText(HISTORY)).toBeInTheDocument();
     cleanup();
     reloadSucceeded(reloadStarted());
-    render(<DeleteUserPanel target={target} action="delete" onDone={vi.fn()} />);
+    render(<DeleteUserPanel reviewDeps={review} target={target} action="delete" onDone={vi.fn()} />);
     await waitFor(() => expect(deleteButton()).toBeEnabled());
     expect(screen.queryByText(HISTORY)).not.toBeInTheDocument();
   });
@@ -1171,18 +1226,18 @@ describe("DeleteUserPanel keeps Delete off until the list reloads after 'can't t
   it("does not block Disable for that person", async () => {
     const first = await reachHistory();
     first.unmount();
-    render(<DeleteUserPanel target={target} action="disable" onDone={vi.fn()} />);
+    render(<DeleteUserPanel reviewDeps={review} target={target} action="disable" onDone={vi.fn()} />);
     expect(await screen.findByRole("button", { name: "Disable account" })).toBeEnabled();
   });
 
   it("is not set by the other outcomes: not_applied leaves the next panel open for a fresh press", async () => {
     vi.mocked(AdminUsers.remove).mockRejectedValueOnce(coded(500, "delete_outcome_unknown"));
     vi.mocked(AdminUsers.settleAttempt).mockResolvedValueOnce(settleResult("not_applied"));
-    const first = render(<DeleteUserPanel target={target} action="delete" onDone={vi.fn()} />);
+    const first = render(<DeleteUserPanel reviewDeps={review} target={target} action="delete" onDone={vi.fn()} />);
     await press();
     await screen.findByText(NOTHING);
     first.unmount();
-    render(<DeleteUserPanel target={target} action="delete" onDone={vi.fn()} />);
+    render(<DeleteUserPanel reviewDeps={review} target={target} action="delete" onDone={vi.fn()} />);
     await waitFor(() => expect(deleteButton()).toBeEnabled());
   });
 });
@@ -1194,14 +1249,15 @@ describe("DeleteUserPanel keeps Delete off after a restore until the list reload
   async function reachRestore() {
     vi.mocked(AdminUsers.remove).mockRejectedValueOnce(coded(503, "restore_detected"));
     const onDone = vi.fn();
-    const view = render(<DeleteUserPanel target={target} action="delete" onDone={onDone} />);
+    const view = render(<DeleteUserPanel reviewDeps={review} target={target} action="delete" onDone={onDone} />);
     await press();
     await screen.findByText(RESTORE);
+
     return { view, onDone };
   }
 
   const reopen = (person: User = target, action: "delete" | "disable" = "delete") =>
-    render(<DeleteUserPanel target={person} action={action} onDone={vi.fn()} />);
+    render(<DeleteUserPanel reviewDeps={review} target={person} action={action} onDone={vi.fn()} />);
 
   it("closing asks for a reload, and a reopened panel is blocked with the restore wording and sends nothing", async () => {
     const { view, onDone } = await reachRestore();
@@ -1223,9 +1279,9 @@ describe("DeleteUserPanel keeps Delete off after a restore until the list reload
     expect(await screen.findByRole("alert")).toHaveTextContent(RESTORE);
     expect(deleteButton()).toBeDisabled();
     other.unmount();
-    const switching = render(<DeleteUserPanel target={target} action="disable" onDone={vi.fn()} />);
+    const switching = render(<DeleteUserPanel reviewDeps={review} target={target} action="disable" onDone={vi.fn()} />);
     expect(await screen.findByRole("button", { name: "Disable account" })).toBeEnabled();
-    switching.rerender(<DeleteUserPanel target={target} action="delete" onDone={vi.fn()} />);
+    switching.rerender(<DeleteUserPanel reviewDeps={review} target={target} action="delete" onDone={vi.fn()} />);
     expect(await screen.findByRole("alert")).toHaveTextContent(RESTORE);
     expect(deleteButton()).toBeDisabled();
   });
@@ -1269,9 +1325,9 @@ describe("DeleteUserPanel keeps Delete off after a restore until the list reload
   });
 });
 
-
 describe("DeleteUserPanel reason review", () => {
   const hashOf = (c: string) => c.repeat(64);
+
   // The set-v1 body the server would accept for these (id, hash seed, choice) entries, built
   // here from the wire spec and not from the code under test.
   const reviewFor = (entries: Array<[string, string, "keep" | "remove"]>) => {
@@ -1288,25 +1344,33 @@ describe("DeleteUserPanel reason review", () => {
     });
     const all = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
     let at = 0;
+
     for (const p of parts) {
       all.set(p, at);
       at += p.length;
     }
+
     return { format: "set-v1", count: String(entries.length), digest: createHash("sha256").update(all).digest("hex"), choices: btoa(String.fromCharCode(...choices)) };
   };
+
   const reason = (id: string, h: string, over: Partial<ErasureReasonItem> = {}): ErasureReasonItem => ({
     requestId: id, reviewHash: hashOf(h), role: "subject", purpose: "contact", status: "pending", createdAt: "2026-11-01T12:00:00Z",
     counterpartName: "Lee Leader", counterpartDeleted: false, reviewerIsParty: false, reason: `Reason text ${id}`, ...over,
   });
-  const page = (items: ErasureReasonItem[], next: string | null = null): ErasureReasonPage => ({ ...(items.length ? { reviewRequired: true } : {}), items, next });
+
+  const page = (items: ErasureReasonItem[], next: string | null = null): ErasureReasonPage => items.length ? { reviewRequired: true, items, next } : { items, next };
+
   // Serves pages by cursor: "start" is the first (after = null).
   function serve(pages: Record<string, ErasureReasonPage>) {
     vi.mocked(AdminUsers.erasureReasonsPage).mockImplementation(async (_id, after) => {
       const found = pages[after ?? "start"];
+
       if (!found) throw new Error(`no page for ${after}`);
+
       return found;
     });
   }
+
   const cursors = () => vi.mocked(AdminUsers.erasureReasonsPage).mock.calls.map((c) => c[1]);
   const group = (n: number, of: number) => within(screen.getByRole("group", { name: `Reason ${n} of ${of}` }));
   const choose = async (n: number, of: number, label: "Keep text" | "Blank text") => userEvent.click(group(n, of).getByRole("radio", { name: label }));
@@ -1360,6 +1424,7 @@ describe("DeleteUserPanel reason review", () => {
     serve({ start: page([A, B, C]) });
     open();
     await screen.findByText("Reason text 1");
+
     for (const r of screen.getAllByRole("radio")) expect(r).not.toBeChecked();
     expect(screen.queryByRole("button", { name: /(keep|blank|choose|select) (all|every)/i })).not.toBeInTheDocument();
     expect(screen.getByText("Choose Keep text or Blank text for 3 more reasons.")).toBeInTheDocument();
@@ -1516,23 +1581,26 @@ describe("DeleteUserPanel reason review", () => {
       await choose(2, 2, "Keep text");
       await press();
       await screen.findByText(/The account was deleted/);
-      const body = vi.mocked(AdminUsers.remove).mock.calls[0][4] as unknown as Record<string, string>;
-      expect(Object.keys(body).sort()).toEqual(["choices", "count", "digest", "format"]);
+      const body = vi.mocked(AdminUsers.remove).mock.calls[0][4];
+      expect(body).toBeDefined();
+      expect(Object.keys(body ?? {}).sort()).toEqual(["choices", "count", "digest", "format"]);
       expect(JSON.stringify(body)).not.toContain(hashOf("a"));
     });
 
     it("a change to the store while the digest is made aborts before any id is minted, and keeps the change", async () => {
       serve({ start: page([A, B]) });
-      made.stores.length = 0;
       open();
       await screen.findByText("Reason text 2");
       await choose(1, 2, "Keep text");
       await choose(2, 2, "Keep text");
-      const store = made.stores[made.stores.length - 1] as ReasonReviewStore;
-      vi.mocked(reasonReviewBody).mockImplementationOnce(async (...args) => {
-        store.choose(0, REMOVE); // the first reason flips behind the panel's back
-        const actual = await vi.importActual<typeof import("../lib/reasonSetDigest")>("../lib/reasonSetDigest");
-        return actual.reasonReviewBody(...args);
+      const results = review.createStore.mock.results;
+      const store = results[results.length - 1];
+
+      if (store?.type !== "return") throw new Error("The panel did not create a review store");
+      review.buildBody.mockImplementationOnce(async (...args) => {
+        store.value.choose(0, REMOVE); // the first reason flips behind the panel's back
+
+        return reasonReviewBody(...args);
       });
       await press();
       expect(await screen.findByRole("alert")).toHaveTextContent("The reasons changed while Fold was preparing your choices. Check them and try again.");
@@ -1552,6 +1620,7 @@ describe("DeleteUserPanel reason review", () => {
       vi.stubGlobal("crypto", {});
       vi.stubGlobal("isSecureContext", false);
       resetDigestChoice();
+
       try {
         serve({ start: page([A, B, C]) });
         open();
@@ -1571,7 +1640,7 @@ describe("DeleteUserPanel reason review", () => {
 
     it("a transient hashing failure mints nothing, sends nothing, keeps every choice and offers another try", async () => {
       serve({ start: page([A]) });
-      vi.mocked(reasonReviewBody).mockRejectedValueOnce(new Error("out of memory"));
+      review.buildBody.mockRejectedValueOnce(new Error("out of memory"));
       open();
       await screen.findByText("Reason text 1");
       await choose(1, 1, "Blank text");
@@ -1588,7 +1657,7 @@ describe("DeleteUserPanel reason review", () => {
 
     it("a browser with no working SHA-256 keeps Delete off for the life of the page, with a client-only message", async () => {
       serve({ start: page([A]) });
-      vi.mocked(reasonReviewBody).mockRejectedValueOnce(new DigestUnavailableError());
+      review.buildBody.mockRejectedValueOnce(new DigestUnavailableError());
       open();
       await screen.findByText("Reason text 1");
       await choose(1, 1, "Keep text");
@@ -1602,16 +1671,17 @@ describe("DeleteUserPanel reason review", () => {
     it("disables every radio while the digest is made, and says so", async () => {
       serve({ start: page([A]) });
       let release!: () => void;
-      vi.mocked(reasonReviewBody).mockImplementationOnce(async (...args) => {
+      review.buildBody.mockImplementationOnce(async (...args) => {
         await new Promise<void>((resolve) => (release = resolve));
-        const actual = await vi.importActual<typeof import("../lib/reasonSetDigest")>("../lib/reasonSetDigest");
-        return actual.reasonReviewBody(...args);
+
+        return reasonReviewBody(...args);
       });
       open();
       await screen.findByText("Reason text 1");
       await choose(1, 1, "Keep text");
       await press();
       expect(await screen.findByText("Preparing your choices…")).toBeInTheDocument();
+
       for (const r of screen.getAllByRole("radio")) expect(r).toBeDisabled();
       expect(AdminUsers.mintAttempt).not.toHaveBeenCalled();
       release();
@@ -1644,8 +1714,10 @@ describe("DeleteUserPanel reason review", () => {
     const radios = (label: "Keep text" | "Blank text") => screen.getAllByRole("radio", { name: label });
     let keep = radios("Keep text"), blank = radios("Blank text");
     auth.calls = 0;
+
     for (let n = 1; n <= 10; n++) fireEvent.click(n % 2 ? keep[n - 1] : blank[n - 1]);
     expect(auth.calls).toBe(0);
+
     // Choose the rest: the last click is the only one that changes what the panel shows.
     for (let n = 11; n <= 50; n++) fireEvent.click(keep[n - 1]);
     expect(auth.calls).toBe(0);
@@ -1718,7 +1790,10 @@ describe("DeleteUserPanel reason review", () => {
     ["an item without a hash", { items: [{ ...A, reviewHash: undefined }], next: null }],
     ["a next that is not a cursor", { items: [], next: 5 }],
   ])("treats %s as a failed unit, not as an empty one", async (_name, bad) => {
-    vi.mocked(AdminUsers.erasureReasonsPage).mockResolvedValue(bad as unknown as ErasureReasonPage);
+    vi.mocked(AdminUsers.erasureReasonsPage).mockImplementation(realAdminUsers.erasureReasonsPage);
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) =>
+      String(input).endsWith("/auth/csrf") ? Response.json({ csrfToken: "csrf" }) : Response.json(bad),
+    ));
     open();
     expect(await screen.findByRole("button", { name: "Try again" })).toBeInTheDocument();
     expect(screen.queryByText("No reasons to review.")).not.toBeInTheDocument();

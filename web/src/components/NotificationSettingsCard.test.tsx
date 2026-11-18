@@ -1,3 +1,5 @@
+import { stubService } from "../test/service";
+import { NotificationSettings, Push } from "../api/notifications";
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -6,37 +8,40 @@ import type { EmailKind } from "../types";
 
 const get = vi.fn();
 const update = vi.fn();
-vi.mock("../api/notifications", async (orig) => ({
-  ...(await orig<typeof import("../api/notifications")>()),
-  NotificationSettings: { get: () => get(), update: (c: EmailSettingsChange) => update(c) },
-  // The church has notifications on devices off unless a test says so, so
-  // these tests see the email card alone (PushDeviceCard.test.tsx has the rest).
-  Push: { config: () => config() },
-}));
+
+stubService(NotificationSettings, () => ({ get: () => get(), update: (c: EmailSettingsChange) => update(c) }));
+
+stubService(Push, () => ({ config: () => config() }));
+
 const config = vi.fn();
 
 import { ApiError } from "../api/core";
 import { NotificationSettingsCard } from "./NotificationSettingsCard";
 
 const all = "Turn off all optional email";
+
 const kinds = (off: Partial<Record<EmailKind["category"], boolean>> = {}): EmailKind[] =>
   (["groups", "events", "messages"] as const).map((category) => ({ category, off: !!off[category] }));
+
 const settings = (k: EmailKind[]) => ({ settings: { kinds: k, optionalEmailOff: k.every((x) => x.off) } });
 
 // The server applies a change the way the real one does.
 let state = kinds();
+
 beforeEach(() => {
   config.mockReset().mockResolvedValue({ enabled: false, publicKey: "" });
   state = kinds();
   get.mockReset().mockImplementation(async () => settings(state));
   update.mockReset().mockImplementation(async (c: EmailSettingsChange) => {
     state = state.map((k) => (!c.category || k.category === c.category ? { ...k, off: c.off } : k));
+
     return settings(state);
   });
 });
 
 it("shows a skeleton while loading, then a switch per kind and the all-off switch", async () => {
-  let finish: (v: unknown) => void = () => {};
+  let finish: (value: Awaited<ReturnType<typeof NotificationSettings.update>>) => void = () => {};
+
   get.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
   render(<NotificationSettingsCard />);
   expect(screen.getByText("Loading your email settings…")).toBeInTheDocument();
@@ -67,9 +72,11 @@ it("turns every kind off at once, and the all-off switch follows the kinds", asy
   await userEvent.click(allBox);
   expect(update).toHaveBeenCalledWith({ off: true });
   expect(await screen.findByText("Saved")).toBeInTheDocument();
+
   for (const label of [/^Group updates/, /^Event updates/, /^Messages from leaders/]) {
     expect(screen.getByRole("checkbox", { name: label })).not.toBeChecked();
   }
+
   expect(allBox).toBeChecked();
   // Turning one kind back on means not everything is off.
   await userEvent.click(screen.getByRole("checkbox", { name: /^Event updates/ }));
@@ -77,7 +84,8 @@ it("turns every kind off at once, and the all-off switch follows the kinds", asy
 });
 
 it("disables the switches while one saves, so saves can't overlap", async () => {
-  let finish: (v: unknown) => void = () => {};
+  let finish: (value: Awaited<ReturnType<typeof NotificationSettings.update>>) => void = () => {};
+
   update.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
   render(<NotificationSettingsCard />);
   const box = await screen.findByRole("checkbox", { name: /^Group updates/ });

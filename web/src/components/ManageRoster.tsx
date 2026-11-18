@@ -34,27 +34,37 @@ export function ManageRoster({ instance, onChanged, onClose, headingLevel = 3 }:
     const boundaries = (instance.attendees ?? []).flatMap((a) => a.householdPerson?.careNotesVisibleUntil ? [new Date(a.householdPerson.careNotesVisibleUntil).getTime()] : []).filter((t) => t >= Date.now());
     const timer = boundaries.length ? window.setTimeout(onChanged, Math.max(0, Math.min(...boundaries) - Date.now() + 1)) : undefined;
     window.addEventListener("focus", onChanged);
-    return () => { window.removeEventListener("focus", onChanged); if (timer !== undefined) window.clearTimeout(timer); };
+
+    return () => {
+      window.removeEventListener("focus", onChanged);
+
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
   }, [instance.attendees, onChanged]);
 
   async function action(a: Attendee, kind: "remove" | "promote" | "restore") {
     if (kind === "remove" && !confirm(`Remove ${a.name}'s registration for this date? They won't be able to re-register on their own.`)) return;
     const full = poolFull(instance, a.attendanceMode);
+
     if (kind === "restore" && full && !confirm(`This date's ${a.attendanceMode === "remote" ? "remote" : "in-person"} seats are full. Add ${a.name} over capacity?`)) return;
     setBusy(a.registrationId); setError(null);
+
     try {
       if (kind === "remove") await Events.removeRegistration(instance.eventId, instance.date, a.registrationId);
       else if (kind === "promote") await Events.promoteRegistration(instance.eventId, instance.date, a.registrationId);
       else {
         const subject = attendeeSubject(a);
         const target = subject?.kind === "household" ? { personId: subject.person.personId, registeredBy: subject.person.registeredBy.userId } : subject?.kind === "user" ? { userId: subject.userId } : null;
+
         if (!target) return;
+
         try { await Events.restoreRegistration(instance.eventId, instance.date, target, a.attendanceMode, full); }
         catch (e) {
           if (errorCode(e) !== "event_full" || full || !confirm(`This date's ${a.attendanceMode === "remote" ? "remote" : "in-person"} seats filled. Add ${a.name} over capacity?`)) throw e;
           await Events.restoreRegistration(instance.eventId, instance.date, target, a.attendanceMode, true);
         }
       }
+
       onChanged();
     } catch (e) { setError(errorText(e, "We couldn't update that registration.")); }
     finally { setBusy(null); }
@@ -62,13 +72,21 @@ export function ManageRoster({ instance, onChanged, onClose, headingLevel = 3 }:
 
   async function add(e: React.FormEvent) {
     e.preventDefault();
-    if (selection && (selection.teen || approvalRequired)) { setAskPerson({ person: selection, overCapacity: approvalRequired?.overCapacity ?? false }); return; }
+
+    if (selection && (selection.teen || approvalRequired)) {
+      setAskPerson({ person: selection, overCapacity: approvalRequired?.overCapacity ?? false });
+
+      return;
+    }
+
     if (!selection && !email.trim()) return;
     const target = selection ? { selectionId: selection.selectionId } : email.trim();
     const full = poolFull(instance, "in_person");
     let overCapacity = full;
+
     if (full && !confirm("This date is full. Add them over capacity?")) return;
     setBusy("add"); setError(null);
+
     try {
       try { await Events.addRegistration(instance.eventId, instance.date, target, full || undefined); }
       catch (e) {
@@ -76,6 +94,7 @@ export function ManageRoster({ instance, onChanged, onClose, headingLevel = 3 }:
         overCapacity = true;
         await Events.addRegistration(instance.eventId, instance.date, target, true);
       }
+
       setEmail(""); setSelection(null); setApprovalRequired(null); onChanged();
     }
     catch (e) {
@@ -88,6 +107,7 @@ export function ManageRoster({ instance, onChanged, onClose, headingLevel = 3 }:
   }
 
   const roster = (instance.attendees ?? []).filter((a) => ["going", "maybe", "waitlisted"].includes(a.status));
+
   return <section aria-label="Manage sign-ups" className="mt-3 border-t border-border pt-3">
     <div className="flex items-center justify-between gap-3"><Heading className="font-semibold">Manage sign-ups</Heading><Button variant="link" onClick={onClose}>Close</Button></div>
     {error && <FormError>{error}</FormError>}
@@ -131,8 +151,10 @@ function statusLabel(a: Attendee, roster: Attendee[]): string {
     case "maybe": return registrationStatusLabel("maybe");
     case "waitlisted": {
       const line = roster.filter((r) => r.status === "waitlisted" && r.attendanceMode === a.attendanceMode);
+
       return `Waitlist position ${line.indexOf(a) + 1}`;
     }
+
     case "declined": return registrationStatusLabel("declined");
     default: return "Removed";
   }

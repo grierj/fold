@@ -1,4 +1,7 @@
-import { render, screen } from "@testing-library/react";
+import { testUser } from "../test/fixtures";
+import { renderWithAuth } from "../test/auth";
+import { stubService } from "../test/service";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -7,8 +10,10 @@ import { ApiError } from "../api/core";
 import { ResetPassword } from "./ResetPassword";
 
 const signedIn = vi.fn();
-vi.mock("../auth", () => ({ useAuth: () => ({ signedIn }) }));
-vi.mock("../api/auth", () => ({ Auth: { confirmPasswordReset: vi.fn() } }));
+
+const render = renderWithAuth(() => ({ signedIn }));
+
+stubService(Auth, () => ({ confirmPasswordReset: vi.fn() }));
 
 function renderAt(path: string) {
   return render(
@@ -40,7 +45,7 @@ it("offers a new reset link when the link has no token", () => {
 });
 
 it("sends the token with the new password, signs the person in and goes where signedIn says", async () => {
-  vi.mocked(Auth.confirmPasswordReset).mockResolvedValue({ user: { id: 1 } } as never);
+  vi.mocked(Auth.confirmPasswordReset).mockResolvedValue({ user: testUser() });
   renderAt("/reset-password?token=abc123");
   await fillAndSubmit("a long enough password");
   expect(await screen.findByText("Home page")).toBeInTheDocument();

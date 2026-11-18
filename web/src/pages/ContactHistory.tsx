@@ -15,36 +15,77 @@ import { errorText } from "../lib/errors";
 import { formatBirthDate, formatWhen, historyDayBounds } from "../lib/when";
 
 const emptyFilters: ContactHistoryFilters = { purpose: "", action: "", from: "", until: "" };
-const actions: Record<string, string> = {
-  "contact.requested": "Contact requested", "contact.decision": "Contact decision",
-  "contact.withdrawn": "Contact request withdrawn", "contact.expired": "Contact request expired",
-  "contact.granted": "Contact access granted", "contact.reveal": "Contact details revealed",
-  "contact.refused": "Contact attempt refused", "contact.revoked": "Contact access revoked", "contact.ended": "Contact access ended",
-  "add.requested": "Add requested", "add.decision": "Add decision", "add.withdrawn": "Add request withdrawn",
-  "add.expired": "Add request expired", "add.completed": "Add completed", "add.refused": "Add attempt refused", "add.ended": "Add request ended",
-  "occurrence_access.added": "One-date access added", "occurrence_access.ended": "One-date access ended",
-  "occurrence.blocked": "One-date access blocked", "occurrence.refused": "One-date attempt refused",
-  "membership.added": "Group member added", "membership.added_over_limit": "Group member added over limit", "membership.removed": "Group member removed",
-  "registration.added": "Registration added", "registration.added_over_capacity": "Registration added over capacity", "registration.removed": "Registration removed",
-};
-const outcomes: Record<string, string> = {
-  requested: "Requested", decision: "Decision recorded", approved: "Approved", denied: "Denied", withdrawn: "Withdrawn", expired: "Expired",
-  granted: "Granted", revealed: "Revealed", refused: "Refused", revoked: "Revoked", ended: "Ended", added: "Added", removed: "Removed", blocked: "Blocked",
-};
+
+const actions = new Map<string, string>([
+  ["contact.requested", "Contact requested"],
+  ["contact.decision", "Contact decision"],
+  ["contact.withdrawn", "Contact request withdrawn"],
+  ["contact.expired", "Contact request expired"],
+  ["contact.granted", "Contact access granted"],
+  ["contact.reveal", "Contact details revealed"],
+  ["contact.refused", "Contact attempt refused"],
+  ["contact.revoked", "Contact access revoked"],
+  ["contact.ended", "Contact access ended"],
+  ["add.requested", "Add requested"],
+  ["add.decision", "Add decision"],
+  ["add.withdrawn", "Add request withdrawn"],
+  ["add.expired", "Add request expired"],
+  ["add.completed", "Add completed"],
+  ["add.refused", "Add attempt refused"],
+  ["add.ended", "Add request ended"],
+  ["occurrence_access.added", "One-date access added"],
+  ["occurrence_access.ended", "One-date access ended"],
+  ["occurrence.blocked", "One-date access blocked"],
+  ["occurrence.refused", "One-date attempt refused"],
+  ["membership.added", "Group member added"],
+  ["membership.added_over_limit", "Group member added over limit"],
+  ["membership.removed", "Group member removed"],
+  ["registration.added", "Registration added"],
+  ["registration.added_over_capacity", "Registration added over capacity"],
+  ["registration.removed", "Registration removed"],
+]);
+
+const outcomes = new Map<string, string>([
+  ["requested", "Requested"],
+  ["decision", "Decision recorded"],
+  ["approved", "Approved"],
+  ["denied", "Denied"],
+  ["withdrawn", "Withdrawn"],
+  ["expired", "Expired"],
+  ["granted", "Granted"],
+  ["revealed", "Revealed"],
+  ["refused", "Refused"],
+  ["revoked", "Revoked"],
+  ["ended", "Ended"],
+  ["added", "Added"],
+  ["removed", "Removed"],
+  ["blocked", "Blocked"],
+]);
+
 const purposes = [{ value: "", label: "All purposes" }, { value: "contact", label: "Direct contact" }, { value: "group_add", label: "Group add" }, { value: "occurrence_add", label: "One-date add" }];
-const purposeLabels: Record<string, string> = Object.fromEntries(purposes.map((p) => [p.value, p.label]));
-const fieldLabels: Record<string, string> = { email: "Email selected", phone: "Phone selected", both: "Email and phone selected" };
+const purposeLabels = new Map(purposes.map((p) => [p.value, p.label]));
+
+const fieldLabels = new Map<string, string>([
+  ["email", "Email selected"],
+  ["phone", "Phone selected"],
+  ["both", "Email and phone selected"],
+]);
+
 const safeId = (id?: string) => id && retainedPersonId(id) ? id : undefined;
-const labelFor = (labels: Record<string, string>, value?: string) => value && Object.prototype.hasOwnProperty.call(labels, value) ? labels[value] : undefined;
+const labelFor = (labels: ReadonlyMap<string, string>, value?: string) => value ? labels.get(value) : undefined;
 
 type Selection = { personId: string; filters: ContactHistoryFilters; days: { from: string; until: string } };
 
 export function ContactHistoryPage() {
   const { user, loading, isAdmin } = useAuth();
   const { id = "" } = useParams();
+
   if (loading) return null;
+
   if (!user) return null;
+
   if (!isAdmin || user.status !== "active" || user.accountType === "teen") return <div className="fold-page-narrow"><h1 className="text-2xl font-bold">Contact access history</h1><p>This page is for church admins only.</p></div>;
+
   return <HistoryView key={`${user.id}:${user.status}:${user.role}:${user.accountType}:${user.birthDate}:${id}`} initialId={id} />;
 }
 
@@ -57,15 +98,20 @@ function HistoryView({ initialId }: { initialId: string }) {
   // maths can't use, leaves it empty and the date filters off (never the browser's zone).
   const { site, error: siteError, retry: retryZone } = useSite();
   const zone = site?.timezone && historyDayBounds("", "", site.timezone) ? site.timezone : "";
+
   const zoneError = siteError
     ? "We couldn't load the church timezone. Try again."
     : site && !zone ? "We couldn't read the church timezone. Try again, or ask your church office for help." : "";
+
   const [dateError, setDateError] = useState("");
   const [filtersOpen, setFiltersOpen] = useState(false);
+
   const [selection, setSelection] = useState<Selection | null>(() => {
     const personId = retainedPersonId(initialId);
+
     return personId ? { personId, filters: emptyFilters, days: { from: "", until: "" } } : null;
   });
+
   const [entries, setEntries] = useState<ContactHistoryEntry[]>([]);
   const [nextBefore, setNextBefore] = useState<string>();
   const [loaded, setLoaded] = useState(false);
@@ -84,35 +130,50 @@ function HistoryView({ initialId }: { initialId: string }) {
 
   const revokeURLs = useCallback(() => {
     for (const [url, timer] of urls.current) { clearTimeout(timer); URL.revokeObjectURL(url); }
+
     urls.current.clear();
   }, []);
+
   const clear = useCallback(() => {
     generation.current++;
     revokeURLs(); paging.current = false; downloading.current = false;
     setEntries([]); setNextBefore(undefined); setLoaded(false); setBusy(false); setExporting(false); setNotice(""); setError("");
   }, [revokeURLs]);
+
   const refresh = useCallback(() => { clear(); setRevision((n) => n + 1); }, [clear]);
-  const failure = useCallback((e: unknown, current: number, clearOnFailure = false) => {
+
+  const failure = useCallback((cause: unknown, current: number, clearOnFailure = false) => {
     if (!mounted.current) return;
-    if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
-      clear(); setNames({}); setAuthority(e.status); return;
+
+    if (cause instanceof ApiError && (cause.status === 401 || cause.status === 403)) {
+      clear();
+      setNames({});
+      setAuthority(cause.status);
+
+      return;
     }
+
     if (generation.current !== current) return;
+
     if (clearOnFailure) clear();
-    setError(errorText(e));
+    setError(errorText(cause));
   }, [clear]);
 
   useEffect(() => {
     mounted.current = true;
+
     return () => { mounted.current = false; generation.current++; revokeURLs(); };
   }, [revokeURLs]);
+
   const knownPerson = useCallback((person: ContactHistoryPerson) => {
     setNames((old) => old[person.id] === person.name ? old : { ...old, [person.id]: person.name });
   }, []);
-  const pickerFailure = useCallback((e: unknown) => failure(e, generation.current), [failure]);
+
+  const pickerFailure = useCallback((cause: unknown) => failure(cause, generation.current), [failure]);
   useEffect(() => {
     if (authority) return;
     window.addEventListener("focus", refresh);
+
     return () => window.removeEventListener("focus", refresh);
   }, [refresh, authority]);
   useEffect(() => {
@@ -122,7 +183,8 @@ function HistoryView({ initialId }: { initialId: string }) {
     ContactHistory.list(selection.personId, selection.filters).then((data) => {
       if (generation.current !== current) return;
       setEntries(data.entries); setNextBefore(data.nextBefore); setLoaded(true);
-    }).catch((e: unknown) => failure(e, current)).finally(() => { if (generation.current === current) setBusy(false); });
+    }).catch((cause: unknown) => failure(cause, current)).finally(() => { if (generation.current === current) setBusy(false); });
+
     return () => { generation.current++; };
   }, [selection, revision, authority, failure]);
 
@@ -130,26 +192,34 @@ function HistoryView({ initialId }: { initialId: string }) {
     if (!selection || !nextBefore || paging.current || busy) return;
     const current = generation.current;
     paging.current = true; setBusy(true); setError("");
+
     try {
       const data = await ContactHistory.list(selection.personId, selection.filters, nextBefore);
+
       if (generation.current !== current) return;
       setEntries((old) => {
         const seen = new Set(old.map((entry) => entry.id));
+
         return [...old, ...data.entries.filter((entry) => {
           if (seen.has(entry.id)) return false;
-          seen.add(entry.id); return true;
+          seen.add(entry.id);
+
+          return true;
         })];
       });
       setNextBefore(data.nextBefore);
     } catch (e) { failure(e, current); }
     finally { if (generation.current === current) { paging.current = false; setBusy(false); } }
   }
+
   async function download() {
     if (!selection || downloading.current || !loaded) return;
     const current = generation.current;
     downloading.current = true; setExporting(true); setError(""); setNotice("");
+
     try {
       const blob = await ContactHistory.csv(selection.personId, selection.filters);
+
       if (!mounted.current || generation.current !== current) return;
       const url = URL.createObjectURL(blob);
       urls.current.set(url, setTimeout(() => { URL.revokeObjectURL(url); urls.current.delete(url); }, 1000));
@@ -157,7 +227,9 @@ function HistoryView({ initialId }: { initialId: string }) {
       anchor.href = url;
       anchor.download = `contact-history-${selection.personId}.csv`;
       document.body.append(anchor);
+
       try { anchor.click(); } finally { anchor.remove(); }
+
       setNotice("Your export was prepared. The audit records preparation, not confirmed receipt of the download.");
     } catch (e) { failure(e, current, true); }
     finally { if (generation.current === current) { downloading.current = false; setExporting(false); } }
@@ -168,21 +240,30 @@ function HistoryView({ initialId }: { initialId: string }) {
   // form and call it too. Dates need the church zone; without dates they don't.
   function show(raw: string, form: HTMLFormElement | null) {
     const personId = retainedPersonId(raw);
+
     if (!personId) {
       clear(); setSelection(null);
       const message = () => setPersonError("Check the saved person ID. Use the digits saved before the account was deleted.");
+
       if (form) showFieldErrors(form, message); else message();
+
       return;
     }
+
     const dated = Boolean(draft.from || draft.until);
+
     if (dated && !zone) return;
     const bounds = dated ? historyDayBounds(draft.from, draft.until, zone) : { from: "", until: "" };
+
     if (!bounds) {
       setFiltersOpen(true);
       const message = () => setDateError("Choose valid dates, with Until on or after From.");
+
       if (form) showFieldErrors(form, message); else message();
+
       return;
     }
+
     clear(); setPersonError(""); setDateError("");
     setSelection({ personId, filters: { ...draft, ...bounds }, days: { from: draft.from, until: draft.until } });
   }
@@ -192,7 +273,9 @@ function HistoryView({ initialId }: { initialId: string }) {
   const appliedCount = selection ? [selection.filters.purpose, selection.filters.action, selection.days.from, selection.days.until].filter(Boolean).length : 0;
 
   if (authority === 401) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+
   if (authority === 403) return <div className="fold-page-narrow"><h1 className="text-2xl font-bold">Contact access history</h1><p>This history is no longer available to you. Ask an active adult church admin for help.</p></div>;
+
   return <div className="fold-page-narrow space-y-5">
     <ButtonLink variant="link" to="/admin?tab=users">Back to users</ButtonLink>
     <h1 className="text-2xl font-bold">Contact access history</h1>
@@ -206,7 +289,7 @@ function HistoryView({ initialId }: { initialId: string }) {
         <Button variant="secondary" aria-expanded={filtersOpen} aria-controls="history-filters" onClick={() => setFiltersOpen((open) => !open)}>{appliedCount ? `Filters (${appliedCount} applied)` : "Filters"}</Button>
         {filtersOpen && <div id="history-filters" className="space-y-4 rounded-lg border border-border bg-surface p-4">
           <Choices legend="Purpose" optional><div className="grid sm:grid-cols-2 gap-x-4">{purposes.map((p) => <Radio key={p.value} name="history-purpose" label={p.label} value={p.value} checked={draft.purpose === p.value} onChange={() => setDraft({ ...draft, purpose: p.value })} />)}</div></Choices>
-          <Field label="Action" optional><Select value={draft.action} options={[{ value: "", label: "All actions" }, ...Object.entries(actions).map(([value, label]) => ({ value, label }))]} onChange={(e) => setDraft({ ...draft, action: e.target.value })} /></Field>
+          <Field label="Action" optional><Select value={draft.action} options={[{ value: "", label: "All actions" }, ...[...actions].map(([value, label]) => ({ value, label }))]} onChange={(e) => setDraft({ ...draft, action: e.target.value })} /></Field>
           <div className="grid sm:grid-cols-2 gap-4">
             <Field label="From" optional hint="In church time. This whole date is included."><Input type="date" value={draft.from} onChange={(e) => { setDraft({ ...draft, from: e.target.value }); setDateError(""); }} /></Field>
             <Field label="Until" optional hint="In church time. This whole date is included; choose From or a later date." error={dateError}><Input type="date" min={draft.from || undefined} value={draft.until} onChange={(e) => { setDraft({ ...draft, until: e.target.value }); setDateError(""); }} /></Field>
@@ -219,7 +302,7 @@ function HistoryView({ initialId }: { initialId: string }) {
     </Form>
     {selection && <section aria-label="Submitted history" className="space-y-3">
       <h2 className="text-xl font-bold wrap-anywhere">History for {names[selection.personId] || `person #${selection.personId}`}</h2>
-      <p className="text-sm text-text-muted wrap-anywhere">Applied: {purposeLabels[selection.filters.purpose] || "All purposes"} · {actions[selection.filters.action] || "All actions"}{selection.days.from && ` · From ${formatBirthDate(selection.days.from)}`}{selection.days.until && ` · Through ${formatBirthDate(selection.days.until)}`}</p>
+      <p className="text-sm text-text-muted wrap-anywhere">Applied: {purposeLabels.get(selection.filters.purpose) || "All purposes"} · {actions.get(selection.filters.action) || "All actions"}{selection.days.from && ` · From ${formatBirthDate(selection.days.from)}`}{selection.days.until && ` · Through ${formatBirthDate(selection.days.until)}`}</p>
       <div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={refresh}>Refresh history</Button><Button variant="secondary" disabled={!loaded || exporting} onClick={() => void download()}>{exporting ? "Preparing CSV…" : "Export all matching CSV"}</Button></div>
       <p className="text-sm text-text-muted">Export includes all matching entries, not just the loaded page. Each page is a fresh read; refresh to see newer entries.</p>
       {busy && <p role="status">Loading history…</p>}
@@ -238,12 +321,13 @@ function HistoryEntry({ entry: e }: { entry: ContactHistoryEntry }) {
     ["Requester", e.requesterId], ["Subject", e.subjectUserId], ["Request", e.requestId], ["Access", e.accessId],
     [e.contextType === "group" ? "Group" : e.contextType === "event" ? "Event" : "Context", e.contextId], ["Occurrence", e.occurrenceId],
   ].filter(([, id]) => safeId(id));
+
   return <li className="fold-list-row space-y-2 wrap-anywhere">
     <h3 className="font-semibold">{labelFor(actions, e.action) || "Recorded activity"}</h3>
     <p>{labelFor(outcomes, e.outcome) || "Outcome not available"} · <time dateTime={e.at}>{formatWhen(e.at)}</time></p>
     <p className="text-sm">Audit #{safeId(e.id) || "unavailable"} · {safeId(e.actorId) ? `Actor #${e.actorId}` : "System action"}</p>
     {labelFor(purposeLabels, e.purpose) && <p>{labelFor(purposeLabels, e.purpose)}</p>}
-    {(e.party === "subject" || e.party === "admin") && (e.decision === "approved" || e.decision === "denied") && <p>{e.party === "subject" ? "Person's" : "Admin's"} decision: {outcomes[e.decision]}</p>}
+    {(e.party === "subject" || e.party === "admin") && (e.decision === "approved" || e.decision === "denied") && <p>{e.party === "subject" ? "Person's" : "Admin's"} decision: {outcomes.get(e.decision)}</p>}
     {labelFor(fieldLabels, e.fields) && <p>{labelFor(fieldLabels, e.fields)} (selection only)</p>}
     {!!provenance.length && <p className="text-sm text-text-muted">{provenance.map(([label, id]) => `${label} #${id}`).join(" · ")}</p>}
   </li>;

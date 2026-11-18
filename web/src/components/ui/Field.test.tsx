@@ -17,6 +17,7 @@ describe("Field (DEC-65)", () => {
   it("puts the hint under the label and above the control, and the error under it", () => {
     render(<Field label="Email" hint="Hint" error="Oops"><Input /></Field>);
     const order = [screen.getByText("Email"), screen.getByText("Hint"), screen.getByLabelText("Email"), screen.getByText("Oops")];
+
     for (let i = 1; i < order.length; i++) {
       expect(order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
@@ -87,6 +88,7 @@ describe("focusFirstInvalid", () => {
         <Field label="C" error="Wrong too"><Input /></Field>
       </form>,
     );
+
     expect(focusFirstInvalid(container.querySelector("form"))).toBe(true);
     expect(screen.getByLabelText("B")).toHaveFocus();
     rerender(

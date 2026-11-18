@@ -14,6 +14,7 @@ import { useCursorList } from "../lib/useCursorList";
 import { formatWhen } from "../lib/when";
 
 const statuses: Record<AddRequest["status"], string> = { pending: "Not added yet", granted: "Added", denied: "Denied", withdrawn: "Withdrawn", expired: "Expired", ended: "Ended" };
+
 const problems = {
   capacity: "Approval was recorded, but there is no room. Retry when a place is available. Retrying does not allow adding over the original limit.",
   childcare: "Approval was recorded, but childcare is full. Retry when childcare has room.",
@@ -25,13 +26,16 @@ function Preview({ request: r }: { request: AddRequest }) {
   // Date previews are title/time only. Never construct a parent-event link or
   // recover names/context from a selection, notice or previously loaded page.
   if (r.purpose === "occurrence_add") return <div className="space-y-1"><p className="font-semibold">{r.eventTitle || "One event date"}</p>{r.startsAt && <p>{formatWhen(r.startsAt)}{r.endsAt ? ` – ${formatWhen(r.endsAt)}` : ""}</p>}<p className="text-sm text-text-muted">One date only. This preview does not give access to the event, its group or any other dates.</p></div>;
+
   return <div className="space-y-1"><p className="font-semibold">{r.groupName || "A group membership"}</p>{r.requesterName && r.subjectName && <p>{r.requesterName} → {r.subjectName}</p>}{r.contextId !== undefined && r.groupName && <ButtonLink variant="link" to={`/groups/${r.contextId}`}>View group</ButtonLink>}{!r.groupName && <p className="text-sm text-text-muted">Group details are not available in this preview. Reviewing an ask does not give group access.</p>}</div>;
 }
 
 export function AddRequestsPage() {
   const { user } = useAuth();
   const { id } = useParams();
+
   if (!user) return null;
+
   return <div className="fold-page-narrow space-y-5">
     <h1 className="text-2xl font-bold">Add requests</h1>
     <p className="text-text-muted">Requests to add someone to a group or event date. Contact details stay private.</p>
@@ -41,6 +45,7 @@ export function AddRequestsPage() {
 
 function AddRequestList() {
   const { items: requests, loaded, more, busy, error, refresh, older } = useCursorList(async (before) => (await Adds.requests(before)).requests);
+
   return <>
     {error && <><FormError>{error}</FormError><Button variant="secondary" onClick={refresh}>Try again</Button></>}
     {!loaded && !error && <p role="status">Loading add requests…</p>}
@@ -64,35 +69,51 @@ function AddRequestDetail({ id }: { id: number }) {
   useEffect(() => {
     const current = ++generation.current;
     setLoaded(false); setRequest(null); setError(""); setBusy(false);
+
     async function load() {
-      if (!Number.isSafeInteger(id) || id <= 0) { if (generation.current === current) setLoaded(true); return; }
+      if (!Number.isSafeInteger(id) || id <= 0) {
+        if (generation.current === current) setLoaded(true);
+
+        return;
+      }
+
       try {
         const { request: r } = await Adds.request(id);
+
         if (generation.current === current) { setRequest(r); setLoaded(true); }
       } catch (e) {
         if (generation.current !== current) return;
+
         if (e instanceof ApiError && (e.status === 404 || e.status === 403)) setLoaded(true);
         else setError(errorText(e));
       }
     }
+
     void load();
     const refresh = () => setRevision((n) => n + 1);
     window.addEventListener("focus", refresh);
+
     return () => { generation.current++; window.removeEventListener("focus", refresh); };
   }, [id, revision]);
+
   async function action(kind: "withdraw" | "complete" | "subject" | "admin", decision?: "approved" | "denied") {
     const current = generation.current;
     setBusy(true); setError("");
+
     try {
       const result = kind === "withdraw" ? await Adds.withdraw(id) : kind === "complete" ? await Adds.complete(id) : await Adds.decide(id, kind, decision!);
+
       if (generation.current === current) setRequest(result.request);
     } catch (e) {
       if (generation.current !== current) return;
+
       if (e instanceof ApiError && (e.status === 403 || e.status === 404)) { setRequest(null); setLoaded(true); }
       else setError(errorText(e));
     } finally { if (generation.current === current) setBusy(false); }
   }
+
   const pending = request?.status === "pending";
+
   return <>
     <ButtonLink variant="link" to="/add-requests">All add requests</ButtonLink>
     {error && <><FormError>{error}</FormError><Button variant="secondary" onClick={() => setRevision((n) => n + 1)}>Try again</Button></>}

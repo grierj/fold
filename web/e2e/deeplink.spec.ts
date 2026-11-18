@@ -7,6 +7,7 @@ test("deep links load directly, signed out and signed in", async ({ page }) => {
   await expect(page.getByRole("heading", { level: 1, name: "Room 201 class" })).toBeVisible();
 
   await signIn(page, "grier");
+
   // The Users list shows 25 people a page and the specs before this one in a shard add people,
   // so a seeded user can sit on page 2. Search for one, which filters the whole list.
   for (const load of [() => page.goto("/admin?tab=users"), () => page.reload()]) {

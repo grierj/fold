@@ -24,12 +24,16 @@ export function GroupCard({
 }) {
   const next = group.nextEventAt ? formatNextMeeting(group.nextEventAt) : null;
   const Heading = headingLevel === 2 ? "h2" : "h3";
+
   const role =
     group.myRole === "leader" ? "You lead" : group.myRole === "member" && showRole ? "You're in" : null;
+
   const memberLine = `${group.memberCount} ${group.memberCount === 1 ? "member" : "members"}${
     group.location ? ` · ${group.location}` : ""
   }`;
+
   const tags = group.tags.slice(0, 3).join(" · ");
+
   return (
     <Link
       to={`/groups/${group.id}`}

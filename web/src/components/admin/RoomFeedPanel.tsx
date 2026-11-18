@@ -9,6 +9,7 @@ import { SecretFeedLink, useSecretFeed } from "../SecretFeedLink";
 // CalendarFeedCard (both are SecretFeedLink).
 export function RoomFeedPanel({ room, onClose }: { room: Room; onClose: () => void }) {
   const headingRef = useRef<HTMLHeadingElement>(null);
+
   const feed = useSecretFeed({
     load: async () => (await AdminRooms.getFeed(room.id)).feed,
     deps: [room.id],
@@ -22,6 +23,7 @@ export function RoomFeedPanel({ room, onClose }: { room: Room; onClose: () => vo
     // The button that was pressed is gone; keep keyboard users in the panel.
     onRevoked: () => headingRef.current?.focus(),
   });
+
   // The button that opened the panel is gone, so focus starts on its heading.
   useEffect(() => { headingRef.current?.focus(); }, [room.id]);
 

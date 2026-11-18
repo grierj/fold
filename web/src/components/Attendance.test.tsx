@@ -58,9 +58,11 @@ describe("Attendance", () => {
     expect(screen.getByText(/3 going · 1 maybe/)).toBeInTheDocument();
     expect(screen.getByText("Some people's names are private.")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Show who's coming" }));
+
     for (const name of ["Going (1)", "Maybe (1)", "Can't go (1)"]) {
       expect(screen.getByRole("heading", { name, level: headingLevel })).toBeInTheDocument();
     }
+
     expect(screen.getAllByRole("listitem")).toHaveLength(3);
   });
 

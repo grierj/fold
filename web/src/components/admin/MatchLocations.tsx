@@ -16,6 +16,7 @@ const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : 
 // "12 upcoming dates across 3 events" or "1 upcoming date in 1 event".
 function countsLine(l: TypedLocation): string {
   const dates = count(l.dates, "upcoming date", "upcoming dates");
+
   return l.events === 1 ? `${dates} in 1 event` : `${dates} across ${l.events} events`;
 }
 
@@ -24,6 +25,7 @@ function countsLine(l: TypedLocation): string {
 function guess(location: string, rooms: Room[]): string {
   const want = location.trim().toLowerCase();
   const same = rooms.filter((r) => r.name.trim().toLowerCase() === want);
+
   return same.length === 1 ? String(same[0].id) : "";
 }
 
@@ -38,14 +40,18 @@ interface Result {
 
 function summary(r: Result): string {
   const parts: string[] = [];
+
   if (r.booked > 0) parts.push(`Booked ${r.room} for ${count(r.booked, "date", "dates")}.`);
   else parts.push(`No dates were booked in ${r.room}.${r.busyTotal === 0 ? " They already have rooms." : ""}`);
+
   if (r.series > 0) {
     parts.push(r.series === 1 ? `1 repeating event now uses ${r.room} for its later dates too.` : `${r.series} repeating events now use ${r.room} for their later dates too.`);
   }
+
   if (r.busyTotal > 0) {
     parts.push(r.busyTotal === 1 ? "1 date was taken, so it was left alone:" : `${r.busyTotal} dates were taken, so they were left alone:`);
   }
+
   return parts.join(" ");
 }
 
@@ -84,6 +90,7 @@ function LocationRow({ location: l, index, rooms, value, onChange, busy, locked,
   onBook: () => void;
 }) {
   const room = rooms.find((r) => String(r.id) === value);
+
   return (
     <li className="bg-surface rounded-lg border border-border p-5 space-y-3" data-location={l.location}>
       <div>
@@ -133,6 +140,7 @@ export function MatchLocations({ rooms }: { rooms: Room[] | null }) {
 
   const load = useCallback(async () => {
     setError(null);
+
     try {
       const { locations } = await AdminRooms.locations();
       setLocations(locations);
@@ -142,6 +150,7 @@ export function MatchLocations({ rooms }: { rooms: Room[] | null }) {
       setError(errorText(e, "We couldn't load the typed places."));
     }
   }, []);
+
   useEffect(() => {
     if (has) void load();
   }, [has, load]);
@@ -161,9 +170,11 @@ export function MatchLocations({ rooms }: { rooms: Room[] | null }) {
   async function book(l: TypedLocation) {
     const roomId = Number(picked[l.location]);
     const room = active.find((r) => r.id === roomId);
+
     if (!room) return;
     setBusyFor(l.location);
     setRowError(null);
+
     try {
       const res = await AdminRooms.matchLocation(l.location, roomId);
       setResult((prev) => ({ n: (prev?.n ?? 0) + 1, room: roomName(room), ...res }));
@@ -176,6 +187,7 @@ export function MatchLocations({ rooms }: { rooms: Room[] | null }) {
   }
 
   if (!has) return null;
+
   // Nothing typed to match and nothing just booked: nothing to say.
   if (locations !== null && locations.length === 0 && !result && !error) return null;
 

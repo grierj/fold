@@ -38,6 +38,7 @@ export function EmailSettings({ load, save, first }: {
   useEffect(() => {
     alive.current = true;
     reload();
+
     return () => { alive.current = false; };
   }, [reload]);
 
@@ -51,25 +52,31 @@ export function EmailSettings({ load, save, first }: {
       kinds: previous.kinds.map((k) => (!c.category || k.category === c.category ? { ...k, off: c.off } : k)),
     });
     setSaving(true); setSaved(false); setError(null);
+
     try {
       const next = await save(c);
+
       if (alive.current) { setSettings(next); setSaved(true); }
     } catch (err) {
       if (alive.current) { setSettings(previous); setError(errorText(err, "We couldn't save your changes. Try again.")); }
     } finally {
       busy.current = false;
+
       if (alive.current) setSaving(false);
     }
   }
 
   if (loadError) return <ErrorNotice message={loadError} onRetry={reload} />;
+
   if (!settings) return <Skeleton kind="lines" count={3} label="Loading your email settings…" />;
   const kinds = [...settings.kinds].sort((a, b) => Number(b.category === first) - Number(a.category === first));
+
   return <div className="bg-surface rounded-lg border border-border p-6 space-y-4">
     {error && <FormError>{error}</FormError>}
     <Choices legend="Optional email" hint="Turn off the kinds you don't want. Everything still shows in Alerts.">
       {kinds.map((k) => {
         const copy = EMAIL_KIND_COPY[k.category];
+
         return <Checkbox key={k.category} label={copy.label} description={copy.hint} checked={!k.off} aria-disabled={saving || undefined}
           onChange={(e) => void change({ category: k.category, off: !e.target.checked })} />;
       })}

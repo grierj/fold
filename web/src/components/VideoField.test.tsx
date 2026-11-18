@@ -1,3 +1,5 @@
+import { stubService } from "../test/service";
+import { Events } from "../api/events";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -5,15 +7,17 @@ import { VideoField, emptyVideo, videoProblem, type VideoValue } from "./VideoFi
 
 const generateJitsi = vi.fn().mockResolvedValue({ url: "https://meet.jit.si/fold-abc123def4" });
 
-vi.mock("../api/core", () => ({ ApiError: class extends Error {} }));
-vi.mock("../api/events", () => ({ Events: { generateJitsi: () => generateJitsi() } }));
+stubService(Events, () => ({ generateJitsi: () => generateJitsi() }));
 
 function renderField(initial: VideoValue = emptyVideo) {
   let value = initial;
+
   const onChange = vi.fn((next: VideoValue) => {
     value = next;
   });
+
   const view = render(<VideoField idPrefix="test" value={initial} onChange={onChange} />);
+
   return {
     onChange,
     getValue: () => value,
@@ -34,12 +38,12 @@ describe("VideoField", () => {
     await userEvent.click(screen.getByLabelText(/^Paste a link/));
     expect(f.getValue().provider).toBe("link");
     f.rerender();
-    const input = screen.getByLabelText("Video link") as HTMLInputElement;
+    const input = screen.getByLabelText("Video link");
     await userEvent.click(input);
     await userEvent.paste("https://zoom.example.org/j/1");
     expect(f.getValue().url).toContain("https://zoom.example.org/j/1");
-    const reveal = screen.getByLabelText("Who sees the link") as HTMLSelectElement;
-    expect(reveal.value).toBe("registered_only");
+    const reveal = screen.getByLabelText("Who sees the link");
+    expect(reveal).toHaveValue("registered_only");
     expect(screen.getByRole("option", { name: "Registered people only" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "Everyone who can see the event" })).toBeInTheDocument();
   });
@@ -57,10 +61,10 @@ describe("VideoField", () => {
 
   it("carries an existing link", () => {
     renderField({ provider: "link", url: "https://meet.example.org/room", reveal: "always" });
-    expect((screen.getByLabelText("Video link") as HTMLInputElement).value).toBe(
+    expect((screen.getByLabelText("Video link"))).toHaveValue(
       "https://meet.example.org/room"
     );
-    expect((screen.getByLabelText("Who sees the link") as HTMLSelectElement).value).toBe("always");
+    expect((screen.getByLabelText("Who sees the link"))).toHaveValue("always");
   });
 });
 

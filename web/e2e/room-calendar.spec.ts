@@ -1,3 +1,4 @@
+import * as schema from "valibot";
 import { expect, test } from "@playwright/test";
 import { apiAs, signIn } from "./helpers";
 
@@ -6,28 +7,30 @@ import { apiAs, signIn } from "./helpers";
 // with no title or link.
 test("a member sees the room calendar, with a hidden date as Reserved", async ({ page, request }) => {
   const admin = await apiAs(request, "grier");
-  const { groups } = (await admin("GET", "/groups")) as { groups: { id: number; name: string }[] };
+  const { groups } = schema.parse(schema.looseObject({ groups: schema.array(schema.looseObject({ id: schema.number(), name: schema.string() })) }), (await admin("GET", "/groups")));
   const group = groups.find((g) => g.name === "Room 201 class")!;
-  const { rooms } = (await admin("GET", "/admin/rooms")) as { rooms: { id: number; name: string }[] };
+  const { rooms } = schema.parse(schema.looseObject({ rooms: schema.array(schema.looseObject({ id: schema.number(), name: schema.string() })) }), (await admin("GET", "/admin/rooms")));
   const hall = rooms.find((r) => r.name === "Fellowship Hall")!;
   const day = new Date(Date.now() + 61 * 864e5).toISOString().slice(0, 10);
 
   // An invite-only group Sam isn't in holds the hall that morning.
-  const { group: hidden } = (await admin("POST", "/groups", { name: "Room calendar hidden group", visibility: "invite_only", tags: [] })) as {
-    group: { id: number };
-  };
-  const { event: secret } = (await admin("POST", `/groups/${hidden.id}/events`, {
+  const { group: hidden } = schema.parse(schema.looseObject({ group: schema.looseObject({ id: schema.number() }) }), (await admin("POST", "/groups", { name: "Room calendar hidden group", visibility: "invite_only", tags: [] })));
+
+  const { event: secret } = schema.parse(schema.looseObject({ event: schema.looseObject({ id: schema.number() }) }), (await admin("POST", `/groups/${hidden.id}/events`, {
     title: "Hidden room meeting", startsLocal: `${day}T09:00`, durationMinutes: 60, tzid: "America/Boise",
-  })) as { event: { id: number } };
+  })));
+
   await admin("PUT", `/events/${secret.id}/dates/${day}/room`, { roomId: hall.id });
 
   // apiAs clients share this request context's cookie jar: each sign-in
   // replaces the session and rotates its CSRF token, so finish with one user
   // before signing in the next.
   const lee = await apiAs(request, "lee");
-  const { event } = (await lee("POST", `/groups/${group.id}/events`, {
+
+  const { event } = schema.parse(schema.looseObject({ event: schema.looseObject({ id: schema.number() }) }), (await lee("POST", `/groups/${group.id}/events`, {
     title: "Room calendar night", startsLocal: `${day}T19:00`, durationMinutes: 60, tzid: "America/Boise",
-  })) as { event: { id: number } };
+  })));
+
   await lee("PUT", `/events/${event.id}/dates/${day}/room`, { roomId: hall.id });
 
   await signIn(page, "sam");

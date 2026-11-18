@@ -1,3 +1,5 @@
+import { stubService } from "../test/service";
+import { Households } from "../api/households";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,14 +9,15 @@ const addPerson = vi.fn();
 const convert = vi.fn();
 const resend = vi.fn();
 const cancel = vi.fn();
-vi.mock("../api/households", async (orig) => ({ ...(await orig<typeof import("../api/households")>()), Households: { mine: () => mine(), addPerson: (d: unknown) => addPerson(d), update: vi.fn(), updatePerson: vi.fn(), removePerson: vi.fn(), convert: (id: number, email: string) => convert(id, email), resendConversion: (id: number) => resend(id), cancelConversion: (id: number) => cancel(id) } }));
+
+stubService(Households, () => ({ mine: () => mine(), addPerson: (d) => addPerson(d), update: vi.fn(), updatePerson: vi.fn(), removePerson: vi.fn(), convert: (id, email) => convert(id, email), resendConversion: (id) => resend(id), cancelConversion: (id) => cancel(id) }));
 
 import { HouseholdCard, personProblems } from "./HouseholdCard";
 import { ApiError } from "../api/core";
 
 const household = {
   id: 1, name: "Smith household", address: "", createdBy: 1,
-  accounts: [{ userId: 1, name: "Pat Smith", relation: "guardian", status: "active" }],
+  accounts: [{ userId: 1, name: "Pat Smith", relation: "guardian" as const, status: "active" as const }],
   people: [{ id: 5, householdId: 1, firstName: "Kid", lastName: "Smith", name: "Kid Smith", kind: "child", birthDate: "2020-05-01", careNotes: "", photoConsent: false, linkStatus: "pending", createdBy: 1 }],
 };
 
@@ -98,7 +101,7 @@ describe("household name and address", () => {
 
   it("shows an empty household's details and saves through the existing endpoint", async () => {
     const { Households } = await import("../api/households");
-    vi.mocked(Households.update).mockResolvedValue({ household: { ...household, people: [], name: "New household", address: "New address" } } as Awaited<ReturnType<typeof Households.update>>);
+    vi.mocked(Households.update).mockResolvedValue({ household: { ...household, people: [], name: "New household", address: "New address" } });
     render(<HouseholdCard />);
     const rename = await screen.findByRole("button", { name: "Rename" });
     expect(screen.getByText("Old address")).toBeInTheDocument();
@@ -190,7 +193,6 @@ it("keeps the account button hidden until a household teen is eligible", async (
   expect(screen.queryByRole("button", { name: /Resend/ })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Create their own account" })).not.toBeInTheDocument();
 });
-
 
 it("offers a confirmed teen an invitation with the consent and guardian checks explained", async () => {
   mine.mockResolvedValue({ household: { ...household, people: [{ ...household.people[0], kind: "teen", birthDate: "2011-05-01", linkStatus: "confirmed", canConvert: true }] } });
