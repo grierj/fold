@@ -792,10 +792,10 @@ test.describe("reviewing contact-request reasons before a delete (T07B-2c)", () 
     await expect(row.getByText("Reasons 101 to 120 of 120", { exact: true })).toBeVisible();
     await expect(page.locator('[data-reason-heading="100"]')).toBeFocused();
     await row.getByLabel("Go to reason number").fill("1");
-    await row.getByRole("button", { name: "Go" }).click();
+    await row.getByRole("button", { name: "Go", exact: true }).click();
     await expect(page.locator('[data-reason-heading="0"]')).toBeFocused();
     await row.getByLabel("Go to reason number").fill("120");
-    await row.getByRole("button", { name: "Go" }).click();
+    await row.getByRole("button", { name: "Go", exact: true }).click();
     await expect(shown).toHaveCount(20);
     await expect(page.locator('[data-reason-heading="119"]')).toBeFocused();
     for (let i = 100; i < 119; i++) await choose(i);
