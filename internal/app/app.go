@@ -228,7 +228,8 @@ func (a *App) load(ctx context.Context, r *http.Request, q *sql.Tx) (pageFacts, 
 
 // renew extends a live session when any page is visited (R8). It runs here,
 // for every page, so a new page cannot forget it. It is the one write a GET
-// makes, and it is the ruled behaviour of a session.
+// makes, and it is the ruled behaviour of a session; it writes no audit row
+// (R19).
 func (a *App) renew(w http.ResponseWriter, r *http.Request) {
 	token := a.sessionToken(r)
 	if token == "" {

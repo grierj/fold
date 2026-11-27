@@ -104,8 +104,9 @@ event. Grier: "security is of primary concern." Every change is judged against t
 - **Uploads are images only**: sniffed, re-encoded, size-capped, stored under a name the server
   made up.
 - **The server never fetches a URL a person supplied.**
-- **Every change writes one row to the sealed audit log**, in the same transaction, because the
-  write executor does it. The log is chained so tampering shows, is never edited or purged, and no
+- **Every change a person makes writes one row to the sealed audit log**, in the same
+  transaction, because the write executor does it. Upkeep such as session renewal does not
+  (`docs/DECISIONS.md` R19). The log is chained so tampering shows, is never edited or purged, and no
   page reads it. Opening it is a deliberate, announced act (`docs/DECISIONS.md` R6).
 - **Secrets are encrypted at rest** and never sent back to the browser.
 - **Few dependencies**, each one justified in the pull request that adds it.

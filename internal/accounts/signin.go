@@ -69,9 +69,12 @@ func (c *UseSignInLink) Apply(tx *write.Tx) error {
 }
 
 // RenewSession extends a session by a week from now (R8), at most hourly.
+// It is upkeep, not something the person did, so it writes no audit row
+// (R19).
 type RenewSession struct{}
 
 func (RenewSession) Action() string { return "session.renew" }
+func (RenewSession) Upkeep()        {}
 
 func (RenewSession) Apply(tx *write.Tx) error {
 	res, err := tx.Exec(`UPDATE sessions SET renewed_at = ?, expires_at = ? WHERE id = ? AND renewed_at <= ?`,
@@ -82,7 +85,6 @@ func (RenewSession) Apply(tx *write.Tx) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return write.ErrNothing
 	}
-	tx.Subject(tx.Actor.Person.UID)
 	return nil
 }
 

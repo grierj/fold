@@ -435,7 +435,11 @@ func TestAnyPageRenewsTheSession(t *testing.T) {
 	s := newSite(t)
 	admin := s.finishSetup()
 	s.Clock.Advance(6 * 24 * time.Hour)
+	rows := s.Count(t, `SELECT count(*) FROM audit_log`)
 	admin.get("/no-such-page")
+	if s.Count(t, `SELECT count(*) FROM audit_log`) != rows {
+		t.Fatal("renewing a session wrote an audit row (R19)")
+	}
 	s.Clock.Advance(3 * 24 * time.Hour)
 	if r := admin.get("/"); !strings.Contains(r.body, "Welcome, Pat") {
 		t.Fatal("visiting another page did not renew the session")

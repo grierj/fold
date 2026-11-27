@@ -88,3 +88,22 @@ func TestActorIsLoadedInsideTheWrite(t *testing.T) {
 		t.Fatalf("expired session: %v", err)
 	}
 }
+
+type upkeep struct{ fn }
+
+func (upkeep) Upkeep() {}
+
+// Upkeep goes through the same door but writes no audit row (R19).
+func TestUpkeepWritesNoAuditRow(t *testing.T) {
+	env := testenv.New(t)
+	err := env.Exec.Run(context.Background(), write.System(), upkeep{fn{"session.renew", func(tx *write.Tx) error {
+		_, err := tx.Exec(`INSERT INTO settings (key, value, updated_at) VALUES ('a', 'b', 0)`)
+		return err
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env.Count(t, `SELECT count(*) FROM settings`) != 1 || env.Count(t, `SELECT count(*) FROM audit_log`) != 0 {
+		t.Fatal("upkeep was not applied, or was audited")
+	}
+}

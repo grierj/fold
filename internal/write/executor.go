@@ -3,7 +3,8 @@
 // run by Executor.Run: begin the write, load the actor fresh, let the command
 // ask policy and apply itself, append the audit row, commit.
 //
-// The other writes in this package are the executor's own machinery: job
+// Commands marked Upkeep (session renewal) skip the audit row (R19). The
+// other writes in this package are the executor's own machinery: job
 // bookkeeping (a job's enqueue was audited by the command that queued it),
 // and the maintenance operations Backup and Restore, which write their own
 // audit rows.
@@ -81,6 +82,14 @@ type Command interface {
 	// Action is the audit action, a dotted name such as "session.end".
 	Action() string
 	Apply(tx *Tx) error
+}
+
+// Upkeep marks a command that keeps the service's own records current (a
+// session's expiry) rather than doing something a person chose to do. It goes
+// through the same door, with the actor loaded fresh, but writes no audit
+// row: the log is for what people do (docs/DECISIONS.md R19).
+type Upkeep interface {
+	Upkeep()
 }
 
 // Executor runs commands on the single writer connection.
@@ -169,10 +178,12 @@ func (e *Executor) Run(ctx context.Context, as ActorRef, c Command) error {
 		}
 		return err
 	}
-	if _, err := audit.Append(ctx, tx, t.Now, audit.Entry{
-		Action: c.Action(), Actor: t.Actor.auditID(), Subjects: t.subjects, Details: t.details,
-	}); err != nil {
-		return err
+	if _, upkeep := c.(Upkeep); !upkeep {
+		if _, err := audit.Append(ctx, tx, t.Now, audit.Entry{
+			Action: c.Action(), Actor: t.Actor.auditID(), Subjects: t.subjects, Details: t.details,
+		}); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("write: commit %s: %w", c.Action(), err)
