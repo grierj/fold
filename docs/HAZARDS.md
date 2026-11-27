@@ -254,7 +254,9 @@ Nobody has decided these. Raise them with Grier when the slice needs them; do no
 
 - *Settled by R34:* a local time that does not exist moves to the next real time; one that happens
   twice uses the first.
-- **Changing the church's time zone after events exist.** Do existing events move? (Fold audit)
-- **Finding public events of groups you are not in.** (Fold DEC-76)
+- **Changing the church's time zone after events exist.** Do existing events move? (Fold audit.
+  Slice 2 builds the default in `docs/PLAN.md`: nothing moves.)
+- **Finding public events of groups you are not in.** (Fold DEC-76. Slice 2 builds Fold's
+  Everything view as the default in `docs/PLAN.md`.)
 - **May a person hide completely from name search?** And is "private" the right word for a group
   every signed-in member can see? (Fold DEC-78)
