@@ -6,7 +6,7 @@ TW_OS := $(shell uname -s | sed 's/Linux/linux/;s/Darwin/macos/')
 TW_ARCH := $(shell uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')
 TW_FILE := tailwindcss-$(TW_OS)-$(TW_ARCH)
 
-.PHONY: build test check css css-check dev e2e image budgets
+.PHONY: build test check css css-check dev demo demo-reset e2e image budgets
 
 build:
 	CGO_ENABLED=0 go build -trimpath -o bin/fold ./cmd/fold
@@ -42,6 +42,14 @@ css-check: bin/tailwindcss
 # A local site at http://localhost:8080 with mail kept at /dev/outbox.
 dev: css
 	DEV=1 DATA_DIR=data go run ./cmd/fold serve
+
+# The same, filled with a made-up church on first run (cmd/demo).
+demo: css
+	test -f data-demo/app.db || go run ./cmd/demo -data data-demo
+	DEV=1 DATA_DIR=data-demo go run ./cmd/fold serve
+
+demo-reset:
+	rm -rf data-demo
 
 # The browser gates: accessibility, layout and contrast at 390 and 1280 px.
 e2e: build
