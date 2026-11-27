@@ -63,7 +63,9 @@ a test message. Open it and press **Finish setup**. You are now signed in as the
 administrator.
 
 If the test message does not arrive, the page says why it could not be sent. Change the
-settings and send it again.
+settings and send it again. A new Postmark account can only send to addresses at the same
+domain as the "send from" address until Postmark approves it, so use an address at your
+church's domain for yourself, or wait for approval.
 
 ## Afterwards
 

@@ -59,3 +59,13 @@ func TestGalleryShowsEveryPartial(t *testing.T) {
 		}
 	}
 }
+
+// A setup code pasted with a trailing newline or spaces still matches.
+func TestSetupCodeIgnoresWhitespace(t *testing.T) {
+	s := newSite(t)
+	b := s.browser()
+	r := b.post("/setup", "/setup/code", url.Values{"code": {"  " + strings.ToLower(s.app.SetupCode()) + "\r\n"}})
+	if r.status != 303 {
+		t.Fatalf("a code with whitespace was refused: %d", r.status)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"fold/internal/accounts"
@@ -52,10 +53,12 @@ func (a *App) SetupCode() string {
 	return a.setup.code
 }
 
+// normalizeCode ignores case, dashes and any whitespace, so a code pasted
+// from a terminal with a trailing newline still matches.
 func normalizeCode(s string) string {
 	s = strings.ToUpper(s)
 	return strings.Map(func(r rune) rune {
-		if r == '-' || r == ' ' {
+		if r == '-' || unicode.IsSpace(r) {
 			return -1
 		}
 		return r
