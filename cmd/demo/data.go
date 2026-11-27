@@ -1,12 +1,18 @@
 package main
 
-import "fold/internal/policy"
+import (
+	"time"
+
+	"fold/internal/events"
+	"fold/internal/policy"
+)
 
 // Everyone here is made up, and every address is at example.org, a domain
 // reserved so mail to it reaches no one.
 
 const (
 	church     = "Grace Community Church"
+	churchZone = "America/Chicago"
 	adminEmail = "alex.admin@example.org"
 
 	secondAdmin    = "Ruth Okafor"
@@ -80,4 +86,24 @@ var groupList = []group{
 		about: "Bring a game or learn a new one. Second Friday of the month in the youth room."},
 	{name: "Saturday Morning Hikers", vis: policy.Public, status: policy.GroupPending, leader: "Joyce Palmer",
 		about: "Easy to moderate trail hikes near the city, about two hours, with a picnic afterward."},
+}
+
+// demoEvent is one event its group's leader schedules, starting on the first
+// day after today that is weekday (and, for a monthly one, that week of its
+// month); untilWeeks ends it that many weeks on.
+type demoEvent struct {
+	group, title, place, at string
+	weekday                 time.Weekday
+	repeat                  string
+	monthWeek, minutes      int
+	untilWeeks              int
+}
+
+var eventList = []demoEvent{
+	{group: "Tuesday Men's Bible Study", title: "Men's Bible Study", place: "Fellowship hall", at: "06:30", weekday: time.Tuesday, repeat: events.Weekly, minutes: 75},
+	{group: "Couples Small Group", title: "Couples night", place: "The Whitakers' home, 412 Alder Lane", at: "19:00", weekday: time.Friday, repeat: events.Biweekly, minutes: 120},
+	{group: "Food Pantry Team", title: "Pantry distribution", place: "Church parking lot, north entrance", at: "09:00", weekday: time.Saturday, repeat: events.Monthly, monthWeek: 2, minutes: 180},
+	{group: "Young Adults", title: "Game night and chili supper", place: "Youth room", at: "18:30", weekday: time.Friday, repeat: events.Once, minutes: 150},
+	{group: "Choir", title: "Christmas cantata rehearsal", place: "Choir room", at: "19:00", weekday: time.Wednesday, repeat: events.Weekly, minutes: 90, untilWeeks: 6},
+	{group: "Senior Saints Lunch", title: "Senior Saints lunch", place: "Fellowship hall", at: "12:00", weekday: time.Wednesday, repeat: events.Monthly, monthWeek: 1, minutes: 90},
 }

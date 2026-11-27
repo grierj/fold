@@ -21,6 +21,7 @@ import (
 
 	"fold/internal/accounts"
 	"fold/internal/clock"
+	"fold/internal/events"
 	"fold/internal/groups"
 	"fold/internal/mail"
 	"fold/internal/people"
@@ -114,7 +115,7 @@ type seeder struct {
 }
 
 func (s *seeder) build() {
-	in := accounts.SetupInput{ChurchName: church, Zone: "America/Chicago", Name: "Alex Admin", Email: adminEmail,
+	in := accounts.SetupInput{ChurchName: church, Zone: churchZone, Name: "Alex Admin", Email: adminEmail,
 		Mail: accounts.MailInput{Provider: "outbox", From: "office@example.org"}}
 	// The seeder is the installer at the server, where the setup code comes from.
 	s.run("", accounts.StartSetup{CodeVerified: true, In: in})
@@ -178,6 +179,18 @@ func (s *seeder) build() {
 		if g.status == policy.GroupArchived {
 			s.run(leader, groups.SetStatus{UID: c.UID, To: policy.GroupArchived})
 		}
+	}
+
+	zone, _ := events.LoadZone(churchZone)
+	today := time.Now().In(zone)
+	for _, e := range eventList {
+		g := groupNamed(e.group)
+		day := firstDay(today, e)
+		p := events.Pattern{Start: day.Format(events.DayLayout) + "T" + e.at, Minutes: e.minutes, Repeat: e.repeat, MonthWeek: e.monthWeek}
+		if e.untilWeeks > 0 {
+			p.Until = day.AddDate(0, 0, 7*e.untilWeeks).Format(events.DayLayout)
+		}
+		s.run(email(g.leader), &events.Create{GroupUID: uids[g.name], Input: events.Input{Title: e.title, Place: e.place, Visibility: g.vis, Pattern: p}})
 	}
 
 	s.run(adminEmail, accounts.Disable{PersonUID: s.person(email(disabledPerson)).UID})
@@ -307,4 +320,25 @@ func (c makeAdmin) Apply(tx *write.Tx) error {
 	tx.Subject(p.UID)
 	_, err = tx.Exec(`UPDATE people SET is_admin = 1, updated_at = ?, version = version + 1 WHERE id = ?`, tx.Now.Unix(), p.ID)
 	return err
+}
+
+func groupNamed(name string) group {
+	for _, g := range groupList {
+		if g.name == name {
+			return g
+		}
+	}
+	panic("demo: no group " + name)
+}
+
+// firstDay is the first day after today that falls on the event's weekday,
+// for a monthly event on its week of the month, and for a one-time event in
+// next month, so the event's
+// pattern starts on a date it really makes.
+func firstDay(today time.Time, e demoEvent) time.Time {
+	d := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1)
+	for d.Weekday() != e.weekday || (e.monthWeek != 0 && !slices.Contains(events.WeeksOf(d), e.monthWeek)) || (e.repeat == events.Once && d.Month() == today.Month()) {
+		d = d.AddDate(0, 0, 1)
+	}
+	return d
 }
