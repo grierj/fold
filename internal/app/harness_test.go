@@ -167,7 +167,7 @@ func (s *site) finishSetup() *browser {
 	}
 	s.work()
 	tok := s.linkIn("pat@cloverdale.example")
-	if r := b.post("/l/"+tok, "/l/"+tok, nil); r.status != http.StatusSeeOther {
+	if r := b.post("/signin", "/l/"+tok, nil); r.status != http.StatusSeeOther {
 		s.t.Fatalf("finish: %d %s", r.status, r.body)
 	}
 	return b

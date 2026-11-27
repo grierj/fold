@@ -45,6 +45,11 @@ func FinishSetup(s Setup, l Link, now time.Time) bool {
 	return !s.Done && LinkUsable(l, "setup", now)
 }
 
+// LinkActsWhenOpened: an emailed link acts as soon as it is opened only in the
+// browser that asked for it (R26). Anywhere else, a mail scanner included,
+// it shows a page with a button, so a scanner cannot use it up.
+func LinkActsWhenOpened(usable, sameDevice bool) bool { return usable && sameDevice }
+
 // Account is the facts about the person a sign-in is for.
 type Account struct {
 	Exists bool

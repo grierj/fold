@@ -378,6 +378,7 @@ func (a *App) startSetup(w http.ResponseWriter, r *http.Request, in accounts.Set
 		a.serverError(w, r, err)
 		return
 	}
+	a.markDevice(w, in.Email)
 	http.Redirect(w, r, "/setup/sent", http.StatusSeeOther)
 }
 

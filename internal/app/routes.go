@@ -3,7 +3,8 @@ package app
 import "net/http"
 
 // routes registers every route, here and nowhere else, so the budget count
-// in AGENTS.md is one grep. A route that writes is a POST.
+// in AGENTS.md is one grep. A route that writes is a POST, except GET
+// /l/{token} in the browser that asked for the link (R26).
 func (a *App) routes(mux *http.ServeMux) {
 	mux.Handle("GET /{$}", http.HandlerFunc(a.home))
 	mux.Handle("GET /static/", a.static())

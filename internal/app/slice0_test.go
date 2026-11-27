@@ -92,7 +92,7 @@ func TestSecondSetupReplacesFirst(t *testing.T) {
 		t.Fatal("a replaced setup link finished setup")
 	}
 	second := s.linkIn("sam@cloverdale.example")
-	if r := b.post("/l/"+second, "/l/"+second, nil); r.status != http.StatusSeeOther {
+	if r := b.post("/signin", "/l/"+second, nil); r.status != http.StatusSeeOther {
 		t.Fatalf("second: %d", r.status)
 	}
 	if n := s.Count(t, `SELECT count(*) FROM people`); n != 1 {
@@ -133,7 +133,7 @@ func TestSetupWaitsForTheTestMessage(t *testing.T) {
 	b.post("/setup/sent", "/setup/resend", nil)
 	s.work()
 	tok := s.linkIn("pat@cloverdale.example")
-	if r := b.post("/l/"+tok, "/l/"+tok, nil); r.status != http.StatusSeeOther {
+	if r := b.post("/signin", "/l/"+tok, nil); r.status != http.StatusSeeOther {
 		t.Fatalf("finish: %d", r.status)
 	}
 	if r := b.get("/"); !strings.Contains(r.body, "Welcome, Pat Admin") {
@@ -158,8 +158,10 @@ func TestSignInLink(t *testing.T) {
 		t.Fatal("same link twice")
 	}
 	sessions := s.Count(t, `SELECT count(*) FROM sessions`)
-	// Opening a link (a mail scanner) changes nothing.
-	if r := b.get("/l/" + second); !strings.Contains(r.body, "Sign in to") {
+	// Opening a link anywhere but the browser that asked for it (a mail
+	// scanner) changes nothing.
+	scanner := s.browser()
+	if r := scanner.get("/l/" + second); !strings.Contains(r.body, "Sign in to") {
 		t.Fatalf("link page: %s", r.body)
 	}
 	if s.Count(t, `SELECT count(*) FROM sessions`) != sessions || s.Count(t, `SELECT count(*) FROM links WHERE used_at IS NOT NULL AND purpose = 'signin'`) != 0 {
@@ -169,7 +171,7 @@ func TestSignInLink(t *testing.T) {
 	if r := b.post("/signin", "/l/"+first, nil); r.status == http.StatusSeeOther || !strings.Contains(r.body, "no longer works") {
 		t.Fatalf("old link: %d", r.status)
 	}
-	if r := b.post("/l/"+second, "/l/"+second, nil); r.status != http.StatusSeeOther {
+	if r := b.post("/signin", "/l/"+second, nil); r.status != http.StatusSeeOther {
 		t.Fatalf("new link: %d", r.status)
 	}
 	if r := b.get("/"); !strings.Contains(r.body, "Welcome, Pat Admin") {
@@ -322,7 +324,7 @@ func TestSessionRenewsAndSignOutEndsAll(t *testing.T) {
 	second.post("/signin", "/signin", url.Values{"email": {"pat@cloverdale.example"}})
 	s.work()
 	tok := s.linkIn("pat@cloverdale.example")
-	second.post("/l/"+tok, "/l/"+tok, nil)
+	second.post("/signin", "/l/"+tok, nil)
 	// Six days later a visit renews; the session outlives its first week.
 	s.Clock.Advance(6 * 24 * time.Hour)
 	admin.get("/")
@@ -336,7 +338,7 @@ func TestSessionRenewsAndSignOutEndsAll(t *testing.T) {
 	second.post("/signin", "/signin", url.Values{"email": {"pat@cloverdale.example"}})
 	s.work()
 	tok = s.linkIn("pat@cloverdale.example")
-	second.post("/l/"+tok, "/l/"+tok, nil)
+	second.post("/signin", "/l/"+tok, nil)
 	admin.post("/", "/signout", nil)
 	if r := second.get("/"); strings.Contains(r.body, "Welcome, Pat") {
 		t.Fatal("signing out in one browser left another signed in")
@@ -443,5 +445,145 @@ func TestAnyPageRenewsTheSession(t *testing.T) {
 	s.Clock.Advance(3 * 24 * time.Hour)
 	if r := admin.get("/"); !strings.Contains(r.body, "Welcome, Pat") {
 		t.Fatal("visiting another page did not renew the session")
+	}
+}
+
+// docs/DECISIONS.md R26: the link acts when opened in the browser that asked
+// for it, and only there. A scanner opening it first does not use it up.
+func TestLinkActsInTheBrowserThatAskedForIt(t *testing.T) {
+	s := newSite(t)
+	s.finishSetup()
+	addr := "pat@cloverdale.example"
+	asker := s.browser()
+	asker.post("/signin", "/signin", url.Values{"email": {addr}})
+	s.work()
+	tok := s.linkIn(addr)
+
+	scanner := s.browser()
+	if r := scanner.get("/l/" + tok); r.status != http.StatusOK || !strings.Contains(r.body, "Sign in to") {
+		t.Fatalf("scanner: %d", r.status)
+	}
+	if r := asker.get("/l/" + tok); r.status != http.StatusSeeOther || r.header.Get("Location") != "/?welcome=1" {
+		t.Fatalf("the asking browser was not signed in by opening the link: %d", r.status)
+	}
+	if r := asker.get("/"); !strings.Contains(r.body, "Welcome, Pat") {
+		t.Fatal("not signed in")
+	}
+	// Used now: opening it again shows that it no longer works.
+	if r := asker.get("/l/" + tok); !strings.Contains(r.body, "no longer works") {
+		t.Fatal("a used link acted again")
+	}
+}
+
+func TestSameDeviceMarkIsForOneAddressAndOneDay(t *testing.T) {
+	s := newSite(t)
+	s.finishSetup()
+	addr := "pat@cloverdale.example"
+	ask := func(b *browser, email string) { b.post("/signin", "/signin", url.Values{"email": {email}}) }
+
+	// A browser marked for a different address gets the button, and a
+	// signed-in visitor opening someone else's link is no different.
+	other := s.browser()
+	ask(other, "someone@example.org")
+	asker := s.browser()
+	ask(asker, addr)
+	s.work()
+	tok := s.linkIn(addr)
+	if r := other.get("/l/" + tok); r.status != http.StatusOK || !strings.Contains(r.body, "Sign in to") {
+		t.Fatalf("a mark for another address acted: %d", r.status)
+	}
+	if r := asker.get("/l/" + tok); r.status != http.StatusSeeOther {
+		t.Fatalf("the marked browser did not act: %d", r.status)
+	}
+
+	// The mark lasts a day. Mark a browser, then 23 hours later ask for a
+	// link from another browser, so the link is fresh but the first mark is
+	// past its day when the link is opened 2 hours after that.
+	stale := s.browser()
+	ask(stale, addr)
+	s.Clock.Advance(23 * time.Hour)
+	ask(s.browser(), addr)
+	s.work()
+	fresh := s.linkIn(addr)
+	s.Clock.Advance(2 * time.Hour)
+	if r := stale.get("/l/" + fresh); r.status != http.StatusOK || !strings.Contains(r.body, "Sign in to") {
+		t.Fatalf("a day-old mark acted: %d", r.status)
+	}
+}
+
+// Opening a link whose person is gone shows that it no longer works.
+func TestLinkWithoutItsPersonShowsTheExpiredPage(t *testing.T) {
+	s := newSite(t)
+	s.finishSetup()
+	b := s.browser()
+	b.post("/signin", "/signin", url.Values{"email": {"pat@cloverdale.example"}})
+	s.work()
+	tok := s.linkIn("pat@cloverdale.example")
+	s.Writer.Exec(`PRAGMA foreign_keys = OFF`)
+	s.Writer.Exec(`DELETE FROM sessions`)
+	s.Writer.Exec(`DELETE FROM people`)
+	if r := b.get("/l/" + tok); r.status != http.StatusOK || !strings.Contains(r.body, "Sign in to") {
+		t.Fatalf("status %d", r.status)
+	}
+}
+
+func TestSetupLinkActsInTheBrowserThatSentIt(t *testing.T) {
+	s := newSite(t)
+	b := s.browser()
+	b.unlock()
+	b.post("/setup", "/setup", setupForm("pat@cloverdale.example"))
+	s.work()
+	tok := s.linkIn("pat@cloverdale.example")
+	if r := s.browser().get("/l/" + tok); r.status != http.StatusOK || !strings.Contains(r.body, "Finish setting up") {
+		t.Fatal("another browser should see the button")
+	}
+	if r := b.get("/l/" + tok); r.status != http.StatusSeeOther {
+		t.Fatalf("the setup browser was not finished by opening the link: %d", r.status)
+	}
+	if r := b.get("/"); !strings.Contains(r.body, "Welcome, Pat Admin") {
+		t.Fatal("not signed in after one-click setup")
+	}
+}
+
+// A prefetch or prerender in the asking browser does not use the link; the
+// person's own visit still signs them in.
+func TestPreloadDoesNotUseTheLink(t *testing.T) {
+	s := newSite(t)
+	s.finishSetup()
+	addr := "pat@cloverdale.example"
+	b := s.browser()
+	b.post("/signin", "/signin", url.Values{"email": {addr}})
+	s.work()
+	tok := s.linkIn(addr)
+	for _, h := range []http.Header{
+		{"Sec-Purpose": {"prefetch;prerender"}},
+		{"Sec-Purpose": {"prefetch"}},
+		{"Purpose": {"prefetch"}},
+		{"Sec-Fetch-Mode": {"no-cors"}, "Sec-Fetch-Dest": {"image"}},
+		{"Sec-Fetch-Mode": {"navigate"}, "Sec-Fetch-Dest": {"iframe"}},
+	} {
+		req, _ := http.NewRequest("GET", s.srv.URL+"/l/"+tok, nil)
+		for k, v := range h {
+			req.Header[k] = v
+		}
+		r, err := b.c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+		if r.StatusCode != http.StatusOK {
+			t.Fatalf("%v acted: %d", h, r.StatusCode)
+		}
+	}
+	req, _ := http.NewRequest("GET", s.srv.URL+"/l/"+tok, nil)
+	req.Header.Set("Sec-Fetch-Mode", "navigate")
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	r, err := b.c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if r.StatusCode != http.StatusSeeOther {
+		t.Fatalf("the person's own visit did not act: %d", r.StatusCode)
 	}
 }

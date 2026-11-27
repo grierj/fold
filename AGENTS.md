@@ -87,8 +87,10 @@ event. Grier: "security is of primary concern." Every change is judged against t
   safe HTML. The one exception is rich text that has passed the single allow-list sanitizer.
 - **Strict content security policy.** No inline script or style, no `eval`, nothing loaded from
   another site.
-- **Only a POST changes anything**, and every POST carries a CSRF token. A link in an email opens a
-  page with a button; it never acts by being opened. The only two POSTs without a CSRF token are
+- **Only a POST changes anything**, except opening an emailed link in the browser that asked for
+  it (R26), and every POST carries a CSRF token. A link in an email opens a
+  page with a button; it never acts by being opened, except in that browser
+  (`docs/DECISIONS.md` R26), so a mail scanner can never use it up. The only two POSTs without a CSRF token are
   the inbox's one-click unsubscribe and the mail provider's delivery webhook, each proved by its
   own secret.
 - **Links are secrets.** Random, stored hashed, never written to a log. A link that signs someone

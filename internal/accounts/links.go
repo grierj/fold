@@ -59,6 +59,7 @@ func ValidTokenShape(s string) bool {
 type linkRow struct {
 	ID       int64
 	PersonID int64
+	Email    string // "" if the person row is gone
 	facts    policy.Link
 }
 
@@ -66,8 +67,10 @@ func loadLink(ctx context.Context, q db.Querier, token string) (linkRow, error) 
 	var l linkRow
 	var expires int64
 	var used, cancelled sql.NullInt64
-	err := q.QueryRowContext(ctx, `SELECT id, person_id, purpose, expires_at, used_at, cancelled_at FROM links WHERE token_hash = ?`,
-		Hash(token)).Scan(&l.ID, &l.PersonID, &l.facts.Purpose, &expires, &used, &cancelled)
+	var email sql.NullString
+	err := q.QueryRowContext(ctx, `SELECT l.id, l.person_id, l.purpose, l.expires_at, l.used_at, l.cancelled_at, p.email
+		FROM links l LEFT JOIN people p ON p.id = l.person_id WHERE l.token_hash = ?`,
+		Hash(token)).Scan(&l.ID, &l.PersonID, &l.facts.Purpose, &expires, &used, &cancelled, &email)
 	if errors.Is(err, sql.ErrNoRows) {
 		return linkRow{}, nil
 	}
@@ -75,23 +78,31 @@ func loadLink(ctx context.Context, q db.Querier, token string) (linkRow, error) 
 		return linkRow{}, err
 	}
 	l.facts.Found = true
+	l.Email = email.String
 	l.facts.Used, l.facts.Cancelled = used.Valid, cancelled.Valid
 	l.facts.ExpiresAt = time.Unix(expires, 0)
 	return l, nil
 }
 
-// LinkPurpose is what the page behind an emailed link shows before its button
-// is pressed: the purpose, if the link can still be used. Opening the page
-// changes nothing.
-func LinkPurpose(ctx context.Context, q db.Querier, token string, now time.Time) (string, bool, error) {
+// LinkInfo is what the page behind an emailed link needs before acting: the
+// purpose, whether the link can still be used, and the address it was sent
+// to, which the same-device check compares (R26).
+type LinkInfo struct {
+	Purpose string
+	Usable  bool
+	Email   string
+}
+
+// LookUpLink reads a link without using it.
+func LookUpLink(ctx context.Context, q db.Querier, token string, now time.Time) (LinkInfo, error) {
 	if !ValidTokenShape(token) {
-		return "", false, nil
+		return LinkInfo{}, nil
 	}
 	l, err := loadLink(ctx, q, token)
-	if err != nil {
-		return "", false, err
+	if err != nil || !l.facts.Found {
+		return LinkInfo{}, err
 	}
-	return l.facts.Purpose, policy.LinkUsable(l.facts, l.facts.Purpose, now), nil
+	return LinkInfo{Purpose: l.facts.Purpose, Usable: policy.LinkUsable(l.facts, l.facts.Purpose, now), Email: l.Email}, nil
 }
 
 // issueLink cancels the person's earlier links of the same purpose (asking for
