@@ -181,3 +181,26 @@ func TestAdminInvitesWithNoGroup(t *testing.T) {
 		t.Fatal("a member used the admin invite")
 	}
 }
+
+// A second click says nothing changed rather than repeating its success; a
+// one-letter search asks for more; an admin re-inviting an account is told
+// the truth (admins see everyone, DEC-5).
+func TestRosterAnswersTruthfully(t *testing.T) {
+	s := newSite(t)
+	admin := s.finishSetup()
+	mel := s.member("Mel Leader", "mel@example.org")
+	uid := s.approvedGroup(admin, mel, "Study")
+	mia := s.member("Mia Member", "mia@example.org")
+	mia.post("/groups/"+uid, "/groups/"+uid+"/join", nil)
+	miaUID := personUID(s, "mia@example.org")
+	mel.post("/groups/"+uid+"/members", "/groups/"+uid+"/members/"+miaUID+"/leader", nil)
+	if r := mel.post("/groups/"+uid+"/members", "/groups/"+uid+"/members/"+miaUID+"/leader", nil); !strings.HasSuffix(r.header.Get("Location"), "done=same") {
+		t.Fatalf("second click: %s", r.header.Get("Location"))
+	}
+	if r := mel.get("/groups/" + uid + "/members?find=A"); strings.Contains(r.body, "Nobody by that name") {
+		t.Fatal("a one-letter search says nobody matched")
+	}
+	if r := admin.post("/admin/requests", "/admin/invite", url.Values{"name": {"Mia"}, "email": {"mia@example.org"}, "adult": {"yes"}}); r.header.Get("Location") != "/admin/requests?done=exists" {
+		t.Fatalf("admin re-invite: %s", r.header.Get("Location"))
+	}
+}

@@ -90,8 +90,8 @@ func (a *App) getRoster(w http.ResponseWriter, r *http.Request) {
 		Invite            inviteForm
 		Status            string
 	}{f.group, rows, canAdd, canInvite,
-		Field{ID: "find", Name: "find", Label: "Add someone by name", Hint: "Type part of their name.", Type: "search", Value: find, MaxLength: 100},
-		find, found, newInviteForm("/groups/"+f.group.UID+"/invite", "", "", false, nil),
+		Field{ID: "find", Name: "find", Label: "Add someone by name", Hint: "Type at least two letters of their name.", Type: "search", Value: find, MaxLength: 100},
+		map[bool]string{true: find, false: ""}[len([]rune(find)) >= 2], found, newInviteForm("/groups/"+f.group.UID+"/invite", "", "", false, nil),
 		rosterStatuses[r.URL.Query().Get("done")]}
 	a.render(w, r, http.StatusOK, "roster", "", f.page)
 }
@@ -103,6 +103,7 @@ var rosterStatuses = map[string]string{
 	"removed": "Removed.",
 	"invited": "Invitation sent. If that address is new, they'll get an email to sign in.",
 	"refused": "That could not be done. The list shows how things stand now.",
+	"same":    "That was already done, so nothing changed.",
 	"many":    "That's a lot of invitations for one day, so this one wasn't sent. Try again tomorrow.",
 	"busy":    "That's a lot of changes in a short time, so this one wasn't made. Try again in a little while.",
 }
@@ -125,6 +126,8 @@ func (a *App) runRoster(w http.ResponseWriter, r *http.Request, c write.Command,
 	switch {
 	case errors.Is(err, write.ErrNotAllowed):
 		done = "refused"
+	case errors.Is(err, groups.ErrUnchanged):
+		done = "same"
 	case errors.Is(err, write.ErrSignedOut):
 		http.Redirect(w, r, "/signin", http.StatusSeeOther)
 		return
@@ -237,6 +240,20 @@ func (a *App) postAdminInvite(w http.ResponseWriter, r *http.Request) {
 		a.renderInviteErrors(w, r, f, newInviteForm("/admin/invite", name, email, adult, errs), "/admin/requests")
 		return
 	}
+	// Admins see everyone (DEC-5), so this page may say how the address
+	// stands; a leader's invitation page never does.
+	done := "invited"
+	a.reader.Read(r.Context(), func(q *sql.Tx) error {
+		if p, err := people.ByEmail(r.Context(), q, email); err == nil {
+			switch p.Status {
+			case people.StatusActive:
+				done = "exists"
+			case people.StatusDisabled:
+				done = "off"
+			}
+		}
+		return nil
+	})
 	err := a.exec.Run(r.Context(), write.Session(accounts.Hash(a.sessionToken(r))), accounts.Invite{Name: name, Email: email})
 	switch {
 	case errors.Is(err, write.ErrSignedOut):
@@ -246,5 +263,5 @@ func (a *App) postAdminInvite(w http.ResponseWriter, r *http.Request) {
 		a.serverError(w, r, err)
 		return
 	}
-	http.Redirect(w, r, "/admin/requests?done=invited", http.StatusSeeOther)
+	http.Redirect(w, r, "/admin/requests?done="+done, http.StatusSeeOther)
 }

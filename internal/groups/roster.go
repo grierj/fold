@@ -14,6 +14,11 @@ import (
 
 // The roster: adding a person found by name (P6), co-leaders, removal.
 
+// ErrUnchanged is a roster action that was already done (a second click):
+// nothing changes, and the page says nothing happened rather than repeat
+// its success.
+var ErrUnchanged = errors.New("groups: already so")
+
 // member loads a person by uid and their relation to the group, inside the
 // write.
 func member(tx *write.Tx, groupID int64, personUID string) (people.Person, policy.Rel, error) {
@@ -56,7 +61,7 @@ func (c Add) Apply(tx *write.Tx) error {
 		return write.ErrNotAllowed
 	}
 	if prel.Member {
-		return write.ErrNothing
+		return ErrUnchanged
 	}
 	if err := addMembership(tx, g.ID, p.ID); err != nil {
 		return err
@@ -110,7 +115,7 @@ func (c SetRole) Apply(tx *write.Tx) error {
 		return write.ErrNotAllowed
 	}
 	if prel.Leader == c.Leader {
-		return write.ErrNothing
+		return ErrUnchanged
 	}
 	role := map[bool]string{true: "leader", false: "member"}[c.Leader]
 	if _, err := tx.Exec(`UPDATE memberships SET role = ?, updated_at = ? WHERE group_id = ? AND person_id = ?`, role, tx.Now.Unix(), g.ID, p.ID); err != nil {

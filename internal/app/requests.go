@@ -109,6 +109,8 @@ func (a *App) getAdminRequests(w http.ResponseWriter, r *http.Request) {
 		"declined": "Declined. Nothing about them was kept.",
 		"gone":     "That request was already decided, so nothing changed.",
 		"invited":  "Invitation sent. If that address is new, they'll get an email to sign in.",
+		"exists":   "They already have an account, so no invitation was sent.",
+		"off":      "That address belongs to an account that's turned off. Turn it on from People instead.",
 	}[r.URL.Query().Get("done")]
 	type row struct {
 		accounts.Request

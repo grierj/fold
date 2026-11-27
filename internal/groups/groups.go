@@ -107,7 +107,9 @@ const visibleSQL = `g.status = 'active' AND (
 	OR ?2 = 1
 	OR EXISTS (SELECT 1 FROM active_memberships am WHERE am.group_id = g.id AND am.person_id = ?1))`
 
-// escapeLike makes a search term literal inside LIKE ... ESCAPE '\'.
+// EscapeLike makes a search term literal inside LIKE ... ESCAPE '\'.
+func EscapeLike(s string) string { return escapeLike(s) }
+
 func escapeLike(s string) string {
 	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
 	return r.Replace(s)

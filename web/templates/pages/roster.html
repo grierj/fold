@@ -36,7 +36,7 @@
           <form method="post" action="/groups/{{$.Data.Group.UID}}/members/add">{{template "csrf" $}}{{template "hidden" (hidden "person" .UID)}}{{template "button" (button "secondary" "Add")}}</form>
         </li>{{end}}
       </ul>
-      {{else}}<p class="mt-4 text-text-muted">Nobody by that name who isn't already in the group. You can invite them by email below.</p>{{end}}
+      {{else}}<p class="mt-4 text-text-muted">Nobody by that name who isn't already in the group.{{if .Data.CanInvite}} You can invite them by email below.{{end}}</p>{{end}}
     {{end}}
   </section>
   {{end}}
