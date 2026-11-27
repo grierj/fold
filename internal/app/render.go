@@ -56,6 +56,9 @@ func loadTemplates() (*templates, error) {
 		"empty": func(image, title, text string, action *LinkButton) Empty {
 			return Empty{Image: "illustrations/" + image, Title: title, Text: text, Action: action}
 		},
+		"emptypage": func(image, title, text string, action *LinkButton) Empty {
+			return Empty{Image: "illustrations/" + image, Title: title, Text: text, Action: action, Main: true}
+		},
 		"notice": func(tone, title, text string) Notice { return Notice{Tone: tone, Title: title, Text: text} },
 	}
 	base, err := template.New("").Funcs(funcs).ParseFS(web.Templates, "templates/base.html", "templates/partials/*.html")

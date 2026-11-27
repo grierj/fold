@@ -1,0 +1,13 @@
+{
+  "name": "fold-e2e",
+  "private": true,
+  "description": "Developer tooling only: the browser gates. Nothing here ships.",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.14.1",
+    "@playwright/test": "1.65.1"
+  }
+}

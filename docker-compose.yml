@@ -1,0 +1,53 @@
+# Everything a church runs: the app, and Caddy in front of it for HTTPS
+# (docs/DECISIONS.md R9). Settings come from .env beside this file; see
+# .env.example and docs/INSTALL.md.
+services:
+  app:
+    # A published release, pinned to an exact version in .env.
+    image: ghcr.io/grierj/fold:${VERSION:?Set VERSION in .env}
+    restart: unless-stopped
+    # No ports on the host: only Caddy is reachable from outside.
+    environment:
+      SITE_URL: https://${DOMAIN:?Set DOMAIN in .env}
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env (make one with openssl rand -hex 32)}
+      SECRET_KEY_PREVIOUS: ${SECRET_KEY_PREVIOUS:-}
+      # Only Caddy, on the fixed network below, may say who the client is.
+      TRUSTED_PROXIES: 172.30.0.0/24
+    volumes:
+      # The database, its backups, and the control socket.
+      - data:/data
+    healthcheck:
+      test: ["CMD", "/fold", "healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  caddy:
+    image: caddy:2.11.9-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+
+# One network with a fixed range, so the app can trust exactly its proxy.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+volumes:
+  data:
+  caddy_data:
+  caddy_config:

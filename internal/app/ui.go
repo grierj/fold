@@ -1,5 +1,7 @@
 package app
 
+//go:generate go run ./zonegen
+
 // The values each partial in web/templates/partials takes. A page builds
 // these in Go; templates never assemble a control from loose strings.
 
@@ -81,6 +83,7 @@ type Dialog struct {
 type Empty struct {
 	Image, Title, Text string
 	Action             *LinkButton
+	Main               bool
 }
 
 type Notice struct {

@@ -44,7 +44,7 @@ type Meta struct {
 	Checkpoint audit.Checkpoint `json:"checkpoint"`
 }
 
-var namePattern = regexp.MustCompile(`^[0-9]{8}-[0-9]{6}$`)
+var namePattern = regexp.MustCompile(`^[0-9]{8}-[0-9]{6}(-[0-9]{1,3})?$`)
 
 // ValidName refuses anything that is not a backup's name, so a name from the
 // command line can never reach outside the backups folder.
@@ -64,7 +64,12 @@ func Take(ctx context.Context, e *write.Executor, dataDir string) (Meta, error) 
 		return Meta{}, err
 	}
 	now := e.Clock().Now().UTC()
+	// Two backups in one second (the copy kept before a restore, say) get
+	// distinct names; a backup is never overwritten.
 	name := now.Format("20060102-150405")
+	for i := 2; exists(dir, name); i++ {
+		name = fmt.Sprintf("%s-%d", now.Format("20060102-150405"), i)
+	}
 	dbPath, metaPath := paths(dir, name)
 	tmp := dbPath + ".partial"
 	os.Remove(tmp)
@@ -250,6 +255,13 @@ func Restore(ctx context.Context, e *write.Executor, dataDir, name string) (Meta
 		return Meta{}, err
 	}
 	return ReadMeta(dataDir, name)
+}
+
+func exists(dir, name string) bool {
+	d, m := paths(dir, name)
+	_, errD := os.Stat(d)
+	_, errM := os.Stat(m)
+	return errD == nil || errM == nil
 }
 
 func copyFile(src, dst string) error {

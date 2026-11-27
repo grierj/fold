@@ -78,10 +78,11 @@
   </form>
 </dialog>{{end}}
 
-{{/* empty: what would appear here, and the next step. Never red (DEC-66). */}}
+{{/* empty: what would appear here, and the next step. Never red (DEC-66).
+     Main makes its title the page's h1, when it is the whole page. */}}
 {{define "empty"}}<div class="empty">
   {{with .Image}}<img src="{{asset .}}" alt="" width="160" height="120" class="h-auto w-32">{{end}}
-  <h2 class="text-xl font-bold">{{.Title}}</h2>
+  {{if .Main}}<h1 class="text-2xl font-bold sm:text-3xl">{{.Title}}</h1>{{else}}<h2 class="text-xl font-bold">{{.Title}}</h2>{{end}}
   {{with .Text}}<p class="max-w-md text-text-muted">{{.}}</p>{{end}}
   {{with .Action}}{{template "linkbutton" .}}{{end}}
 </div>{{end}}

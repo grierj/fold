@@ -10,14 +10,14 @@
       {{template "field" .Data.ChurchName}}
       {{template "field" .Data.Zone}}
     </fieldset>
-    <fieldset class="form-stack section">
-      <legend class="mb-2 pt-6 text-xl font-bold">You, the first administrator</legend>
+    <div class="section"><fieldset class="form-stack">
+      <legend class="mb-2 text-xl font-bold">You, the first administrator</legend>
       {{template "field" .Data.Name}}
       {{template "field" .Data.Email}}
       {{template "choice" .Data.Adult}}
-    </fieldset>
-    <fieldset class="form-stack section mail-settings">
-      <legend class="mb-2 pt-6 text-xl font-bold">Mail</legend>
+    </fieldset></div>
+    <div class="section"><fieldset class="form-stack mail-settings">
+      <legend class="mb-2 text-xl font-bold">Mail</legend>
       <p class="field-hint">The service that sends your site's email. Postmark is the one we suggest; any mail server that offers encryption works too.</p>
       {{range .Data.Providers}}{{template "choice" .}}{{end}}
       {{template "field" .Data.From}}
@@ -28,7 +28,7 @@
         {{template "field" .Data.SMTPUsername}}
         {{template "field" .Data.SMTPPassword}}
       </div>
-    </fieldset>
+    </fieldset></div>
     {{template "button" (wide (button "primary" "Send the test message"))}}
   </form>
 </div>{{end}}

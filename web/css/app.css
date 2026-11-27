@@ -212,7 +212,7 @@
   .form-stack { @apply w-full space-y-5; }
   .site-header { @apply border-b border-border bg-surface; }
   .site-header-row { @apply mx-auto flex min-h-16 flex-wrap items-center justify-between gap-x-4 gap-y-2 py-2; max-width: var(--page-width); padding-inline: var(--gutter); }
-  .skip-link { @apply absolute left-2 top-2 z-50 -translate-y-24 rounded-md bg-surface px-4 py-2 font-semibold text-primary shadow-lg focus:translate-y-0; }
+  .skip-link { @apply absolute left-2 top-2 z-50 inline-flex min-h-11 items-center -translate-y-24 rounded-md bg-surface px-4 py-2 font-semibold text-primary shadow-lg focus:translate-y-0; }
 }
 
 /* Setup's mail fields follow the chosen service, without script. */

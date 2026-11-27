@@ -1,0 +1,37 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Vet, staticcheck, vulnerabilities, tests, stylesheet
+        run: make check
+      - name: Build with CGO off
+        run: make build
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Browser gates (axe, layout, contrast at 390 and 1280 px)
+        working-directory: e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          npx playwright test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screens
+          path: e2e/test-results
+          retention-days: 7

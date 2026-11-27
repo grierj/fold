@@ -12,8 +12,9 @@ import (
 func TestHourlyAndDaily(t *testing.T) {
 	c := clock.NewFake(time.Unix(0, 0))
 	l := New(c, Rule{N: 2, Per: time.Hour}, Rule{N: 3, Per: 24 * time.Hour})
-	if !l.Allow("a") || !l.Allow("a") || l.Allow("a") {
-		t.Fatal("hourly limit")
+	got := []bool{l.Allow("a"), l.Allow("a"), l.Allow("a")}
+	if !got[0] || !got[1] || got[2] {
+		t.Fatalf("hourly limit: %v", got)
 	}
 	if !l.Allow("b") {
 		t.Fatal("one key's limit spent another's")
