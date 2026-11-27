@@ -2,8 +2,6 @@ package accounts
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 
 	"fold/internal/db"
 	"fold/internal/groups"
@@ -113,18 +111,6 @@ func (c Enable) Apply(tx *write.Tx) error {
 	}
 	tx.Subject(target.UID)
 	return nil
-}
-
-func byUID(tx *write.Tx, uid string) (people.Person, error) {
-	var id int64
-	err := tx.QueryRow(`SELECT id FROM people WHERE uid = ?`, uid).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return people.Person{}, write.ErrNotAllowed
-	}
-	if err != nil {
-		return people.Person{}, err
-	}
-	return people.ByID(tx.Context(), tx, id)
 }
 
 // SoleLed lists the active groups a person is the only active leader of:
