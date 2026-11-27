@@ -104,6 +104,7 @@ var rosterStatuses = map[string]string{
 	"invited": "Invitation sent. If that address is new, they'll get an email to sign in.",
 	"refused": "That could not be done. The list shows how things stand now.",
 	"many":    "That's a lot of invitations for one day, so this one wasn't sent. Try again tomorrow.",
+	"busy":    "That's a lot of changes in a short time, so this one wasn't made. Try again in a little while.",
 }
 
 // runRoster runs a roster command and comes back to the roster.
