@@ -137,6 +137,20 @@ test("account requests and notices, through the gates", async ({ page, browser }
   await expect(visitor.getByText("Invitation sent.")).toBeVisible();
   await gate(visitor, "roster after invite");
 
+  // Nia opens her emailed invitation in her own browser, says she is an
+  // adult and accepts (R32).
+  await page.goto("/dev/outbox");
+  const niaText = await page.locator("li", { hasText: "To nia@example.org" }).first().locator("[data-outbox-text]").innerText();
+  const niaLink = niaText.match(/http:\/\/[^\s]+\/invite\/[A-Za-z0-9_-]{43}/)![0];
+  const nia = await (await browser.newContext()).newPage();
+  await watchCSP(nia);
+  await nia.goto(niaLink);
+  await expect(nia.getByRole("heading", { name: "Join Tuesday Bible Study" })).toBeVisible();
+  await gate(nia, "invitation by email");
+  await nia.getByLabel("I am 18 or older").check();
+  await nia.getByRole("button", { name: "Accept the invitation" }).click();
+  await expect(nia.getByText("You joined the group.")).toBeVisible();
+
   // Sam's profile: the email switch saves when changed.
   await visitor.goto("/profile");
   await gate(visitor, "profile");
