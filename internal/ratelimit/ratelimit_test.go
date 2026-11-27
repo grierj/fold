@@ -47,3 +47,19 @@ func TestCheckAndSpendIsAtomic(t *testing.T) {
 		t.Fatalf("%d allowed, want 5", ok.Load())
 	}
 }
+
+// A full limiter still lets a newcomer in and stays at its size, so many
+// strangers cannot shut out the church.
+func TestFullLimiterMakesRoom(t *testing.T) {
+	l := New(clock.NewFake(time.Unix(0, 0)), Rule{N: 1, Per: 24 * time.Hour})
+	l.maxKeys = 10
+	for i := range 10 {
+		l.Allow(string(rune('a' + i)))
+	}
+	if !l.Allow("newcomer") {
+		t.Fatal("a full limiter refused a newcomer")
+	}
+	if len(l.seen) != 10 {
+		t.Fatalf("%d keys, want 10", len(l.seen))
+	}
+}

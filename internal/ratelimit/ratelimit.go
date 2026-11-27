@@ -33,8 +33,9 @@ type Limiter struct {
 	clock clock.Clock
 	rules []Rule
 	seen  map[string][]window
-	// maxKeys bounds memory. When it is reached every new key is refused,
-	// which only ever errs toward the silent answer.
+	// maxKeys bounds memory (about 40 MB at the worst). When it is reached a
+	// new key makes room by dropping another, so a stranger with many
+	// networks can reset some counters but never shut everyone out.
 	maxKeys int
 	swept   time.Time
 }
@@ -53,7 +54,10 @@ func (l *Limiter) Allow(key string) bool {
 	ws, ok := l.seen[key]
 	if !ok {
 		if len(l.seen) >= l.maxKeys {
-			return false
+			for k := range l.seen { // map order is unpredictable: a random key
+				delete(l.seen, k)
+				break
+			}
 		}
 		ws = make([]window, len(l.rules))
 	}
