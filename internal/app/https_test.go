@@ -21,7 +21,7 @@ func TestHTTPSCookiesAndOrigin(t *testing.T) {
 	env := testenv.New(t)
 	u, _ := url.Parse("https://church.example.org")
 	a, err := app.New(app.Config{SiteURL: u, Proxies: httpx.Proxies{}},
-		app.Deps{Reader: env.Reader, Exec: env.Exec, Queue: accounts.NewSignInQueue(env.Exec, env.Log), Keys: env.Keys, Clock: env.Clock, Log: env.Log, Outbox: &mail.Outbox{}})
+		app.Deps{Reader: env.Reader, Exec: env.Exec, Queue: accounts.NewQueue(env.Exec, env.Log), Keys: env.Keys, Clock: env.Clock, Log: env.Log, Outbox: &mail.Outbox{}})
 	if err != nil {
 		t.Fatal(err)
 	}

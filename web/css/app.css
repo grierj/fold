@@ -221,3 +221,10 @@
   .mail-settings:not(:has(#provider-postmark:checked)) .mail-postmark,
   .mail-settings:not(:has(#provider-smtp:checked)) .mail-smtp { display: none; }
 }
+
+/* The bell and the notice list. */
+@layer components {
+  .badge { @apply ml-1 inline-flex min-w-6 items-center justify-center rounded-full bg-primary px-1.5 text-xs font-semibold text-primary-foreground; }
+  .notice-item { @apply block w-full min-h-11 px-1 py-3 text-left text-base text-text hover:bg-sunken; }
+  .unread-dot { @apply mt-2 size-2 shrink-0 rounded-full bg-primary; }
+}

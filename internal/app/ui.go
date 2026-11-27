@@ -95,6 +95,14 @@ type Notice struct {
 
 type FieldError struct{ ID, Message string }
 
+// NoticeItem is one row of the notice list.
+type NoticeItem struct {
+	ID         int64
+	Text, When string
+	Read       bool
+	CSRF       string
+}
+
 // errorSummary lists the fields' errors in form order.
 func errorSummary(fields ...Field) []FieldError {
 	var out []FieldError

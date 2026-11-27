@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"fold/internal/accounts"
-	"fold/internal/httpx"
 	"fold/internal/mail"
 	"fold/internal/people"
 	"fold/internal/policy"
@@ -71,20 +70,9 @@ func (a *App) postSignin(w http.ResponseWriter, r *http.Request) {
 			a.signinForm(raw, "Enter an email address like name@example.org.", ""))
 		return
 	}
-	// Limits are spent in order and stop at the first refusal. Counting an
-	// address per client first means one stranger cannot use up the
-	// address's own allowance and lock its owner out for the day.
 	a.markDevice(w, email)
-	client := httpx.ClientKey(a.cfg.Proxies.ClientIP(r))
-	switch {
-	case !a.limits.signinClient.Allow(client):
-		a.log.Warn("signin: client limit reached; answered as usual")
-	case !a.limits.signinPair.Allow(client + " " + email):
-		a.log.Warn("signin: address limit for this client reached; answered as usual")
-	case !a.limits.signinAddress.Allow(email):
-		a.log.Warn("signin: address limit reached; answered as usual")
-	default:
-		a.queue.Add(email)
+	if a.allowStrangerMail(r, email) {
+		a.queue.Add(accounts.RequestSignIn{Email: email})
 	}
 	a.renderPlain(w, r, http.StatusOK, "signin_sent", struct{ Email string }{email})
 }

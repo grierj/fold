@@ -1,0 +1,21 @@
+{{define "title"}}Account requests{{end}}
+{{define "content"}}<div class="page-narrow">
+  <div class="page-header"><h1 class="text-2xl font-bold sm:text-3xl">Account requests</h1></div>
+  {{with .Data.Status}}<div class="mb-6">{{template "status" .}}</div>{{end}}
+  {{if .Data.Requests}}
+  <ul class="divide-y divide-border border-y border-border">
+    {{range .Data.Requests}}<li class="flex flex-wrap items-center justify-between gap-3 py-4">
+      <div class="min-w-0">
+        <p class="font-semibold wrap-anywhere">{{.Name}}</p>
+        <p class="text-sm text-text-muted wrap-anywhere">{{.Email}}</p>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <form method="post" action="/admin/requests/{{.UID}}/approve">{{template "csrf" $}}{{template "button" (button "primary" "Approve")}}</form>
+        {{template "dialog" .Decline}}
+      </div>
+    </li>{{end}}
+  </ul>
+  {{else}}
+  {{template "empty" (empty "all-caught-up.svg" "No requests waiting" "When someone asks for an account, it appears here and you get a notice." nil)}}
+  {{end}}
+</div>{{end}}

@@ -13,7 +13,7 @@ import (
 
 	"fold/internal/accounts"
 	"fold/internal/app"
-	"fold/internal/backup"
+	"fold/internal/server"
 	"fold/internal/httpx"
 	"fold/internal/mail"
 	"fold/internal/testenv"
@@ -28,7 +28,7 @@ type site struct {
 	app    *app.App
 	srv    *httptest.Server
 	runner *write.Runner
-	queue  *accounts.SignInQueue
+	queue  *accounts.Queue
 	outbox *mail.Outbox
 }
 
@@ -36,7 +36,7 @@ func newSite(t *testing.T) *site {
 	t.Helper()
 	env := testenv.New(t)
 	outbox := &mail.Outbox{}
-	queue := accounts.NewSignInQueue(env.Exec, env.Log)
+	queue := accounts.NewQueue(env.Exec, env.Log)
 	srv := httptest.NewUnstartedServer(nil)
 	u, _ := url.Parse("http://" + srv.Listener.Addr().String())
 	a, err := app.New(app.Config{SiteURL: u, Dev: true, Proxies: httpx.Proxies{}},
@@ -48,9 +48,8 @@ func newSite(t *testing.T) *site {
 	srv.Start()
 	t.Cleanup(srv.Close)
 	runner := write.NewRunner(env.Exec, env.Log)
-	mailer := &accounts.Mailer{Reader: env.Reader, Keys: env.Keys, SiteURL: u.String(), Outbox: outbox, Dev: true, Clock: env.Clock}
-	runner.Handle(accounts.JobLinkMail, mailer.SendLink)
-	(&backup.Jobs{Exec: env.Exec, Reader: env.Reader, DataDir: env.Dir, Outbox: outbox, Dev: true, Log: env.Log}).Register(runner)
+	server.RegisterJobs(runner, server.JobDeps{Exec: env.Exec, Reader: env.Reader, Keys: env.Keys, SiteURL: u.String(),
+		Outbox: outbox, Dev: true, Clock: env.Clock, DataDir: env.Dir, Log: env.Log})
 	return &site{Env: env, t: t, app: a, srv: srv, runner: runner, queue: queue, outbox: outbox}
 }
 

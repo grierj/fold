@@ -28,6 +28,7 @@ import (
 	"fold/internal/httpx"
 	"fold/internal/keys"
 	"fold/internal/mail"
+	"fold/internal/notices"
 	"fold/internal/write"
 )
 
@@ -197,16 +198,15 @@ func Serve(ctx context.Context, env Env, log *slog.Logger) error {
 	if env.Dev {
 		outbox = &mail.Outbox{}
 	}
-	queue := accounts.NewSignInQueue(o.Exec, log)
+	queue := accounts.NewQueue(o.Exec, log)
 	a, err := app.New(app.Config{SiteURL: env.SiteURL, Dev: env.Dev, Proxies: env.Proxies},
 		app.Deps{Reader: o.Reader, Exec: o.Exec, Queue: queue, Keys: env.Keys, Clock: c, Log: log, Outbox: outbox})
 	if err != nil {
 		return err
 	}
 	runner := write.NewRunner(o.Exec, log)
-	mailer := &accounts.Mailer{Reader: o.Reader, Keys: env.Keys, SiteURL: env.SiteURL.String(), Outbox: outbox, Dev: env.Dev, Clock: c}
-	runner.Handle(accounts.JobLinkMail, mailer.SendLink)
-	(&backup.Jobs{Exec: o.Exec, Reader: o.Reader, DataDir: env.DataDir, Outbox: outbox, Dev: env.Dev, Log: log}).Register(runner)
+	RegisterJobs(runner, JobDeps{Exec: o.Exec, Reader: o.Reader, Keys: env.Keys, SiteURL: env.SiteURL.String(),
+		Outbox: outbox, Dev: env.Dev, Clock: c, DataDir: env.DataDir, Log: log})
 
 	ctrl := &control{env: env, exec: o.Exec, reader: o.Reader, app: a, log: log}
 	if err := ctrl.announceSetup(ctx); err != nil {
@@ -245,4 +245,28 @@ func Serve(ctx context.Context, env Env, log *slog.Logger) error {
 	shut, done := context.WithTimeout(context.Background(), 10*time.Second)
 	defer done()
 	return srv.Shutdown(shut)
+}
+
+// JobDeps is what the background jobs need.
+type JobDeps struct {
+	Exec    *write.Executor
+	Reader  *db.Reader
+	Keys    *keys.Keys
+	SiteURL string
+	Outbox  *mail.Outbox
+	Dev     bool
+	Clock   clock.Clock
+	DataDir string
+	Log     *slog.Logger
+}
+
+// RegisterJobs adds every job handler and schedule to the runner. Tests call
+// it too, so they run the same jobs as the server.
+func RegisterJobs(r *write.Runner, d JobDeps) {
+	(&accounts.Mailer{Reader: d.Reader, Keys: d.Keys, SiteURL: d.SiteURL, Outbox: d.Outbox, Dev: d.Dev, Clock: d.Clock}).Register(r)
+	(&backup.Jobs{Exec: d.Exec, Reader: d.Reader, DataDir: d.DataDir, Outbox: d.Outbox, Dev: d.Dev, Log: d.Log}).Register(r)
+	r.Handle(notices.JobCleanup, notices.Cleanup(d.Exec))
+	r.Every(write.Recurring{Kind: notices.JobCleanup, Next: func(now time.Time) time.Time {
+		return now.UTC().Truncate(24 * time.Hour).Add(29 * time.Hour) // 05:00 UTC tomorrow
+	}})
 }

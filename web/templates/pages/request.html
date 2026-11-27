@@ -1,0 +1,17 @@
+{{define "title"}}Ask for an account{{end}}
+{{define "content"}}<div class="page-form">
+  <h1 class="text-2xl font-bold sm:text-3xl">Ask for an account</h1>
+  <p class="mt-2 text-text-muted">An administrator looks at each request. You'll get an email when your account is ready.</p>
+  <form class="form-stack mt-6" method="post" action="/request" novalidate>
+    {{template "csrf" .}}
+    {{template "errorsummary" .Data.Errors}}
+    {{template "field" .Data.Name}}
+    {{template "field" .Data.Email}}
+    <fieldset>
+      <legend class="label">Your age</legend>
+      {{range .Data.Ages}}{{template "choice" .}}{{end}}
+    </fieldset>
+    {{template "button" (wide (button "primary" "Ask for an account"))}}
+  </form>
+  <p class="mt-6">Already have an account? <a class="text-link" href="/signin">Sign in</a></p>
+</div>{{end}}

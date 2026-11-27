@@ -29,7 +29,18 @@ const (
 	// JobLinkMail emails a link. Its ref is the link id and its secret the
 	// token, erased when the job ends.
 	JobLinkMail = "mail.link"
+	// JobApprovedMail emails a sign-in link saying the account was approved.
+	JobApprovedMail = "mail.approved"
+
+	// JobAccountExists tells an address that already has an account that
+	// someone asked for one; its ref is the person. JobRequestReceived tells
+	// a new requester their request is waiting.
+	JobAccountExists   = "mail.account_exists"
+	JobRequestReceived = "mail.request_received"
 )
+
+// linkJobs are the job kinds that carry a link's token.
+var linkJobs = []string{JobLinkMail, JobApprovedMail}
 
 // NewToken is 32 random bytes, URL-safe.
 func NewToken() string {
@@ -108,6 +119,12 @@ func LookUpLink(ctx context.Context, q db.Querier, token string, now time.Time) 
 // issueLink cancels the person's earlier links of the same purpose (asking for
 // a new one cancels the old, R8), creates a new one and queues its email.
 func issueLink(tx *write.Tx, personID int64, purpose string) (int64, error) {
+	return issueLinkAs(tx, personID, purpose, JobLinkMail)
+}
+
+// issueLinkAs is issueLink with the email that carries the link: the plain
+// sign-in email, or one saying why (an approval, an invitation).
+func issueLinkAs(tx *write.Tx, personID int64, purpose, jobKind string) (int64, error) {
 	rows, err := tx.Query(`SELECT id FROM links WHERE person_id = ? AND purpose = ? AND used_at IS NULL AND cancelled_at IS NULL`, personID, purpose)
 	if err != nil {
 		return 0, err
@@ -123,8 +140,10 @@ func issueLink(tx *write.Tx, personID int64, purpose string) (int64, error) {
 		if _, err := tx.Exec(`UPDATE links SET cancelled_at = ? WHERE id = ?`, tx.Now.Unix(), id); err != nil {
 			return 0, err
 		}
-		if err := tx.CancelJobs(JobLinkMail, id); err != nil {
-			return 0, err
+		for _, kind := range linkJobs {
+			if err := tx.CancelJobs(kind, id); err != nil {
+				return 0, err
+			}
 		}
 	}
 	token := NewToken()
@@ -134,7 +153,7 @@ func issueLink(tx *write.Tx, personID int64, purpose string) (int64, error) {
 		return 0, err
 	}
 	id, _ := res.LastInsertId()
-	if err := tx.Enqueue(write.NewJob{Kind: JobLinkMail, Ref: id, Secret: []byte(token)}); err != nil {
+	if err := tx.Enqueue(write.NewJob{Kind: jobKind, Ref: id, Secret: []byte(token)}); err != nil {
 		return 0, err
 	}
 	tx.Detail("purpose", purpose)
