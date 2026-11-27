@@ -4,7 +4,7 @@ What to build, in what order, and how to tell a slice is done. This page adds no
 is in `docs/DECISIONS.md` (cited here as R, P or a Fold DEC number). If this page and a decision
 disagree, the decision wins and this page is fixed.
 
-Only slices 0 and 1 are written in detail. Each later slice gets its detail in a pull request to
+Slices 0 to 2 are written in detail. Each later slice gets its detail in a pull request to
 this page when the slice before it is merged, so the plan is written with what was just learned
 and never runs far ahead of the code.
 
@@ -15,8 +15,8 @@ The only place status is kept. Update the row in the pull request that changes i
 | Slice | What | Status |
 |---|---|---|
 | 0 | Foundation and install | Done (v0.2.0). The timed install by a person waits for an installer who is not Grier |
-| 1 | People, groups, approvals, notices | Done. A real volunteer admin approving from their phone is in `docs/FIRST-CHURCH-CHECKS.md` |
-| 2 | Events, dates, RSVP, calendar | Not started |
+| 1 | People, groups, approvals, notices | Done (v0.3.0). A real volunteer admin approving from their phone is in `docs/FIRST-CHURCH-CHECKS.md` |
+| 2 | Events, dates, RSVP, calendar | Planned below (R33 to R36); milestone 1 next |
 | 3 | Announcements, reminders, email choices | Not started |
 | 4 | First-church readiness. **Pilot goes live.** | Not started |
 | 5 | Households, children, teens | Waits for the pilot |
@@ -167,18 +167,124 @@ Email choices and unsubscribe (slice 3); until then the only email is required a
 
 ---
 
-## Slices 2 to 4, in outline
+## Slice 2: events, dates, RSVP, calendar
 
-**Slice 2: events, dates, RSVP, calendar.** A leader schedules a one-off or weekly event in the
-church's time zone; an admin creates a church-wide event and names its hosts. A member opens a
-date and can tell at a glance what it is, when, where, whether they are in, who else is coming and
-what is different about this date. They answer Going, Maybe or Can't go, for one date or the
-series. Seats and a waitlist work, and anyone moved up is told. A guest RSVPs to a public event by
-emailed link and can manage that one date. The calendar has Agenda, Week and Month, and a personal
-feed subscribes from a phone. The group finder gains filters for meeting day and time of day.
-Leaving a group takes the person off its upcoming dates. Deleting or cancelling tells the people
-signed up. Then the measuring gate above. *Rests on:* R15, P7, P8, and "Events and dates" and
-"RSVP" in the decisions.
+**End state.** A leader schedules a one-off or repeating event for their group, in the church's
+time zone, and an admin creates a church-wide event and names its hosts. A member opens a date and
+can tell at a glance what it is, when, where, whether they are in, who else is coming and what is
+different about this date. They answer Going, Maybe or Can't go, for one date, this and following,
+or all future dates. Seats and a waitlist work, and anyone moved up is told. A stranger RSVPs to a
+public event by emailed link and can manage that one date. The calendar has Agenda, Week and
+Month, Home leads with what is coming up, and a personal feed subscribes from a phone. The group
+finder filters by meeting day and time of day, and group lists sort by next meeting. Leaving a
+group takes the person off its upcoming dates. Cancelling a date or deleting an event tells the
+people signed up. Then the measuring gate.
+
+**Milestones**, one pull request each, in this order:
+
+1. **Events and dates.** The tables; the event clock carried from Fold (`internal/events`:
+   expansion in the event's zone, the 2,000-date cap, the series edit, ICS output; see
+   `docs/CARRYOVER.md` section 1); the policy for seeing and running an event; the event editor
+   (title, description, When, place, then more options with seats and visibility, DEC-95, DEC-51),
+   with repeats as R33 lists and times on a daylight-saving night as R34 says. A new event starts
+   in the church's zone (DEC-50) and copies its group's visibility (DEC-48); opening one wider is
+   audited, tells the other leaders and admins, and never shows an invite-only group's name, place
+   or members (DEC-6, DEC-17, DEC-28). Church-wide events and their hosts (DEC-7). The series is
+   edited on the event page only (DEC-161), and dates it drops are cancelled and restored
+   (DEC-91); one date can be cancelled, restored, or opened wider than its series (P7). The date
+   page, without answers yet, shows times in the viewer's zone with one quiet line when the
+   event's clock differs, and edit forms name the event's zone (DEC-57). Video is a link out
+   (DEC-16). Dates are stored 18 months ahead, Fold's horizon, and extended by a nightly job. Each
+   person gets a time zone (DEC-58, R29): the church's by default, set from the browser the first
+   time, changed on the profile.
+2. **Answers, seats and the waitlist.** Going, Maybe, Can't go, and Cancelled as its own state
+   (DEC-54). Membership is a standing invitation, a church-wide event invites every member, and a
+   public event is not an invitation until the person answers (DEC-72, DEC-73). The series dialog
+   says that dates added later are not answered for them, and a status line stays after each
+   answer (DEC-71, DEC-92). Counts first, names to those allowed, and Can't go only to the people
+   running the event (DEC-63, DEC-64). Optional seats, and one function every seat change passes
+   through, which moves the next waiting person up and tells them (DEC-84, `docs/HAZARDS.md`
+   section 7). Leaving a group or being removed takes the person off upcoming dates without
+   rewriting past ones; a disabled account's answers are hidden and not counted, and come back
+   where there is room when it is turned on again (DEC-38, DEC-47). Making an event more private
+   removes nobody and lists who is affected (R3). Deleting an event or cancelling a date tells the
+   people signed up, with the count in the confirmation (DEC-175). Email goes only where R36 says;
+   every notice goes to the bell.
+3. **Guests.** A public event's date offers a stranger a short form: name, email, and that they are
+   18 or older, each with a length limit. Two links, both random and stored hashed. The *confirm
+   link* is single use and lasts 24 hours; it is one click in the browser that asked and a button
+   anywhere else (R26), and only then does the answer count (R35). Until it is used, the name and
+   email wait sealed in the link's row, no person or answer exists, and the row is erased when it
+   is used or expires. The *manage link* is a standing link to that one date: it can cancel the
+   guest's answer (a POST with a CSRF token), is revoked when they cancel, and stops working when
+   the date ends (DEC-55). Going only (DEC-56). An address that already has an account gets the
+   same page and the same email shape, and the answer joins that account (R15). Guests get only the
+   mail R36 allows, by their manage link; no optional mail. Limits per address and per client,
+   in memory, answer with the usual message (`docs/HAZARDS.md` sections 3 and 9). Inviting one
+   person to one date by link (P8).
+4. **Calendar, Home and feeds.** `/calendar` with Agenda (the default), Week and Month (DEC-67),
+   Going tinted and Maybe and unanswered outlined, unanswered church-wide and public dates within
+   30 days (DEC-77). Home's "Coming up for you" (DEC-94). A personal ICS feed on a standing link:
+   random, stored hashed, one purpose, revocable from the profile, read by GET without a session,
+   and an unknown or revoked link answers exactly like one never issued. The feed marks Going
+   confirmed and Maybe tentative and leaves out Can't go (DEC-71). "Add to calendar" and "Share"
+   on every date (DEC-93). Finder filters by day and time of day; group lists sort by next meeting.
+5. **Measure.** The gate below: lines, tables, routes and test time against `AGENTS.md`, compared
+   with Fold for the same behaviour, written into this page. A timed install waits for an installer
+   who is not Grier, as in slice 0.
+
+**Checks.** Every test reads an injected clock.
+
+- A: a weekly 7:00 pm event stays at 7:00 pm on both sides of each daylight-saving change, in the
+  event's zone. Only R33's repeats can be saved, and one that would make more than 2,000 dates is
+  refused.
+- A: on the spring night a 2:30 am date moves to 3:30 am and the date page says so; on the fall
+  night a 1:30 am date uses the first 1:30; the form warns when the chosen time can do either
+  (R34).
+- A: the policy tables for seeing an event, answering, running it and seeing who is coming pass,
+  carried from Fold and changed where R3, P7 and P8 say. An invite-only group's event answers like
+  a missing page to someone outside it, on the date page, the calendar and the feed. Only the
+  people running an event see who can't go.
+- A: every change that frees a seat (Can't go, Cancelled, a removal, leaving a group, a disabled
+  account, a raised limit, a cancelled guest) moves the next waiting person up and tells them;
+  nothing that doesn't free a seat moves anyone.
+- A: deleting an event or cancelling a date tells everyone signed up, at the bell and by the email
+  R36 names, in batches; the confirmation's count is exactly the people who will be told. A series
+  edit that drops dates asks about that before saving.
+- A: the guest form answers the same whether or not the address has an account; a confirm link
+  does nothing when merely opened in another browser; nothing about the guest is stored as a
+  person until it is used, and its sealed row is gone after use or expiry; the manage link stops
+  working when the guest cancels or the date ends; limits stop an address being flooded.
+- A: leaving a group removes upcoming answers and keeps past ones; joining again is allowed.
+- A: the feed shows only what the person may see, an unknown or revoked link gets the same answer,
+  and no feed or guest link is ever written to a log.
+- A: the calendar and the feed never carry other people's answers, counts or Can't go (DEC-64,
+  DEC-67).
+- A: the accessibility, layout and contrast gates pass on every new page at 390 and 1280 px.
+- P: a personal feed subscribes on a real iPhone and shows next week's dates.
+
+**Defaults, Grier to confirm or change** (also listed in `docs/HAZARDS.md` section 12):
+
+- Changing the church's time zone moves nothing: each event keeps its own zone, and only new events
+  start in the new one.
+- Finding public events of other groups (DEC-76) is the calendar's Everything view within 30 days,
+  and signed-out Home's "Browse public events", as Fold built it. Nothing more until Grier designs
+  it.
+- Monthly repeats offer the 1st to 4th weekday and the last, so no month is skipped.
+- A party is one person until households arrive in slice 5; no plus-ones (DEC-56).
+- Places are text. A date offers "Open in maps", a plain link built from the text; the server
+  fetches nothing.
+- No pictures on events in this slice. Uploads (DEC-49) arrive when a church asks or with a later
+  slice.
+
+**Rests on.** R3, R15, R29, R33 to R36, P7, P8, and "Events and dates" and "RSVP" in the decisions.
+
+**Not in this slice.** Reminders and announcements (slice 3). Children, childcare and teens
+(slice 5). Rooms (slice 6). Attendance (slice 4).
+
+---
+
+## Slices 3 to 4, in outline
 
 **Slice 3: announcements, reminders, email choices.** A leader writes to their group or to an
 event's sign-ups, sees who it will reach before sending, and can schedule it. Reminders go out
