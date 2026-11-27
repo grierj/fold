@@ -331,10 +331,9 @@ func groupNamed(name string) group {
 	panic("demo: no group " + name)
 }
 
-// firstDay is the first day after today that falls on the event's weekday,
-// for a monthly event on its week of the month, and for a one-time event in
-// next month, so the event's
-// pattern starts on a date it really makes.
+// firstDay is the first day after today on the event's weekday: for a
+// monthly event, in its week of the month, so the pattern starts on a date
+// it makes; for a one-time event, in next month.
 func firstDay(today time.Time, e demoEvent) time.Time {
 	d := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1)
 	for d.Weekday() != e.weekday || (e.monthWeek != 0 && !slices.Contains(events.WeeksOf(d), e.monthWeek)) || (e.repeat == events.Once && d.Month() == today.Month()) {
