@@ -300,6 +300,9 @@ func TestCanInvite(t *testing.T) {
 			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
 		}
 	}
+	if !CanAddDirectly(admin, active(Public)) || CanAddDirectly(adult, active(Public)) || CanAddDirectly(admin, deleted) {
+		t.Error("only admins add directly (R32)")
+	}
 	if !LeadsApprovedGroup([]string{GroupPending, GroupActive}) || LeadsApprovedGroup([]string{GroupPending, GroupArchived}) {
 		t.Error("only an active group counts")
 	}

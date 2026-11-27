@@ -1,0 +1,14 @@
+{{define "title"}}An invitation{{end}}
+{{define "content"}}<div class="page-form">
+{{if .Data.Open}}
+  <h1 class="text-2xl font-bold wrap-anywhere sm:text-3xl">Join {{.Data.GroupName}}?</h1>
+  <p class="mt-2">{{.Data.Inviter}} invited you.</p>
+  {{with .Data.GroupAbout}}<p class="mt-4 whitespace-pre-line wrap-anywhere text-text-muted">{{.}}</p>{{end}}
+  <div class="mt-6 flex flex-wrap gap-3">
+    <form method="post" action="/invitations/{{.Data.UID}}/accept">{{template "csrf" .}}{{template "button" (button "primary" "Join")}}</form>
+    <form method="post" action="/invitations/{{.Data.UID}}/decline">{{template "csrf" .}}{{template "button" (button "secondary" "No thanks")}}</form>
+  </div>
+{{else}}
+  {{template "empty" (emptypage "all-caught-up.svg" "This invitation is no longer open" "It was answered, it expired, or the person who sent it can't invite to that group any more. You can still find groups to join." (linkbutton "primary" "Find a group" "/groups"))}}
+{{end}}
+</div>{{end}}

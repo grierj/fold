@@ -15,6 +15,7 @@
   {{if .Data.Waiting}}<div class="mb-6">{{template "notice" (notice "info" "Waiting for approval" "An administrator will look at this group soon. Only its leaders and admins can see it until then.")}}</div>{{end}}
   {{if .Data.Archived}}<div class="mb-6">{{template "notice" (notice "warning" "Archived" (print "This group no longer shows in the list. " .Data.Reason))}}{{with .Data.Group.DecisionNote}}<p class="mt-2 whitespace-pre-line wrap-anywhere text-text-muted">{{.}}</p>{{end}}</div>{{end}}
   {{if .Data.Group.About}}<p class="whitespace-pre-line wrap-anywhere">{{.Data.Group.About}}</p>{{else}}<p class="text-text-muted">No description yet.</p>{{end}}
+  {{if .Data.CanSeeMembers}}<p class="mt-6">{{template "linkbutton" (linkbutton "secondary" (print "Members (" .Data.Members ")") (print "/groups/" .Data.Group.UID "/members"))}}</p>{{end}}
 
   {{if or .Data.CanLeave .Data.LastLeader .Data.CanArchive .Data.CanUnarchive .Data.CanDelete}}
   <details class="section mt-10">

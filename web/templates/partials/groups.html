@@ -10,3 +10,13 @@
   <a class="text-link px-1" href="/admin/requests"{{if eq . "requests"}} aria-current="page"{{end}}>Account requests</a>
   <a class="text-link px-1" href="/admin/groups"{{if eq . "groups"}} aria-current="page"{{end}}>Groups to approve</a>
 </nav>{{end}}
+
+{{/* inviteform: invite by email; takes Form (an inviteForm) and CSRF. */}}
+{{define "inviteform"}}<form class="form-stack" method="post" action="{{.Form.Action}}" novalidate>
+  {{template "hidden" (hidden "csrf" .CSRF)}}
+  {{template "errorsummary" .Form.Errors}}
+  {{template "field" .Form.Name}}
+  {{template "field" .Form.Email}}
+  {{template "choice" .Form.Adult}}
+  {{template "button" (button "primary" "Send the invitation")}}
+</form>{{end}}

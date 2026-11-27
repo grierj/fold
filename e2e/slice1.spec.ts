@@ -114,4 +114,26 @@ test("account requests and notices, through the gates", async ({ page, browser }
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Your groups" })).toBeVisible();
   await gate(page, "home with groups");
+
+  // Sam, the leader, sees the roster, makes Pat a co-leader, searches and invites.
+  await visitor.goto("/groups");
+  await visitor.getByRole("link", { name: "Tuesday Bible Study" }).click();
+  await visitor.getByRole("link", { name: /Members/ }).click();
+  await expect(visitor.getByRole("heading", { name: "Members" })).toBeVisible();
+  await gate(visitor, "roster leader");
+  await visitor.getByRole("button", { name: "Make a leader" }).click();
+  await expect(visitor.getByText("They're now a leader.")).toBeVisible();
+  await visitor.getByLabel("Add someone by name").fill("Nobody Here");
+  await visitor.getByRole("button", { name: "Find" }).click();
+  await expect(visitor.getByText("Nobody by that name")).toBeVisible();
+  await gate(visitor, "roster search");
+  await visitor.getByRole("button", { name: "Send the invitation" }).click();
+  await expect(visitor.getByText("Check these, then try again")).toBeVisible();
+  await gate(visitor, "invite errors");
+  await visitor.getByLabel("Their name").fill("Nia New");
+  await visitor.getByLabel("Their email").fill("nia@example.org");
+  await visitor.getByLabel("They are 18 or older").check();
+  await visitor.getByRole("button", { name: "Send the invitation" }).click();
+  await expect(visitor.getByText("Invitation sent.")).toBeVisible();
+  await gate(visitor, "roster after invite");
 });

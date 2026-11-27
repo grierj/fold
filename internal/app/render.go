@@ -60,6 +60,20 @@ func loadTemplates() (*templates, error) {
 		"emptypage": func(image, title, text string, action *LinkButton) Empty {
 			return Empty{Image: "illustrations/" + image, Title: title, Text: text, Action: action, Main: true}
 		},
+		"dict": func(kv ...any) (map[string]any, error) {
+			if len(kv)%2 != 0 {
+				return nil, fmt.Errorf("dict needs pairs")
+			}
+			m := map[string]any{}
+			for i := 0; i < len(kv); i += 2 {
+				k, ok := kv[i].(string)
+				if !ok {
+					return nil, fmt.Errorf("dict keys are strings")
+				}
+				m[k] = kv[i+1]
+			}
+			return m, nil
+		},
 		"hidden": func(name string, value any) Hidden { return Hidden{Name: name, Value: fmt.Sprint(value)} },
 		"notice": func(tone, title, text string) Notice { return Notice{Tone: tone, Title: title, Text: text} },
 	}
