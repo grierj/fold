@@ -31,6 +31,7 @@ type Mailer struct {
 func (m *Mailer) Register(r *write.Runner) {
 	r.Handle(JobLinkMail, m.SendLink)
 	r.Handle(JobApprovedMail, m.SendLink)
+	r.Handle(JobInvitedMail, m.SendLink)
 	r.Handle(JobAccountExists, m.toPerson(existsEmail))
 	r.Handle(JobRequestReceived, m.toPerson(receivedEmail))
 	r.Handle(notices.JobMail, m.SendNotice)
@@ -88,8 +89,11 @@ func (m *Mailer) SendLink(ctx context.Context, j write.Job) error {
 	}
 	church, url := s[settings.ChurchName], m.SiteURL+"/l/"+string(j.Secret)
 	e := linkEmail(purpose, church, url)
-	if j.Kind == JobApprovedMail {
+	switch j.Kind {
+	case JobApprovedMail:
 		e = approvedEmail(church, url, m.SiteURL)
+	case JobInvitedMail:
+		e = invitedEmail(church, url, m.SiteURL)
 	}
 	return m.send(ctx, s, to, e)
 }
@@ -189,4 +193,17 @@ func receivedEmail(church, _ string) mail.Email {
 	return mail.Email{Church: church, Subject: "We got your request for an account at " + church, Footer: footer(church),
 		Before: []string{"Thanks for asking. An administrator will look at your request, and you'll get an email when your account is ready."},
 		After:  []string{"If you didn't ask for an account, you can ignore this message."}}
+}
+
+func invitedEmail(church, url, site string) mail.Email {
+	return mail.Email{Church: church, Subject: "You're invited to " + church + "'s groups", Footer: footer(church),
+		Before: []string{
+			church + " uses this site for its small groups and what's coming up. Someone there invited you, so your account is ready.",
+			"Press the button to sign in.",
+		},
+		Button: &mail.Button{Label: "Sign in", URL: url},
+		After: []string{
+			"The button works once, within 24 hours. After that, ask for a new sign-in link at " + site + "/signin.",
+			"If you don't know anyone at " + church + ", you can ignore this message.",
+		}}
 }

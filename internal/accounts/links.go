@@ -31,6 +31,8 @@ const (
 	JobLinkMail = "mail.link"
 	// JobApprovedMail emails a sign-in link saying the account was approved.
 	JobApprovedMail = "mail.approved"
+	// JobInvitedMail emails a sign-in link saying someone invited them.
+	JobInvitedMail = "mail.invited"
 
 	// JobAccountExists tells an address that already has an account that
 	// someone asked for one; its ref is the person. JobRequestReceived tells
@@ -40,7 +42,7 @@ const (
 )
 
 // linkJobs are the job kinds that carry a link's token.
-var linkJobs = []string{JobLinkMail, JobApprovedMail}
+var linkJobs = []string{JobLinkMail, JobApprovedMail, JobInvitedMail}
 
 // NewToken is 32 random bytes, URL-safe.
 func NewToken() string {

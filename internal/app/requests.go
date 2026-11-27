@@ -108,6 +108,7 @@ func (a *App) getAdminRequests(w http.ResponseWriter, r *http.Request) {
 		"approved": "Approved. They've been sent a sign-in link.",
 		"declined": "Declined. Nothing about them was kept.",
 		"gone":     "That request was already decided, so nothing changed.",
+		"invited":  "Invitation sent. If that address is new, they'll get an email to sign in.",
 	}[r.URL.Query().Get("done")]
 	type row struct {
 		accounts.Request
@@ -124,7 +125,8 @@ func (a *App) getAdminRequests(w http.ResponseWriter, r *http.Request) {
 		Requests []row
 		Status   string
 		More     int
-	}{rows, status, total - len(rows)}
+		Invite   inviteForm
+	}{rows, status, total - len(rows), newInviteForm("/admin/invite", "", "", false, nil)}
 	a.render(w, r, http.StatusOK, "admin_requests", "", f.page)
 }
 

@@ -281,10 +281,13 @@ func (a *App) postNewGroup(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) getGroup(w http.ResponseWriter, r *http.Request) {
 	var leaders []string
-	var leaderCount int
+	var leaderCount, members int
 	f, ok := a.loadGroup(w, r, func(q *sql.Tx, f *groupFacts) error {
 		var err error
 		if leaders, err = groups.Leaders(r.Context(), q, f.group.ID); err != nil {
+			return err
+		}
+		if err = q.QueryRowContext(r.Context(), `SELECT count(*) FROM active_memberships WHERE group_id = ?`, f.group.ID).Scan(&members); err != nil {
 			return err
 		}
 		leaderCount, err = groups.LeaderCount(r.Context(), q, f.group.ID)
@@ -303,22 +306,26 @@ func (a *App) getGroup(w http.ResponseWriter, r *http.Request) {
 		CanArchive, CanUnarchive     bool
 		CanDelete, Waiting, Archived bool
 		SignedIn, LastLeader         bool
+		CanSeeMembers                bool
+		Members                      int
 		Delete                       Dialog
 		Reason                       string
 	}{
 		Group: f.group, Visibility: visibilityLabels[f.group.Visibility], Leaders: leaders,
-		Status:       groupStatuses[r.URL.Query().Get("done")],
-		CanJoin:      policy.CanJoinGroup(p, g, f.rel) && !f.rel.Member,
-		CanLeave:     policy.CanLeaveGroup(f.rel, leaderCount),
-		LastLeader:   f.rel.Leader && leaderCount == 1,
-		CanManage:    policy.CanManageGroup(p, g, f.rel),
-		CanArchive:   policy.DecideGroupStatus(p, f.rel, f.group.Status, policy.GroupArchived) == policy.GroupStatusArchive,
-		CanUnarchive: policy.DecideGroupStatus(p, f.rel, f.group.Status, policy.GroupActive) == policy.GroupStatusUnarchive,
-		CanDelete:    policy.CanDeleteGroup(p, g),
-		Waiting:      f.group.Status == policy.GroupPending,
-		Archived:     f.group.Status == policy.GroupArchived,
-		SignedIn:     f.session != nil,
-		Reason:       policy.GroupReasons[f.group.DecisionReason],
+		Status:        groupStatuses[r.URL.Query().Get("done")],
+		CanJoin:       policy.CanJoinGroup(p, g, f.rel) && !f.rel.Member,
+		CanLeave:      policy.CanLeaveGroup(f.rel, leaderCount),
+		LastLeader:    f.rel.Leader && leaderCount == 1,
+		CanManage:     policy.CanManageGroup(p, g, f.rel),
+		CanArchive:    policy.DecideGroupStatus(p, f.rel, f.group.Status, policy.GroupArchived) == policy.GroupStatusArchive,
+		CanUnarchive:  policy.DecideGroupStatus(p, f.rel, f.group.Status, policy.GroupActive) == policy.GroupStatusUnarchive,
+		CanDelete:     policy.CanDeleteGroup(p, g),
+		Waiting:       f.group.Status == policy.GroupPending,
+		Archived:      f.group.Status == policy.GroupArchived,
+		SignedIn:      f.session != nil,
+		CanSeeMembers: policy.CanSeeRoster(p, g, f.rel),
+		Members:       members,
+		Reason:        policy.GroupReasons[f.group.DecisionReason],
 		Delete: Dialog{ID: "delete-group", OpenLabel: "Delete the group", OpenKind: "danger-outline",
 			Title: "Delete " + f.group.Name + "?", Text: "Its members will be told. This cannot be undone.",
 			CancelLabel: "Keep it", ConfirmLabel: "Delete", ConfirmKind: "danger",

@@ -23,6 +23,9 @@ const (
 	GroupApproved    = "group.approved"    // to the group's leaders
 	GroupRejected    = "group.rejected"    // to the group's leaders
 	GroupDeleted     = "group.deleted"     // to the group's members
+	MemberAdded      = "member.added"      // to the person a leader added (P6)
+	MadeLeader       = "member.leader"     // to the person made a leader
+	Invited          = "member.invited"    // to the person invited; actor: who invited; group, if any
 )
 
 // JobMail emails one notice to its person, for the kinds that are required
@@ -244,6 +247,8 @@ func word(ctx context.Context, q db.Querier, r Reader, x row) (Notice, bool, err
 		return n, true, nil
 	case GroupRequested, GroupApproved, GroupRejected, GroupDeleted:
 		return wordGroup(ctx, q, r, x, n)
+	case MemberAdded, MadeLeader, Invited:
+		return wordMember(ctx, q, r, x, n)
 	}
 	return n, false, nil
 }
@@ -363,4 +368,42 @@ func (cleanup) Apply(tx *write.Tx) error {
 // Cleanup is the JobCleanup handler.
 func Cleanup(e *write.Executor) write.Handler {
 	return func(ctx context.Context, _ write.Job) error { return e.Run(ctx, write.System(), cleanup{}) }
+}
+
+// wordMember words the notices to a person about their own membership. It
+// shows only while they are still in the group, so a notice never points
+// at something they can no longer see.
+func wordMember(ctx context.Context, q db.Querier, r Reader, x row, n Notice) (Notice, bool, error) {
+	who := "Someone"
+	if x.actorID.Valid {
+		q.QueryRowContext(ctx, `SELECT name FROM people WHERE id = ?`, x.actorID.Int64).Scan(&who)
+	}
+	if !x.group.Valid {
+		if x.kind != Invited {
+			return n, false, nil
+		}
+		n.Text, n.Href, n.Subject = who+" invited you. Welcome!", "/groups", "Welcome"
+		return n, true, nil
+	}
+	var uid, name string
+	var in bool
+	err := q.QueryRowContext(ctx, `SELECT g.uid, g.name, EXISTS (SELECT 1 FROM active_memberships am WHERE am.group_id = g.id AND am.person_id = ?)
+		FROM groups g WHERE g.id = ?`, r.ID, x.group.Int64).Scan(&uid, &name, &in)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && !in) {
+		return n, false, nil
+	}
+	if err != nil {
+		return n, false, err
+	}
+	quoted := "\u201c" + name + "\u201d"
+	n.Href = "/groups/" + uid
+	switch x.kind {
+	case MemberAdded:
+		n.Text, n.Subject = who+" added you to "+quoted+". If it isn't for you, you can leave it from its page.", "You were added to a group"
+	case MadeLeader:
+		n.Text, n.Subject = who+" made you a leader of "+quoted+".", "You're a group leader"
+	case Invited:
+		n.Text, n.Subject = who+" invited you to "+quoted+". Welcome!", "Welcome"
+	}
+	return n, true, nil
 }

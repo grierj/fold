@@ -20,4 +20,9 @@
   {{else}}
   {{template "empty" (empty "all-caught-up.svg" "No requests waiting" "When someone asks for an account, it appears here and you get a notice." nil)}}
   {{end}}
+  <section class="section mt-10" aria-labelledby="invite-h">
+    <h2 id="invite-h" class="mb-2 text-xl font-bold">Invite someone</h2>
+    <p class="mb-4 text-text-muted">They get an email to sign in, with no approval needed.</p>
+    {{template "inviteform" (dict "Form" .Data.Invite "CSRF" .CSRF)}}
+  </section>
 </div>{{end}}
