@@ -16,7 +16,7 @@ The only place status is kept. Update the row in the pull request that changes i
 |---|---|---|
 | 0 | Foundation and install | Done (v0.2.0). The timed install by a person waits for an installer who is not Grier |
 | 1 | People, groups, approvals, notices | Done (v0.3.0). A real volunteer admin approving from their phone is in `docs/FIRST-CHURCH-CHECKS.md` |
-| 2 | Events, dates, RSVP, calendar | Planned below (R33 to R36); milestone 1 next |
+| 2 | Events, dates, RSVP, calendar | Planned below (R33 to R37). Milestone 1a in review |
 | 3 | Announcements, reminders, email choices | Not started |
 | 4 | First-church readiness. **Pilot goes live.** | Not started |
 | 5 | Households, children, teens | Waits for the pilot |
@@ -182,21 +182,28 @@ people signed up. Then the measuring gate.
 
 **Milestones**, one pull request each, in this order:
 
-1. **Events and dates.** The tables; the event clock carried from Fold (`internal/events`:
-   expansion in the event's zone, the 2,000-date cap, the series edit, ICS output; see
-   `docs/CARRYOVER.md` section 1); the policy for seeing and running an event; the event editor
-   (title, description, When, place, then more options with seats and visibility, DEC-95, DEC-51),
-   with repeats as R33 lists and times on a daylight-saving night as R34 says. A new event starts
-   in the church's zone (DEC-50) and copies its group's visibility (DEC-48); opening one wider is
-   audited, tells the other leaders and admins, and never shows an invite-only group's name, place
-   or members (DEC-6, DEC-17, DEC-28). Church-wide events and their hosts (DEC-7). The series is
-   edited on the event page only (DEC-161), and dates it drops are cancelled and restored
-   (DEC-91); one date can be cancelled, restored, or opened wider than its series (P7). The date
-   page, without answers yet, shows times in the viewer's zone with one quiet line when the
-   event's clock differs, and edit forms name the event's zone (DEC-57). Video is a link out
-   (DEC-16). Dates are stored 18 months ahead, Fold's horizon, and extended by a nightly job. Each
-   person gets a time zone (DEC-58, R29): the church's by default, set from the browser the first
-   time, changed on the profile.
+1. **Events and dates**, in two pull requests.
+
+   **1a. A group's events and their dates.** The tables; the event clock (`internal/events`:
+   expansion in the event's zone, the 2,000-date cap, the series edit; see
+   `docs/CARRYOVER.md` section 1, written fresh for R33's four repeats instead of carrying
+   `rrule-go`); the policy for seeing and running an event; the event editor (title,
+   description, When, place, then more options with visibility, DEC-95, DEC-51), with repeats as
+   R33 and R37 list and times on a daylight-saving night as R34 says. A new event starts in the
+   church's zone (DEC-50) and copies its group's visibility (DEC-48); in 1a it may be made more
+   private, never wider. The series is edited on the event page only (DEC-161), and dates it
+   drops are cancelled and restored (DEC-91), asking first. The date page, without answers yet,
+   shows times in the viewer's zone with one quiet line when the event's clock differs, and edit
+   forms name the event's zone (DEC-57). The group page lists what is coming up. Dates are stored
+   18 months ahead, Fold's horizon, and extended by a nightly job. Seats have a column and no
+   page until milestone 2; ICS output arrives with the feeds (milestone 4).
+
+   **1b. Everything else events need before answers.** One date can be cancelled, restored, or
+   opened wider than its series (P7). Church-wide events and their hosts (DEC-7). Opening an
+   event wider than its group is audited, tells the other leaders and admins, and never shows an
+   invite-only group's name, place or members (DEC-6, DEC-17, DEC-28). Each person gets a time
+   zone (DEC-58, R29): the church's by default, set from the browser the first time, changed on
+   the profile. Video is a link out (DEC-16).
 2. **Answers, seats and the waitlist.** Going, Maybe, Can't go, and Cancelled as its own state
    (DEC-54). Membership is a standing invitation, a church-wide event invites every member, and a
    public event is not an invitation until the person answers (DEC-72, DEC-73). The series dialog
