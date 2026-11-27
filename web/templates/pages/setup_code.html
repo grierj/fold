@@ -9,5 +9,5 @@
     {{template "field" .Data.Code}}
     {{template "button" (wide (button "primary" "Continue"))}}
   </form>
-  <p class="mt-6 text-sm text-text-muted">On the server, run <code class="rounded-sm bg-sunken px-1">docker compose logs app | grep "setup code"</code> to see it.</p>
+  <p class="mt-6 text-sm text-text-muted">To see it, run <code class="rounded-sm bg-sunken px-1 wrap-anywhere">docker compose exec app /fold setup-code</code> on the server.</p>
 </div>{{end}}

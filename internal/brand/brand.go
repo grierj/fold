@@ -1,7 +1,8 @@
-// Package brand holds the product's name. It is the only place the name is
-// written (docs/DECISIONS.md R5): the project becomes Fold again later, and
-// that rename should be this one file.
+// Package brand holds the product's name, written here and nowhere else
+// (docs/DECISIONS.md R5, R25). A church's own name leads every page and
+// email; this one only says what powers them.
 package brand
 
-// Name is shown in page titles, the header and email footers.
-const Name = "Fellowship Facilitator"
+// Name is shown in the footer, in page titles before the church has a name,
+// and at the foot of emails.
+const Name = "Fold"

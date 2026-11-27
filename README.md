@@ -1,6 +1,6 @@
 # Fold: groups and events for a church
 
-Working name: Fellowship Facilitator. One place for a church's small groups, events, RSVPs
+One place for a church's small groups, events, RSVPs
 and announcements, run by the church on its own small server. Free, MIT-licensed.
 
 - Installing: `docs/INSTALL.md`

@@ -73,7 +73,7 @@ func (m *Mailer) SendLink(ctx context.Context, j write.Job) error {
 }
 
 func linkEmail(purpose, church, url string) mail.Email {
-	footer := fmt.Sprintf("Sent by %s for %s.", brand.Name, church)
+	footer := fmt.Sprintf("Sent by %s, powered by %s.", church, brand.Name)
 	switch purpose {
 	case "setup":
 		return mail.Email{Church: church, Subject: "Finish setting up " + church, Footer: footer,
