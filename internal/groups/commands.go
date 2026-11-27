@@ -251,6 +251,10 @@ func (c Delete) Apply(tx *write.Tx) error {
 	return nil
 }
 
+// ErrAlreadyMember is a join by someone already in the group (a second
+// click): nothing changes, and the page says so.
+var ErrAlreadyMember = errors.New("groups: already a member")
+
 // Join adds the actor to a group they may join (DEC-30). Someone who left
 // may join again (DEC-86); someone a leader removed may not (DEC-35).
 type Join struct{ UID string }
@@ -263,7 +267,7 @@ func (c Join) Apply(tx *write.Tx) error {
 		return err
 	}
 	if rel.Member {
-		return write.ErrNothing
+		return ErrAlreadyMember
 	}
 	if !policy.CanJoinGroup(actor(tx), policy.Group{Status: g.Status, Visibility: g.Visibility}, rel) {
 		return write.ErrNotAllowed

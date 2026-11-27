@@ -98,6 +98,8 @@ func (a *App) runGroup(w http.ResponseWriter, r *http.Request, c write.Command, 
 	switch {
 	case errors.Is(err, write.ErrNotAllowed):
 		done = "refused"
+	case errors.Is(err, groups.ErrAlreadyMember):
+		done = "already"
 	case errors.Is(err, write.ErrSignedOut):
 		http.Redirect(w, r, "/signin", http.StatusSeeOther)
 		return
@@ -110,6 +112,7 @@ func (a *App) runGroup(w http.ResponseWriter, r *http.Request, c write.Command, 
 
 var groupStatuses = map[string]string{
 	"joined":     "You joined the group.",
+	"already":    "You're already in this group.",
 	"left":       "You left the group.",
 	"saved":      "Saved.",
 	"archived":   "The group is archived. It no longer shows in the list.",
@@ -173,6 +176,10 @@ func (a *App) groupForm(name, about, vis string, errs map[string]string) groupFo
 		focusFirstError(&d.Name, &d.About)
 	}
 	d.Errors = errorSummary(d.Name, d.About)
+	if e := errs["visibility"]; e != "" {
+		d.Visibility[0].Error = e
+		d.Errors = append(d.Errors, FieldError{ID: d.Visibility[0].ID, Message: e})
+	}
 	return d
 }
 
@@ -202,6 +209,7 @@ func readGroupForm(r *http.Request) (name, about, vis string, errs map[string]st
 		errs["about"] = "Keep it under 2,000 characters."
 	}
 	if !policy.ValidVisibility(vis) {
+		errs["visibility"] = "Choose who can see it."
 		vis = policy.Church
 	}
 	if len(errs) == 0 {
@@ -418,13 +426,16 @@ func (a *App) getAdminGroups(w http.ResponseWriter, r *http.Request) {
 	}
 	type row struct {
 		groups.Listed
-		Reasons []Choice
-		Note    Field
+		Reasons     []Choice
+		Note        Field
+		ApproveNote Field
 	}
 	var rows []row
 	for _, g := range list {
-		rr := row{Listed: g, Note: Field{ID: "note-" + g.UID, Name: "note", Label: "A note to the leaders (optional)",
-			Hint: "Shown to the group's leaders. Kept in the church's records.", MaxLength: groups.MaxNote}}
+		rr := row{Listed: g, Note: Field{ID: "note-" + g.UID, Name: "note", Label: "A note to the leaders",
+			Hint: "Needed for \"Another reason\", optional otherwise. Shown to the group's leaders and kept in the church's records.", MaxLength: groups.MaxNote},
+			ApproveNote: Field{ID: "approve-note-" + g.UID, Name: "note", Label: "A welcome note to the leaders (optional)",
+				Hint: "Shown to the group's leaders and kept in the church's records.", MaxLength: groups.MaxNote}}
 		for _, k := range []string{"similar", "detail", "office", "other"} {
 			label := policy.GroupReasons[k]
 			if k == "other" {
@@ -459,7 +470,7 @@ func (a *App) postDecideGroup(approve bool) http.HandlerFunc {
 			http.Redirect(w, r, "/admin/groups?done=note", http.StatusSeeOther)
 			return
 		}
-		if !approve && (reason == "" || (reason == "other" && note == "")) {
+		if _, known := policy.GroupReasons[reason]; !approve && (!known || (reason == "other" && note == "")) {
 			http.Redirect(w, r, "/admin/groups?done=reason", http.StatusSeeOther)
 			return
 		}

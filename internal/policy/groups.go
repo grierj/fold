@@ -116,8 +116,8 @@ func CanJoinGroup(p *Person, g Group, r Rel) bool {
 	if p == nil || g.Status != GroupActive || !CanSeeGroup(p, g, r) {
 		return false
 	}
-	if r.Removed && !IsAdmin(p) {
-		return false // removed people come back only when a leader adds them
+	if r.Removed {
+		return false // removed people, admins too, come back only when a leader adds them (DEC-35)
 	}
 	return IsAdmin(p) || r.Member || g.Visibility != InviteOnly
 }

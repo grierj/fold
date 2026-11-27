@@ -8,6 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	"fold/internal/db"
@@ -296,7 +297,7 @@ func wordGroup(ctx context.Context, q db.Querier, r Reader, x row, n Notice) (No
 	if x.kind == GroupApproved {
 		n.Text, n.Subject = "Your group "+quoted+" was approved.", "Your group was approved"
 	} else {
-		n.Text, n.Subject = "Your group "+quoted+" wasn't approved. "+policy.GroupReasons[reason], "About your group"
+		n.Text, n.Subject = strings.TrimSpace("Your group "+quoted+" wasn't approved. "+policy.GroupReasons[reason]), "About your group"
 	}
 	n.Note = note
 	return n, true, nil

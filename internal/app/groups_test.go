@@ -73,8 +73,10 @@ func TestGroupTurnedDownNeedsAReason(t *testing.T) {
 	admin := s.finishSetup()
 	mel := s.member("Mel Leader", "mel@example.org")
 	uid := s.start(mel, "Duplicate Study", "church")
-	if r := admin.post("/admin/groups", "/admin/groups/"+uid+"/reject", url.Values{"reason": {"other"}}); r.header.Get("Location") != "/admin/groups?done=reason" {
-		t.Fatalf("\"other\" without a note: %s", r.header.Get("Location"))
+	for _, form := range []url.Values{{"reason": {"other"}}, {"reason": {"bogus"}}, {}} {
+		if r := admin.post("/admin/groups", "/admin/groups/"+uid+"/reject", form); r.header.Get("Location") != "/admin/groups?done=reason" {
+			t.Fatalf("reject with %v: %s", form, r.header.Get("Location"))
+		}
 	}
 	admin.post("/admin/groups", "/admin/groups/"+uid+"/reject", url.Values{"reason": {"similar"}})
 	r := mel.get("/groups/" + uid)
@@ -145,6 +147,15 @@ func TestDirectoryFiltersBeforeLimiting(t *testing.T) {
 	if !strings.Contains(r.body, "Breakfast") || strings.Contains(r.body, "Staff Only") {
 		t.Fatal("a member sees the wrong groups")
 	}
+	// The list is filtered before it is limited: 205 hidden groups that sort
+	// first do not push a visible one off the page.
+	for i := range 205 {
+		s.Writer.Exec(`INSERT INTO groups (uid, name, visibility, status, created_at, updated_at) VALUES (?, ?, 'invite_only', 'active', 0, 0)`,
+			"hidden"+strings.Repeat("0", 3)+string(rune('a'+i%26))+string(rune('a'+i/26)), "AAA hidden")
+	}
+	if r := member.get("/groups"); !strings.Contains(r.body, "Open Choir") {
+		t.Fatal("hidden groups pushed a visible one past the limit")
+	}
 	// A % in a search is a literal character, not a wildcard.
 	if r := member.get("/groups?q=" + url.QueryEscape("%")); !strings.Contains(r.body, "100% Joy") || strings.Contains(r.body, "Open Choir") {
 		t.Fatal("% was a wildcard")
@@ -159,6 +170,9 @@ func TestJoinLeaveAndRemoved(t *testing.T) {
 	mia.post("/groups/"+uid, "/groups/"+uid+"/join", nil)
 	if r := mia.get("/"); !strings.Contains(r.body, "Open Choir") {
 		t.Fatal("joined group not on home")
+	}
+	if r := mia.post("/groups/"+uid, "/groups/"+uid+"/join", nil); !strings.HasSuffix(r.header.Get("Location"), "done=already") {
+		t.Fatalf("a second join: %s", r.header.Get("Location"))
 	}
 	mia.post("/groups/"+uid, "/groups/"+uid+"/leave", nil)
 	mia.post("/groups/"+uid, "/groups/"+uid+"/join", nil) // leaving is not removal (DEC-86)
@@ -203,7 +217,7 @@ func TestMorePrivateRemovesNobody(t *testing.T) {
 	uid := s.start(admin, "Open Choir", "public")
 	mia := s.member("Mia Member", "mia@example.org")
 	mia.post("/groups/"+uid, "/groups/"+uid+"/join", nil)
-	form := groupForm("Open Choir", "Sing with us.", "invite_only")
+	form := groupForm("Open Choir", "Sing with us.\nTuesdays at 7.", "invite_only")
 	form.Set("version", "1")
 	r := admin.post("/groups/"+uid+"/edit", "/groups/"+uid+"/edit", form)
 	if !strings.Contains(r.body, "Nobody is removed.") {
@@ -216,6 +230,11 @@ func TestMorePrivateRemovesNobody(t *testing.T) {
 	}
 	if r := mia.get("/groups/" + uid); r.status != http.StatusOK {
 		t.Fatal("a member lost sight of their group")
+	}
+	var about string
+	s.Writer.QueryRow(`SELECT about FROM groups WHERE uid = ?`, uid).Scan(&about)
+	if about != "Sing with us.\nTuesdays at 7." {
+		t.Fatalf("line breaks lost through the confirmation: %q", about)
 	}
 }
 
@@ -260,5 +279,26 @@ func TestDeleteGroup(t *testing.T) {
 		if r := b.get("/groups"); strings.Contains(r.body, "Open Choir") {
 			t.Fatal("a deleted group is still listed")
 		}
+	}
+}
+
+func TestOtherReasonShowsTheNoteAlone(t *testing.T) {
+	s := newSite(t)
+	admin := s.finishSetup()
+	mel := s.member("Mel Leader", "mel@example.org")
+	uid := s.start(mel, "Study", "church")
+	admin.post("/admin/groups", "/admin/groups/"+uid+"/reject", url.Values{"reason": {"other"}, "note": {"Let's talk Sunday."}})
+	r := mel.get("/notices")
+	if !strings.Contains(r.body, "wasn&#39;t approved.</span>") || !strings.Contains(r.body, "Let&#39;s talk Sunday.") {
+		t.Fatalf("notice: %s", between(r.body, "<main", "</main>"))
+	}
+}
+
+func TestBogusVisibilityIsAnError(t *testing.T) {
+	s := newSite(t)
+	mel := s.finishSetup()
+	r := mel.post("/groups/new", "/groups/new", groupForm("Study", "", "bogus"))
+	if r.status != http.StatusUnprocessableEntity || !strings.Contains(r.body, "Choose who can see it.") {
+		t.Fatalf("bogus visibility: %d", r.status)
 	}
 }

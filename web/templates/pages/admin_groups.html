@@ -8,8 +8,9 @@
     {{range .Data.Groups}}<li class="panel">
       <h2 class="text-xl font-bold wrap-anywhere"><a class="text-link" href="/groups/{{.UID}}">{{.Name}}</a></h2>
       {{with .About}}<p class="mt-2 whitespace-pre-line wrap-anywhere">{{.}}</p>{{end}}
-      <form class="mt-4" method="post" action="/admin/groups/{{.UID}}/approve">
+      <form class="form-stack mt-4" method="post" action="/admin/groups/{{.UID}}/approve">
         {{template "csrf" $}}
+        {{template "textarea" .ApproveNote}}
         {{template "button" (button "primary" "Approve")}}
       </form>
       <details class="mt-4">
@@ -18,7 +19,7 @@
           {{template "csrf" $}}
           <fieldset><legend class="label">Why</legend>{{range .Reasons}}{{template "choice" .}}{{end}}</fieldset>
           {{template "textarea" .Note}}
-          {{template "button" (button "danger" "Turn it down")}}
+          {{template "button" (button "danger-outline" "Turn it down")}}
         </form>
       </details>
     </li>{{end}}
