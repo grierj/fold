@@ -124,3 +124,34 @@ func TestPhonesGetATabBar(t *testing.T) {
 		t.Fatal("no tab bar for a signed-in person")
 	}
 }
+
+func TestEnableTwiceSaysNothing(t *testing.T) {
+	s := newSite(t)
+	admin := s.finishSetup()
+	s.member("Mia Member", "mia@example.org")
+	uid := personUID(s, "mia@example.org")
+	if r := admin.post("/admin/people/"+uid, "/admin/people/"+uid+"/enable", nil); strings.Contains(r.header.Get("Location"), "done=enabled") {
+		t.Fatal("enabling an active account reports success")
+	}
+}
+
+// A group that takes no members needs no successor.
+func TestArchivedGroupNeedsNoSuccessor(t *testing.T) {
+	s := newSite(t)
+	admin := s.finishSetup()
+	mel := s.member("Mel Leader", "mel@example.org")
+	uid := s.approvedGroup(admin, mel, "Study")
+	mel.post("/groups/"+uid, "/groups/"+uid+"/archive", nil)
+	melUID := personUID(s, "mel@example.org")
+	if r := admin.post("/admin/people/"+melUID, "/admin/people/"+melUID+"/disable", nil); !strings.Contains(r.header.Get("Location"), "done=disabled") {
+		t.Fatalf("disabling the leader of only an archived group: %d", r.status)
+	}
+}
+
+func TestCurrentTabIsMarked(t *testing.T) {
+	s := newSite(t)
+	admin := s.finishSetup()
+	if r := admin.get("/groups"); !strings.Contains(r.body, `href="/groups" aria-current="page">Groups`) {
+		t.Fatal("the Groups tab is not marked on the groups page")
+	}
+}

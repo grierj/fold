@@ -127,11 +127,13 @@ func byUID(tx *write.Tx, uid string) (people.Person, error) {
 	return people.ByID(tx.Context(), tx, id)
 }
 
-// SoleLed lists the groups (not deleted) a person is the only active leader
-// of: the ones that need a successor before the person is disabled.
+// SoleLed lists the active groups a person is the only active leader of:
+// the ones that need a successor before the person is disabled. A waiting
+// or archived group takes no members and needs no new leader; it keeps its
+// leader, hidden, until they are turned on again.
 func SoleLed(ctx context.Context, q db.Querier, personID int64) ([]groups.Group, error) {
 	rows, err := q.QueryContext(ctx, `SELECT g.uid FROM active_memberships am JOIN groups g ON g.id = am.group_id
-		WHERE am.person_id = ? AND am.role = 'leader'
+		WHERE am.person_id = ? AND am.role = 'leader' AND g.status = 'active'
 		AND (SELECT count(*) FROM active_memberships x WHERE x.group_id = g.id AND x.role = 'leader') = 1
 		ORDER BY g.name COLLATE NOCASE`, personID)
 	if err != nil {

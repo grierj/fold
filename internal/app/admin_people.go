@@ -27,7 +27,7 @@ func findPeople(ctx context.Context, q db.Querier, search string, limit int) ([]
 	var args []any
 	if search != "" {
 		query += ` AND (name LIKE ? ESCAPE '\' OR email LIKE ? ESCAPE '\')`
-		like := "%" + likeEscape(search) + "%"
+		like := "%" + groups.EscapeLike(search) + "%"
 		args = append(args, like, like)
 	}
 	query += ` ORDER BY name COLLATE NOCASE LIMIT ?`
@@ -46,10 +46,6 @@ func findPeople(ctx context.Context, q db.Querier, search string, limit int) ([]
 		out = append(out, p)
 	}
 	return out, rows.Err()
-}
-
-func likeEscape(s string) string {
-	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }
 
 func (a *App) getAdminPeople(w http.ResponseWriter, r *http.Request) {
@@ -216,13 +212,16 @@ func (a *App) postEnable(w http.ResponseWriter, r *http.Request) {
 	}
 	uid := r.PathValue("uid")
 	err := a.exec.Run(r.Context(), write.Session(accounts.Hash(a.sessionToken(r))), accounts.Enable{PersonUID: uid})
+	done := "?done=enabled"
 	switch {
+	case errors.Is(err, write.ErrNotAllowed):
+		done = "" // already on: the page shows how it stands
 	case errors.Is(err, write.ErrSignedOut):
 		http.Redirect(w, r, "/signin", http.StatusSeeOther)
 		return
-	case err != nil && !errors.Is(err, write.ErrNotAllowed):
+	case err != nil:
 		a.serverError(w, r, err)
 		return
 	}
-	http.Redirect(w, r, "/admin/people/"+uid+"?done=enabled", http.StatusSeeOther)
+	http.Redirect(w, r, "/admin/people/"+uid+done, http.StatusSeeOther)
 }

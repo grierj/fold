@@ -43,10 +43,10 @@
 <footer class="mx-auto px-4 py-8 text-center text-sm text-text-muted{{if .Viewer}} footer-above-tabs{{end}}">Powered by {{.Product}}</footer>
 {{if .Viewer}}
 <nav aria-label="Tabs" class="tabbar">
-  <a class="tab" href="/">Home</a>
-  <a class="tab" href="/groups">Groups</a>
-  <a class="tab" href="/notices">Notices{{if .Unread}} <span class="badge">{{.Unread}}<span class="sr-only"> unread</span></span>{{end}}</a>
-  <a class="tab" href="/profile">You</a>
+  <a class="tab" href="/"{{if eq .Path "/"}} aria-current="page"{{end}}>Home</a>
+  <a class="tab" href="/groups"{{if or (eq .Path "/groups") (hasPrefix .Path "/groups/")}} aria-current="page"{{end}}>Groups</a>
+  <a class="tab" href="/notices"{{if eq .Path "/notices"}} aria-current="page"{{end}}>Notices{{if .Unread}} <span class="badge">{{.Unread}}<span class="sr-only"> unread</span></span>{{end}}</a>
+  <a class="tab" href="/profile"{{if eq .Path "/profile"}} aria-current="page"{{end}}>You</a>
 </nav>
 {{end}}
 </body>

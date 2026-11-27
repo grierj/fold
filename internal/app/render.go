@@ -74,8 +74,9 @@ func loadTemplates() (*templates, error) {
 			}
 			return m, nil
 		},
-		"hidden": func(name string, value any) Hidden { return Hidden{Name: name, Value: fmt.Sprint(value)} },
-		"notice": func(tone, title, text string) Notice { return Notice{Tone: tone, Title: title, Text: text} },
+		"hasPrefix": strings.HasPrefix,
+		"hidden":    func(name string, value any) Hidden { return Hidden{Name: name, Value: fmt.Sprint(value)} },
+		"notice":    func(tone, title, text string) Notice { return Notice{Tone: tone, Title: title, Text: text} },
 	}
 	base, err := template.New("").Funcs(funcs).ParseFS(web.Templates, "templates/base.html", "templates/partials/*.html")
 	if err != nil {
@@ -100,6 +101,7 @@ func loadTemplates() (*templates, error) {
 
 // page is what every template receives.
 type page struct {
+	Path    string // the request's path, for marking the current tab
 	Product string
 	Church  string
 	Viewer  *viewerInfo
@@ -117,6 +119,7 @@ type viewerInfo struct {
 // request. A render error is found before anything is written.
 func (a *App) render(w http.ResponseWriter, r *http.Request, status int, name, block string, p page) {
 	p.Product = brand.Name
+	p.Path = r.URL.Path
 	if p.CSRF == "" {
 		p.CSRF = a.csrfToken(r)
 	}
