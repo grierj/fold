@@ -1,25 +1,11 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import { gate, watchCSP } from "./gates";
+import { latestLink, signIn } from "./session";
 
 // Slice 1 pages through the gates. Runs after slice0.spec.ts, on the same
 // site: the church is set up and Pat is its first admin.
 
 const admin = "pat@cloverdale.example";
-
-async function latestLink(page: Page, to: string): Promise<string> {
-  await page.goto("/dev/outbox");
-  const text = await page.locator("li", { hasText: `To ${to}` }).first().locator("[data-outbox-text]").innerText();
-  return text.match(/http:\/\/[^\s]+\/l\/[A-Za-z0-9_-]{43}/)![0];
-}
-
-async function signIn(page: Page, email: string) {
-  await page.goto("/signin");
-  await page.getByLabel("Email").fill(email);
-  await page.getByRole("button", { name: "Email me a sign-in link" }).click();
-  await expect(page.getByRole("heading", { name: "Check your email" })).toBeVisible();
-  await expect.poll(async () => (await latestLink(page, email)).length, { timeout: 10_000 }).toBeGreaterThan(0);
-  await page.goto(await latestLink(page, email));
-}
 
 test("account requests and notices, through the gates", async ({ page, browser }) => {
   await watchCSP(page);
