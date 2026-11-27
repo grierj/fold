@@ -1,0 +1,104 @@
+{{/* Every control on every page is one of these partials (docs/DECISIONS.md
+     P18). A test refuses a raw button, input, select or textarea anywhere
+     else. Each partial takes a value built in Go (internal/app/ui.go). */}}
+
+{{define "csrf"}}<input type="hidden" name="csrf" value="{{.CSRF}}">{{end}}
+
+{{/* button: kind is primary, secondary, danger, danger-outline or ghost. */}}
+{{define "button"}}<button class="btn-{{.Kind}}{{if .Wide}} w-full{{end}}{{if .Busy}} btn-busy{{end}}" type="{{or .Type "submit"}}"
+{{- with .ID}} id="{{.}}"{{end}}
+{{- with .Name}} name="{{.}}"{{end}}
+{{- with .Value}} value="{{.}}"{{end}}
+{{- if .Disabled}} disabled{{end}}
+{{- if .Busy}} aria-busy="true" disabled{{end}}
+{{- with .CommandFor}} commandfor="{{.}}"{{end}}
+{{- with .Command}} command="{{.}}"{{end}}
+{{- with .PopoverTarget}} popovertarget="{{.}}"{{end}}
+{{- with .Pressed}} aria-pressed="{{.}}"{{end}}>{{.Label}}</button>{{end}}
+
+{{/* linkbutton: a link drawn as a button, for navigation. */}}
+{{define "linkbutton"}}<a class="btn-{{.Kind}}{{if .Wide}} w-full{{end}} no-underline" href="{{.Href}}">{{.Label}}</a>{{end}}
+
+{{/* field: label, then hint, then the control, then the error (DEC-65). */}}
+{{define "field"}}<div>
+  <label class="label" for="{{.ID}}">{{.Label}}</label>
+  {{with .Hint}}<p class="field-hint" id="{{$.ID}}-hint">{{.}}</p>{{end}}
+  <input class="input" id="{{.ID}}" name="{{.Name}}" type="{{or .Type "text"}}"
+    {{- if ne .Type "password"}} value="{{.Value}}"{{end}}
+    {{- with .Autocomplete}} autocomplete="{{.}}"{{end}}
+    {{- with .Inputmode}} inputmode="{{.}}"{{end}}
+    {{- with .List}} list="{{.}}"{{end}}
+    {{- with .MaxLength}} maxlength="{{.}}"{{end}}
+    {{- if .Required}} required{{end}}
+    {{- if .Disabled}} disabled{{end}}
+    {{- if .ReadOnly}} readonly{{end}}
+    {{- if .Autofocus}} autofocus{{end}}
+    {{- if .Error}} aria-invalid="true"{{end}}
+    {{- if or .Hint .Error}} aria-describedby="{{if .Hint}}{{.ID}}-hint{{end}}{{if and .Hint .Error}} {{end}}{{if .Error}}{{.ID}}-error{{end}}"{{end}}>
+  {{with .Options}}<datalist id="{{$.List}}">{{range .}}<option value="{{.}}"></option>{{end}}</datalist>{{end}}
+  {{with .Error}}<p class="field-error" id="{{$.ID}}-error"><span aria-hidden="true">⚠</span><span>{{.}}</span></p>{{end}}
+</div>{{end}}
+
+{{/* choice: one checkbox or radio row; the whole row is the label. */}}
+{{define "choice"}}<div>
+  <label class="choice-row" for="{{.ID}}">
+    <input class="choice-control" id="{{.ID}}" name="{{.Name}}" type="{{.Type}}" value="{{.Value}}"
+      {{- if .Checked}} checked{{end}}{{if .Disabled}} disabled{{end}}{{if .Error}} aria-invalid="true" aria-describedby="{{.ID}}-error"{{end}}>
+    <span>{{.Label}}{{with .Hint}}<span class="block text-sm text-text-muted">{{.}}</span>{{end}}</span>
+  </label>
+  {{with .Error}}<p class="field-error" id="{{$.ID}}-error"><span aria-hidden="true">⚠</span><span>{{.}}</span></p>{{end}}
+</div>{{end}}
+
+{{/* chip: a toggle shown as a pill. */}}
+{{define "chip"}}<button class="chip" type="{{or .Type "button"}}" aria-pressed="{{if .Pressed}}true{{else}}false{{end}}"{{with .Name}} name="{{.}}"{{end}}{{with .Value}} value="{{.}}"{{end}}{{if .Disabled}} disabled{{end}}>{{.Label}}</button>{{end}}
+
+{{/* segment: a joined set of choices; the chosen one is pressed. */}}
+{{define "segment"}}<div class="segment-bar" role="group" aria-label="{{.Label}}">
+{{- range .Options}}<button class="segment" type="submit" name="{{$.Name}}" value="{{.Value}}" aria-pressed="{{if .Pressed}}true{{else}}false{{end}}"{{if .Disabled}} disabled{{end}}>{{.Label}}</button>{{end -}}
+</div>{{end}}
+
+{{/* menu: a "More" button opening a popover list of links or form buttons. */}}
+{{define "menu"}}<div class="relative inline-block">
+  <button class="btn-secondary" type="button" popovertarget="{{.ID}}" aria-haspopup="true">{{.Label}}</button>
+  <div class="menu-panel" id="{{.ID}}" popover>
+    {{range .Items}}<a class="menu-item no-underline" href="{{.Href}}">{{.Label}}</a>{{end}}
+  </div>
+</div>{{end}}
+
+{{/* dialog: a native modal dialog with its own opener. The body is HTML the
+     page built from its own template, never user text marked safe. */}}
+{{define "dialog"}}<button class="btn-{{.OpenKind}}" type="button" commandfor="{{.ID}}" command="show-modal">{{.OpenLabel}}</button>
+<dialog class="dialog" id="{{.ID}}" aria-labelledby="{{.ID}}-title">
+  <h2 class="text-xl font-bold" id="{{.ID}}-title">{{.Title}}</h2>
+  <p class="mt-2 text-text-muted">{{.Text}}</p>
+  <form class="mt-6 flex flex-wrap justify-end gap-3" method="post" action="{{.Action}}">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <button class="btn-secondary" type="button" commandfor="{{.ID}}" command="close">{{.CancelLabel}}</button>
+    <button class="btn-{{.ConfirmKind}}" type="submit">{{.ConfirmLabel}}</button>
+  </form>
+</dialog>{{end}}
+
+{{/* empty: what would appear here, and the next step. Never red (DEC-66).
+     Main makes its title the page's h1, when it is the whole page. */}}
+{{define "empty"}}<div class="empty">
+  {{with .Image}}<img src="{{asset .}}" alt="" width="160" height="120" class="h-auto w-32">{{end}}
+  {{if .Main}}<h1 class="text-2xl font-bold sm:text-3xl">{{.Title}}</h1>{{else}}<h2 class="text-xl font-bold">{{.Title}}</h2>{{end}}
+  {{with .Text}}<p class="max-w-md text-text-muted">{{.}}</p>{{end}}
+  {{with .Action}}{{template "linkbutton" .}}{{end}}
+</div>{{end}}
+
+{{/* notice: tone is info, success, warning or danger. Danger is an alert. */}}
+{{define "notice"}}<div class="notice notice-{{.Tone}}" {{if eq .Tone "danger"}}role="alert"{{else}}role="status"{{end}}{{with .ID}} id="{{.}}" tabindex="-1"{{end}}>
+  {{with .Title}}<p class="font-semibold">{{.}}</p>{{end}}
+  {{with .Text}}<p{{if $.Title}} class="mt-1"{{end}}>{{.}}</p>{{end}}
+  {{with .Links}}<ul class="mt-2 list-disc pl-5">{{range .}}<li><a class="text-link" href="{{.Href}}">{{.Label}}</a></li>{{end}}</ul>{{end}}
+</div>{{end}}
+
+{{/* status: the line that stays after an action and says what happened. */}}
+{{define "status"}}<p class="status-line" role="status" aria-live="polite">{{with .}}<span aria-hidden="true">✓</span><span>{{.}}</span>{{end}}</p>{{end}}
+
+{{/* errorsummary: the list at the top of a failed form, each a link to its field. */}}
+{{define "errorsummary"}}{{if .}}<div class="notice notice-danger" role="alert" id="error-summary" tabindex="-1">
+  <p class="font-semibold">Check these, then try again:</p>
+  <ul class="mt-2 list-disc pl-5">{{range .}}<li><a class="text-link" href="#{{.ID}}">{{.Message}}</a></li>{{end}}</ul>
+</div>{{end}}{{end}}

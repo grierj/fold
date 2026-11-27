@@ -14,7 +14,7 @@ The only place status is kept. Update the row in the pull request that changes i
 
 | Slice | What | Status |
 |---|---|---|
-| 0 | Foundation and install | Not started |
+| 0 | Foundation and install | Built; person-only checks open (`docs/FIRST-CHURCH-CHECKS.md`) |
 | 1 | People, groups, approvals, notices | Not started |
 | 2 | Events, dates, RSVP, calendar | Not started |
 | 3 | Announcements, reminders, email choices | Not started |
@@ -63,6 +63,22 @@ Grier decided these on 2026-11-26 (`docs/DECISIONS.md` R3, R5 and R8 to R17):
 - That the chosen fragment-update script runs with script evaluation off under the strict content
   security policy.
 - That the stylesheet builds without Node.
+
+**Answers (slice 0 pull request):**
+
+- **SQLite driver:** `modernc.org/sqlite` v1.63.0, pure Go; the binary builds with
+  `CGO_ENABLED=0`. It also exposes SQLite's backup interface, which the restore uses to
+  replace the live database in one step (tested with readers open).
+- **Migration runner:** not worth a dependency. Forward-only files in `migrations/`, the
+  version kept in SQLite's `user_version`, about 100 lines in `internal/db/migrate.go`.
+- **Fragment updates:** htmx 2.0.11, vendored (checked against the npm integrity hash), with
+  `allowEval`, `allowScriptTags`, `includeIndicatorStyles` and the history cache off. The
+  browser gates run a fragment swap under the real policy header and assert no
+  `securitypolicyviolation` event.
+- **Stylesheet:** the Tailwind 4.3.5 standalone binary builds it in under a second, no Node.
+  The built file is committed; `make css-check` fails when it is stale.
+- **Rate limits (`docs/HAZARDS.md` section 9):** counters in memory in the one process,
+  never in the database; a restart forgets them. See `internal/ratelimit`.
 
 ---
 

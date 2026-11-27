@@ -1,0 +1,12 @@
+{{define "title"}}Sign in{{end}}
+{{define "content"}}<div class="page-form">
+  <h1 class="text-2xl font-bold sm:text-3xl">Sign in</h1>
+  {{with .Data.Status}}<div class="mt-4">{{template "status" .}}</div>{{end}}
+  <p class="mt-2 text-text-muted">We will email you a link. There is no password to remember.</p>
+  <form class="form-stack mt-6" method="post" action="/signin" novalidate>
+    {{template "csrf" .}}
+    {{template "errorsummary" .Data.Errors}}
+    {{template "field" .Data.Email}}
+    {{template "button" (wide (button "primary" "Email me a sign-in link"))}}
+  </form>
+</div>{{end}}

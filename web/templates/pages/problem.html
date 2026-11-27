@@ -1,0 +1,6 @@
+{{define "title"}}{{.Data.Title}}{{end}}
+{{define "content"}}<div class="page-narrow">
+  <div class="page-header"><h1 class="text-2xl font-bold sm:text-3xl">{{.Data.Title}}</h1></div>
+  <p>{{.Data.Text}}</p>
+  <div class="mt-6">{{template "linkbutton" (linkbutton "primary" .Data.Next .Data.NextHref)}}</div>
+</div>{{end}}

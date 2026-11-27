@@ -1,0 +1,13 @@
+{{define "title"}}Outbox{{end}}
+{{define "content"}}<div class="page">
+  <div class="page-header"><h1 class="text-2xl font-bold sm:text-3xl">Outbox</h1><p class="text-sm text-text-muted">Development only. Mail is kept here instead of being sent.</p></div>
+  {{if .Data.Sent}}
+  <ol class="divide-y divide-border border-y border-border">
+  {{range .Data.Sent}}<li class="py-4">
+    <p class="font-semibold">{{.Subject}}</p>
+    <p class="text-sm text-text-muted">To {{.To}} · {{.At.Format "15:04:05"}}</p>
+    <pre class="mt-2 whitespace-pre-wrap wrap-anywhere text-sm" data-outbox-text>{{.Text}}</pre>
+  </li>{{end}}
+  </ol>
+  {{else}}{{template "empty" (empty "all-caught-up.svg" "No mail yet" "Mail the site sends will appear here." nil)}}{{end}}
+</div>{{end}}

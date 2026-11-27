@@ -1,0 +1,4 @@
+{{define "title"}}Not found{{end}}
+{{define "content"}}<div class="page-narrow">
+  {{template "empty" (emptypage "not-found.svg" "There is nothing here" "The page may have moved, or the address may be mistyped." (linkbutton "primary" "Go to the home page" "/"))}}
+</div>{{end}}
