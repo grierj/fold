@@ -2,6 +2,14 @@
 
 Every command here runs on the server, in the folder with `docker-compose.yml`.
 
+## Email to work and school accounts
+
+Personal Gmail and Outlook.com addresses get the site's email in the inbox. A work or school
+address can be different: its organization may hold or discard mail from a sender it does not
+know, without telling the person, even after Postmark reports the message as delivered. If
+someone with such an address never gets a sign-in link, ask them to try a personal address, or
+ask their organization's IT to allow mail from your church's sending domain.
+
 ## Backups
 
 A backup is taken every night at 3 am, church time, and the newest 14 are kept in the app's
