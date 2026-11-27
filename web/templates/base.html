@@ -21,22 +21,33 @@
       <img src="{{asset "brand/fold-icon-1.svg"}}" alt="" width="28" height="28">
       <span>{{if .Church}}{{.Church}}{{else}}{{.Product}}{{end}}</span>
     </a>
+    {{if .Viewer}}
+    <nav aria-label="Main" class="site-nav">
+      <a class="text-link px-2" href="/groups">Groups</a>
+      <a class="text-link px-2" href="/notices">Notices{{if .Unread}} <span class="badge">{{.Unread}}<span class="sr-only"> unread</span></span>{{end}}</a>
+      {{if .Viewer.IsAdmin}}<a class="text-link px-2" href="/admin/requests">Admin</a>{{end}}
+      <a class="text-link px-2" href="/profile">{{.Viewer.Name}}</a>
+      <form method="post" action="/signout">{{template "csrf" .}}{{template "button" (button "secondary" "Sign out")}}</form>
+    </nav>
+    {{else}}
     <nav aria-label="Main" class="flex flex-wrap items-center gap-2">
       <a class="text-link px-2" href="/groups">Groups</a>
-    {{if .Viewer}}
-      <a class="text-link px-2" href="/notices">Notices{{if .Unread}} <span class="badge">{{.Unread}}<span class="sr-only"> unread</span></span>{{end}}</a>
-      {{if .Viewer.IsAdmin}}<a class="text-link px-2" href="/admin/requests">Requests</a>{{end}}
-      <span class="text-sm text-text-muted">{{.Viewer.Name}}</span>
-      <form method="post" action="/signout">{{template "csrf" .}}{{template "button" (button "secondary" "Sign out")}}</form>
-    {{else}}
       <a class="text-link px-2" href="/signin">Sign in</a>
-    {{end}}
     </nav>
+    {{end}}
   </div>
 </header>
 <main id="main" tabindex="-1">
 {{template "content" .}}
 </main>
-<footer class="mx-auto px-4 py-8 text-center text-sm text-text-muted">Powered by {{.Product}}</footer>
+<footer class="mx-auto px-4 py-8 text-center text-sm text-text-muted{{if .Viewer}} footer-above-tabs{{end}}">Powered by {{.Product}}</footer>
+{{if .Viewer}}
+<nav aria-label="Tabs" class="tabbar">
+  <a class="tab" href="/">Home</a>
+  <a class="tab" href="/groups">Groups</a>
+  <a class="tab" href="/notices">Notices{{if .Unread}} <span class="badge">{{.Unread}}<span class="sr-only"> unread</span></span>{{end}}</a>
+  <a class="tab" href="/profile">You</a>
+</nav>
+{{end}}
 </body>
 </html>{{end}}

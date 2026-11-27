@@ -1,0 +1,25 @@
+{{define "title"}}Your profile{{end}}
+{{define "content"}}<div class="page-form">
+  <h1 class="text-2xl font-bold sm:text-3xl">Your profile</h1>
+  {{with .Data.Status}}<div class="mt-4">{{template "status" .}}</div>{{end}}
+  {{if .Data.Conflict}}<div class="mt-4">{{template "notice" (notice "warning" "That could not be saved" "Your profile changed in another window while you were editing. Here is what it says now; make your change again.")}}</div>{{end}}
+  <form class="form-stack mt-6" method="post" action="/profile/name" novalidate>
+    {{template "csrf" .}}
+    {{template "hidden" (hidden "version" .Data.Version)}}
+    {{template "field" .Data.Name}}
+    {{template "button" (button "primary" "Save")}}
+  </form>
+  <section class="section mt-10" aria-labelledby="contact-h">
+    <h2 id="contact-h" class="text-xl font-bold">Your email</h2>
+    <p class="mt-2 wrap-anywhere">{{.Data.Email}}</p>
+    <p class="mt-2 text-text-muted">You sign in with it. Admins can always see it. Leaders of your groups see it unless you turn this off.</p>
+    <div class="mt-4">{{template "contact" .}}</div>
+  </section>
+  <section class="section mt-10 flex flex-wrap items-center gap-3" aria-label="More">
+    {{if .Viewer.IsAdmin}}{{template "linkbutton" (linkbutton "secondary" "Admin" "/admin/requests")}}{{template "linkbutton" (linkbutton "ghost" "Components" "/admin/gallery")}}{{end}}
+    <form method="post" action="/signout">{{template "csrf" .}}{{template "button" (button "secondary" "Sign out")}}</form>
+  </section>
+</div>{{end}}
+{{define "contact"}}<form id="contact" class="flex flex-wrap items-center gap-3" method="post" action="/profile/contact" hx-post="/profile/contact" hx-target="this" hx-swap="outerHTML">
+  {{template "csrf" .}}{{template "chip" .Data.Contact}}{{template "status" .Data.Status}}
+</form>{{end}}

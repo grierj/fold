@@ -1,0 +1,38 @@
+{{define "title"}}{{.Data.Person.Name}}{{end}}
+{{define "content"}}<div class="page-narrow">
+  <div class="page-header">
+    <div class="min-w-0">
+      <p class="text-sm"><a class="text-link" href="/admin/people">People</a></p>
+      <h1 class="text-2xl font-bold wrap-anywhere sm:text-3xl">{{.Data.Person.Name}}</h1>
+      <p class="mt-1 text-sm text-text-muted wrap-anywhere">{{.Data.Person.Email}}{{if .Data.Person.IsAdmin}} · Administrator{{end}}{{if eq .Data.Person.Status "disabled"}} · Turned off{{end}}</p>
+    </div>
+  </div>
+  {{with .Data.Status}}<div class="mb-6">{{template "status" .}}</div>{{end}}
+  {{with .Data.Message}}<div class="mb-6">{{template "notice" (notice "danger" "That could not be done yet" .)}}</div>{{end}}
+  <section aria-labelledby="groups-h">
+    <h2 id="groups-h" class="mb-2 text-xl font-bold">Groups</h2>
+    {{if .Data.Groups}}<ul class="divide-y divide-border border-y border-border">{{range .Data.Groups}}{{template "grouprow" .}}{{end}}</ul>
+    {{else}}<p class="text-text-muted">Not in any groups.</p>{{end}}
+  </section>
+  {{if not .Data.Self}}
+  <section class="section mt-10" aria-labelledby="account-h">
+    <h2 id="account-h" class="mb-2 text-xl font-bold">Account</h2>
+    {{if eq .Data.Person.Status "disabled"}}
+      <p class="mb-4 text-text-muted">Their account is turned off. Turning it on brings back their groups.</p>
+      <form method="post" action="/admin/people/{{.Data.Person.UID}}/enable">{{template "csrf" .}}{{template "button" (button "primary" "Turn their account on")}}</form>
+    {{else}}
+      <p class="mb-4 text-text-muted">Turning their account off signs them out everywhere. Their groups are kept, hidden, until it's turned on again.</p>
+      <form class="form-stack" method="post" action="/admin/people/{{.Data.Person.UID}}/disable">
+        {{template "csrf" .}}
+        {{range .Data.Succession}}<fieldset>
+          <legend class="label">Who leads {{.Group.Name}} next?</legend>
+          <p class="field-hint">They're its only leader.</p>
+          {{range .Choices}}{{template "choice" .}}{{else}}<p class="text-text-muted">Nobody else can lead it yet. Make another member or an administrator able to first.</p>{{end}}
+          {{with .Error}}<p class="field-error"><span aria-hidden="true">⚠</span><span>{{.}}</span></p>{{end}}
+        </fieldset>{{end}}
+        {{template "button" (button "danger-outline" "Turn their account off")}}
+      </form>
+    {{end}}
+  </section>
+  {{end}}
+</div>{{end}}

@@ -53,6 +53,14 @@ func (a *App) routes(mux *http.ServeMux) {
 	mux.Handle("POST /groups/{uid}/members/{person}/remove", http.HandlerFunc(a.postRemoveMember))
 	mux.Handle("POST /groups/{uid}/invite", http.HandlerFunc(a.postInvite))
 	mux.Handle("POST /admin/invite", http.HandlerFunc(a.postAdminInvite))
+	mux.Handle("GET /admin/people", http.HandlerFunc(a.getAdminPeople))
+	mux.Handle("GET /admin/people/{uid}", http.HandlerFunc(a.getAdminPerson))
+	mux.Handle("POST /admin/people/{uid}/disable", http.HandlerFunc(a.postDisable))
+	mux.Handle("POST /admin/people/{uid}/enable", http.HandlerFunc(a.postEnable))
+
+	mux.Handle("GET /profile", http.HandlerFunc(a.getProfile))
+	mux.Handle("POST /profile/name", http.HandlerFunc(a.postProfileName))
+	mux.Handle("POST /profile/contact", http.HandlerFunc(a.postProfileContact))
 
 	mux.Handle("GET /admin/groups", http.HandlerFunc(a.getAdminGroups))
 	mux.Handle("POST /admin/groups/{uid}/approve", a.postDecideGroup(true))

@@ -1,0 +1,97 @@
+package app
+
+import (
+	"errors"
+	"net/http"
+	"strconv"
+
+	"fold/internal/accounts"
+	"fold/internal/write"
+)
+
+// The profile: a person's own name, and whether leaders of their groups see
+// their email (P5).
+
+func (a *App) profileData(r *http.Request, f pageFacts, name string, version int64, nameErr string, conflict bool) any {
+	return a.profileDataWith(f, name, version, nameErr, conflict, map[string]string{"saved": "Saved."}[r.URL.Query().Get("done")])
+}
+
+func (a *App) profileDataWith(f pageFacts, name string, version int64, nameErr string, conflict bool, status string) any {
+	p := f.session.Person
+	nameF := Field{ID: "name", Name: "name", Label: "Your name", Hint: "As people at church know you. It's shown on rosters and notices.",
+		Value: name, MaxLength: maxName, Required: true, Error: nameErr, Autocomplete: "name"}
+	return struct {
+		Name     Field
+		Version  int64
+		Email    string
+		Contact  Chip
+		Status   string
+		Conflict bool
+	}{nameF, version, p.Email,
+		// Pressing the switch posts the state it changes to.
+		Chip{Label: "Show my email to leaders of my groups", Name: "hide", Value: map[bool]string{true: "0", false: "1"}[p.ContactHidden], Type: "submit", Pressed: !p.ContactHidden},
+		status, conflict}
+}
+
+func (a *App) getProfile(w http.ResponseWriter, r *http.Request) {
+	f, ok := a.signedIn(w, r, nil)
+	if !ok {
+		return
+	}
+	f.Data = a.profileData(r, f, f.session.Person.Name, f.session.Person.Version, "", false)
+	a.render(w, r, http.StatusOK, "profile", "", f.page)
+}
+
+func (a *App) postProfileName(w http.ResponseWriter, r *http.Request) {
+	f, ok := a.signedIn(w, r, nil)
+	if !ok {
+		return
+	}
+	name, okName := text(r, "name", maxName)
+	version, _ := strconv.ParseInt(r.PostFormValue("version"), 10, 64)
+	if !okName || name == "" {
+		f.Data = a.profileData(r, f, name, version, "Enter your name.", false)
+		a.render(w, r, http.StatusUnprocessableEntity, "profile", "", f.page)
+		return
+	}
+	err := a.exec.Run(r.Context(), write.Session(accounts.Hash(a.sessionToken(r))), accounts.EditName{Name: name, Version: version})
+	switch {
+	case errors.Is(err, write.ErrConflict):
+		f.Data = a.profileData(r, f, f.session.Person.Name, f.session.Person.Version, "", true)
+		a.render(w, r, http.StatusConflict, "profile", "", f.page)
+		return
+	case errors.Is(err, write.ErrSignedOut):
+		http.Redirect(w, r, "/signin", http.StatusSeeOther)
+		return
+	case err != nil:
+		a.serverError(w, r, err)
+		return
+	}
+	http.Redirect(w, r, "/profile?done=saved", http.StatusSeeOther)
+}
+
+// postProfileContact flips the one switch. With htmx it answers with the
+// switch and "Saved"; without, it redirects back to the profile.
+func (a *App) postProfileContact(w http.ResponseWriter, r *http.Request) {
+	f, ok := a.signedIn(w, r, nil)
+	if !ok {
+		return
+	}
+	hidden := r.PostFormValue("hide") == "1"
+	err := a.exec.Run(r.Context(), write.Session(accounts.Hash(a.sessionToken(r))), accounts.SetContactHidden{Hidden: hidden})
+	if errors.Is(err, write.ErrSignedOut) {
+		http.Redirect(w, r, "/signin", http.StatusSeeOther)
+		return
+	}
+	if err != nil {
+		a.serverError(w, r, err)
+		return
+	}
+	if r.Header.Get("HX-Request") != "true" {
+		http.Redirect(w, r, "/profile?done=saved", http.StatusSeeOther)
+		return
+	}
+	f.session.Person.ContactHidden = hidden
+	f.Data = a.profileDataWith(f, f.session.Person.Name, f.session.Person.Version, "", false, "Saved.")
+	a.render(w, r, http.StatusOK, "profile", "contact", f.page)
+}
