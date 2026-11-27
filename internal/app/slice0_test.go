@@ -479,21 +479,51 @@ func TestSameDeviceMarkIsForOneAddressAndOneDay(t *testing.T) {
 	s := newSite(t)
 	s.finishSetup()
 	addr := "pat@cloverdale.example"
-	// A browser that asked for a different address gets the button.
+	ask := func(b *browser, email string) { b.post("/signin", "/signin", url.Values{"email": {email}}) }
+
+	// A browser marked for a different address gets the button, and a
+	// signed-in visitor opening someone else's link is no different.
 	other := s.browser()
-	other.post("/signin", "/signin", url.Values{"email": {"someone@example.org"}})
+	ask(other, "someone@example.org")
 	asker := s.browser()
-	asker.post("/signin", "/signin", url.Values{"email": {addr}})
+	ask(asker, addr)
 	s.work()
 	tok := s.linkIn(addr)
-	if r := other.get("/l/" + tok); r.status != http.StatusOK {
+	if r := other.get("/l/" + tok); r.status != http.StatusOK || !strings.Contains(r.body, "Sign in to") {
 		t.Fatalf("a mark for another address acted: %d", r.status)
 	}
-	// After a link's lifetime the mark no longer acts (the link has expired
-	// too, so ask again and age only the mark).
-	s.Clock.Advance(accounts.LinkLife + time.Minute)
-	if r := asker.get("/l/" + tok); r.status == http.StatusSeeOther {
-		t.Fatal("an expired link acted")
+	if r := asker.get("/l/" + tok); r.status != http.StatusSeeOther {
+		t.Fatalf("the marked browser did not act: %d", r.status)
+	}
+
+	// The mark lasts a day. Mark a browser, then 23 hours later ask for a
+	// link from another browser, so the link is fresh but the first mark is
+	// past its day when the link is opened 2 hours after that.
+	stale := s.browser()
+	ask(stale, addr)
+	s.Clock.Advance(23 * time.Hour)
+	ask(s.browser(), addr)
+	s.work()
+	fresh := s.linkIn(addr)
+	s.Clock.Advance(2 * time.Hour)
+	if r := stale.get("/l/" + fresh); r.status != http.StatusOK || !strings.Contains(r.body, "Sign in to") {
+		t.Fatalf("a day-old mark acted: %d", r.status)
+	}
+}
+
+// Opening a link whose person is gone shows that it no longer works.
+func TestLinkWithoutItsPersonShowsTheExpiredPage(t *testing.T) {
+	s := newSite(t)
+	s.finishSetup()
+	b := s.browser()
+	b.post("/signin", "/signin", url.Values{"email": {"pat@cloverdale.example"}})
+	s.work()
+	tok := s.linkIn("pat@cloverdale.example")
+	s.Writer.Exec(`PRAGMA foreign_keys = OFF`)
+	s.Writer.Exec(`DELETE FROM sessions`)
+	s.Writer.Exec(`DELETE FROM people`)
+	if r := b.get("/l/" + tok); r.status != http.StatusOK || !strings.Contains(r.body, "Sign in to") {
+		t.Fatalf("status %d", r.status)
 	}
 }
 

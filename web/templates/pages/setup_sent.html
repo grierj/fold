@@ -10,7 +10,7 @@
 </div>{{end}}
 {{define "setupstatus"}}<div id="setup-status" class="mt-4"{{if eq .Data.State "pending"}} hx-get="/setup/status" hx-trigger="every 3s" hx-swap="outerHTML"{{end}}>
   {{if eq .Data.State "done"}}
-    <p>We sent the test message to <strong class="wrap-anywhere">{{.Data.Email}}</strong>. Open it and press <strong>Finish setup</strong>. The button works once, within 24 hours.</p>
+    <p>We sent the test message to <strong class="wrap-anywhere">{{.Data.Email}}</strong>. Open it on this device and setup finishes at once; anywhere else, press its <strong>Finish setup</strong> button. It works once, within 24 hours.</p>
     <p class="mt-3 text-text-muted">If it has not arrived in a few minutes, look in your spam folder, then send it again.</p>
   {{else if eq .Data.State "failed"}}
     {{template "notice" (notice "danger" "The test message could not be sent" .Data.Problem)}}
