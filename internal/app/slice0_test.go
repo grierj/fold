@@ -412,3 +412,32 @@ func TestMonthlyCheckpointEmail(t *testing.T) {
 		t.Fatal("no checkpoint email")
 	}
 }
+
+// A replaced setup link leads back to setup, not to sign-in: before setup
+// is done there is no account to sign in to.
+func TestOldSetupLinkLeadsBackToSetup(t *testing.T) {
+	s := newSite(t)
+	b := s.browser()
+	b.unlock()
+	b.post("/setup", "/setup", setupForm("pat@cloverdale.example"))
+	s.work()
+	old := s.linkIn("pat@cloverdale.example")
+	b.post("/setup/sent", "/setup/resend", nil)
+	s.work()
+	r := b.get("/l/" + old)
+	if !strings.Contains(r.body, "no longer works") || !strings.Contains(r.body, `href="/setup"`) || strings.Contains(r.body, "Get a new sign-in link") {
+		t.Fatalf("old setup link page:\n%s", r.body)
+	}
+}
+
+// Any page renews the session, not only the home page (R8).
+func TestAnyPageRenewsTheSession(t *testing.T) {
+	s := newSite(t)
+	admin := s.finishSetup()
+	s.Clock.Advance(6 * 24 * time.Hour)
+	admin.get("/no-such-page")
+	s.Clock.Advance(3 * 24 * time.Hour)
+	if r := admin.get("/"); !strings.Contains(r.body, "Welcome, Pat") {
+		t.Fatal("visiting another page did not renew the session")
+	}
+}

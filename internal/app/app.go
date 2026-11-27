@@ -114,6 +114,9 @@ func (a *App) guard(next http.Handler) http.Handler {
 		switch r.Method {
 		case http.MethodGet, http.MethodHead:
 			a.ensureCSRFCookie(w, r)
+			if !isStatic(r) {
+				a.renew(w, r)
+			}
 		case http.MethodPost:
 			if !a.sameOrigin(r) || !a.checkCSRF(r) {
 				a.staleForm(w, r)
@@ -223,13 +226,26 @@ func (a *App) load(ctx context.Context, r *http.Request, q *sql.Tx) (pageFacts, 
 	return f, nil
 }
 
-// renew extends a live session when a page is visited (R8). It is the one
-// write a GET makes, and it is the ruled behaviour of a session.
-func (a *App) renew(w http.ResponseWriter, r *http.Request, s *people.Session) {
-	if s == nil || a.clock.Now().Sub(s.RenewedAt) < accounts.RenewEvery {
+// renew extends a live session when any page is visited (R8). It runs here,
+// for every page, so a new page cannot forget it. It is the one write a GET
+// makes, and it is the ruled behaviour of a session.
+func (a *App) renew(w http.ResponseWriter, r *http.Request) {
+	token := a.sessionToken(r)
+	if token == "" {
 		return
 	}
-	token := a.sessionToken(r)
+	var due bool
+	err := a.reader.Read(r.Context(), func(q *sql.Tx) error {
+		s, err := people.BySession(r.Context(), q, accounts.Hash(token), a.clock.Now())
+		if errors.Is(err, people.ErrNotFound) {
+			return nil
+		}
+		due = err == nil && a.clock.Now().Sub(s.RenewedAt) >= accounts.RenewEvery
+		return err
+	})
+	if err != nil || !due {
+		return
+	}
 	if err := a.exec.Run(r.Context(), write.Session(accounts.Hash(token)), accounts.RenewSession{}); err != nil {
 		a.log.Warn("session renew", "err", err)
 		return

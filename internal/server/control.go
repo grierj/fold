@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,7 +17,6 @@ import (
 	"fold/internal/app"
 	"fold/internal/backup"
 	"fold/internal/db"
-	"fold/internal/keys"
 	"fold/internal/settings"
 	"fold/internal/write"
 )
@@ -113,8 +111,6 @@ func (c *control) setupCode(ctx context.Context) (string, error) {
 	return c.app.SetupCode(), nil
 }
 
-func decode(s string) ([]byte, error) { return base64.StdEncoding.DecodeString(s) }
-
 // Call sends one command to the running server. ok is false when no server
 // is listening.
 func Call(dataDir, method, path string, out any) (bool, error) {
@@ -147,29 +143,9 @@ type Reseal struct{}
 func (Reseal) Action() string { return "keys.reseal" }
 
 func (Reseal) Apply(tx *write.Tx) error {
-	s, err := settings.Load(tx.Context(), tx)
+	n, err := settings.Reseal(tx)
 	if err != nil {
 		return err
-	}
-	n := 0
-	for _, key := range []string{settings.PostmarkToken, settings.SMTPPassword} {
-		if !s.Has(key) {
-			continue
-		}
-		raw, err := decode(s[key])
-		if err != nil {
-			return err
-		}
-		plain, usedPrevious, err := tx.Open(keys.Settings, raw)
-		if err != nil {
-			return fmt.Errorf("%s opens with neither secret: %w", key, err)
-		}
-		if usedPrevious {
-			if err := settings.SaveSealed(tx, key, string(plain)); err != nil {
-				return err
-			}
-			n++
-		}
 	}
 	if n == 0 {
 		return write.ErrNothing

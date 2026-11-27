@@ -31,6 +31,7 @@ import (
 	"fold/internal/clock"
 	"fold/internal/db"
 	"fold/internal/keys"
+	"fold/internal/settings"
 	"fold/internal/write"
 )
 
@@ -257,6 +258,12 @@ func (c restored) Apply(tx *write.Tx) error {
 	// keeps its schedule.
 	if _, err := tx.Exec(`UPDATE jobs SET state = 'cancelled', secret = NULL, finished_at = ? WHERE state = 'pending' AND unique_key IS NULL`, now); err != nil {
 		return err
+	}
+	// Mail settings sealed under a key this server no longer has would leave
+	// the church unable to send a sign-in link once everyone is signed out.
+	// Refuse before anything goes live; reseal any that need the old key.
+	if _, err := settings.Reseal(tx); err != nil {
+		return fmt.Errorf("backup: %w. Set SECRET_KEY_PREVIOUS to the key in use when %s was taken, then restore again (docs/OPERATIONS.md)", err, c.m.Name)
 	}
 	tx.Detail("from", c.m.Name)
 	tx.Detail("from_seq", strconv.FormatInt(c.m.Checkpoint.Seq, 10))

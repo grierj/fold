@@ -33,7 +33,6 @@ func (a *App) home(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 		return
 	}
-	a.renew(w, r, f.session)
 	status := ""
 	if r.URL.Query().Get("welcome") == "1" && f.Viewer != nil {
 		status = "You're signed in."
@@ -95,6 +94,7 @@ func (a *App) postSignin(w http.ResponseWriter, r *http.Request) {
 type linkPage struct {
 	Usable                      bool
 	Title, Text, Button, Action string
+	Next                        *LinkButton // what to do when the link no longer works
 }
 
 func (a *App) getLink(w http.ResponseWriter, r *http.Request) {
@@ -114,10 +114,16 @@ func (a *App) getLink(w http.ResponseWriter, r *http.Request) {
 		a.serverError(w, r, err)
 		return
 	}
-	lp := linkPage{Usable: usable, Action: "/l/" + token}
+	lp := linkPage{Usable: usable, Action: "/l/" + token,
+		Next: &LinkButton{Kind: "primary", Label: "Get a new sign-in link", Href: "/signin"}}
 	switch purpose {
 	case "setup":
 		lp.Title, lp.Text, lp.Button = "Finish setting up", "Your mail settings work. Press the button to finish setup and sign in as the first administrator.", "Finish setup"
+		// Before setup is done there is no account to sign in to: the way on
+		// is another test message.
+		if !f.setup.Done() {
+			lp.Next = &LinkButton{Kind: "primary", Label: "Back to setup", Href: "/setup"}
+		}
 	default:
 		church := f.Church
 		lp.Title, lp.Text, lp.Button = "Sign in to "+church, "Press the button to sign in on this device.", "Sign in"

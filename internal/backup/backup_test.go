@@ -2,14 +2,19 @@ package backup_test
 
 import (
 	"context"
+	"database/sql"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"fold/internal/audit"
 	"fold/internal/backup"
 	"fold/internal/db"
+	"fold/internal/keys"
+	"fold/internal/settings"
 	"fold/internal/testenv"
+	"fold/internal/write"
 )
 
 func TestBackupsInOneSecondKeepBoth(t *testing.T) {
@@ -144,4 +149,50 @@ func TestBeforeMigrateCopyIsARestorableBackup(t *testing.T) {
 	if _, err := backup.Restore(ctx, env.Exec, env.Dir, m.Name); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// A backup whose mail settings were sealed with a key the server no longer
+// has is refused, and the live database is left as it was. With the old key
+// as the previous one it restores and is resealed with the current key.
+func TestRestoreRefusesSettingsItCannotOpen(t *testing.T) {
+	env := testenv.New(t)
+	ctx := context.Background()
+	oldHex, newHex := strings.Repeat("ab", 32), strings.Repeat("cd", 32)
+	oldKeys, _ := keys.Parse(oldHex, "")
+	before := write.New(env.Writer, env.Clock, oldKeys)
+	if err := before.Run(ctx, write.System(), sealToken{}); err != nil {
+		t.Fatal(err)
+	}
+	m, err := backup.Take(ctx, before, env.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.Clock.Advance(time.Minute)
+
+	newKeys, _ := keys.Parse(newHex, "")
+	after := write.New(env.Writer, env.Clock, newKeys)
+	tip, _ := after.Checkpoint(ctx)
+	if _, err := backup.Restore(ctx, after, env.Dir, m.Name); err == nil || !strings.Contains(err.Error(), "SECRET_KEY_PREVIOUS") {
+		t.Fatalf("restore with the wrong key: %v", err)
+	}
+	if now, _ := after.Checkpoint(ctx); now.Seq != tip.Seq+1 { // only the safety copy's row
+		t.Fatalf("the live log moved from %d to %d", tip.Seq, now.Seq)
+	}
+
+	rotating, _ := keys.Parse(newHex, oldHex)
+	if _, err := backup.Restore(ctx, write.New(env.Writer, env.Clock, rotating), env.Dir, m.Name); err != nil {
+		t.Fatal(err)
+	}
+	var s settings.Settings
+	env.Reader.Read(ctx, func(q *sql.Tx) error { var err error; s, err = settings.Load(ctx, q); return err })
+	if got, err := s.Open(newKeys, settings.PostmarkToken); err != nil || got != "pm-token" {
+		t.Fatalf("not resealed with the current key: %q %v", got, err)
+	}
+}
+
+type sealToken struct{}
+
+func (sealToken) Action() string { return "settings.save" }
+func (sealToken) Apply(tx *write.Tx) error {
+	return settings.SaveSealed(tx, settings.PostmarkToken, "pm-token")
 }

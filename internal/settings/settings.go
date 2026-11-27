@@ -119,3 +119,39 @@ func (s Settings) Sender(k *keys.Keys, outbox *mail.Outbox, dev bool) (mail.Send
 	}
 	return nil, write.Permanent(ErrNoMail)
 }
+
+// ErrWrongKey is a sealed setting that opens with neither the current nor
+// the previous secret.
+var ErrWrongKey = errors.New("settings: the saved mail settings were sealed with a different SECRET_KEY")
+
+// Reseal opens every sealed setting and re-encrypts with the current secret
+// any that needed the previous one. It returns how many it resealed, or
+// ErrWrongKey when one opens with neither, so nothing is kept that the
+// server cannot read.
+func Reseal(tx *write.Tx) (int, error) {
+	s, err := Load(tx.Context(), tx)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, key := range []string{PostmarkToken, SMTPPassword} {
+		if !s.Has(key) {
+			continue
+		}
+		raw, err := base64.StdEncoding.DecodeString(s[key])
+		if err != nil {
+			return 0, fmt.Errorf("%w (%s)", ErrWrongKey, key)
+		}
+		plain, usedPrevious, err := tx.Open(keys.Settings, raw)
+		if err != nil {
+			return 0, fmt.Errorf("%w (%s)", ErrWrongKey, key)
+		}
+		if usedPrevious {
+			if err := SaveSealed(tx, key, string(plain)); err != nil {
+				return 0, err
+			}
+			n++
+		}
+	}
+	return n, nil
+}

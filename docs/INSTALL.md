@@ -20,6 +20,7 @@ Sign in to the server and run:
 
 ```sh
 mkdir fold && cd fold
+umask 077   # the files made here, .env above all, are readable by you alone
 curl -fsSLO https://raw.githubusercontent.com/grierj/fold/master/docker-compose.yml
 curl -fsSLO https://raw.githubusercontent.com/grierj/fold/master/Caddyfile
 curl -fsSL -o .env https://raw.githubusercontent.com/grierj/fold/master/.env.example
@@ -32,6 +33,9 @@ Open `.env` in an editor (`nano .env`) and set:
 - `DOMAIN`: the site's name, without `https://`.
 - `VERSION`: the release to run, from the project's releases page.
 - `SECRET_KEY`: run `openssl rand -hex 32` and paste what it prints.
+
+Check that only you can read it: `ls -l .env` should start with `-rw-------`. If it does
+not, run `chmod 600 .env`.
 
 Save a copy of `.env` somewhere safe, such as the church's password manager. Without the
 secret key, the saved mail settings cannot be read on a new server.
@@ -52,7 +56,8 @@ Get the setup code:
 docker compose exec app /fold setup-code
 ```
 
-Open `https://` and your domain in a browser, enter the code, and answer the questions: your
+Open your site in a browser, at `https://` followed by your domain (for example
+`https://groups.yourchurch.org`). Enter the code, and answer the questions: your
 church's name and time zone, your name and email, and the mail settings. The site sends you
 a test message. Open it and press **Finish setup**. You are now signed in as the first
 administrator.

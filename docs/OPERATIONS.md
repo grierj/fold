@@ -82,6 +82,12 @@ Do this if `.env` may have been seen by someone it should not have been.
    the new key and says so in its log.
 4. Remove `SECRET_KEY_PREVIOUS` and run `docker compose up -d` again.
 
+Keep the old key with the church's records for as long as you keep backups taken before
+the change (14 nights on the server, longer for copies kept elsewhere). Restoring one of
+those backups needs it: set it as `SECRET_KEY_PREVIOUS` first. A restore refuses a backup
+whose mail settings open with neither key, rather than leave the site unable to send
+sign-in links.
+
 Anyone in the middle of filling in a form sees "That page was out of date" once. Nobody is
 signed out. Each use of the key (form tokens, saved settings, emails waiting to go, the
 setup code) has its own key derived from the secret.

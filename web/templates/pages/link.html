@@ -8,6 +8,6 @@
     {{template "button" (wide (button "primary" .Data.Button))}}
   </form>
 {{else}}
-  {{template "empty" (emptypage "link-expired.svg" "This link no longer works" "Links work once, within 24 hours, and asking for a new one cancels the old. You can ask for another." (linkbutton "primary" "Get a new sign-in link" "/signin"))}}
+  {{template "empty" (emptypage "link-expired.svg" "This link no longer works" "Links work once, within 24 hours, and asking for a new one cancels the old. You can ask for another." .Data.Next)}}
 {{end}}
 </div>{{end}}

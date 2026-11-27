@@ -51,7 +51,6 @@ func (a *App) gallery(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	a.renew(w, r, f.session)
 	var rows [][]Button
 	for _, k := range []string{"primary", "secondary", "danger", "danger-outline", "ghost"} {
 		rows = append(rows, []Button{
