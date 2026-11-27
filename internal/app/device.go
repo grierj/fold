@@ -24,6 +24,24 @@ func (a *App) deviceMAC(email string, at int64) string {
 	return base64.RawURLEncoding.EncodeToString(a.keys.MAC(keys.Device, []byte(msg)))
 }
 
+// personOpened reports whether a request is a person opening the page, not a
+// browser preloading it. A prefetch or prerender carries the browser's
+// cookies, so acting on one could use a link up, or finish setup, before
+// anyone sees it. Browsers that send no Sec-Fetch headers are taken as a
+// person; the link still works once either way.
+func personOpened(r *http.Request) bool {
+	if r.Header.Get("Sec-Purpose") != "" || r.Header.Get("Purpose") != "" {
+		return false
+	}
+	if m := r.Header.Get("Sec-Fetch-Mode"); m != "" && m != "navigate" {
+		return false
+	}
+	if d := r.Header.Get("Sec-Fetch-Dest"); d != "" && d != "document" {
+		return false
+	}
+	return true
+}
+
 // markDevice marks this browser as the one that asked for a link to email.
 // It is set whether or not the address has an account, so it says nothing.
 func (a *App) markDevice(w http.ResponseWriter, email string) {

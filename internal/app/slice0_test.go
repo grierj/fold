@@ -544,3 +544,46 @@ func TestSetupLinkActsInTheBrowserThatSentIt(t *testing.T) {
 		t.Fatal("not signed in after one-click setup")
 	}
 }
+
+// A prefetch or prerender in the asking browser does not use the link; the
+// person's own visit still signs them in.
+func TestPreloadDoesNotUseTheLink(t *testing.T) {
+	s := newSite(t)
+	s.finishSetup()
+	addr := "pat@cloverdale.example"
+	b := s.browser()
+	b.post("/signin", "/signin", url.Values{"email": {addr}})
+	s.work()
+	tok := s.linkIn(addr)
+	for _, h := range []http.Header{
+		{"Sec-Purpose": {"prefetch;prerender"}},
+		{"Sec-Purpose": {"prefetch"}},
+		{"Purpose": {"prefetch"}},
+		{"Sec-Fetch-Mode": {"no-cors"}, "Sec-Fetch-Dest": {"image"}},
+		{"Sec-Fetch-Mode": {"navigate"}, "Sec-Fetch-Dest": {"iframe"}},
+	} {
+		req, _ := http.NewRequest("GET", s.srv.URL+"/l/"+tok, nil)
+		for k, v := range h {
+			req.Header[k] = v
+		}
+		r, err := b.c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+		if r.StatusCode != http.StatusOK {
+			t.Fatalf("%v acted: %d", h, r.StatusCode)
+		}
+	}
+	req, _ := http.NewRequest("GET", s.srv.URL+"/l/"+tok, nil)
+	req.Header.Set("Sec-Fetch-Mode", "navigate")
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	r, err := b.c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if r.StatusCode != http.StatusSeeOther {
+		t.Fatalf("the person's own visit did not act: %d", r.StatusCode)
+	}
+}

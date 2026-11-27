@@ -118,7 +118,7 @@ func (a *App) showLink(w http.ResponseWriter, r *http.Request, mayAct bool) {
 		a.serverError(w, r, err)
 		return
 	}
-	if mayAct && r.Method == http.MethodGet && policy.LinkActsWhenOpened(info.Usable, a.sameDevice(r, info.Email)) {
+	if mayAct && r.Method == http.MethodGet && personOpened(r) && policy.LinkActsWhenOpened(info.Usable, a.sameDevice(r, info.Email)) {
 		a.useLink(w, r, token, info.Purpose)
 		return
 	}
