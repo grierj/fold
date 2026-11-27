@@ -21,6 +21,7 @@ type galleryData struct {
 	Dialog       Dialog
 	Empty        Empty
 	Notices      []Notice
+	NoticeItems  []NoticeItem
 	Errors       []FieldError
 	Toggle       Chip
 	ToggleStatus string
@@ -94,6 +95,10 @@ func (a *App) gallery(w http.ResponseWriter, r *http.Request) {
 			{Tone: "danger", Title: "That could not be saved", Text: "Someone else changed this group. Here is what it says now."},
 		},
 		Errors: []FieldError{{ID: "g-error", Message: "Enter an email address like name@example.org."}},
+		NoticeItems: []NoticeItem{
+			{ID: 1, Text: "Sam Member asked for an account.", When: "Thu 27 Nov, 3:04 pm", CSRF: a.csrfToken(r)},
+			{ID: 2, Text: "Your group \u201cBible Study\u201d was approved.", When: "Wed 26 Nov, 9:15 am", Read: true, CSRF: a.csrfToken(r)},
+		},
 		Toggle: Chip{Label: "Remind me", Name: "on", Value: "1", Type: "submit"},
 	}
 	f.Data = d

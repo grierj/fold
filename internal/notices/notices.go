@@ -135,10 +135,24 @@ func List(ctx context.Context, q db.Querier, r Reader, limit int) ([]Notice, err
 	return out, nil
 }
 
-// Unread is the bell's one plain count (DEC-44).
-func Unread(ctx context.Context, q db.Querier, personID int64) (int, error) {
+// adminOnly are the kinds only an admin reads. Someone who stops being an
+// admin keeps the rows but no longer sees or counts them.
+var adminOnly = []string{AccountRequested}
+
+// Unread is the bell's one plain count (DEC-44): the unread notices the
+// reader would see in the list. A notice whose subject has since gone is
+// deleted with it, so only the admin-only kinds need leaving out here.
+func Unread(ctx context.Context, q db.Querier, r Reader) (int, error) {
+	query := `SELECT count(*) FROM notices WHERE person_id = ? AND read_at IS NULL`
+	args := []any{r.ID}
+	if !r.Admin {
+		for _, k := range adminOnly {
+			query += ` AND kind <> ?`
+			args = append(args, k)
+		}
+	}
 	var n int
-	err := q.QueryRowContext(ctx, `SELECT count(*) FROM notices WHERE person_id = ? AND read_at IS NULL`, personID).Scan(&n)
+	err := q.QueryRowContext(ctx, query, args...).Scan(&n)
 	return n, err
 }
 

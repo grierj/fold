@@ -220,7 +220,7 @@ func (a *App) load(ctx context.Context, r *http.Request, q *sql.Tx) (pageFacts, 
 		if err == nil {
 			f.session = &sess
 			f.Viewer = &viewerInfo{Name: sess.Person.Name, IsAdmin: sess.Person.IsAdmin}
-			if f.Unread, err = notices.Unread(ctx, q, sess.Person.ID); err != nil {
+			if f.Unread, err = notices.Unread(ctx, q, noticeReader(sess.Person)); err != nil {
 				return pageFacts{}, err
 			}
 		} else if !errors.Is(err, people.ErrNotFound) {

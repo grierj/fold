@@ -137,6 +137,11 @@ func TestDeclinedRequestIsDeleted(t *testing.T) {
 	if s.Count(t, `SELECT count(*) FROM people WHERE email = 'sam@example.org'`) != 0 || s.Count(t, `SELECT count(*) FROM notices`) != 0 {
 		t.Fatal("something about a declined person was kept")
 	}
+	sent := len(s.outbox.All())
+	s.work()
+	if len(s.outbox.All()) != sent || s.Count(t, `SELECT count(*) FROM links WHERE purpose = 'signin'`) != 0 {
+		t.Fatal("a decline sent mail or left a link")
+	}
 	// The audit row keeps only the random id.
 	var details string
 	s.Writer.QueryRow(`SELECT subjects || details FROM audit_log WHERE action = 'account.decline'`).Scan(&details)
@@ -156,6 +161,20 @@ func TestRequestsAreForAdmins(t *testing.T) {
 	s.work()
 	var uid string
 	s.Writer.QueryRow(`SELECT uid FROM people WHERE email = 'sam@example.org'`).Scan(&uid)
+	// A signed-in member who is not an admin is answered as if the page
+	// did not exist.
+	member := s.browser()
+	s.Writer.Exec(`INSERT INTO people (uid, name, email, status, created_at, updated_at) VALUES ('m1', 'Mel', 'mel@example.org', 'active', 0, 0)`)
+	member.post("/signin", "/signin", url.Values{"email": {"mel@example.org"}})
+	s.work()
+	tok := s.linkIn("mel@example.org")
+	member.get("/l/" + tok)
+	if r := member.get("/admin/requests"); r.status != http.StatusNotFound {
+		t.Fatalf("a member sees requests: %d", r.status)
+	}
+	if r := member.post("/", "/admin/requests/"+uid+"/approve", nil); r.status != http.StatusNotFound {
+		t.Fatalf("a member approved: %d", r.status)
+	}
 	stranger := s.browser()
 	if r := stranger.get("/admin/requests"); r.status != http.StatusNotFound {
 		t.Fatalf("a stranger sees requests: %d", r.status)
@@ -210,6 +229,35 @@ func TestOldNoticesAreCleanedUp(t *testing.T) {
 	s.work()
 	if n := s.Count(t, `SELECT count(*) FROM notices`); n != 0 {
 		t.Fatalf("%d notices left after 90 days read", n)
+	}
+	// An unread one stays 180 days.
+	s.browser().post("/request", "/request", requestForm("Ana Other", "ana@example.org"))
+	s.work()
+	s.Clock.Advance(170 * 24 * time.Hour)
+	s.work()
+	if n := s.Count(t, `SELECT count(*) FROM notices`); n != 1 {
+		t.Fatalf("an unread notice went before 180 days: %d", n)
+	}
+	s.Clock.Advance(11 * 24 * time.Hour)
+	s.work()
+	if n := s.Count(t, `SELECT count(*) FROM notices`); n != 0 {
+		t.Fatalf("an unread notice outlived 180 days: %d", n)
+	}
+}
+
+// Someone who stops being an admin no longer counts admin notices.
+func TestBellCountsOnlyWhatTheReaderSees(t *testing.T) {
+	s := newSite(t)
+	admin := s.finishSetup()
+	s.Writer.Exec(`INSERT INTO people (uid, name, email, status, is_admin, created_at, updated_at) VALUES ('a2', 'Second Admin', 'a2@example.org', 'active', 1, 0, 0)`)
+	s.browser().post("/request", "/request", requestForm("Sam Member", "sam@example.org"))
+	s.work()
+	if r := admin.get("/"); !strings.Contains(r.body, `class="badge"`) {
+		t.Fatal("no count before stepping down")
+	}
+	s.Writer.Exec(`UPDATE people SET is_admin = 0 WHERE email = 'pat@cloverdale.example'`)
+	if r := admin.get("/"); strings.Contains(r.body, `class="badge"`) {
+		t.Fatal("the bell counts a notice its reader can no longer see")
 	}
 }
 
