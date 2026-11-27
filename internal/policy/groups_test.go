@@ -137,6 +137,7 @@ func TestDecideGroupStatus(t *testing.T) {
 		{"admin rejects", admin, none, GroupPending, GroupArchived, GroupStatusReject},
 		{"leader archives own", adult, leader, GroupActive, GroupArchived, GroupStatusArchive},
 		{"leader can't approve own", adult, leader, GroupPending, GroupActive, GroupStatusForbidden},
+		{"leader can't reject own waiting group (DEC-96)", adult, leader, GroupPending, GroupArchived, GroupStatusForbidden},
 		{"leader can't unarchive", adult, leader, GroupArchived, GroupActive, GroupStatusForbidden},
 		{"admin unarchives", admin, none, GroupArchived, GroupActive, GroupStatusUnarchive},
 		{"nobody goes back to pending (DEC-160)", admin, none, GroupActive, GroupPending, GroupStatusNoReturn},
@@ -331,8 +332,11 @@ func TestPeopleAndContact(t *testing.T) {
 	if !CanDecideAccount(admin) || CanDecideAccount(adult) {
 		t.Error("admins decide account requests")
 	}
-	if !CanDisable(admin, adult, 1) || CanDisable(admin, admin, 2) || CanDisable(admin, &Person{ID: 9, Admin: true}, 1) || CanDisable(adult, adult2, 2) {
+	if !CanDisable(admin, adult, 1, 0) || CanDisable(admin, admin, 2, 0) || CanDisable(admin, &Person{ID: 9, Admin: true}, 1, 0) || CanDisable(adult, adult2, 2, 0) {
 		t.Error("disable: admins only, never yourself, never the last admin")
+	}
+	if CanDisable(admin, adult, 1, 1) {
+		t.Error("disable: never while a group they alone lead has no successor (DEC-36)")
 	}
 	if !MorePrivate(Public, Church) || !MorePrivate(Church, InviteOnly) || MorePrivate(InviteOnly, Public) || MorePrivate(Church, Church) {
 		t.Error("MorePrivate")

@@ -61,7 +61,9 @@ type Group struct {
 	Visibility string
 }
 
-// Rel is a person's membership in one group, read from active_memberships.
+// Rel is a person's membership in one group. Read it with groups.RelOf,
+// which sees removed rows too; never build it from active_memberships,
+// which drops them.
 type Rel struct {
 	Member bool // an active membership, leaders included
 	Leader bool // an active membership with the leader role
@@ -163,7 +165,9 @@ func DecideGroupStatus(p *Person, r Rel, from, to string) GroupStatusDecision {
 	if from == to {
 		return GroupStatusKept
 	}
-	if !IsAdmin(p) && to != GroupArchived {
+	// Only an admin decides a waiting group (DEC-96), and only an admin
+	// reactivates; a leader may archive their own active group.
+	if !IsAdmin(p) && (to != GroupArchived || from == GroupPending) {
 		return GroupStatusForbidden
 	}
 	switch {
@@ -289,7 +293,8 @@ func CanSeeEmail(viewer *Person, leadsTheirGroup bool, target *Person, hidden bo
 func CanDecideAccount(p *Person) bool { return IsAdmin(p) }
 
 // CanDisable guards disabling an account: only admins, never themselves,
-// and never the last active admin.
-func CanDisable(p, target *Person, activeAdmins int) bool {
-	return IsAdmin(p) && target != nil && p.ID != target.ID && (!target.Admin || activeAdmins > 1)
+// never the last active admin, and never while a group the person alone
+// leads has no successor chosen (DEC-36). leaderless counts those groups.
+func CanDisable(p, target *Person, activeAdmins, leaderless int) bool {
+	return IsAdmin(p) && target != nil && p.ID != target.ID && (!target.Admin || activeAdmins > 1) && leaderless == 0
 }

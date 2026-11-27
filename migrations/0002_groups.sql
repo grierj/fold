@@ -27,11 +27,13 @@ ALTER TABLE people_new RENAME TO people;
 
 -- A deleted group stays as a row with status 'deleted', so the notices that
 -- tell its members can still name it. Nothing shows a deleted group.
+-- "text" marks words people write that may mention someone; erasure
+-- (slice 4) reviews every column so marked, alongside "personal".
 CREATE TABLE groups (
   id         INTEGER PRIMARY KEY,
   uid        TEXT    NOT NULL UNIQUE,  -- random: the id in URLs and the audit log
-  name       TEXT    NOT NULL,
-  about      TEXT    NOT NULL DEFAULT '',
+  name       TEXT    NOT NULL,         -- text
+  about      TEXT    NOT NULL DEFAULT '', -- text
   visibility TEXT    NOT NULL CHECK (visibility IN ('public', 'church', 'invite_only')),
   status     TEXT    NOT NULL CHECK (status IN ('pending', 'active', 'archived', 'deleted')),
   version    INTEGER NOT NULL DEFAULT 1,
