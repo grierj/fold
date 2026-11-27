@@ -30,6 +30,9 @@ var (
 	// ErrSignedOut is an actor whose session ended, expired, or whose account
 	// is no longer active, between the page and the write.
 	ErrSignedOut = errors.New("write: the session is no longer valid")
+	// ErrConflict is a save whose row changed since the form was opened
+	// (P16). Nothing is saved; the form shows the current values.
+	ErrConflict = errors.New("write: changed by someone else")
 	// ErrNothing is a command deciding there is nothing to change. The
 	// transaction is rolled back, no audit row is written, and Run returns nil.
 	ErrNothing = errors.New("write: nothing to change")
@@ -117,6 +120,7 @@ type Tx struct {
 	keys     *keys.Keys
 	subjects []string
 	details  map[string]string
+	text     string
 	queued   bool
 }
 
@@ -143,6 +147,9 @@ func (t *Tx) QueryContext(ctx context.Context, query string, args ...any) (*sql.
 func (t *Tx) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
 	return t.tx.QueryRowContext(ctx, query, args...)
 }
+
+// Text keeps the words one person sent another in the audit row (R30).
+func (t *Tx) Text(s string) { t.text = s }
 
 // Subject adds a person's (or thing's) random identifier to the audit row.
 func (t *Tx) Subject(uid string) { t.subjects = append(t.subjects, uid) }
@@ -180,7 +187,7 @@ func (e *Executor) Run(ctx context.Context, as ActorRef, c Command) error {
 	}
 	if _, upkeep := c.(Upkeep); !upkeep {
 		if _, err := audit.Append(ctx, tx, t.Now, audit.Entry{
-			Action: c.Action(), Actor: t.Actor.auditID(), Subjects: t.subjects, Details: t.details,
+			Action: c.Action(), Actor: t.Actor.auditID(), Subjects: t.subjects, Details: t.details, Text: t.text,
 		}); err != nil {
 			return err
 		}

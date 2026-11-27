@@ -3,7 +3,10 @@ package backup_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -16,14 +19,6 @@ import (
 	"fold/internal/testenv"
 	"fold/internal/write"
 )
-
-type sql1 struct{ q string }
-
-func (c sql1) Action() string { return "test.seed" }
-func (c sql1) Apply(tx *write.Tx) error {
-	_, err := tx.Exec(c.q, tx.Now.Unix())
-	return err
-}
 
 // Rehearses the first real upgrade: a schema-1 database with a person, a
 // session, a link and audit rows is copied (BeforeMigrate), migrated to the
@@ -44,29 +39,35 @@ func TestUpgradeFromSchema1(t *testing.T) {
 	c := clock.NewFake(testenv.Start)
 	e := write.New(w, c, keys.FromBytes(bytes.Repeat([]byte{9}, 32)))
 	hash := bytes.Repeat([]byte{7}, 32)
+	now := c.Now().Unix()
 	for _, q := range []string{
 		`INSERT INTO people (id, uid, name, email, status, is_admin, created_at, updated_at) VALUES (1, 'u1', 'Pat', 'pat@example.org', 'active', 1, ?1, ?1)`,
 		`INSERT INTO sessions (token_hash, person_id, created_at, renewed_at, expires_at) VALUES (x'` + bytesHex(hash) + `', 1, ?1, ?1, ?1 + 3600)`,
 		`INSERT INTO links (purpose, person_id, token_hash, created_at, expires_at) VALUES ('signin', 1, x'01', ?1, ?1 + 3600)`,
 	} {
-		if err := e.Run(ctx, write.System(), sql1{q}); err != nil {
+		if _, err := w.Exec(q, now); err != nil {
 			t.Fatal(err)
 		}
 	}
-	old, err := backup.Take(ctx, e, dir)
+	// Three audit rows as a schema-1 binary wrote them: format 1, whose bytes
+	// this test fixes independently of the audit package.
+	prev := make([]byte, 32)
+	for seq := int64(1); seq <= 3; seq++ {
+		h := format1Hash(seq, now, "test.seed", "system", "[]", "{}", prev)
+		if _, err := w.Exec(`INSERT INTO audit_log (seq, at, action, actor, subjects, details, format, prev_hash, hash) VALUES (?, ?, 'test.seed', 'system', '[]', '{}', 1, ?, ?)`,
+			seq, now, prev, h); err != nil {
+			t.Fatal(err)
+		}
+		prev = h
+	}
+	have, _ := db.Version(ctx, w)
+	old, err := backup.BeforeMigrate(ctx, w, dir, c.Now(), have)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if old.Schema != db.Latest() {
-		// Take records the binary's schema; this backup is really schema 1.
-		t.Logf("backup schema field %d (binary's)", old.Schema)
-	}
+	c.Advance(time.Second)
 
-	// The upgrade, as server.Open does it.
-	have, _ := db.Version(ctx, w)
-	if _, err := backup.BeforeMigrate(ctx, w, dir, c.Now(), have); err != nil {
-		t.Fatal(err)
-	}
+	// The upgrade, as server.Open does it (the copy above was its first step).
 	if err := db.Migrate(ctx, w); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -82,7 +83,7 @@ func TestUpgradeFromSchema1(t *testing.T) {
 	if problems != 0 {
 		t.Fatalf("%d foreign key problems after the upgrade", problems)
 	}
-	if rep, err := audit.Verify(ctx, w); err != nil || !rep.Intact() || rep.Rows != 4 {
+	if rep, err := audit.Verify(ctx, w); err != nil || !rep.Intact() || rep.Rows != 3 {
 		t.Fatalf("chain after upgrade: %+v %v", rep, err)
 	}
 	s, err := people.BySession(ctx, w, hash, c.Now())
@@ -140,4 +141,24 @@ func TestActiveMembershipsView(t *testing.T) {
 	if n := env.Count(t, `SELECT count(*) FROM active_memberships`); n != 2 {
 		t.Fatalf("%d active memberships, want 2 (not the disabled person, not the deleted group)", n)
 	}
+}
+
+// format1Hash is the audit row hash of format 1, written out here so a
+// change to the audit package cannot silently change what old rows prove.
+func format1Hash(seq, at int64, action, actor, subjects, details string, prev []byte) []byte {
+	h := sha256.New()
+	field := func(b []byte) {
+		var n [binary.MaxVarintLen64]byte
+		h.Write(n[:binary.PutUvarint(n[:], uint64(len(b)))])
+		h.Write(b)
+	}
+	field([]byte("audit-format-1"))
+	field([]byte(strconv.FormatInt(seq, 10)))
+	field([]byte(strconv.FormatInt(at, 10)))
+	field([]byte(action))
+	field([]byte(actor))
+	field([]byte(subjects))
+	field([]byte(details))
+	field(prev)
+	return h.Sum(nil)
 }

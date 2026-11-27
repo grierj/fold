@@ -78,7 +78,7 @@ func TestCanJoinGroup(t *testing.T) {
 		{"nobody joins an archived group", admin, archived, none, false},
 		{"nobody joins a deleted group", admin, deleted, none, false},
 		{"removed people don't rejoin on their own (DEC-35)", adult, active(Public), Rel{Removed: true}, false},
-		{"admins may rejoin after removal", admin, active(Public), Rel{Removed: true}, true},
+		{"a removed admin doesn't rejoin on their own either (DEC-35)", admin, active(Public), Rel{Removed: true}, false},
 	}
 	for _, c := range cases {
 		if got := CanJoinGroup(c.p, c.g, c.r); got != c.want {

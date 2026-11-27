@@ -1,0 +1,20 @@
+{{define "title"}}Groups{{end}}
+{{define "content"}}<div class="page-narrow">
+  <div class="page-header">
+    <h1 class="text-2xl font-bold sm:text-3xl">Groups</h1>
+    {{if .Viewer}}{{template "linkbutton" (linkbutton "primary" "Start a group" "/groups/new")}}{{end}}
+  </div>
+  <form class="mb-6 flex flex-wrap items-end gap-3" method="get" action="/groups" role="search">
+    <div class="min-w-0 flex-1">{{template "field" .Data.Search}}</div>
+    {{template "button" (button "secondary" "Search")}}
+  </form>
+  {{if .Data.Groups}}
+  <ul class="divide-y divide-border border-y border-border">{{range .Data.Groups}}{{template "grouprow" .}}{{end}}</ul>
+  {{else if .Data.Query}}
+  {{template "empty" (empty "not-found.svg" "No groups match" "Try fewer words, or a different word." (linkbutton "secondary" "Show every group" "/groups"))}}
+  {{else if .Viewer}}
+  {{template "empty" (empty "all-caught-up.svg" "No groups yet" "Groups appear here once they're started." (linkbutton "primary" "Start a group" "/groups/new"))}}
+  {{else}}
+  {{template "empty" (empty "all-caught-up.svg" "No public groups yet" "Sign in to see the groups for members of the church." (linkbutton "primary" "Sign in" "/signin"))}}
+  {{end}}
+</div>{{end}}

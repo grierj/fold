@@ -68,7 +68,7 @@ test("setup, sign in and out, with every page through the gates", async ({ page,
   await gate(elsewhere, "setup link");
   await page.goto(setupLink);
   await expect(page.getByRole("heading", { name: "Welcome, Pat Admin" })).toBeVisible();
-  await expect(page.getByText("There is nothing here yet")).toBeVisible();
+  await expect(page.getByText("You're not in any groups yet")).toBeVisible();
   await gate(page, "home signed in");
 
   // The gallery: every control, and a fragment update under the strict policy.

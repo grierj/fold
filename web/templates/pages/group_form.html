@@ -1,0 +1,19 @@
+{{define "title"}}{{.Data.Submit}}{{end}}
+{{define "content"}}<div class="page-form">
+  <h1 class="text-2xl font-bold sm:text-3xl">{{if eq .Data.Submit "Save"}}Edit the group{{else}}Start a group{{end}}</h1>
+  {{if eq .Data.Submit "Save"}}{{else}}<p class="mt-2 text-text-muted">An administrator approves new groups. You'll lead this one.</p>{{end}}
+  {{if .Data.TooMany}}<div class="mt-4">{{template "notice" (notice "warning" "That's a lot of new groups" "So this one wasn't started. An administrator will get to the ones waiting; you can start another once one is decided, or tomorrow.")}}</div>{{end}}
+  {{if .Data.Conflict}}<div class="mt-4">{{template "notice" (notice "warning" "That could not be saved" "Someone else changed this group while you were editing. Here is what it says now; make your change again.")}}</div>{{end}}
+  <form class="form-stack mt-6" method="post" action="{{.Data.Action}}" novalidate>
+    {{template "csrf" .}}
+    {{template "hidden" (hidden "version" .Data.Version)}}
+    {{template "errorsummary" .Data.Errors}}
+    {{template "field" .Data.Name}}
+    {{template "textarea" .Data.About}}
+    <fieldset>
+      <legend class="label">Who can see it</legend>
+      {{range .Data.Visibility}}{{template "choice" .}}{{end}}
+    </fieldset>
+    {{template "button" (wide (button "primary" .Data.Submit))}}
+  </form>
+</div>{{end}}

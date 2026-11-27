@@ -1,0 +1,16 @@
+{{define "title"}}Make it more private?{{end}}
+{{define "content"}}<div class="page-form">
+  <h1 class="text-2xl font-bold sm:text-3xl">Make {{.Data.Group.Name}} {{.Data.To}}?</h1>
+  <p class="mt-3">It is {{.Data.From}} now. {{.Data.ToHint}}</p>
+  <p class="mt-3"><strong>Nobody is removed.</strong> Everyone in the group stays in it and can still see it, so nobody loses access. People who aren't members won't find it any more.</p>
+  <form class="mt-6 flex flex-wrap gap-3" method="post" action="/groups/{{.Data.Group.UID}}/edit">
+    {{template "csrf" .}}
+    {{template "hidden" (hidden "version" .Data.Version)}}
+    {{template "hidden" (hidden "name" .Data.Name)}}
+    {{template "hidden" (hidden "about" .Data.About)}}
+    {{template "hidden" (hidden "visibility" .Data.Visibility)}}
+    {{template "hidden" (hidden "confirmed" "yes")}}
+    {{template "button" (button "primary" (print "Make it " .Data.To))}}
+    {{template "linkbutton" (linkbutton "secondary" "Go back" (print "/groups/" .Data.Group.UID "/edit"))}}
+  </form>
+</div>{{end}}

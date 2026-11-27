@@ -1,0 +1,12 @@
+{{/* grouprow: one group in a list. */}}
+{{define "grouprow"}}<li class="py-4">
+  <a class="text-link text-lg" href="/groups/{{.UID}}">{{.Name}}</a>
+  <p class="text-sm text-text-muted">{{.Members}} {{if eq .Members 1}}member{{else}}members{{end}}{{if .Leads}} · You lead it{{else if .Mine}} · You're a member{{end}}{{if eq .Status "pending"}} · Waiting for approval{{else if eq .Status "archived"}} · Archived{{end}}</p>
+  {{with .About}}<p class="mt-1 line-clamp-2 wrap-anywhere">{{.}}</p>{{end}}
+</li>{{end}}
+
+{{/* adminnav: the links between the admin's lists. */}}
+{{define "adminnav"}}<nav aria-label="Admin" class="mb-6 flex flex-wrap gap-2">
+  <a class="text-link px-1" href="/admin/requests"{{if eq . "requests"}} aria-current="page"{{end}}>Account requests</a>
+  <a class="text-link px-1" href="/admin/groups"{{if eq . "groups"}} aria-current="page"{{end}}>Groups to approve</a>
+</nav>{{end}}

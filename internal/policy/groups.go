@@ -116,8 +116,8 @@ func CanJoinGroup(p *Person, g Group, r Rel) bool {
 	if p == nil || g.Status != GroupActive || !CanSeeGroup(p, g, r) {
 		return false
 	}
-	if r.Removed && !IsAdmin(p) {
-		return false // removed people come back only when a leader adds them
+	if r.Removed {
+		return false // removed people, admins too, come back only when a leader adds them (DEC-35)
 	}
 	return IsAdmin(p) || r.Member || g.Visibility != InviteOnly
 }
@@ -183,6 +183,15 @@ func DecideGroupStatus(p *Person, r Rel, from, to string) GroupStatusDecision {
 		return GroupStatusNoReturn
 	}
 	return GroupStatusForbidden
+}
+
+// GroupReasons are what an admin may give for a group decision (R31).
+// "other" carries a note.
+var GroupReasons = map[string]string{
+	"similar": "A similar group already exists.",
+	"detail":  "It needs a little more detail.",
+	"office":  "Please talk with the church office first.",
+	"other":   "",
 }
 
 // CanDeleteGroup: only an admin deletes a group, and its members are told

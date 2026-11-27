@@ -1,0 +1,31 @@
+{{define "title"}}{{.Data.Group.Name}}{{end}}
+{{define "content"}}<div class="page-narrow">
+  <div class="page-header">
+    <div class="min-w-0">
+      <h1 class="text-2xl font-bold wrap-anywhere sm:text-3xl">{{.Data.Group.Name}}</h1>
+      <p class="mt-1 text-sm text-text-muted">{{.Data.Visibility}}{{with .Data.Leaders}} · Led by {{range $i, $n := .}}{{if $i}}, {{end}}{{$n}}{{end}}{{end}}</p>
+    </div>
+    <div class="flex flex-wrap gap-2">
+      {{if .Data.CanJoin}}<form method="post" action="/groups/{{.Data.Group.UID}}/join">{{template "csrf" .}}{{template "button" (button "primary" "Join")}}</form>
+      {{else if and (not .Viewer) (eq .Data.Group.Status "active")}}{{template "linkbutton" (linkbutton "primary" "Sign in to join" "/signin")}}{{end}}
+      {{if .Data.CanManage}}{{template "linkbutton" (linkbutton "secondary" "Edit" (print "/groups/" .Data.Group.UID "/edit"))}}{{end}}
+    </div>
+  </div>
+  {{with .Data.Status}}<div class="mb-6">{{template "status" .}}</div>{{end}}
+  {{if .Data.Waiting}}<div class="mb-6">{{template "notice" (notice "info" "Waiting for approval" "An administrator will look at this group soon. Only its leaders and admins can see it until then.")}}</div>{{end}}
+  {{if .Data.Archived}}<div class="mb-6">{{template "notice" (notice "warning" "Archived" (print "This group no longer shows in the list. " .Data.Reason))}}{{with .Data.Group.DecisionNote}}<p class="mt-2 whitespace-pre-line wrap-anywhere text-text-muted">{{.}}</p>{{end}}</div>{{end}}
+  {{if .Data.Group.About}}<p class="whitespace-pre-line wrap-anywhere">{{.Data.Group.About}}</p>{{else}}<p class="text-text-muted">No description yet.</p>{{end}}
+
+  {{if or .Data.CanLeave .Data.LastLeader .Data.CanArchive .Data.CanUnarchive .Data.CanDelete}}
+  <details class="section mt-10">
+    <summary class="text-link">More</summary>
+    <div class="mt-3 flex flex-wrap items-center gap-3">
+      {{if .Data.CanLeave}}<form method="post" action="/groups/{{.Data.Group.UID}}/leave">{{template "csrf" .}}{{template "button" (button "secondary" "Leave the group")}}</form>{{end}}
+      {{if .Data.LastLeader}}<p class="text-sm text-text-muted">You're its only leader. To leave, make someone else a leader first.</p>{{end}}
+      {{if .Data.CanArchive}}<form method="post" action="/groups/{{.Data.Group.UID}}/archive">{{template "csrf" .}}{{template "button" (button "secondary" "Archive the group")}}</form>{{end}}
+      {{if .Data.CanUnarchive}}<form method="post" action="/groups/{{.Data.Group.UID}}/unarchive">{{template "csrf" .}}{{template "button" (button "secondary" "Make it active again")}}</form>{{end}}
+      {{if .Data.CanDelete}}{{template "dialog" .Data.Delete}}{{end}}
+    </div>
+  </details>
+  {{end}}
+</div>{{end}}

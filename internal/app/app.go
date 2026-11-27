@@ -59,6 +59,8 @@ type limits struct {
 	setupCode     *ratelimit.Limiter // setup code guesses from one client
 	setupMail     *ratelimit.Limiter // test messages sent during setup
 	requests      *ratelimit.Limiter // account requests from the whole site
+	newGroups     *ratelimit.Limiter // groups one person starts
+	groupActions  *ratelimit.Limiter // other changes one person makes to groups
 }
 
 type Deps struct {
@@ -87,6 +89,8 @@ func New(cfg Config, d Deps) (*App, error) {
 			setupCode:     ratelimit.New(c, ratelimit.Rule{N: 10, Per: time.Hour}),
 			setupMail:     ratelimit.New(c, ratelimit.Rule{N: 10, Per: time.Hour}, ratelimit.Rule{N: 30, Per: 24 * time.Hour}),
 			requests:      ratelimit.New(c, ratelimit.Rule{N: 20, Per: time.Hour}, ratelimit.Rule{N: 60, Per: 24 * time.Hour}),
+			newGroups:     ratelimit.New(c, ratelimit.Rule{N: 5, Per: 24 * time.Hour}),
+			groupActions:  ratelimit.New(c, ratelimit.Rule{N: 120, Per: time.Hour}),
 		}}
 	return a, nil
 }

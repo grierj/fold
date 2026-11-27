@@ -8,15 +8,21 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 
 	"fold/internal/db"
+	"fold/internal/policy"
 	"fold/internal/write"
 )
 
 // Kinds. Each has a wording in word below.
 const (
 	AccountRequested = "account.requested" // to every admin; subject: the person asking
+	GroupRequested   = "group.requested"   // to every admin; actor: who asked; group
+	GroupApproved    = "group.approved"    // to the group's leaders
+	GroupRejected    = "group.rejected"    // to the group's leaders
+	GroupDeleted     = "group.deleted"     // to the group's members
 )
 
 // JobMail emails one notice to its person, for the kinds that are required
@@ -99,6 +105,7 @@ type Notice struct {
 	Text    string // worded now, for this reader
 	Href    string // where opening it goes
 	Subject string // an email subject, for mailed kinds
+	Note    string // an admin's note on a group decision, shown beneath (R31)
 	At      time.Time
 	Read    bool
 }
@@ -150,7 +157,7 @@ func List(ctx context.Context, q db.Querier, r Reader, limit int) ([]Notice, err
 
 // adminOnly are the kinds only an admin reads. Someone who stops being an
 // admin keeps the rows but no longer sees or counts them.
-var adminOnly = []string{AccountRequested}
+var adminOnly = []string{AccountRequested, GroupRequested}
 
 // Unread is the bell's one plain count (DEC-44): the unread notices the
 // reader would see in the list. A notice whose subject has since gone is
@@ -235,8 +242,65 @@ func word(ctx context.Context, q db.Querier, r Reader, x row) (Notice, bool, err
 			n.Href = "/"
 		}
 		return n, true, nil
+	case GroupRequested, GroupApproved, GroupRejected, GroupDeleted:
+		return wordGroup(ctx, q, r, x, n)
 	}
 	return n, false, nil
+}
+
+// wordGroup words the group notices. A leader's notice about their group's
+// decision shows only while they may still see the group (they lead it, or
+// they are an admin); the group request only to admins.
+func wordGroup(ctx context.Context, q db.Querier, r Reader, x row, n Notice) (Notice, bool, error) {
+	if !x.group.Valid {
+		return n, false, nil
+	}
+	var uid, name, status, reason, note string
+	err := q.QueryRowContext(ctx, `SELECT uid, name, status, decision_reason, decision_note FROM groups WHERE id = ?`, x.group.Int64).
+		Scan(&uid, &name, &status, &reason, &note)
+	if errors.Is(err, sql.ErrNoRows) {
+		return n, false, nil
+	}
+	if err != nil {
+		return n, false, err
+	}
+	quoted := "\u201c" + name + "\u201d"
+	if x.kind == GroupDeleted {
+		n.Text, n.Href, n.Subject = "The group "+quoted+" was deleted.", "/groups", "A group was deleted"
+		return n, true, nil
+	}
+	if status == policy.GroupDeleted {
+		return n, false, nil
+	}
+	if x.kind == GroupRequested {
+		if !r.Admin {
+			return n, false, nil
+		}
+		who := "Someone"
+		if x.actorID.Valid {
+			q.QueryRowContext(ctx, `SELECT name FROM people WHERE id = ?`, x.actorID.Int64).Scan(&who)
+		}
+		n.Subject = "A new group is waiting"
+		if status == policy.GroupPending {
+			n.Text, n.Href = who+" asked to start "+quoted+".", "/admin/groups"
+		} else {
+			n.Text, n.Href = who+"'s group "+quoted+" has been decided.", "/groups/"+uid
+		}
+		return n, true, nil
+	}
+	var leads bool
+	q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM active_memberships WHERE group_id = ? AND person_id = ? AND role = 'leader')`, x.group.Int64, r.ID).Scan(&leads)
+	if !leads && !r.Admin {
+		return n, false, nil
+	}
+	n.Href = "/groups/" + uid
+	if x.kind == GroupApproved {
+		n.Text, n.Subject = "Your group "+quoted+" was approved.", "Your group was approved"
+	} else {
+		n.Text, n.Subject = strings.TrimSpace("Your group "+quoted+" wasn't approved. "+policy.GroupReasons[reason]), "About your group"
+	}
+	n.Note = note
+	return n, true, nil
 }
 
 // Open marks one of the actor's notices read. It is upkeep (R19).
