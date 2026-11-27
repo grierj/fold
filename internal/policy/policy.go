@@ -5,13 +5,6 @@ package policy
 
 import "time"
 
-// Viewer is who is looking or acting, as loaded in the current transaction.
-type Viewer struct {
-	SignedIn bool
-	Active   bool // the account is active (not waiting for setup, not disabled)
-	Admin    bool
-}
-
 // Setup is what the database says about first-run setup.
 type Setup struct {
 	Done bool // a first admin exists
@@ -66,4 +59,4 @@ func SignIn(a Account, l Link, now time.Time) bool {
 }
 
 // ViewGallery: the component gallery is for admins.
-func ViewGallery(v Viewer) bool { return v.SignedIn && v.Active && v.Admin }
+func ViewGallery(p *Person) bool { return IsAdmin(p) }
