@@ -281,3 +281,15 @@ func ZoneCity(name string) string {
 	}
 	return strings.ReplaceAll(name, "_", " ")
 }
+
+// Ahead is the dates to store for a pattern now: from its first date through
+// the horizon.
+func Ahead(p Pattern, loc *time.Location, now time.Time) ([]Date, error) {
+	day, err := p.StartDay()
+	if err != nil {
+		return nil, err
+	}
+	start, _ := time.Parse(WallLayout, p.Start)
+	first, _, _ := Resolve(day.Year(), day.Month(), day.Day(), start.Hour(), start.Minute(), loc)
+	return Expand(p, loc, Through(first, now))
+}

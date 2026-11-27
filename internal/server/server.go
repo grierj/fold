@@ -25,6 +25,7 @@ import (
 	"fold/internal/backup"
 	"fold/internal/clock"
 	"fold/internal/db"
+	"fold/internal/events"
 	"fold/internal/httpx"
 	"fold/internal/keys"
 	"fold/internal/mail"
@@ -272,5 +273,9 @@ func RegisterJobs(r *write.Runner, d JobDeps) {
 	}})
 	r.Every(write.Recurring{Kind: notices.JobCleanup, Next: func(now time.Time) time.Time {
 		return now.UTC().Truncate(24 * time.Hour).Add(29 * time.Hour) // 05:00 UTC tomorrow
+	}})
+	r.Handle(events.JobExtend, events.Extend(d.Exec))
+	r.Every(write.Recurring{Kind: events.JobExtend, Next: func(now time.Time) time.Time {
+		return now.UTC().Truncate(24 * time.Hour).Add(28*time.Hour + 30*time.Minute)
 	}})
 }
