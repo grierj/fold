@@ -19,12 +19,17 @@ import (
 	"regexp"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	"fold/internal/db"
 )
 
-// Format is the version of the hashed bytes.
-const Format = 1
+// Format is the version of the hashed bytes that new rows use. Format 1 rows
+// (before R30) have no text; format 2 adds it. Old rows keep their format.
+const Format = 2
+
+// MaxText bounds the text one row keeps (R30).
+const MaxText = 20000
 
 // Actor values that are not a person's identifier.
 const (
@@ -40,6 +45,10 @@ type Entry struct {
 	Actor    string
 	Subjects []string
 	Details  map[string]string
+	// Text is the exact words one person sent another through Fold (R30):
+	// an announcement, a message, a decision's note. It is kept forever and
+	// survives erasure. Nothing else free-form belongs here.
+	Text string
 }
 
 var (
@@ -63,6 +72,9 @@ func (e Entry) check() error {
 			return fmt.Errorf("audit: subject %q is not an identifier", s)
 		}
 	}
+	if len(e.Text) > MaxText || !utf8.ValidString(e.Text) {
+		return errors.New("audit: the text is too long or not UTF-8")
+	}
 	if len(e.Details) > maxDetails {
 		return errors.New("audit: too many details")
 	}
@@ -83,28 +95,37 @@ type Row struct {
 	Subjects string
 	Details  string
 	Format   int
+	Text     string
 	Prev     []byte
 	Hash     []byte
 }
 
 var genesis = make([]byte, sha256.Size)
 
-// hashRow is the format 1 hash: every field written as a length and its
-// bytes, in a fixed order, then the previous hash.
+// hashRow hashes a row in its own format: every field written as a length
+// and its bytes, in a fixed order, then the previous hash. Format 2 adds the
+// text after the details. An unknown format hashes to nil, which never
+// matches.
 func hashRow(r Row) []byte {
+	if r.Format != 1 && r.Format != 2 {
+		return nil
+	}
 	h := sha256.New()
 	field := func(b []byte) {
 		var n [binary.MaxVarintLen64]byte
 		h.Write(n[:binary.PutUvarint(n[:], uint64(len(b)))])
 		h.Write(b)
 	}
-	field([]byte("audit-format-1"))
+	field([]byte("audit-format-" + strconv.Itoa(r.Format)))
 	field([]byte(strconv.FormatInt(r.Seq, 10)))
 	field([]byte(strconv.FormatInt(r.At, 10)))
 	field([]byte(r.Action))
 	field([]byte(r.Actor))
 	field([]byte(r.Subjects))
 	field([]byte(r.Details))
+	if r.Format == 2 {
+		field([]byte(r.Text))
+	}
 	field(r.Prev)
 	return h.Sum(nil)
 }
@@ -129,11 +150,11 @@ func Append(ctx context.Context, tx *sql.Tx, at time.Time, e Entry) (Row, error)
 	}
 	r := Row{
 		Seq: last.Seq + 1, At: at.Unix(), Action: e.Action, Actor: e.Actor,
-		Subjects: string(subjects), Details: string(details), Format: Format, Prev: last.Hash,
+		Subjects: string(subjects), Details: string(details), Format: Format, Text: e.Text, Prev: last.Hash,
 	}
 	r.Hash = hashRow(r)
-	_, err = tx.ExecContext(ctx, `INSERT INTO audit_log (seq, at, action, actor, subjects, details, format, prev_hash, hash)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, r.Seq, r.At, r.Action, r.Actor, r.Subjects, r.Details, r.Format, r.Prev, r.Hash)
+	_, err = tx.ExecContext(ctx, `INSERT INTO audit_log (seq, at, action, actor, subjects, details, format, text, prev_hash, hash)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, r.Seq, r.At, r.Action, r.Actor, r.Subjects, r.Details, r.Format, r.Text, r.Prev, r.Hash)
 	if err != nil {
 		return Row{}, fmt.Errorf("audit: append: %w", err)
 	}
@@ -181,7 +202,7 @@ func (r Report) Intact() bool { return r.BrokenAt == 0 }
 
 // Verify walks the chain in sequence order and recomputes every hash.
 func Verify(ctx context.Context, q db.Querier) (Report, error) {
-	rows, err := q.QueryContext(ctx, `SELECT seq, at, action, actor, subjects, details, format, prev_hash, hash FROM audit_log ORDER BY seq`)
+	rows, err := q.QueryContext(ctx, `SELECT seq, at, action, actor, subjects, details, format, text, prev_hash, hash FROM audit_log ORDER BY seq`)
 	if err != nil {
 		return Report{}, err
 	}
@@ -191,14 +212,14 @@ func Verify(ctx context.Context, q db.Querier) (Report, error) {
 	var want int64 = 1
 	for rows.Next() {
 		var r Row
-		if err := rows.Scan(&r.Seq, &r.At, &r.Action, &r.Actor, &r.Subjects, &r.Details, &r.Format, &r.Prev, &r.Hash); err != nil {
+		if err := rows.Scan(&r.Seq, &r.At, &r.Action, &r.Actor, &r.Subjects, &r.Details, &r.Format, &r.Text, &r.Prev, &r.Hash); err != nil {
 			return Report{}, err
 		}
 		rep.Rows++
 		switch {
 		case r.Seq != want:
 			rep.BrokenAt, rep.Problem = want, fmt.Sprintf("row %d is missing", want)
-		case r.Format != Format:
+		case r.Format != 1 && r.Format != 2, r.Format == 1 && r.Text != "":
 			rep.BrokenAt, rep.Problem = r.Seq, fmt.Sprintf("row %d has unknown format %d", r.Seq, r.Format)
 		case string(r.Prev) != string(prev):
 			rep.BrokenAt, rep.Problem = r.Seq, fmt.Sprintf("row %d does not follow row %d", r.Seq, r.Seq-1)

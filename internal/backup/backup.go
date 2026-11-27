@@ -217,6 +217,12 @@ func Prepare(ctx context.Context, dataDir, name string, c clock.Clock, k *keys.K
 	} else if v > db.Latest() {
 		return "", db.ErrTooNew{Have: v, Know: db.Latest()}
 	}
+	// Bring an older backup up to this release's schema first, so the chain
+	// check reads it the way this release writes. Migrations never touch an
+	// audit row's stored fields, so the chain and checkpoint still prove it.
+	if err := db.Migrate(ctx, w); err != nil {
+		return "", err
+	}
 	rep, err := e.Verify(ctx)
 	if err != nil {
 		return "", err
@@ -226,9 +232,6 @@ func Prepare(ctx context.Context, dataDir, name string, c clock.Clock, k *keys.K
 	}
 	if ok, err := audit.Holds(ctx, w, meta.Checkpoint); err != nil || !ok {
 		return "", fmt.Errorf("backup: %s does not match its checkpoint file", name)
-	}
-	if err := db.Migrate(ctx, w); err != nil {
-		return "", err
 	}
 	if err := e.Run(ctx, write.System(), restored{meta}); err != nil {
 		return "", err

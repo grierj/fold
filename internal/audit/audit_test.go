@@ -159,3 +159,41 @@ func rewriteFrom(t *testing.T, env *testenv.Env, from int64) {
 		tx.Commit()
 	}
 }
+
+// R30: a row keeps the exact text sent, the hash covers it, and a changed
+// word breaks the chain.
+func TestTextIsKeptAndSealed(t *testing.T) {
+	env := testenv.New(t)
+	ctx := context.Background()
+	tx, _ := env.Writer.BeginTx(ctx, nil)
+	if _, err := audit.Append(ctx, tx, time.Unix(1, 0), audit.Entry{Action: "group.reject", Actor: audit.System, Text: "Please talk to the office first."}); err != nil {
+		t.Fatal(err)
+	}
+	tx.Commit()
+	var text string
+	env.Writer.QueryRow(`SELECT text FROM audit_log WHERE seq = 1`).Scan(&text)
+	if text != "Please talk to the office first." {
+		t.Fatalf("text %q", text)
+	}
+	if rep, _ := audit.Verify(ctx, env.Writer); !rep.Intact() {
+		t.Fatalf("chain: %+v", rep)
+	}
+	mustExec(t, env.Writer, `DROP TRIGGER audit_log_no_update`)
+	mustExec(t, env.Writer, `UPDATE audit_log SET text = 'Please talk to the office.' WHERE seq = 1`)
+	if rep, _ := audit.Verify(ctx, env.Writer); rep.Intact() {
+		t.Fatal("a changed word went unnoticed")
+	}
+}
+
+func TestTextLimits(t *testing.T) {
+	env := testenv.New(t)
+	ctx := context.Background()
+	tx, _ := env.Writer.BeginTx(ctx, nil)
+	defer tx.Rollback()
+	if _, err := audit.Append(ctx, tx, time.Unix(1, 0), audit.Entry{Action: "a.b", Actor: audit.System, Text: strings.Repeat("x", audit.MaxText+1)}); err == nil {
+		t.Fatal("an overlong text was kept")
+	}
+	if _, err := audit.Append(ctx, tx, time.Unix(1, 0), audit.Entry{Action: "a.b", Actor: audit.System, Text: "\xff\xfe"}); err == nil {
+		t.Fatal("text that is not UTF-8 was kept")
+	}
+}
