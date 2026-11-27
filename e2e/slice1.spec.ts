@@ -48,7 +48,7 @@ test("account requests and notices, through the gates", async ({ page, browser }
 
   await signIn(page, admin);
   await expect(page.getByRole("heading", { name: "Welcome, Pat Admin" })).toBeVisible();
-  await expect(page.locator(".badge")).toHaveText(/1/);
+  await expect(page.locator(".site-nav .badge")).toHaveText(/1/);
   await page.goto("/notices");
   await expect(page.getByText("Sam Member asked for an account.")).toBeVisible();
   await gate(page, "notices");
@@ -136,4 +136,36 @@ test("account requests and notices, through the gates", async ({ page, browser }
   await visitor.getByRole("button", { name: "Send the invitation" }).click();
   await expect(visitor.getByText("Invitation sent.")).toBeVisible();
   await gate(visitor, "roster after invite");
+
+  // Nia opens her emailed invitation in her own browser, says she is an
+  // adult and accepts (R32).
+  await page.goto("/dev/outbox");
+  const niaText = await page.locator("li", { hasText: "To nia@example.org" }).first().locator("[data-outbox-text]").innerText();
+  const niaLink = niaText.match(/http:\/\/[^\s]+\/invite\/[A-Za-z0-9_-]{43}/)![0];
+  const nia = await (await browser.newContext()).newPage();
+  await watchCSP(nia);
+  await nia.goto(niaLink);
+  await expect(nia.getByRole("heading", { name: "Join Tuesday Bible Study" })).toBeVisible();
+  await gate(nia, "invitation by email");
+  await nia.getByLabel("I am 18 or older").check();
+  await nia.getByRole("button", { name: "Accept the invitation" }).click();
+  await expect(nia.getByText("You joined the group.")).toBeVisible();
+
+  // Sam's profile: the email switch saves when changed.
+  await visitor.goto("/profile");
+  await gate(visitor, "profile");
+  await visitor.getByRole("button", { name: "Show my email to leaders of my groups" }).click();
+  await expect(visitor.locator("#contact").getByRole("status")).toHaveText(/Saved/);
+  await expect(visitor.getByRole("button", { name: "Show my email to leaders of my groups" })).toHaveAttribute("aria-pressed", "false");
+
+  // Pat finds Nia among the people and turns her account off, then on.
+  await page.goto("/admin/people");
+  await gate(page, "admin people");
+  await page.getByRole("link", { name: "Nia New" }).click();
+  await gate(page, "admin person");
+  await page.getByRole("button", { name: "Turn their account off" }).click();
+  await expect(page.getByText(/Disabled\./)).toBeVisible();
+  await gate(page, "admin person disabled");
+  await page.getByRole("button", { name: "Turn their account on" }).click();
+  await expect(page.getByText(/Turned on again/)).toBeVisible();
 });

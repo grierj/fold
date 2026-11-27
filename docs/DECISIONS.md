@@ -144,7 +144,7 @@ Standing yardsticks, in Grier's words from the Fold work. They apply to every de
 
 ### Groups
 
-- Three visibilities. **Public:** anyone. **Private:** signed-in members of the church.
+- Three visibilities. **Public:** anyone. **Church only** (Fold's "Private", renamed by R28): signed-in members of the church.
   **Invite-only:** hidden from everyone but its members, the people it invited, and admins.
 - A new group waits for an admin's approval. Its leaders hear the answer, with an optional message
   from the admin. (DEC-96)

@@ -15,7 +15,7 @@ The only place status is kept. Update the row in the pull request that changes i
 | Slice | What | Status |
 |---|---|---|
 | 0 | Foundation and install | Done (v0.2.0). The timed install by a person waits for an installer who is not Grier |
-| 1 | People, groups, approvals, notices | In progress |
+| 1 | People, groups, approvals, notices | Done. A real volunteer admin approving from their phone is in `docs/FIRST-CHURCH-CHECKS.md` |
 | 2 | Events, dates, RSVP, calendar | Not started |
 | 3 | Announcements, reminders, email choices | Not started |
 | 4 | First-church readiness. **Pilot goes live.** | Not started |
