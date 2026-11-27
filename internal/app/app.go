@@ -20,6 +20,7 @@ import (
 	"fold/internal/httpx"
 	"fold/internal/keys"
 	"fold/internal/mail"
+	"fold/internal/notices"
 	"fold/internal/people"
 	"fold/internal/ratelimit"
 	"fold/internal/settings"
@@ -39,7 +40,7 @@ type App struct {
 	cfg    Config
 	reader *db.Reader
 	exec   *write.Executor
-	queue  *accounts.SignInQueue
+	queue  *accounts.Queue
 	keys   *keys.Keys
 	clock  clock.Clock
 	log    *slog.Logger
@@ -57,12 +58,13 @@ type limits struct {
 	signinClient  *ratelimit.Limiter // anything from one client
 	setupCode     *ratelimit.Limiter // setup code guesses from one client
 	setupMail     *ratelimit.Limiter // test messages sent during setup
+	requests      *ratelimit.Limiter // account requests from the whole site
 }
 
 type Deps struct {
 	Reader *db.Reader
 	Exec   *write.Executor
-	Queue  *accounts.SignInQueue
+	Queue  *accounts.Queue
 	Keys   *keys.Keys
 	Clock  clock.Clock
 	Log    *slog.Logger
@@ -84,6 +86,7 @@ func New(cfg Config, d Deps) (*App, error) {
 			signinClient:  ratelimit.New(c, ratelimit.Rule{N: 20, Per: time.Hour}, ratelimit.Rule{N: 100, Per: 24 * time.Hour}),
 			setupCode:     ratelimit.New(c, ratelimit.Rule{N: 10, Per: time.Hour}),
 			setupMail:     ratelimit.New(c, ratelimit.Rule{N: 10, Per: time.Hour}, ratelimit.Rule{N: 30, Per: 24 * time.Hour}),
+			requests:      ratelimit.New(c, ratelimit.Rule{N: 20, Per: time.Hour}, ratelimit.Rule{N: 60, Per: 24 * time.Hour}),
 		}}
 	return a, nil
 }
@@ -219,6 +222,9 @@ func (a *App) load(ctx context.Context, r *http.Request, q *sql.Tx) (pageFacts, 
 		if err == nil {
 			f.session = &sess
 			f.Viewer = &viewerInfo{Name: sess.Person.Name, IsAdmin: sess.Person.IsAdmin}
+			if f.Unread, err = notices.Unread(ctx, q, noticeReader(sess.Person)); err != nil {
+				return pageFacts{}, err
+			}
 		} else if !errors.Is(err, people.ErrNotFound) {
 			return pageFacts{}, err
 		}

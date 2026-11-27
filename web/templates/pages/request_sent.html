@@ -1,0 +1,8 @@
+{{define "title"}}Check your email{{end}}
+{{define "content"}}<div class="page-form">
+  <img src="{{asset "illustrations/request-sent.svg"}}" alt="" width="160" height="120" class="mb-4 h-auto w-32">
+  <h1 class="text-2xl font-bold sm:text-3xl">Thanks for asking</h1>
+  <p class="mt-2">We've sent a note to <strong class="wrap-anywhere">{{.Data.Email}}</strong> about your request. An administrator will look at it, and you'll get an email when your account is ready. Open that email on this device and you're signed in at once.</p>
+  <p class="mt-3 text-text-muted">Nothing after a few minutes? Look in your spam folder.</p>
+  <div class="mt-6">{{template "linkbutton" (linkbutton "secondary" "Back to the home page" "/")}}</div>
+</div>{{end}}

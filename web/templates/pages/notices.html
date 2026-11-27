@@ -1,0 +1,14 @@
+{{define "title"}}Notices{{end}}
+{{define "content"}}<div class="page-narrow">
+  <div class="page-header">
+    <h1 class="text-2xl font-bold sm:text-3xl">Notices</h1>
+    {{if .Unread}}<form method="post" action="/notices/read">{{template "csrf" .}}{{template "button" (button "secondary" "Mark all as read")}}</form>{{end}}
+  </div>
+  {{if .Data.Notices}}
+  <ul class="divide-y divide-border border-y border-border">
+    {{range .Data.Notices}}<li>{{template "noticeitem" .}}</li>{{end}}
+  </ul>
+  {{else}}
+  {{template "empty" (empty "all-caught-up.svg" "You're all caught up" "News about your groups and your account will appear here." nil)}}
+  {{end}}
+</div>{{end}}

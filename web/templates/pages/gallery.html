@@ -37,6 +37,7 @@
       <div class="space-y-3">{{range .Data.Notices}}{{template "notice" .}}{{end}}</div>
       <div class="mt-4">{{template "errorsummary" .Data.Errors}}</div>
       <div class="mt-4">{{template "status" "Updated"}}</div>
+      <ul class="mt-4 divide-y divide-border border-y border-border">{{range .Data.NoticeItems}}<li>{{template "noticeitem" .}}</li>{{end}}</ul>
     </section>
   </div>
 </div>{{end}}

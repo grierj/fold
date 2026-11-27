@@ -88,6 +88,7 @@ type page struct {
 	Product string
 	Church  string
 	Viewer  *viewerInfo
+	Unread  int // the bell's count
 	CSRF    string
 	Data    any
 }

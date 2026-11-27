@@ -23,7 +23,8 @@
     </a>
     {{if .Viewer}}
     <nav aria-label="Account" class="flex flex-wrap items-center gap-2">
-      {{if .Viewer.IsAdmin}}<a class="text-link px-2" href="/admin/gallery">Components</a>{{end}}
+      <a class="text-link px-2" href="/notices">Notices{{if .Unread}} <span class="badge">{{.Unread}}<span class="sr-only"> unread</span></span>{{end}}</a>
+      {{if .Viewer.IsAdmin}}<a class="text-link px-2" href="/admin/requests">Requests</a>{{end}}
       <span class="text-sm text-text-muted">{{.Viewer.Name}}</span>
       <form method="post" action="/signout">{{template "csrf" .}}{{template "button" (button "secondary" "Sign out")}}</form>
     </nav>

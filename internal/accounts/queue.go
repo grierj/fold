@@ -7,56 +7,57 @@ import (
 	"fold/internal/write"
 )
 
-// SignInQueue hands sign-in requests from the form to one worker. The form
-// answers as soon as the address is queued, so neither its answer nor its
-// timing says whether the address has an account, and a stranger's request
-// never waits on the writer. A full queue drops the request; the person sees
-// the usual answer and can ask again. Requests in memory are lost on restart,
-// which is the same.
-type SignInQueue struct {
+// Queue hands requests from the public forms (a sign-in link, an account) to
+// one worker. A form answers as soon as its request is queued, so neither
+// the answer nor its timing says whether the address has an account, and a
+// stranger's request never waits on the writer. A full queue drops the
+// request; the person sees the usual answer and can ask again. Requests in
+// memory are lost on restart, which is the same: each one leads to an email,
+// so a person who gets none asks again.
+type Queue struct {
 	exec *write.Executor
 	log  *slog.Logger
-	ch   chan string
+	ch   chan write.Command
 }
 
-func NewSignInQueue(e *write.Executor, log *slog.Logger) *SignInQueue {
-	return &SignInQueue{exec: e, log: log, ch: make(chan string, 256)}
+func NewQueue(e *write.Executor, log *slog.Logger) *Queue {
+	return &Queue{exec: e, log: log, ch: make(chan write.Command, 256)}
 }
 
-// Add queues a normalized, validated address. It never blocks.
-func (q *SignInQueue) Add(email string) {
+// Add queues a command to run as the system. It never blocks.
+func (q *Queue) Add(c write.Command) {
 	select {
-	case q.ch <- email:
+	case q.ch <- c:
 	default:
-		q.log.Warn("signin: queue full, request dropped")
+		q.log.Warn("queue full, request dropped", "action", c.Action())
 	}
 }
 
 // Run works the queue until ctx ends.
-func (q *SignInQueue) Run(ctx context.Context) {
+func (q *Queue) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case email := <-q.ch:
-			q.handle(ctx, email)
+		case c := <-q.ch:
+			q.handle(ctx, c)
 		}
 	}
 }
 
-func (q *SignInQueue) handle(ctx context.Context, email string) {
-	if err := q.exec.Run(ctx, write.System(), RequestSignIn{Email: email}); err != nil {
-		q.log.Error("signin: request", "err", err)
+func (q *Queue) handle(ctx context.Context, c write.Command) {
+	if err := q.exec.Run(ctx, write.System(), c); err != nil {
+		q.log.Error("queued request", "action", c.Action(), "err", err)
 	}
 }
 
 // Drain handles everything queued, then returns. Tests use it in place of
 // Run, so nothing happens behind their back.
-func (q *SignInQueue) Drain(ctx context.Context) {
+func (q *Queue) Drain(ctx context.Context) {
 	for {
 		select {
-		case email := <-q.ch:
-			q.handle(ctx, email)
+		case c := <-q.ch:
+			q.handle(ctx, c)
 		default:
 			return
 		}

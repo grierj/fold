@@ -7,5 +7,6 @@
 {{else}}
   <div class="page-header"><h1 class="text-2xl font-bold sm:text-3xl">{{.Church}}</h1></div>
   {{template "empty" (empty "hero-signed-out.svg" "Welcome" "Sign in to see what is coming up." (linkbutton "primary" "Sign in" "/signin"))}}
+  <p class="text-center">New here? <a class="text-link" href="/request">Ask for an account</a></p>
 {{end}}
 </div>{{end}}

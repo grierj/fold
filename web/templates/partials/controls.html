@@ -97,6 +97,15 @@
 {{/* status: the line that stays after an action and says what happened. */}}
 {{define "status"}}<p class="status-line" role="status" aria-live="polite">{{with .}}<span aria-hidden="true">✓</span><span>{{.}}</span>{{end}}</p>{{end}}
 
+{{/* noticeitem: one notice in the list; opening it marks it read. */}}
+{{define "noticeitem"}}<form method="post" action="/notices/{{.ID}}/open">
+  <input type="hidden" name="csrf" value="{{.CSRF}}">
+  <button class="notice-item" type="submit">
+    <span class="flex items-start gap-2">{{if not .Read}}<span class="unread-dot" aria-hidden="true"></span><span class="sr-only">Unread: </span>{{end}}<span>{{.Text}}</span></span>
+    <span class="block text-sm text-text-muted">{{.When}}</span>
+  </button>
+</form>{{end}}
+
 {{/* errorsummary: the list at the top of a failed form, each a link to its field. */}}
 {{define "errorsummary"}}{{if .}}<div class="notice notice-danger" role="alert" id="error-summary" tabindex="-1">
   <p class="font-semibold">Check these, then try again:</p>
