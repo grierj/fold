@@ -252,8 +252,8 @@ If you find yourself building one of these, stop and ask.
 
 Nobody has decided these. Raise them with Grier when the slice needs them; do not guess.
 
-- **A local time that does not exist or happens twice.** 2:30 am on the night clocks go forward,
-  1:30 am on the night they go back. Refuse it, or move it? (Fold audit, never settled)
+- *Settled by R34:* a local time that does not exist moves to the next real time; one that happens
+  twice uses the first.
 - **Changing the church's time zone after events exist.** Do existing events move? (Fold audit)
 - **Finding public events of groups you are not in.** (Fold DEC-76)
 - **May a person hide completely from name search?** And is "private" the right word for a group
