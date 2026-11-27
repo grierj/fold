@@ -1,7 +1,8 @@
 -- Slice 0. Every table is STRICT (docs/HAZARDS.md section 9). Times are
 -- integer seconds since the Unix epoch, in UTC.
 --
--- Personal data lives only in the columns marked "personal".
+-- Personal data lives only in the columns marked "personal". From schema 2,
+-- words people write that may mention someone are marked "text".
 
 CREATE TABLE people (
   id         INTEGER PRIMARY KEY,

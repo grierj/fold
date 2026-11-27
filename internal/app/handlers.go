@@ -243,10 +243,11 @@ func (a *App) devOutbox(w http.ResponseWriter, r *http.Request) {
 	a.renderPlain(w, r, http.StatusOK, "outbox", struct{ Sent []mail.Sent }{a.outbox.All()})
 }
 
-// viewerFacts turns the loaded session into policy's terms.
-func viewerFacts(s *people.Session) policy.Viewer {
+// viewerFacts turns the loaded session into policy's terms; nil is signed
+// out.
+func viewerFacts(s *people.Session) *policy.Person {
 	if s == nil {
-		return policy.Viewer{}
+		return nil
 	}
-	return policy.Viewer{SignedIn: true, Active: s.Person.Status == people.StatusActive, Admin: s.Person.IsAdmin}
+	return s.Person.Policy()
 }

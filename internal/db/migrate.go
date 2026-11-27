@@ -77,7 +77,11 @@ func (e ErrTooNew) Error() string {
 
 // Migrate brings the database forward. The caller keeps a copy of a
 // database that holds data first (backup.BeforeMigrate).
-func Migrate(ctx context.Context, w *sql.DB) error {
+func Migrate(ctx context.Context, w *sql.DB) error { return MigrateTo(ctx, w, Latest()) }
+
+// MigrateTo brings the database forward to schema version n. Tests use it to
+// build an older database and rehearse an upgrade from it.
+func MigrateTo(ctx context.Context, w *sql.DB, n int) error {
 	ms, err := loadMigrations()
 	if err != nil {
 		return err
@@ -89,22 +93,57 @@ func Migrate(ctx context.Context, w *sql.DB) error {
 	if have > len(ms) {
 		return ErrTooNew{Have: have, Know: len(ms)}
 	}
-	for _, m := range ms[have:] {
-		tx, err := w.BeginTx(ctx, nil)
-		if err != nil {
+	if n > len(ms) {
+		n = len(ms)
+	}
+	if have >= n {
+		return nil
+	}
+	// A migration may rebuild a table others point at (SQLite cannot alter a
+	// constraint in place). That only works with foreign keys off, which
+	// must be set outside a transaction, so the migrations run on one
+	// connection with them off, and each checks every foreign key itself
+	// before it commits.
+	conn, err := w.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+		return err
+	}
+	defer conn.ExecContext(context.WithoutCancel(ctx), "PRAGMA foreign_keys = ON")
+	for _, m := range ms[have:n] {
+		if err := apply(ctx, conn, m); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, m.sql); err != nil {
-			tx.Rollback()
-			return fmt.Errorf("db: migration %s: %w", m.name, err)
-		}
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", m.version)); err != nil {
-			tx.Rollback()
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("db: migration %s: %w", m.name, err)
-		}
+	}
+	return nil
+}
+
+func apply(ctx context.Context, conn *sql.Conn, m migration) error {
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, m.sql); err != nil {
+		return fmt.Errorf("db: migration %s: %w", m.name, err)
+	}
+	rows, err := tx.QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		return err
+	}
+	bad := rows.Next()
+	rows.Close()
+	if bad {
+		return fmt.Errorf("db: migration %s leaves rows pointing at nothing", m.name)
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", m.version)); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("db: migration %s: %w", m.name, err)
 	}
 	return nil
 }

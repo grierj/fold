@@ -78,17 +78,8 @@ func TestSignIn(t *testing.T) {
 }
 
 func TestViewGallery(t *testing.T) {
-	for _, c := range []struct {
-		v    Viewer
-		want bool
-	}{
-		{Viewer{SignedIn: true, Active: true, Admin: true}, true},
-		{Viewer{SignedIn: true, Active: true}, false},
-		{Viewer{}, false},
-	} {
-		if got := ViewGallery(c.v); got != c.want {
-			t.Errorf("ViewGallery(%+v) = %v", c.v, got)
-		}
+	if !ViewGallery(admin) || ViewGallery(adult) || ViewGallery(guest) {
+		t.Error("the gallery is for admins")
 	}
 }
 
