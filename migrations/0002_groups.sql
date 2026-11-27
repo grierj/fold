@@ -54,13 +54,16 @@ CREATE TABLE memberships (
 ) STRICT;
 CREATE INDEX memberships_person ON memberships(person_id);
 
--- The one definition of an active membership: the membership is active and
--- so is its person. A disabled account keeps its rows, hidden and not
--- counted (DEC-38). Every count of members or leaders reads this.
+-- The one definition of an active membership: the membership is active, so
+-- is its person, and its group is not deleted. A disabled account keeps its
+-- rows, hidden and not counted (DEC-38); a deleted group keeps its rows so
+-- its members can be told. Every count of members or leaders reads this.
 CREATE VIEW active_memberships AS
   SELECT m.id, m.group_id, m.person_id, m.role, m.created_at
-  FROM memberships m JOIN people p ON p.id = m.person_id
-  WHERE m.state = 'active' AND p.status = 'active';
+  FROM memberships m
+  JOIN people p ON p.id = m.person_id
+  JOIN groups g ON g.id = m.group_id
+  WHERE m.state = 'active' AND p.status = 'active' AND g.status <> 'deleted';
 
 -- A notice stores a kind and ids, never words (P12). It is worded when read,
 -- through the same visibility rules as any page, so it can never carry an

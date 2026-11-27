@@ -251,20 +251,18 @@ func LeadsApprovedGroup(statuses []string) bool {
 }
 
 // CanInvite reports whether p may invite someone by email, skipping review
-// (DEC-4). Admins may invite anyone, into any group or none. Leaders may
-// invite into an active group they lead, or with no group if they lead any
-// active group.
-func CanInvite(p *Person, groupNamed, leadsTarget, leadsAnywhere bool) bool {
+// (DEC-4). Admins may invite anyone, into any active group or none. Leaders
+// may invite into an active group they lead, or with no group if they lead
+// any active group. target is nil for an invitation into no group; an
+// invitation names only an active group, since nothing else takes members.
+func CanInvite(p *Person, target *Group, leadsTarget, leadsAnywhere bool) bool {
 	if p == nil || p.Inactive || p.Teen {
 		return false
 	}
-	if IsAdmin(p) {
-		return true
+	if target != nil {
+		return target.Status == GroupActive && (IsAdmin(p) || leadsTarget)
 	}
-	if groupNamed {
-		return leadsTarget
-	}
-	return leadsAnywhere
+	return IsAdmin(p) || leadsAnywhere
 }
 
 // CanSearchPeople: leaders of an active group and admins find people by

@@ -121,3 +121,23 @@ func bytesHex(b []byte) string {
 	}
 	return string(out)
 }
+
+// The active_memberships view counts only an active membership of an active
+// person in a group that is not deleted.
+func TestActiveMembershipsView(t *testing.T) {
+	env := testenv.New(t)
+	for _, q := range []string{
+		`INSERT INTO people (id, uid, name, email, status, created_at, updated_at) VALUES (1, 'a', 'A', 'a@x.org', 'active', 0, 0), (2, 'b', 'B', 'b@x.org', 'disabled', 0, 0)`,
+		`INSERT INTO groups (id, uid, name, visibility, status, created_at, updated_at) VALUES (1, 'g1', 'G1', 'public', 'active', 0, 0), (2, 'g2', 'G2', 'public', 'deleted', 0, 0), (3, 'g3', 'G3', 'public', 'pending', 0, 0)`,
+		`INSERT INTO memberships (group_id, person_id, role, state, created_at, updated_at) VALUES
+			(1, 1, 'leader', 'active', 0, 0), (1, 2, 'member', 'active', 0, 0),
+			(2, 1, 'leader', 'active', 0, 0), (3, 1, 'leader', 'active', 0, 0)`,
+	} {
+		if _, err := env.Writer.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := env.Count(t, `SELECT count(*) FROM active_memberships`); n != 2 {
+		t.Fatalf("%d active memberships, want 2 (not the disabled person, not the deleted group)", n)
+	}
+}

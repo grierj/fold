@@ -272,27 +272,30 @@ func TestCanAddToGroup(t *testing.T) {
 }
 
 func TestCanInvite(t *testing.T) {
+	act, arch := active(Public), archived
 	cases := []struct {
 		name          string
 		p             *Person
-		groupNamed    bool
+		target        *Group
 		leadsTarget   bool
 		leadsAnywhere bool
 		want          bool
 	}{
-		{"admin invites with no group", admin, false, false, false, true},
-		{"admin invites into any group", admin, true, false, false, true},
-		{"leader invites into own group", adult, true, true, true, true},
-		{"leader invites with no group", adult, false, false, true, true},
-		{"leader can't invite into a group they don't lead", adult, true, false, true, false},
-		{"member can't invite into a group", adult, true, false, false, false},
-		{"member can't invite with no group", adult, false, false, false, false},
-		{"teen can't invite", teen, false, false, true, false},
-		{"guest can't invite", guest, false, false, false, false},
-		{"disabled leader can't invite", &Person{ID: 7, Inactive: true}, true, true, true, false},
+		{"admin invites with no group", admin, nil, false, false, true},
+		{"admin invites into any active group", admin, &act, false, false, true},
+		{"not even an admin invites into an archived group", admin, &arch, false, false, false},
+		{"leader invites into own group", adult, &act, true, true, true},
+		{"leader can't invite into own archived group (DEC-88)", adult, &arch, true, true, false},
+		{"leader invites with no group", adult, nil, false, true, true},
+		{"leader can't invite into a group they don't lead", adult, &act, false, true, false},
+		{"member can't invite into a group", adult, &act, false, false, false},
+		{"member can't invite with no group", adult, nil, false, false, false},
+		{"teen can't invite", teen, nil, false, true, false},
+		{"guest can't invite", guest, nil, false, false, false},
+		{"disabled leader can't invite", &Person{ID: 7, Inactive: true}, &act, true, true, false},
 	}
 	for _, c := range cases {
-		if got := CanInvite(c.p, c.groupNamed, c.leadsTarget, c.leadsAnywhere); got != c.want {
+		if got := CanInvite(c.p, c.target, c.leadsTarget, c.leadsAnywhere); got != c.want {
 			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
 		}
 	}
