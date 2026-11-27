@@ -94,6 +94,10 @@ func (a *App) runGroup(w http.ResponseWriter, r *http.Request, c write.Command, 
 		http.Redirect(w, r, "/signin", http.StatusSeeOther)
 		return
 	}
+	if !a.limits.groupActions.Allow(f.session.Person.UID) {
+		http.Redirect(w, r, "/groups/"+f.group.UID+"?done=many", http.StatusSeeOther)
+		return
+	}
 	err := a.exec.Run(r.Context(), write.Session(accounts.Hash(a.sessionToken(r))), c)
 	switch {
 	case errors.Is(err, write.ErrNotAllowed):
@@ -113,6 +117,7 @@ func (a *App) runGroup(w http.ResponseWriter, r *http.Request, c write.Command, 
 var groupStatuses = map[string]string{
 	"joined":     "You joined the group.",
 	"already":    "You're already in this group.",
+	"many":       "That's a lot of changes in a short time, so this one wasn't made. Try again in a little while.",
 	"left":       "You left the group.",
 	"saved":      "Saved.",
 	"archived":   "The group is archived. It no longer shows in the list.",
@@ -191,6 +196,7 @@ type groupFormData struct {
 	Action      string
 	Submit      string
 	Conflict    bool
+	TooMany     bool
 }
 
 // readGroupForm reads and checks the group form.
@@ -242,8 +248,22 @@ func (a *App) postNewGroup(w http.ResponseWriter, r *http.Request) {
 		a.render(w, r, http.StatusUnprocessableEntity, "group_form", "", f.page)
 		return
 	}
+	if !a.limits.newGroups.Allow(f.session.Person.UID) {
+		d := a.groupForm(name, about, vis, nil)
+		d.Action, d.Submit, d.TooMany = "/groups/new", "Start the group", true
+		f.Data = d
+		a.render(w, r, http.StatusTooManyRequests, "group_form", "", f.page)
+		return
+	}
 	c := &groups.Create{Name: name, About: about, Visibility: vis}
 	err := a.exec.Run(r.Context(), write.Session(accounts.Hash(a.sessionToken(r))), c)
+	if errors.Is(err, groups.ErrTooManyWaiting) {
+		d := a.groupForm(name, about, vis, nil)
+		d.Action, d.Submit, d.TooMany = "/groups/new", "Start the group", true
+		f.Data = d
+		a.render(w, r, http.StatusTooManyRequests, "group_form", "", f.page)
+		return
+	}
 	if errors.Is(err, write.ErrSignedOut) {
 		http.Redirect(w, r, "/signin", http.StatusSeeOther)
 		return

@@ -58,10 +58,13 @@ func TestGroupWaitsForApproval(t *testing.T) {
 	if r := mel.get("/notices"); !strings.Contains(r.body, "was approved.") || !strings.Contains(r.body, "Let the office know your room.") {
 		t.Fatal("the leader did not hear, with the note")
 	}
-	var text string
-	s.Writer.QueryRow(`SELECT text FROM audit_log WHERE action = 'group.approve'`).Scan(&text)
+	var text, subjects string
+	s.Writer.QueryRow(`SELECT text, subjects FROM audit_log WHERE action = 'group.approve'`).Scan(&text, &subjects)
 	if text != "Welcome! Let the office know your room." {
 		t.Fatalf("the note is not in the audit log (R30): %q", text)
+	}
+	if !strings.Contains(subjects, uid) || !strings.Contains(subjects, personUID(s, "mel@example.org")) {
+		t.Fatalf("the audit row does not name who received the note (R30): %s", subjects)
 	}
 	if r := other.get("/groups"); !strings.Contains(r.body, "Tuesday Bible Study") {
 		t.Fatal("an approved church-only group is not in the list")
@@ -300,5 +303,28 @@ func TestBogusVisibilityIsAnError(t *testing.T) {
 	r := mel.post("/groups/new", "/groups/new", groupForm("Study", "", "bogus"))
 	if r.status != http.StatusUnprocessableEntity || !strings.Contains(r.body, "Choose who can see it.") {
 		t.Fatalf("bogus visibility: %d", r.status)
+	}
+}
+
+func personUID(s *site, email string) string {
+	var uid string
+	s.Writer.QueryRow(`SELECT uid FROM people WHERE email = ?`, email).Scan(&uid)
+	return uid
+}
+
+// One member cannot flood the admins with groups: at most 3 waiting at once.
+func TestWaitingGroupsAreBounded(t *testing.T) {
+	s := newSite(t)
+	s.finishSetup()
+	mel := s.member("Mel Leader", "mel@example.org")
+	for i := range 3 {
+		s.start(mel, "Group "+string(rune('A'+i)), "church")
+	}
+	r := mel.post("/groups/new", "/groups/new", groupForm("Group D", "", "church"))
+	if r.status != http.StatusTooManyRequests || !strings.Contains(r.body, "That&#39;s a lot of new groups") {
+		t.Fatalf("a fourth waiting group: %d", r.status)
+	}
+	if n := s.Count(t, `SELECT count(*) FROM groups`); n != 3 {
+		t.Fatalf("%d groups", n)
 	}
 }

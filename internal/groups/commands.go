@@ -52,10 +52,27 @@ type Create struct {
 
 func (*Create) Action() string { return "group.create" }
 
+// MaxWaiting is how many groups one person may have waiting for approval
+// at once.
+const MaxWaiting = 3
+
+// ErrTooManyWaiting is a person who already has MaxWaiting groups waiting.
+var ErrTooManyWaiting = errors.New("groups: too many waiting")
+
 func (c *Create) Apply(tx *write.Tx) error {
 	p := actor(tx)
 	if !policy.CanCreateGroup(p) || !policy.ValidVisibility(c.Visibility) {
 		return write.ErrNotAllowed
+	}
+	if !policy.IsAdmin(p) {
+		var waiting int
+		if err := tx.QueryRow(`SELECT count(*) FROM groups g JOIN memberships m ON m.group_id = g.id
+			WHERE g.status = 'pending' AND m.person_id = ? AND m.role = 'leader'`, p.ID).Scan(&waiting); err != nil {
+			return err
+		}
+		if waiting >= MaxWaiting {
+			return ErrTooManyWaiting
+		}
 	}
 	c.UID = people.NewUID()
 	status := policy.NewGroupStatus(p)
@@ -131,7 +148,7 @@ func toLeaders(tx *write.Tx, groupID int64, n notices.New) error {
 }
 
 func toMembers(tx *write.Tx, groupID int64, n notices.New, leadersOnly bool) error {
-	q := `SELECT m.person_id FROM memberships m JOIN people p ON p.id = m.person_id
+	q := `SELECT m.person_id, p.uid FROM memberships m JOIN people p ON p.id = m.person_id
 		WHERE m.group_id = ? AND m.state = 'active' AND p.status = 'active'`
 	if leadersOnly {
 		q += ` AND m.role = 'leader'`
@@ -140,18 +157,25 @@ func toMembers(tx *write.Tx, groupID int64, n notices.New, leadersOnly bool) err
 	if err != nil {
 		return err
 	}
-	var ids []int64
+	type recipient struct {
+		id  int64
+		uid string
+	}
+	var to []recipient
 	for rows.Next() {
-		var id int64
-		rows.Scan(&id)
-		ids = append(ids, id)
+		var r recipient
+		rows.Scan(&r.id, &r.uid)
+		to = append(to, r)
 	}
 	rows.Close()
-	for _, id := range ids {
-		if tx.Actor.Person != nil && id == tx.Actor.Person.ID {
+	for _, r := range to {
+		if tx.Actor.Person != nil && r.id == tx.Actor.Person.ID {
 			continue // nobody is told about what they did themselves
 		}
-		n.PersonID = id
+		// The audit row names everyone told, so it shows who received any
+		// words it keeps (R30).
+		tx.Subject(r.uid)
+		n.PersonID = r.id
 		if err := notices.Add(tx, n); err != nil {
 			return err
 		}
