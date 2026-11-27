@@ -69,3 +69,13 @@ func TestSetupCodeIgnoresWhitespace(t *testing.T) {
 		t.Fatalf("a code with whitespace was refused: %d", r.status)
 	}
 }
+
+// Pages say what powers them at the foot, under the product's one name
+// (docs/DECISIONS.md R25).
+func TestFooterSaysPoweredByFold(t *testing.T) {
+	s := newSite(t)
+	r := s.browser().get("/setup")
+	if !strings.Contains(r.body, "Powered by Fold") || strings.Contains(r.body, "Fellowship Facilitator") {
+		t.Fatal("the footer does not say Powered by Fold")
+	}
+}

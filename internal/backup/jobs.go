@@ -198,7 +198,7 @@ func (j *Jobs) tellAdmins(ctx context.Context, subject string, paras []string) e
 	}
 	church := s[settings.ChurchName]
 	e := mail.Email{Church: church, Subject: subject, Before: paras,
-		Footer: fmt.Sprintf("Sent by %s to the administrators of %s.", brand.Name, church)}
+		Footer: fmt.Sprintf("Sent to the administrators of %s, powered by %s.", church, brand.Name)}
 	for _, to := range admins {
 		m, err := e.Message(to)
 		if err != nil {

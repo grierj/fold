@@ -1,8 +1,8 @@
 # AGENTS.md
 
-Working name: **Fellowship Facilitator** (FelFac). It will take the name **Fold** again once the
-repositories are sorted out (R5), so the name lives in one constant and one stylesheet variable
-and nowhere else.
+The product is **Fold** (`docs/DECISIONS.md` R5, R25). The name lives in one constant,
+`internal/brand`, and nowhere else. Pages and emails lead with the church's own name and say
+"Powered by Fold" at the foot.
 
 This page is the mission and the way of working. Keep it under 200 lines. Four companions hold
 the detail:
