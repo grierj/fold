@@ -5,12 +5,9 @@ import (
 	"database/sql"
 	"fmt"
 	"io/fs"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"fold/migrations"
 )
@@ -78,10 +75,9 @@ func (e ErrTooNew) Error() string {
 	return fmt.Sprintf("db: the database is at schema %d but this release knows only up to %d; run the newer release, or restore the copy taken before the upgrade", e.Have, e.Know)
 }
 
-// Migrate brings the database forward. Before changing a database that
-// already holds data it copies it to copyDir (docs/DECISIONS.md R11, P9).
-// An empty copyDir skips the copy (a fresh staging file during restore).
-func Migrate(ctx context.Context, w *sql.DB, copyDir string, now time.Time) error {
+// Migrate brings the database forward. The caller keeps a copy of a
+// database that holds data first (backup.BeforeMigrate).
+func Migrate(ctx context.Context, w *sql.DB) error {
 	ms, err := loadMigrations()
 	if err != nil {
 		return err
@@ -92,18 +88,6 @@ func Migrate(ctx context.Context, w *sql.DB, copyDir string, now time.Time) erro
 	}
 	if have > len(ms) {
 		return ErrTooNew{Have: have, Know: len(ms)}
-	}
-	if have == len(ms) {
-		return nil
-	}
-	if have > 0 && copyDir != "" {
-		if err := os.MkdirAll(copyDir, 0o700); err != nil {
-			return err
-		}
-		dst := filepath.Join(copyDir, fmt.Sprintf("before-schema-%d-%s.db", have+1, now.UTC().Format("20060102-150405")))
-		if _, err := w.ExecContext(ctx, "VACUUM INTO ?", dst); err != nil {
-			return fmt.Errorf("db: copy before migrating: %w", err)
-		}
 	}
 	for _, m := range ms[have:] {
 		tx, err := w.BeginTx(ctx, nil)

@@ -52,8 +52,9 @@ type App struct {
 }
 
 type limits struct {
-	signinAddress *ratelimit.Limiter // sign-in links asked for one address
-	signinClient  *ratelimit.Limiter // sign-in links asked for from one client
+	signinPair    *ratelimit.Limiter // one address from one client
+	signinAddress *ratelimit.Limiter // one address from anywhere: the inbox flood cap
+	signinClient  *ratelimit.Limiter // anything from one client
 	setupCode     *ratelimit.Limiter // setup code guesses from one client
 	setupMail     *ratelimit.Limiter // test messages sent during setup
 }
@@ -78,7 +79,8 @@ func New(cfg Config, d Deps) (*App, error) {
 		outbox: d.Outbox, tmpl: t, secure: cfg.SiteURL.Scheme == "https",
 		origin: cfg.SiteURL.Scheme + "://" + cfg.SiteURL.Host,
 		limits: limits{
-			signinAddress: ratelimit.New(c, ratelimit.Rule{N: 3, Per: time.Hour}, ratelimit.Rule{N: 10, Per: 24 * time.Hour}),
+			signinPair:    ratelimit.New(c, ratelimit.Rule{N: 3, Per: time.Hour}, ratelimit.Rule{N: 10, Per: 24 * time.Hour}),
+			signinAddress: ratelimit.New(c, ratelimit.Rule{N: 6, Per: time.Hour}, ratelimit.Rule{N: 20, Per: 24 * time.Hour}),
 			signinClient:  ratelimit.New(c, ratelimit.Rule{N: 20, Per: time.Hour}, ratelimit.Rule{N: 100, Per: 24 * time.Hour}),
 			setupCode:     ratelimit.New(c, ratelimit.Rule{N: 10, Per: time.Hour}),
 			setupMail:     ratelimit.New(c, ratelimit.Rule{N: 10, Per: time.Hour}, ratelimit.Rule{N: 30, Per: 24 * time.Hour}),

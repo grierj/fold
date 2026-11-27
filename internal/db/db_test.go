@@ -70,7 +70,7 @@ func TestReaderRefusesWrites(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "x.db")
 	w, _ := db.OpenWriter(path)
 	defer w.Close()
-	if err := db.Migrate(context.Background(), w, "", time.Now()); err != nil {
+	if err := db.Migrate(context.Background(), w); err != nil {
 		t.Fatal(err)
 	}
 	r, _ := db.OpenReader(path)
@@ -84,27 +84,23 @@ func TestReaderRefusesWrites(t *testing.T) {
 	}
 }
 
-func TestMigrateCopiesFirstAndRefusesNewer(t *testing.T) {
+func TestMigrateRefusesNewer(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "x.db")
 	w, _ := db.OpenWriter(path)
 	defer w.Close()
 	ctx := context.Background()
-	if err := db.Migrate(ctx, w, dir, time.Now()); err != nil {
+	if err := db.Migrate(ctx, w); err != nil {
 		t.Fatal(err)
 	}
 	if v, _ := db.Version(ctx, w); v != db.Latest() {
 		t.Fatalf("version %d, want %d", v, db.Latest())
 	}
-	// A fresh database is not copied: there is nothing to keep.
-	if m, _ := filepath.Glob(filepath.Join(dir, "before-schema-*")); len(m) != 0 {
-		t.Fatalf("copied an empty database: %v", m)
-	}
 	if _, err := w.Exec("PRAGMA user_version = 99"); err != nil {
 		t.Fatal(err)
 	}
 	var tooNew db.ErrTooNew
-	if err := db.Migrate(ctx, w, dir, time.Now()); !errors.As(err, &tooNew) {
+	if err := db.Migrate(ctx, w); !errors.As(err, &tooNew) {
 		t.Fatalf("Migrate on a newer database = %v", err)
 	}
 }
@@ -113,7 +109,7 @@ func TestTablesAreStrict(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "x.db")
 	w, _ := db.OpenWriter(path)
 	defer w.Close()
-	if err := db.Migrate(context.Background(), w, "", time.Now()); err != nil {
+	if err := db.Migrate(context.Background(), w); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := w.Query(`SELECT name, strict FROM pragma_table_list WHERE schema = 'main' AND type = 'table' AND name NOT LIKE 'sqlite_%'`)

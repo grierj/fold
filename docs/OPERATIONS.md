@@ -52,9 +52,15 @@ docker compose up -d
 ## Upgrading, and going back
 
 Change `VERSION` in `.env` and run `docker compose up -d`. Before a new version changes the
-database it copies it to `backups/before-schema-N-<time>.db`. Changes to the database only
-ever go forward. To go back, set the old `VERSION` and restore the copy taken before the
-upgrade.
+database it keeps a copy as an ordinary backup, listed by `fold backups` as "before upgrading
+from schema N". Changes to the database only ever go forward. To go back:
+
+```sh
+# set VERSION back to the old release in .env, then:
+docker compose stop app
+docker compose run --rm app restore <the "before upgrading" backup>
+docker compose up -d
+```
 
 ## Checking the audit log
 

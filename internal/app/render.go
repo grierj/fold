@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"fold/internal/brand"
+	"fold/internal/httpx"
 	"fold/web"
 )
 
@@ -129,7 +130,7 @@ func (a *App) notFound(w http.ResponseWriter, r *http.Request) {
 type problem struct{ Title, Text, Next, NextHref string }
 
 func (a *App) serverError(w http.ResponseWriter, r *http.Request, err error) {
-	a.log.Error("request failed", "path", r.URL.Path, "err", err)
+	a.log.Error("request failed", "path", httpx.RedactPath(r.URL.Path), "err", err)
 	a.render(w, r, http.StatusInternalServerError, "problem", "", page{Data: problem{
 		Title: "Something went wrong", Text: "That could not be finished because of a problem on our side. Nothing was changed. Please try again in a moment.",
 		Next: "Go to the home page", NextHref: "/"}})

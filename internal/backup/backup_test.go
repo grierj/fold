@@ -2,9 +2,13 @@ package backup_test
 
 import (
 	"context"
+	"os"
 	"testing"
+	"time"
 
+	"fold/internal/audit"
 	"fold/internal/backup"
+	"fold/internal/db"
 	"fold/internal/testenv"
 )
 
@@ -61,5 +65,83 @@ func TestRestoreRefusesABrokenChain(t *testing.T) {
 	w.Close()
 	if _, err := backup.Restore(ctx, env.Exec, env.Dir, m.Name); err == nil {
 		t.Fatal("restored a backup whose log was changed")
+	}
+}
+
+func TestRestoreTheOldestOfAFullSet(t *testing.T) {
+	env := testenv.New(t)
+	ctx := context.Background()
+	var oldest backup.Meta
+	for i := range backup.Keep {
+		m, err := backup.Take(ctx, env.Exec, env.Dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			oldest = m
+		}
+		env.Clock.Advance(time.Hour)
+	}
+	if _, err := backup.Restore(ctx, env.Exec, env.Dir, oldest.Name); err != nil {
+		t.Fatalf("restoring the oldest backup: %v", err)
+	}
+	if list, _ := backup.List(env.Dir); len(list) != backup.Keep {
+		t.Fatalf("%d backups kept", len(list))
+	}
+}
+
+func TestOfflineRestoreNeverOpensTheLiveDatabase(t *testing.T) {
+	for name, damage := range map[string]func(path string){
+		"garbage": func(p string) { os.WriteFile(p, []byte("not a database at all, not even close"), 0o600) },
+		"newer schema": func(p string) {
+			w, _ := db.OpenWriter(p)
+			w.Exec("PRAGMA user_version = 99")
+			w.Close()
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := testenv.New(t)
+			ctx := context.Background()
+			m, err := backup.Take(ctx, env.Exec, env.Dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			env.Writer.Close()
+			env.Reader.Close()
+			removeDB(env.Path)
+			damage(env.Path)
+			if _, err := backup.RestoreOffline(ctx, env.Dir, env.Path, m.Name, env.Clock, env.Keys); err != nil {
+				t.Fatal(err)
+			}
+			w, err := db.OpenWriter(env.Path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer w.Close()
+			rep, err := audit.Verify(ctx, w)
+			if err != nil || !rep.Intact() || rep.Last.Seq != m.Checkpoint.Seq+1 {
+				t.Fatalf("after offline restore: %+v %v", rep, err)
+			}
+			if v, _ := db.Version(ctx, w); v != db.Latest() {
+				t.Fatalf("schema %d", v)
+			}
+		})
+	}
+}
+
+func TestBeforeMigrateCopyIsARestorableBackup(t *testing.T) {
+	env := testenv.New(t)
+	ctx := context.Background()
+	m, err := backup.BeforeMigrate(ctx, env.Writer, env.Dir, env.Clock.Now(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list, _ := backup.List(env.Dir)
+	if len(list) != 1 || list[0].Note == "" || !backup.ValidName(m.Name) {
+		t.Fatalf("list %+v", list)
+	}
+	env.Clock.Advance(time.Second)
+	if _, err := backup.Restore(ctx, env.Exec, env.Dir, m.Name); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -58,6 +58,7 @@ func ReadEnv(get func(string) string) (Env, error) {
 		return Env{}, errors.New("SITE_URL must be the site's address, like https://church.example.org")
 	}
 	u.Path = ""
+	u.Host = strings.ToLower(u.Host) // browsers send the Origin in lower case
 	e.SiteURL = u
 	if e.Listen == "" {
 		e.Listen = ":8080"
@@ -114,10 +115,10 @@ func devSecret(dir string) string {
 // DBPath is the one database file.
 func DBPath(dataDir string) string { return filepath.Join(dataDir, "app.db") }
 
-// lock holds DATA_DIR/server.lock for the life of the process, so two
+// Lock holds DATA_DIR/server.lock for the life of the process, so two
 // servers never share a database and an offline restore knows the server is
 // stopped.
-func lock(dataDir string) (*os.File, error) {
+func Lock(dataDir string) (*os.File, error) {
 	f, err := os.OpenFile(filepath.Join(dataDir, "server.lock"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
@@ -148,7 +149,7 @@ func Open(ctx context.Context, dataDir string, k *keys.Keys, c clock.Clock) (*Op
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return nil, err
 	}
-	l, err := lock(dataDir)
+	l, err := Lock(dataDir)
 	if err != nil {
 		return nil, err
 	}
@@ -157,7 +158,14 @@ func Open(ctx context.Context, dataDir string, k *keys.Keys, c clock.Clock) (*Op
 		l.Close()
 		return nil, err
 	}
-	if err := db.Migrate(ctx, w, backup.Dir(dataDir), c.Now()); err != nil {
+	have, err := db.Version(ctx, w)
+	if err == nil && have > 0 && have < db.Latest() {
+		_, err = backup.BeforeMigrate(ctx, w, dataDir, c.Now(), have)
+	}
+	if err == nil {
+		err = db.Migrate(ctx, w)
+	}
+	if err != nil {
 		w.Close()
 		l.Close()
 		return nil, err

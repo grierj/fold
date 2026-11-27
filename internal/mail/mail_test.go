@@ -69,11 +69,17 @@ func TestPostmark(t *testing.T) {
 
 func TestSMTPRefusesPlaintext(t *testing.T) {
 	srv := fakeSMTP(t, false)
-	s := &SMTP{Host: "smtp.invalid", Port: srv.port, From: "office@example.org"}
-	// Dial the fake on loopback, but under a non-loopback name.
-	s.Host = "127.0.0.1"
-	if _, err := s.Send(context.Background(), Message{To: "pat@example.org", Subject: "s", Text: "x"}); err != nil {
-		t.Fatalf("loopback relay without TLS should be allowed: %v", err)
+	msg := Message{To: "pat@example.org", Subject: "s", Text: "x"}
+	// "localhost." reaches the fake on loopback but is not the loopback
+	// exception, so it stands for any outside server without STARTTLS.
+	remote := &SMTP{Host: "localhost.", Port: srv.port, From: "office@example.org"}
+	_, err := remote.Send(context.Background(), msg)
+	if err == nil || !IsPermanent(err) || !strings.Contains(err.Error(), "encryption") {
+		t.Fatalf("a server without STARTTLS: %v", err)
+	}
+	local := &SMTP{Host: "127.0.0.1", Port: srv.port, From: "office@example.org"}
+	if _, err := local.Send(context.Background(), msg); err != nil {
+		t.Fatalf("a mail catcher on loopback: %v", err)
 	}
 	if !loopback("localhost") || loopback("mail.example.org") || loopback("10.0.0.1") {
 		t.Fatal("loopback")

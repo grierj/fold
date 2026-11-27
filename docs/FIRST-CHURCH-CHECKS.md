@@ -10,3 +10,4 @@ Run them before the pilot church goes live, and note the date and result here.
 | 0 | The same in an Outlook inbox | | Not run |
 | 0 | The setup pages, sign-in, home and the component gallery look right on a real iPhone and a real Android phone | | Not run |
 | 0 | A real backup restores on the test server with `fold restore`, and the restored site works | | Not run |
+| 0 | The app's log (`docker compose logs app`) shows visitors' real public addresses as `client`, not `172.30.0.1`. If every visitor shows the same address, rate limits would be shared by the whole church; check Docker's userland proxy and IPv6 setup | | Not run |

@@ -41,7 +41,7 @@ func New(t testing.TB) *Env {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { w.Close() })
-	if err := db.Migrate(context.Background(), w, dir, Start); err != nil {
+	if err := db.Migrate(context.Background(), w); err != nil {
 		t.Fatal(err)
 	}
 	r, err := db.OpenReader(path)

@@ -2,7 +2,8 @@
    never with Node. The built file is web/static/app.css and is committed, so
    `go build` needs no tool. Tokens and rules come from Fold (docs/CARRYOVER.md,
    design.md); colours are roles, chosen by meaning (DEC-60). */
-@import 'tailwindcss';
+/* Classes come from the templates only, never from scanning other files. */
+@import 'tailwindcss' source(none);
 
 @source '../templates';
 

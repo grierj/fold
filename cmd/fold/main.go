@@ -87,7 +87,7 @@ func run(cmd string, args []string) error {
 			fmt.Println("No backups yet. One is taken every night at 3 am, church time.")
 		}
 		for _, m := range list {
-			fmt.Printf("%s  taken %s  audit row %d\n", m.Name, m.TakenAt.Local().Format("Mon 2 Jan 2006 15:04"), m.Checkpoint.Seq)
+			fmt.Printf("%s  taken %s  audit row %d  %s\n", m.Name, m.TakenAt.Local().Format("Mon 2 Jan 2006 15:04"), m.Checkpoint.Seq, m.Note)
 		}
 		return nil
 	case "restore":
@@ -137,12 +137,12 @@ func restore(args []string) error {
 		if err != nil {
 			return err
 		}
-		o, err := openForRestore(env)
+		l, err := server.Lock(env.DataDir)
 		if err != nil {
-			return err
+			return fmt.Errorf("the server seems to be running but not answering: %w", err)
 		}
-		defer o.Close()
-		m, err = backup.Restore(context.Background(), o.Exec, env.DataDir, args[0])
+		defer l.Close()
+		m, err = backup.RestoreOffline(context.Background(), env.DataDir, server.DBPath(env.DataDir), args[0], clock.Real{}, env.Keys)
 		if err != nil {
 			return err
 		}
@@ -152,14 +152,6 @@ func restore(args []string) error {
 	b, _ := json.Marshal(m.Checkpoint)
 	fmt.Printf("Restored backup %s. Everyone was signed out and every emailed link stopped working. Audit checkpoint of the backup: %s\n", m.Name, b)
 	return nil
-}
-
-func openForRestore(env server.Env) (*server.Opened, error) {
-	o, err := server.Open(context.Background(), env.DataDir, env.Keys, clock.Real{})
-	if err == nil {
-		return o, nil
-	}
-	return nil, fmt.Errorf("could not open the database to restore into: %w", err)
 }
 
 // verify checks the chain of the live database, read-only.

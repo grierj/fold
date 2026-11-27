@@ -72,13 +72,19 @@ func (a *App) postSignin(w http.ResponseWriter, r *http.Request) {
 			a.signinForm(raw, "Enter an email address like name@example.org.", ""))
 		return
 	}
+	// Limits are spent in order and stop at the first refusal. Counting an
+	// address per client first means one stranger cannot use up the
+	// address's own allowance and lock its owner out for the day.
 	client := httpx.ClientKey(a.cfg.Proxies.ClientIP(r))
-	byClient := a.limits.signinClient.Allow(client)
-	byAddress := byClient && a.limits.signinAddress.Allow(email)
-	if byClient && byAddress {
+	switch {
+	case !a.limits.signinClient.Allow(client):
+		a.log.Warn("signin: client limit reached; answered as usual")
+	case !a.limits.signinPair.Allow(client + " " + email):
+		a.log.Warn("signin: address limit for this client reached; answered as usual")
+	case !a.limits.signinAddress.Allow(email):
+		a.log.Warn("signin: address limit reached; answered as usual")
+	default:
 		a.queue.Add(email)
-	} else {
-		a.log.Warn("signin: limit reached; answered as usual", "by_client", !byClient)
 	}
 	a.renderPlain(w, r, http.StatusOK, "signin_sent", struct{ Email string }{email})
 }

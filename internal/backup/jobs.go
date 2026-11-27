@@ -110,7 +110,8 @@ func (j *Jobs) check(ctx context.Context, _ write.Job) error {
 			return err
 		}
 		for _, m := range metas {
-			if m.TakenAt.Unix() < lastRestore {
+			// The copy kept by a restore is taken just before its row.
+			if m.TakenAt.Unix() <= lastRestore {
 				continue
 			}
 			var ok bool

@@ -350,3 +350,65 @@ func TestGalleryIsForAdmins(t *testing.T) {
 		t.Fatalf("signed out: %d", r.status)
 	}
 }
+
+// The daily check after a restore stays quiet: the copy kept by the restore
+// and older backups are explained by the "restored" row. A changed row
+// still tells every admin.
+func TestDailyCheckAfterRestore(t *testing.T) {
+	s := newSite(t)
+	s.finishSetup()
+	ctx := context.Background()
+	if err := s.runner.Schedule(ctx); err != nil {
+		t.Fatal(err)
+	}
+	m, err := backup.Take(ctx, s.Exec, s.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Clock.Advance(time.Hour)
+	backup.Take(ctx, s.Exec, s.Dir)
+	s.Clock.Advance(time.Hour)
+	if _, err := backup.Restore(ctx, s.Exec, s.Dir, m.Name); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		s.Clock.Advance(24 * time.Hour)
+		s.work()
+	}
+	for _, sent := range s.outbox.All() {
+		if strings.Contains(sent.Subject, "check failed") {
+			t.Fatal("a restore set off the tamper alarm")
+		}
+	}
+	if n := s.Count(t, `SELECT count(*) FROM audit_log WHERE action = 'backup.taken'`); n < 3 {
+		t.Fatalf("nightly backups did not run: %d", n)
+	}
+	s.Writer.Exec(`DROP TRIGGER audit_log_no_update`)
+	s.Writer.Exec(`UPDATE audit_log SET details = '{"x":"1"}' WHERE seq = 2`)
+	s.Clock.Advance(24 * time.Hour)
+	s.work()
+	alarmed := false
+	for _, sent := range s.outbox.All() {
+		alarmed = alarmed || strings.Contains(sent.Subject, "check failed")
+	}
+	if !alarmed {
+		t.Fatal("a changed row did not reach the admins")
+	}
+}
+
+func TestMonthlyCheckpointEmail(t *testing.T) {
+	s := newSite(t)
+	s.finishSetup()
+	s.runner.Schedule(context.Background())
+	s.Clock.Advance(40 * 24 * time.Hour)
+	s.work()
+	found := false
+	for _, m := range s.outbox.All() {
+		if m.Subject == "This month's audit checkpoint" && strings.Contains(m.Text, "Checkpoint: row ") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no checkpoint email")
+	}
+}
