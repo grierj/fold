@@ -22,7 +22,7 @@ const (
 	SetupDone  = "setup.done"
 
 	MailProvider  = "mail.provider" // postmark, smtp, or outbox (development only)
-	MailFrom      = "mail.from"
+	MailFrom      = "mail.from" // the church's address, not a person's (R23)
 	SMTPHost      = "mail.smtp.host"
 	SMTPPort      = "mail.smtp.port"
 	SMTPUsername  = "mail.smtp.username"
