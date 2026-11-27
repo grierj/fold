@@ -10,5 +10,6 @@ and announcements, run by the church on its own small server. Free, MIT-licensed
 ## Developing
 
 Go 1.27. `make dev` runs a local site at http://localhost:8080 with mail kept at
-`/dev/outbox`. `make check` runs vet, staticcheck, govulncheck, the tests and the stylesheet
-check; `make e2e` runs the browser gates (needs Node, for developer tooling only).
+`/dev/outbox`. `make demo` runs the same site filled with a made-up church, built on first run;
+`make demo-reset` deletes it. `make check` runs vet, staticcheck, govulncheck, the tests and
+the stylesheet check; `make e2e` runs the browser gates (needs Node, for developer tooling only).
