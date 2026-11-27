@@ -13,9 +13,9 @@ import (
 
 	"fold/internal/accounts"
 	"fold/internal/app"
-	"fold/internal/server"
 	"fold/internal/httpx"
 	"fold/internal/mail"
+	"fold/internal/server"
 	"fold/internal/testenv"
 	"fold/internal/write"
 )

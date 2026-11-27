@@ -55,7 +55,9 @@ func (m *Mailer) send(ctx context.Context, s settings.Settings, to string, e mai
 	return nil
 }
 
-func footer(church string) string { return fmt.Sprintf("Sent by %s, powered by %s.", church, brand.Name) }
+func footer(church string) string {
+	return fmt.Sprintf("Sent by %s, powered by %s.", church, brand.Name)
+}
 
 // SendLink emails a link (JobLinkMail, JobApprovedMail).
 func (m *Mailer) SendLink(ctx context.Context, j write.Job) error {
