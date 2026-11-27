@@ -216,12 +216,13 @@ func (a *App) getDate(w http.ResponseWriter, r *http.Request) {
 		Event                events.Event
 		Day, When, ZoneLine  string
 		Moved                string
-		Cancelled, Past      bool
+		Cancelled, BySeries  bool
+		Past                 bool
 		GroupName, GroupHref string
 		Maps                 string
 	}{
 		Event: f.event, Day: longDay(start), When: when, ZoneLine: zoneLine(f.event.Zone, loc), Moved: moved,
-		Cancelled: f.date.Cancelled, Past: !f.date.EndsAt.After(now),
+		Cancelled: f.date.Cancelled, BySeries: f.date.BySeries, Past: !f.date.EndsAt.After(now),
 		GroupName: groupName, GroupHref: groupHref, Maps: mapsLink(f.event.Place),
 	}
 	a.render(w, r, http.StatusOK, "date", "", f.page)

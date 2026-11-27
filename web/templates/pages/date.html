@@ -6,7 +6,7 @@
       {{with .Data.GroupName}}<p class="mt-1 text-sm text-text-muted"><a class="text-link" href="{{$.Data.GroupHref}}">{{.}}</a></p>{{end}}
     </div>
   </div>
-  {{if .Data.Cancelled}}<div class="mb-6">{{template "notice" (notice "warning" "This date is cancelled" "The event's times changed, so it no longer happens on this day.")}}</div>{{end}}
+  {{if .Data.Cancelled}}<div class="mb-6">{{if .Data.BySeries}}{{template "notice" (notice "warning" "This date is cancelled" "The event's times changed, so it no longer happens on this day.")}}{{else}}{{template "notice" (notice "warning" "This date is cancelled" "")}}{{end}}</div>{{end}}
   <section aria-labelledby="when">
     <h2 id="when" class="text-lg font-bold">When</h2>
     <p class="mt-1 text-lg">{{.Data.Day}}</p>
