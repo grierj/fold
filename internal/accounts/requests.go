@@ -27,6 +27,14 @@ type RequestAccount struct {
 func (RequestAccount) Action() string { return "account.request" }
 
 func (c RequestAccount) Apply(tx *write.Tx) error {
+	// Before setup is done there is no admin to ask, and a request must not
+	// claim the address the installer is about to use.
+	if facts, err := setupFacts(tx); err != nil || !facts.Done {
+		if err != nil {
+			return err
+		}
+		return write.ErrNothing
+	}
 	p, err := people.ByEmail(tx.Context(), tx, c.Email)
 	switch {
 	case err == nil && p.Status == people.StatusActive:
@@ -106,9 +114,19 @@ type Request struct {
 	At    time.Time
 }
 
-// Waiting lists the requests waiting for an admin, oldest first.
-func Waiting(ctx context.Context, q db.Querier) ([]Request, error) {
-	rows, err := q.QueryContext(ctx, `SELECT uid, name, email, created_at FROM people WHERE status = 'pending' ORDER BY created_at, id`)
+// Waiting lists up to limit requests waiting for an admin, oldest first,
+// and how many wait in all.
+func Waiting(ctx context.Context, q db.Querier, limit int) ([]Request, int, error) {
+	var total int
+	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM people WHERE status = 'pending'`).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	list, err := waiting(ctx, q, limit)
+	return list, total, err
+}
+
+func waiting(ctx context.Context, q db.Querier, limit int) ([]Request, error) {
+	rows, err := q.QueryContext(ctx, `SELECT uid, name, email, created_at FROM people WHERE status = 'pending' ORDER BY created_at, id LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}

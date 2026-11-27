@@ -58,6 +58,7 @@ type limits struct {
 	signinClient  *ratelimit.Limiter // anything from one client
 	setupCode     *ratelimit.Limiter // setup code guesses from one client
 	setupMail     *ratelimit.Limiter // test messages sent during setup
+	requests      *ratelimit.Limiter // account requests from the whole site
 }
 
 type Deps struct {
@@ -85,6 +86,7 @@ func New(cfg Config, d Deps) (*App, error) {
 			signinClient:  ratelimit.New(c, ratelimit.Rule{N: 20, Per: time.Hour}, ratelimit.Rule{N: 100, Per: 24 * time.Hour}),
 			setupCode:     ratelimit.New(c, ratelimit.Rule{N: 10, Per: time.Hour}),
 			setupMail:     ratelimit.New(c, ratelimit.Rule{N: 10, Per: time.Hour}, ratelimit.Rule{N: 30, Per: 24 * time.Hour}),
+			requests:      ratelimit.New(c, ratelimit.Rule{N: 20, Per: time.Hour}, ratelimit.Rule{N: 60, Per: 24 * time.Hour}),
 		}}
 	return a, nil
 }

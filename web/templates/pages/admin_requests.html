@@ -15,6 +15,7 @@
       </div>
     </li>{{end}}
   </ul>
+  {{with .Data.More}}<p class="mt-4 text-text-muted">{{.}} more are waiting. They'll show here as you decide these, oldest first.</p>{{end}}
   {{else}}
   {{template "empty" (empty "all-caught-up.svg" "No requests waiting" "When someone asks for an account, it appears here and you get a notice." nil)}}
   {{end}}

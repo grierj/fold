@@ -39,6 +39,12 @@ func (a *App) requestForm(name, email, age string, errs map[string]string) any {
 }
 
 func (a *App) getRequest(w http.ResponseWriter, r *http.Request) {
+	if done, ok := a.setupState(w, r); !ok {
+		return
+	} else if !done {
+		http.Redirect(w, r, "/setup", http.StatusSeeOther)
+		return
+	}
 	a.renderPlain(w, r, http.StatusOK, "request", a.requestForm("", "", "", nil))
 }
 
@@ -75,17 +81,24 @@ func (a *App) postRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.markDevice(w, email)
+	// Requests have their own allowance for the whole site too, since each
+	// new address reaches every admin; past it the form answers as usual.
 	if a.allowStrangerMail(r, email) {
-		a.queue.Add(accounts.RequestAccount{Name: name, Email: email})
+		if a.limits.requests.Allow("site") {
+			a.queue.Add(accounts.RequestAccount{Name: name, Email: email})
+		} else {
+			a.log.Warn("account requests: site limit reached; answered as usual")
+		}
 	}
 	a.renderPlain(w, r, http.StatusOK, "request_sent", struct{ Email string }{email})
 }
 
 func (a *App) getAdminRequests(w http.ResponseWriter, r *http.Request) {
 	var list []accounts.Request
+	var total int
 	f, ok := a.adminPage(w, r, func(q *sql.Tx, f *pageFacts) error {
 		var err error
-		list, err = accounts.Waiting(r.Context(), q)
+		list, total, err = accounts.Waiting(r.Context(), q, 100)
 		return err
 	})
 	if !ok {
@@ -110,7 +123,8 @@ func (a *App) getAdminRequests(w http.ResponseWriter, r *http.Request) {
 	f.Data = struct {
 		Requests []row
 		Status   string
-	}{rows, status}
+		More     int
+	}{rows, status, total - len(rows)}
 	a.render(w, r, http.StatusOK, "admin_requests", "", f.page)
 }
 

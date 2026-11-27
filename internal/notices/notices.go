@@ -23,6 +23,9 @@ const (
 // mail (Mails). Its ref is the notice id.
 const JobMail = "mail.notice"
 
+// MailsPerDay is how many emails of one kind a person gets in a day.
+const MailsPerDay = 10
+
 // Mails reports whether a kind is also emailed. Until email choices arrive
 // in slice 3 only required account mail goes out.
 func Mails(kind string) bool { return kind == AccountRequested }
@@ -51,6 +54,16 @@ func Add(tx *write.Tx, n New) error {
 		return err
 	}
 	if !Mails(n.Kind) {
+		return nil
+	}
+	// Each person gets at most a few emails of one kind a day; past that the
+	// bell still counts them. A flood of requests cannot flood an inbox.
+	var today int
+	if err := tx.QueryRow(`SELECT count(*) FROM notices WHERE person_id = ? AND kind = ? AND created_at > ?`,
+		n.PersonID, n.Kind, tx.Now.Add(-24*time.Hour).Unix()).Scan(&today); err != nil {
+		return err
+	}
+	if today > MailsPerDay {
 		return nil
 	}
 	id, _ := res.LastInsertId()

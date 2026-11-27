@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -272,4 +273,59 @@ func between(s, start, end string) string {
 		return ""
 	}
 	return s[:j]
+}
+
+// Before setup is done, a request creates nothing and cannot claim the
+// installer's address.
+func TestRequestBeforeSetupDoesNothing(t *testing.T) {
+	s := newSite(t)
+	stranger := s.browser()
+	if r := stranger.get("/request"); r.header.Get("Location") != "/setup" {
+		t.Fatalf("request form before setup: %d", r.status)
+	}
+	stranger.post("/signin", "/request", requestForm("Not Pat", "pat@cloverdale.example"))
+	s.work()
+	if n := s.Count(t, `SELECT count(*) FROM people`); n != 0 {
+		t.Fatalf("%d people before setup", n)
+	}
+	s.finishSetup() // the installer can still use the address
+}
+
+// A stranger with endless new addresses cannot bury the admins: the site
+// takes 20 requests an hour, and each admin gets at most 10 request emails a
+// day; the bell still counts the rest.
+func TestRequestFloodIsBounded(t *testing.T) {
+	s := newSite(t)
+	s.finishSetup()
+	for i := range 30 {
+		b := s.browser()
+		b.post("/request", "/request", requestForm("Person", "p"+strconv.Itoa(i)+"@example.org"))
+	}
+	s.work()
+	if n := s.Count(t, `SELECT count(*) FROM people WHERE status = 'pending'`); n != 20 {
+		t.Fatalf("%d waiting requests from one hour, want 20", n)
+	}
+	toAdmin := 0
+	for _, m := range s.outbox.All() {
+		if m.To == "pat@cloverdale.example" && strings.Contains(m.Subject, "New account request") {
+			toAdmin++
+		}
+	}
+	if toAdmin > 11 {
+		t.Fatalf("the admin got %d request emails in a day", toAdmin)
+	}
+}
+
+// name+tag@ reaches the same inbox as name@, so it shares its allowance.
+func TestPlusAddressesShareAnInbox(t *testing.T) {
+	s := newSite(t)
+	s.finishSetup()
+	b := s.browser()
+	for i := range 6 {
+		b.post("/request", "/request", requestForm("Victim", "victim+"+strconv.Itoa(i)+"@example.org"))
+	}
+	s.work()
+	if n := s.Count(t, `SELECT count(*) FROM people WHERE email LIKE 'victim+%'`); n > 3 {
+		t.Fatalf("%d requests reached one inbox from one client", n)
+	}
 }

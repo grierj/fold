@@ -3,6 +3,7 @@ package app
 import (
 	"database/sql"
 	"net/http"
+	"strings"
 	"time"
 
 	"fold/internal/httpx"
@@ -79,12 +80,23 @@ func (a *App) allowStrangerMail(r *http.Request, email string) bool {
 	switch {
 	case !a.limits.signinClient.Allow(client):
 		a.log.Warn("public form: client limit reached; answered as usual")
-	case !a.limits.signinPair.Allow(client + " " + email):
+	case !a.limits.signinPair.Allow(client + " " + inboxKey(email)):
 		a.log.Warn("public form: address limit for this client reached; answered as usual")
-	case !a.limits.signinAddress.Allow(email):
+	case !a.limits.signinAddress.Allow(inboxKey(email)):
 		a.log.Warn("public form: address limit reached; answered as usual")
 	default:
 		return true
 	}
 	return false
+}
+
+// inboxKey is the inbox an address reaches, for counting mail to it:
+// name+anything@example.org reaches name@example.org.
+func inboxKey(email string) string {
+	local, domain, ok := strings.Cut(email, "@")
+	if !ok {
+		return email
+	}
+	local, _, _ = strings.Cut(local, "+")
+	return local + "@" + domain
 }
