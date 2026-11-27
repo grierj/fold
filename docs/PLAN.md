@@ -263,7 +263,7 @@ people signed up. Then the measuring gate.
 - A: the accessibility, layout and contrast gates pass on every new page at 390 and 1280 px.
 - P: a personal feed subscribes on a real iPhone and shows next week's dates.
 
-**Defaults, Grier to confirm or change** (also listed in `docs/HAZARDS.md` section 12):
+**Defaults, confirmed by Grier (R37):**
 
 - Changing the church's time zone moves nothing: each event keeps its own zone, and only new events
   start in the new one.
@@ -277,7 +277,7 @@ people signed up. Then the measuring gate.
 - No pictures on events in this slice. Uploads (DEC-49) arrive when a church asks or with a later
   slice.
 
-**Rests on.** R3, R15, R29, R33 to R36, P7, P8, and "Events and dates" and "RSVP" in the decisions.
+**Rests on.** R3, R15, R29, R33 to R37, P7, P8, and "Events and dates" and "RSVP" in the decisions.
 
 **Not in this slice.** Reminders and announcements (slice 3). Children, childcare and teens
 (slice 5). Rooms (slice 6). Attendance (slice 4).
