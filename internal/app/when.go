@@ -32,19 +32,21 @@ func churchZone(f pageFacts) *time.Location {
 	return time.UTC
 }
 
-// stamp words when something happened: "Mon 2 Jan, 3:04 pm".
-func stamp(t time.Time, loc *time.Location) string { return t.In(loc).Format("Mon 2 Jan, 3:04 pm") }
+// Dates are written the American way (R38).
 
-// dayWords is "Tue 8 Dec", with the year when it is not this year's.
+// stamp words when something happened: "Mon, Jan 2, 3:04 pm".
+func stamp(t time.Time, loc *time.Location) string { return t.In(loc).Format("Mon, Jan 2, 3:04 pm") }
+
+// dayWords is "Tue, Dec 8", with the year when it is not this year's.
 func dayWords(t time.Time, now time.Time) string {
 	if t.Year() != now.In(t.Location()).Year() {
-		return t.Format("Mon 2 Jan 2006")
+		return t.Format("Mon, Jan 2, 2006")
 	}
-	return t.Format("Mon 2 Jan")
+	return t.Format("Mon, Jan 2")
 }
 
-// longDay is "Tuesday 8 December 2026", for a date page's heading.
-func longDay(t time.Time) string { return t.Format("Monday 2 January 2006") }
+// longDay is "Tuesday, December 8, 2026", for a date page's heading.
+func longDay(t time.Time) string { return t.Format("Monday, January 2, 2006") }
 
 func clockWords(t time.Time) string { return t.Format("3:04 pm") }
 
@@ -56,7 +58,7 @@ func clockSpan(start, end time.Time) string {
 	return clockWords(start) + " to " + clockWords(end)
 }
 
-// span words a date's time in loc: "Tue 8 Dec, 7:00 to 8:30 pm", or with
+// span words a date's time in loc: "Tue, Dec 8, 7:00 to 8:30 pm", or with
 // both days when it ends on another.
 func span(start, end time.Time, loc *time.Location, now time.Time) string {
 	start, end = start.In(loc), end.In(loc)

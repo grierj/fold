@@ -52,7 +52,7 @@ func TestScheduleAWeeklyEvent(t *testing.T) {
 	form := eventForm("Bible Study", "2026-12-01", "19:00", "weekly")
 	uid := s.schedule(admin, group, form)
 	r := admin.get("/events/" + uid + "?done=created")
-	for _, want := range []string{"Every Tuesday, 7:00 to 8:30 pm", "Your event is scheduled.", "Tue 1 Dec, 7:00 to 8:30 pm",
+	for _, want := range []string{"Every Tuesday, 7:00 to 8:30 pm", "Your event is scheduled.", "Tue, Dec 1, 7:00 to 8:30 pm",
 		"See all dates", "Room 4 &amp; the hall", "https://www.google.com/maps/search/?api=1&amp;query=Room&#43;4&#43;%26&#43;the&#43;hall", "Tuesday Study"} {
 		if !strings.Contains(r.body, want) {
 			t.Errorf("the event page lacks %q", want)
@@ -62,11 +62,11 @@ func TestScheduleAWeeklyEvent(t *testing.T) {
 		t.Error("a zone line when the zones agree")
 	}
 	g := s.browser().get("/groups/" + group)
-	if !strings.Contains(g.body, "Bible Study") || !strings.Contains(g.body, "Tue 1 Dec, 7:00 to 8:30 pm") {
+	if !strings.Contains(g.body, "Bible Study") || !strings.Contains(g.body, "Tue, Dec 1, 7:00 to 8:30 pm") {
 		t.Fatal("the group page doesn't show what's coming up")
 	}
 	d := s.browser().get("/dates/" + firstDate(g.body))
-	if d.status != 200 || !strings.Contains(d.body, "Tuesday 1 December 2026") || !strings.Contains(d.body, "7:00 to 8:30 pm") || !strings.Contains(d.body, "/events/"+uid) {
+	if d.status != 200 || !strings.Contains(d.body, "Tuesday, December 1, 2026") || !strings.Contains(d.body, "7:00 to 8:30 pm") || !strings.Contains(d.body, "/events/"+uid) {
 		t.Fatalf("date page: %d", d.status)
 	}
 	if n := s.Count(t, `SELECT count(*) FROM dates`); n < 75 || n > 80 {
@@ -232,7 +232,7 @@ func TestDroppedDatesAskFirst(t *testing.T) {
 	if n := s.Count(t, `SELECT count(*) FROM dates WHERE status = 'cancelled' AND cancelled_by = 'series'`); n != tuesdays {
 		t.Fatalf("%d dates cancelled", n)
 	}
-	if r := admin.get("/events/" + uid); !strings.Contains(r.body, "Every Wednesday") || !strings.Contains(r.body, "Wed 2 Dec") || strings.Contains(r.body, "Tue 1 Dec") {
+	if r := admin.get("/events/" + uid); !strings.Contains(r.body, "Every Wednesday") || !strings.Contains(r.body, "Wed, Dec 2") || strings.Contains(r.body, "Tue, Dec 1") {
 		t.Fatal("the event doesn't show its new day")
 	}
 	if r := s.browser().get("/dates/" + tuesday); r.status != http.StatusOK || !strings.Contains(r.body, "This date is cancelled") {
@@ -336,7 +336,7 @@ func TestDaylightSavingWarning(t *testing.T) {
 	form := eventForm("Vigil", "2027-03-07", "02:30", "weekly")
 	form.Set("until", "2027-03-21")
 	r := admin.post(page, page, form)
-	if r.status != http.StatusOK || !strings.Contains(r.body, "The clocks change on a night this meets") || !strings.Contains(r.body, "Sun 14 Mar 2027 the clocks go forward, so that date starts at 3:30 am") {
+	if r.status != http.StatusOK || !strings.Contains(r.body, "The clocks change on a night this meets") || !strings.Contains(r.body, "Sun, Mar 14, 2027, the clocks go forward, so that date starts at 3:30 am") {
 		t.Fatalf("no warning: %d %s", r.status, between(r.body, "<main", "</main>"))
 	}
 	form.Set("timing", between(r.body, `name="timing" value="`, `"`))
@@ -367,7 +367,7 @@ func TestTimesInTheViewersZone(t *testing.T) {
 	uid := s.schedule(admin, group, eventForm("Study", "2026-12-01", "19:00", "weekly"))
 	s.Writer.Exec(`UPDATE people SET zone = 'America/Chicago'`)
 	r := admin.get("/events/" + uid)
-	if !strings.Contains(r.body, "This event keeps Boise time. Times here are shown in Chicago time.") || !strings.Contains(r.body, "Tue 1 Dec, 8:00 to 9:30 pm") {
+	if !strings.Contains(r.body, "This event keeps Boise time. Times here are shown in Chicago time.") || !strings.Contains(r.body, "Tue, Dec 1, 8:00 to 9:30 pm") {
 		t.Fatalf("viewer zone: %s", between(r.body, "<main", "</main>"))
 	}
 	if !strings.Contains(r.body, "Every Tuesday, 7:00 to 8:30 pm") {
@@ -401,7 +401,7 @@ func TestDeleteEvent(t *testing.T) {
 			t.Errorf("%s still shows", p)
 		}
 	}
-	if r := admin.get("/groups/" + group + "?done=event-deleted"); strings.Contains(r.body, "Tue 1 Dec") || !strings.Contains(r.body, "The event is deleted.") {
+	if r := admin.get("/groups/" + group + "?done=event-deleted"); strings.Contains(r.body, "Tue, Dec 1") || !strings.Contains(r.body, "The event is deleted.") {
 		t.Fatal("the group page still lists its dates")
 	}
 	if s.Count(t, `SELECT count(*) FROM audit_log WHERE action = 'event.delete'`) != 1 {

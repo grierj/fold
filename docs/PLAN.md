@@ -215,8 +215,9 @@ people signed up. Then the measuring gate.
    rewriting past ones; a disabled account's answers are hidden and not counted, and come back
    where there is room when it is turned on again (DEC-38, DEC-47). Making an event more private
    removes nobody and lists who is affected (R3). Deleting an event or cancelling a date tells the
-   people signed up, with the count in the confirmation (DEC-175). Email goes only where R36 says;
-   every notice goes to the bell.
+   people signed up, with the count in the confirmation (DEC-175). A date moved to another day
+   takes no answers with it: the people signed up to the cancelled date are told and answer the
+   new one themselves (R40). Email goes only where R36 says; every notice goes to the bell.
 3. **Guests.** A public event's date offers a stranger a short form: name, email, and that they are
    18 or older, each with a length limit. Two links, both random and stored hashed. The *confirm
    link* is single use and lasts 24 hours; it is one click in the browser that asked and a button
@@ -284,7 +285,7 @@ people signed up. Then the measuring gate.
 - No pictures on events in this slice. Uploads (DEC-49) arrive when a church asks or with a later
   slice.
 
-**Rests on.** R3, R15, R29, R33 to R37, P7, P8, and "Events and dates" and "RSVP" in the decisions.
+**Rests on.** R3, R15, R29, R33 to R40, P7, P8, and "Events and dates" and "RSVP" in the decisions.
 
 **Not in this slice.** Reminders and announcements (slice 3). Children, childcare and teens
 (slice 5). Rooms (slice 6). Attendance (slice 4).

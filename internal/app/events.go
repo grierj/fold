@@ -368,7 +368,7 @@ func weekMismatch(day time.Time) string {
 	for _, w := range weeks {
 		names = append(names, events.Ordinal(w))
 	}
-	which := day.Format("Mon 2 Jan") + " is the " + names[0] + " " + day.Weekday().String() + " of its month"
+	which := day.Format("Mon, Jan 2") + " is the " + names[0] + " " + day.Weekday().String() + " of its month"
 	if len(names) == 2 {
 		which += ", and the last"
 	}
@@ -385,9 +385,9 @@ func dstWarning(ds []events.Date, loc *time.Location, now time.Time) string {
 		local := d.StartsAt.In(loc)
 		switch {
 		case d.Moved:
-			parts = append(parts, "On "+dayWords(local, now)+" the clocks go forward, so that date starts at "+clockWords(local)+".")
+			parts = append(parts, "On "+dayWords(local, now)+", the clocks go forward, so that date starts at "+clockWords(local)+".")
 		case d.Doubled:
-			parts = append(parts, "On "+dayWords(local, now)+" the clocks go back and "+clockWords(local)+" happens twice, so that date starts at the first one.")
+			parts = append(parts, "On "+dayWords(local, now)+", the clocks go back and "+clockWords(local)+" happens twice, so that date starts at the first one.")
 		}
 	}
 	if len(parts) == 0 {
