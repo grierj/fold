@@ -391,9 +391,15 @@ func wordMember(ctx context.Context, q db.Querier, r Reader, x row, n Notice) (N
 	quoted := "\u201c" + name + "\u201d"
 	rel := policy.Rel{Member: role != "", Leader: role == "leader"}
 	if x.kind == Invited {
+		// The invitation shows only while its inviter may still invite into
+		// the group: active, and an admin or an active leader of it. This is
+		// accounts.inviterMay in SQL (the packages cannot import each other);
+		// a test holds the two together.
 		var inv string
-		err := q.QueryRowContext(ctx, `SELECT uid FROM invitations WHERE group_id = ? AND person_id = ? AND state = 'open' AND expires_at > ?
-			ORDER BY id DESC LIMIT 1`, x.group.Int64, r.ID, r.Now.Unix()).Scan(&inv)
+		err := q.QueryRowContext(ctx, `SELECT i.uid FROM invitations i JOIN people p ON p.id = i.inviter_id
+			WHERE i.group_id = ? AND i.person_id = ? AND i.state = 'open' AND i.expires_at > ? AND p.status = 'active'
+			AND (p.is_admin = 1 OR EXISTS (SELECT 1 FROM active_memberships am WHERE am.group_id = i.group_id AND am.person_id = p.id AND am.role = 'leader'))
+			ORDER BY i.id DESC LIMIT 1`, x.group.Int64, r.ID, r.Now.Unix()).Scan(&inv)
 		if errors.Is(err, sql.ErrNoRows) || status != policy.GroupActive {
 			return n, false, nil
 		}

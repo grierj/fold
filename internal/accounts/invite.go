@@ -286,9 +286,13 @@ func (c *RedeemInvitation) Apply(tx *write.Tx) error {
 		return write.ErrNotAllowed
 	}
 	if !c.Adult {
-		// Accounts for under-18s open with slice 5. Nothing is created and
-		// the invitation ends; the decline is the change this row records.
-		if err := decide(tx, i.ID, "declined"); err != nil {
+		// Accounts for under-18s open with slice 5. Nothing is created, and
+		// the invitation, with the name and address typed into it, is
+		// deleted: nothing about someone who says they are a minor is kept.
+		if _, err := tx.Exec(`DELETE FROM invitations WHERE id = ?`, i.ID); err != nil {
+			return err
+		}
+		if err := tx.CancelJobs(JobInvitationMail, i.ID); err != nil {
 			return err
 		}
 		tx.Detail("outcome", "under18")
@@ -376,8 +380,18 @@ func InvitationForToken(ctx context.Context, q db.Querier, token string, now tim
 	return v, true, err
 }
 
+// describe reads what an invitation's page and email show. An invitation
+// whose inviter may no longer invite into its group is closed, and shows
+// nothing of the group: the same check as using it, read now (#155).
 func describe(ctx context.Context, q db.Querier, i invitation, now time.Time) (Invitation, error) {
-	v := Invitation{Open: i.open(now)}
+	may, err := inviterMay(ctx, q, i)
+	if err != nil {
+		return Invitation{}, err
+	}
+	v := Invitation{Open: i.open(now) && may}
+	if !v.Open {
+		return v, nil
+	}
 	q.QueryRowContext(ctx, `SELECT name FROM people WHERE id = ?`, i.InviterID).Scan(&v.Inviter)
 	if i.GroupID.Valid {
 		g, err := groups.ByID(ctx, q, i.GroupID.Int64)
@@ -385,11 +399,87 @@ func describe(ctx context.Context, q db.Querier, i invitation, now time.Time) (I
 			return v, err
 		}
 		v.GroupUID, v.GroupName, v.GroupAbout = g.UID, g.Name, g.About
-		if g.Status != policy.GroupActive {
-			v.Open = false
-		}
 	}
 	return v, nil
+}
+
+// inviterMay reports whether the inviter may still invite into the
+// invitation's group: they are active, and the group is active and they
+// lead it or are an admin; with no group, they may invite at all.
+func inviterMay(ctx context.Context, q db.Querier, i invitation) (bool, error) {
+	inviter, err := people.ByID(ctx, q, i.InviterID)
+	if errors.Is(err, people.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	p := inviter.Policy()
+	if !i.GroupID.Valid {
+		leads, err := groups.LeadsActive(ctx, q, p.ID)
+		return err == nil && policy.CanInvite(p, nil, false, leads), err
+	}
+	g, err := groups.ByID(ctx, q, i.GroupID.Int64)
+	if errors.Is(err, groups.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	rel, err := groups.RelOf(ctx, q, g.ID, p.ID)
+	if err != nil {
+		return false, err
+	}
+	return g.Status == policy.GroupActive && policy.CanAddToGroup(p, g.Policy(), rel), nil
+}
+
+// OpenInvitationFor is the uid of the person's open invitation to a group,
+// if it is still good (for their notice).
+func OpenInvitationFor(ctx context.Context, q db.Querier, groupID, personID int64, now time.Time) (string, bool, error) {
+	var uid string
+	err := q.QueryRowContext(ctx, `SELECT uid FROM invitations WHERE group_id = ? AND person_id = ? AND state = 'open' AND expires_at > ?
+		ORDER BY id DESC LIMIT 1`, groupID, personID, now.Unix()).Scan(&uid)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	i, err := loadInvitation(ctx, q, `uid = ?`, uid)
+	if err != nil {
+		return "", false, err
+	}
+	may, err := inviterMay(ctx, q, i)
+	return uid, may, err
+}
+
+// JobInvitationCleanup deletes finished invitations daily, with the names
+// and addresses typed into them: emailed ones a week after they ended,
+// ones by name 90 days after.
+const JobInvitationCleanup = "invitations.cleanup"
+
+type cleanupInvitations struct{}
+
+func (cleanupInvitations) Action() string { return "invitation.cleanup" }
+func (cleanupInvitations) Upkeep()        {}
+
+func (cleanupInvitations) Apply(tx *write.Tx) error {
+	week, quarter := tx.Now.Add(-7*24*time.Hour).Unix(), tx.Now.Add(-90*24*time.Hour).Unix()
+	res, err := tx.Exec(`DELETE FROM invitations WHERE
+		(email IS NOT NULL AND ((state <> 'open' AND decided_at < ?1) OR expires_at < ?1))
+		OR (person_id IS NOT NULL AND ((state <> 'open' AND decided_at < ?2) OR expires_at < ?2))`, week, quarter)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return write.ErrNothing
+	}
+	return nil
+}
+
+// CleanupInvitations is the JobInvitationCleanup handler.
+func CleanupInvitations(e *write.Executor) write.Handler {
+	return func(ctx context.Context, _ write.Job) error { return e.Run(ctx, write.System(), cleanupInvitations{}) }
 }
 
 // OpenByName lists the names of people with an open invitation by name to

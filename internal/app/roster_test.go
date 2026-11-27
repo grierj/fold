@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 )
 
 // approvedGroup has mel start a church-only group that the admin approves.
@@ -298,5 +299,69 @@ func TestRosterAnswersTruthfully(t *testing.T) {
 	}
 	if r := admin.post("/admin/requests", "/admin/invite", url.Values{"name": {"Mia"}, "email": {"mia@example.org"}, "adult": {"yes"}}); r.header.Get("Location") != "/admin/requests?done=exists" {
 		t.Fatalf("admin re-invite: %s", r.header.Get("Location"))
+	}
+}
+
+// An under-18 answer leaves nothing: not even the invitation's typed name
+// and address.
+func TestUnder18AnswerDeletesTheInvitation(t *testing.T) {
+	s := newSite(t)
+	admin := s.finishSetup()
+	mel := s.member("Mel Leader", "mel@example.org")
+	uid := s.approvedGroup(admin, mel, "Youth")
+	mel.post("/groups/"+uid+"/members", "/groups/"+uid+"/invite", url.Values{"name": {"Teen Name"}, "email": {"teen@example.org"}, "adult": {"yes"}})
+	tok := s.inviteLink("teen@example.org")
+	s.browser().post("/invite/"+tok, "/invite/"+tok, url.Values{"age": {"young"}})
+	if n := s.Count(t, `SELECT count(*) FROM invitations`); n != 0 {
+		t.Fatalf("%d invitations kept after an under-18 answer", n)
+	}
+}
+
+// An invitation whose inviter lost the right to invite shows nothing of the
+// group: not on the page, not at the bell, not in a later email (#155).
+func TestInvitationClosesWhenTheInviterLosesTheRight(t *testing.T) {
+	s := newSite(t)
+	admin := s.finishSetup()
+	mel := s.member("Mel Leader", "mel@example.org")
+	uid := s.start(mel, "Secret Circle", "invite_only")
+	admin.post("/admin/groups", "/admin/groups/"+uid+"/approve", nil)
+	ann := s.member("Ann Newcomer", "ann@example.org")
+	mel.post("/groups/"+uid+"/members", "/groups/"+uid+"/members/ask", url.Values{"person": {personUID(s, "ann@example.org")}})
+	var inv string
+	s.Writer.QueryRow(`SELECT uid FROM invitations`).Scan(&inv)
+	if r := ann.get("/notices"); !strings.Contains(r.body, "Secret Circle") {
+		t.Fatal("the open invitation should show")
+	}
+	// An admin makes someone else the leader and Mel a member.
+	s.Writer.Exec(`UPDATE memberships SET role = 'member' WHERE person_id = (SELECT id FROM people WHERE email = 'mel@example.org')`)
+	if r := ann.get("/notices"); strings.Contains(r.body, "Secret Circle") {
+		t.Fatal("the bell still names the group after the inviter lost the right")
+	}
+	r := ann.get("/invitations/" + inv)
+	if strings.Contains(r.body, "Secret Circle") || !strings.Contains(r.body, "no longer open") {
+		t.Fatal("the invitation page still shows the group")
+	}
+	// An emailed invitation sends nothing once its inviter is disabled.
+	s.Writer.Exec(`UPDATE memberships SET role = 'leader' WHERE person_id = (SELECT id FROM people WHERE email = 'mel@example.org')`)
+	mel.post("/groups/"+uid+"/members", "/groups/"+uid+"/invite", url.Values{"name": {"Zoe"}, "email": {"zoe@example.org"}, "adult": {"yes"}})
+	s.Writer.Exec(`UPDATE people SET status = 'disabled' WHERE email = 'mel@example.org'`)
+	s.work()
+	if _, ok := s.outbox.LatestTo("zoe@example.org"); ok {
+		t.Fatal("an invitation was emailed after its inviter was disabled")
+	}
+}
+
+// Finished invitations, with what was typed into them, are deleted: an
+// emailed one a week after it ended.
+func TestFinishedInvitationsAreCleanedUp(t *testing.T) {
+	s := newSite(t)
+	admin := s.finishSetup()
+	admin.post("/admin/requests", "/admin/invite", url.Values{"name": {"Sue"}, "email": {"sue@example.org"}, "adult": {"yes"}})
+	s.work()
+	s.runner.Schedule(t.Context())
+	s.Clock.Advance(9 * 24 * time.Hour)
+	s.work()
+	if n := s.Count(t, `SELECT count(*) FROM invitations`); n != 0 {
+		t.Fatalf("%d invitations kept after they ended", n)
 	}
 }
