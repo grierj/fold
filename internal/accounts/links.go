@@ -80,18 +80,27 @@ func loadLink(ctx context.Context, q db.Querier, token string) (linkRow, error) 
 	return l, nil
 }
 
-// LinkPurpose is what the page behind an emailed link shows before its button
-// is pressed: the purpose, if the link can still be used. Opening the page
-// changes nothing.
-func LinkPurpose(ctx context.Context, q db.Querier, token string, now time.Time) (string, bool, error) {
+// LinkInfo is what the page behind an emailed link needs before acting: the
+// purpose, whether the link can still be used, and the address it was sent
+// to, which the same-device check compares (R26).
+type LinkInfo struct {
+	Purpose string
+	Usable  bool
+	Email   string
+}
+
+// LookUpLink reads a link without using it.
+func LookUpLink(ctx context.Context, q db.Querier, token string, now time.Time) (LinkInfo, error) {
 	if !ValidTokenShape(token) {
-		return "", false, nil
+		return LinkInfo{}, nil
 	}
 	l, err := loadLink(ctx, q, token)
-	if err != nil {
-		return "", false, err
+	if err != nil || !l.facts.Found {
+		return LinkInfo{}, err
 	}
-	return l.facts.Purpose, policy.LinkUsable(l.facts, l.facts.Purpose, now), nil
+	info := LinkInfo{Purpose: l.facts.Purpose, Usable: policy.LinkUsable(l.facts, l.facts.Purpose, now)}
+	err = q.QueryRowContext(ctx, `SELECT email FROM people WHERE id = ?`, l.PersonID).Scan(&info.Email)
+	return info, err
 }
 
 // issueLink cancels the person's earlier links of the same purpose (asking for

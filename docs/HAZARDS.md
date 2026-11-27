@@ -171,7 +171,9 @@ when a limit is reached. Decide and document this in slice 0.
 **Signing in by link**
 
 - Mail scanners open links before the person does. A link opens a page with a button, and only the
-  button's POST signs anyone in. This is the same rule as every other emailed link.
+  button's POST signs anyone in. This is the same rule as every other emailed link. The one
+  exception is the browser that asked for the link (R26): it holds a cookie bound to the address,
+  which no scanner has.
 - A link is single use and lasts 24 hours (R8). Asking for a new one cancels the old. A day is a
   long life for a secret sitting in an inbox, so the single use, the cancel-on-new and the button
   are what protect it; do not weaken any of them.

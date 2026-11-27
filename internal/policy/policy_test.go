@@ -91,3 +91,16 @@ func TestViewGallery(t *testing.T) {
 		}
 	}
 }
+
+func TestLinkActsWhenOpened(t *testing.T) {
+	for _, c := range []struct{ usable, same, want bool }{
+		{true, true, true},
+		{true, false, false}, // a scanner, or another device: the button
+		{false, true, false}, // used or expired
+		{false, false, false},
+	} {
+		if got := LinkActsWhenOpened(c.usable, c.same); got != c.want {
+			t.Errorf("LinkActsWhenOpened(%v, %v) = %v", c.usable, c.same, got)
+		}
+	}
+}

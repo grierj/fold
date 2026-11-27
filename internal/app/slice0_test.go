@@ -92,7 +92,7 @@ func TestSecondSetupReplacesFirst(t *testing.T) {
 		t.Fatal("a replaced setup link finished setup")
 	}
 	second := s.linkIn("sam@cloverdale.example")
-	if r := b.post("/l/"+second, "/l/"+second, nil); r.status != http.StatusSeeOther {
+	if r := b.post("/signin", "/l/"+second, nil); r.status != http.StatusSeeOther {
 		t.Fatalf("second: %d", r.status)
 	}
 	if n := s.Count(t, `SELECT count(*) FROM people`); n != 1 {
@@ -133,7 +133,7 @@ func TestSetupWaitsForTheTestMessage(t *testing.T) {
 	b.post("/setup/sent", "/setup/resend", nil)
 	s.work()
 	tok := s.linkIn("pat@cloverdale.example")
-	if r := b.post("/l/"+tok, "/l/"+tok, nil); r.status != http.StatusSeeOther {
+	if r := b.post("/signin", "/l/"+tok, nil); r.status != http.StatusSeeOther {
 		t.Fatalf("finish: %d", r.status)
 	}
 	if r := b.get("/"); !strings.Contains(r.body, "Welcome, Pat Admin") {
@@ -158,8 +158,10 @@ func TestSignInLink(t *testing.T) {
 		t.Fatal("same link twice")
 	}
 	sessions := s.Count(t, `SELECT count(*) FROM sessions`)
-	// Opening a link (a mail scanner) changes nothing.
-	if r := b.get("/l/" + second); !strings.Contains(r.body, "Sign in to") {
+	// Opening a link anywhere but the browser that asked for it (a mail
+	// scanner) changes nothing.
+	scanner := s.browser()
+	if r := scanner.get("/l/" + second); !strings.Contains(r.body, "Sign in to") {
 		t.Fatalf("link page: %s", r.body)
 	}
 	if s.Count(t, `SELECT count(*) FROM sessions`) != sessions || s.Count(t, `SELECT count(*) FROM links WHERE used_at IS NOT NULL AND purpose = 'signin'`) != 0 {
@@ -169,7 +171,7 @@ func TestSignInLink(t *testing.T) {
 	if r := b.post("/signin", "/l/"+first, nil); r.status == http.StatusSeeOther || !strings.Contains(r.body, "no longer works") {
 		t.Fatalf("old link: %d", r.status)
 	}
-	if r := b.post("/l/"+second, "/l/"+second, nil); r.status != http.StatusSeeOther {
+	if r := b.post("/signin", "/l/"+second, nil); r.status != http.StatusSeeOther {
 		t.Fatalf("new link: %d", r.status)
 	}
 	if r := b.get("/"); !strings.Contains(r.body, "Welcome, Pat Admin") {
@@ -322,7 +324,7 @@ func TestSessionRenewsAndSignOutEndsAll(t *testing.T) {
 	second.post("/signin", "/signin", url.Values{"email": {"pat@cloverdale.example"}})
 	s.work()
 	tok := s.linkIn("pat@cloverdale.example")
-	second.post("/l/"+tok, "/l/"+tok, nil)
+	second.post("/signin", "/l/"+tok, nil)
 	// Six days later a visit renews; the session outlives its first week.
 	s.Clock.Advance(6 * 24 * time.Hour)
 	admin.get("/")
@@ -336,7 +338,7 @@ func TestSessionRenewsAndSignOutEndsAll(t *testing.T) {
 	second.post("/signin", "/signin", url.Values{"email": {"pat@cloverdale.example"}})
 	s.work()
 	tok = s.linkIn("pat@cloverdale.example")
-	second.post("/l/"+tok, "/l/"+tok, nil)
+	second.post("/signin", "/l/"+tok, nil)
 	admin.post("/", "/signout", nil)
 	if r := second.get("/"); strings.Contains(r.body, "Welcome, Pat") {
 		t.Fatal("signing out in one browser left another signed in")
@@ -443,5 +445,72 @@ func TestAnyPageRenewsTheSession(t *testing.T) {
 	s.Clock.Advance(3 * 24 * time.Hour)
 	if r := admin.get("/"); !strings.Contains(r.body, "Welcome, Pat") {
 		t.Fatal("visiting another page did not renew the session")
+	}
+}
+
+// docs/DECISIONS.md R26: the link acts when opened in the browser that asked
+// for it, and only there. A scanner opening it first does not use it up.
+func TestLinkActsInTheBrowserThatAskedForIt(t *testing.T) {
+	s := newSite(t)
+	s.finishSetup()
+	addr := "pat@cloverdale.example"
+	asker := s.browser()
+	asker.post("/signin", "/signin", url.Values{"email": {addr}})
+	s.work()
+	tok := s.linkIn(addr)
+
+	scanner := s.browser()
+	if r := scanner.get("/l/" + tok); r.status != http.StatusOK || !strings.Contains(r.body, "Sign in to") {
+		t.Fatalf("scanner: %d", r.status)
+	}
+	if r := asker.get("/l/" + tok); r.status != http.StatusSeeOther || r.header.Get("Location") != "/?welcome=1" {
+		t.Fatalf("the asking browser was not signed in by opening the link: %d", r.status)
+	}
+	if r := asker.get("/"); !strings.Contains(r.body, "Welcome, Pat") {
+		t.Fatal("not signed in")
+	}
+	// Used now: opening it again shows that it no longer works.
+	if r := asker.get("/l/" + tok); !strings.Contains(r.body, "no longer works") {
+		t.Fatal("a used link acted again")
+	}
+}
+
+func TestSameDeviceMarkIsForOneAddressAndOneDay(t *testing.T) {
+	s := newSite(t)
+	s.finishSetup()
+	addr := "pat@cloverdale.example"
+	// A browser that asked for a different address gets the button.
+	other := s.browser()
+	other.post("/signin", "/signin", url.Values{"email": {"someone@example.org"}})
+	asker := s.browser()
+	asker.post("/signin", "/signin", url.Values{"email": {addr}})
+	s.work()
+	tok := s.linkIn(addr)
+	if r := other.get("/l/" + tok); r.status != http.StatusOK {
+		t.Fatalf("a mark for another address acted: %d", r.status)
+	}
+	// After a link's lifetime the mark no longer acts (the link has expired
+	// too, so ask again and age only the mark).
+	s.Clock.Advance(accounts.LinkLife + time.Minute)
+	if r := asker.get("/l/" + tok); r.status == http.StatusSeeOther {
+		t.Fatal("an expired link acted")
+	}
+}
+
+func TestSetupLinkActsInTheBrowserThatSentIt(t *testing.T) {
+	s := newSite(t)
+	b := s.browser()
+	b.unlock()
+	b.post("/setup", "/setup", setupForm("pat@cloverdale.example"))
+	s.work()
+	tok := s.linkIn("pat@cloverdale.example")
+	if r := s.browser().get("/l/" + tok); r.status != http.StatusOK || !strings.Contains(r.body, "Finish setting up") {
+		t.Fatal("another browser should see the button")
+	}
+	if r := b.get("/l/" + tok); r.status != http.StatusSeeOther {
+		t.Fatalf("the setup browser was not finished by opening the link: %d", r.status)
+	}
+	if r := b.get("/"); !strings.Contains(r.body, "Welcome, Pat Admin") {
+		t.Fatal("not signed in after one-click setup")
 	}
 }

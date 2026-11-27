@@ -74,6 +74,7 @@ func (a *App) postSignin(w http.ResponseWriter, r *http.Request) {
 	// Limits are spent in order and stop at the first refusal. Counting an
 	// address per client first means one stranger cannot use up the
 	// address's own allowance and lock its owner out for the day.
+	a.markDevice(w, email)
 	client := httpx.ClientKey(a.cfg.Proxies.ClientIP(r))
 	switch {
 	case !a.limits.signinClient.Allow(client):
@@ -88,32 +89,40 @@ func (a *App) postSignin(w http.ResponseWriter, r *http.Request) {
 	a.renderPlain(w, r, http.StatusOK, "signin_sent", struct{ Email string }{email})
 }
 
-// The page behind an emailed link. Opening it changes nothing; only its
-// button's POST acts, because mail scanners open links (docs/HAZARDS.md
-// section 9).
+// The page behind an emailed link. Opened in the browser that asked for the
+// link, it acts at once (R26). Anywhere else opening it changes nothing and
+// only its button's POST acts, because mail scanners open links
+// (docs/HAZARDS.md section 9).
 type linkPage struct {
 	Usable                      bool
 	Title, Text, Button, Action string
 	Next                        *LinkButton // what to do when the link no longer works
 }
 
-func (a *App) getLink(w http.ResponseWriter, r *http.Request) {
+func (a *App) getLink(w http.ResponseWriter, r *http.Request) { a.showLink(w, r, true) }
+
+// showLink draws the link's page; mayAct lets a same-device open act.
+func (a *App) showLink(w http.ResponseWriter, r *http.Request, mayAct bool) {
 	token := r.PathValue("token")
 	var f pageFacts
-	var purpose string
-	var usable bool
+	var info accounts.LinkInfo
 	err := a.reader.Read(r.Context(), func(q *sql.Tx) error {
 		var err error
 		if f, err = a.load(r.Context(), r, q); err != nil {
 			return err
 		}
-		purpose, usable, err = accounts.LinkPurpose(r.Context(), q, token, a.clock.Now())
+		info, err = accounts.LookUpLink(r.Context(), q, token, a.clock.Now())
 		return err
 	})
 	if err != nil {
 		a.serverError(w, r, err)
 		return
 	}
+	if mayAct && r.Method == http.MethodGet && policy.LinkActsWhenOpened(info.Usable, a.sameDevice(r, info.Email)) {
+		a.useLink(w, r, token, info.Purpose)
+		return
+	}
+	purpose, usable := info.Purpose, info.Usable
 	lp := linkPage{Usable: usable, Action: "/l/" + token,
 		Next: &LinkButton{Kind: "primary", Label: "Get a new sign-in link", Href: "/signin"}}
 	switch purpose {
@@ -134,16 +143,23 @@ func (a *App) getLink(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) postLink(w http.ResponseWriter, r *http.Request) {
 	token := r.PathValue("token")
-	var purpose string
+	var info accounts.LinkInfo
 	err := a.reader.Read(r.Context(), func(q *sql.Tx) error {
 		var err error
-		purpose, _, err = accounts.LinkPurpose(r.Context(), q, token, a.clock.Now())
+		info, err = accounts.LookUpLink(r.Context(), q, token, a.clock.Now())
 		return err
 	})
 	if err != nil {
 		a.serverError(w, r, err)
 		return
 	}
+	a.useLink(w, r, token, info.Purpose)
+}
+
+// useLink runs the link's command: the button's POST, or opening the link in
+// the browser that asked for it.
+func (a *App) useLink(w http.ResponseWriter, r *http.Request, token, purpose string) {
+	var err error
 	var session string
 	switch purpose {
 	case "setup":
@@ -163,15 +179,16 @@ func (a *App) postLink(w http.ResponseWriter, r *http.Request) {
 		session = c.SessionToken
 	}
 	if errors.Is(err, write.ErrNotAllowed) {
-		// Used, replaced or expired since the page was drawn: show the page
-		// again, which now says so.
-		a.getLink(w, r)
+		// Used, replaced or expired since the page was drawn: show the page,
+		// which now says so.
+		a.showLink(w, r, false)
 		return
 	}
 	if err != nil {
 		a.serverError(w, r, err)
 		return
 	}
+	a.setCookie(w, "device", "", -1)
 	a.setCookie(w, "session", session, accounts.SessionLife)
 	http.Redirect(w, r, "/?welcome=1", http.StatusSeeOther)
 }

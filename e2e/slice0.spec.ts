@@ -22,7 +22,12 @@ async function latestLink(page: Page, to: string): Promise<string> {
 
 test.describe.configure({ mode: "serial" });
 
-test("setup, sign in and out, with every page through the gates", async ({ page, context }) => {
+test("setup, sign in and out, with every page through the gates", async ({ page, context, browser }) => {
+  // A second browser stands in for a mail scanner or another device: it sees
+  // an emailed link's button page, while the browser that asked for the link
+  // is signed in by opening it (docs/DECISIONS.md R26).
+  const elsewhere = await (await browser.newContext()).newPage();
+  await watchCSP(elsewhere);
   await watchCSP(page);
 
   await page.goto("/");
@@ -58,10 +63,10 @@ test("setup, sign in and out, with every page through the gates", async ({ page,
 
   const setupLink = await latestLink(page, admin);
   await gate(page, "dev outbox");
+  await elsewhere.goto(setupLink);
+  await expect(elsewhere.getByRole("heading", { name: "Finish setting up" })).toBeVisible();
+  await gate(elsewhere, "setup link");
   await page.goto(setupLink);
-  await expect(page.getByRole("heading", { name: "Finish setting up" })).toBeVisible();
-  await gate(page, "setup link");
-  await page.getByRole("button", { name: "Finish setup" }).click();
   await expect(page.getByRole("heading", { name: "Welcome, Pat Admin" })).toBeVisible();
   await expect(page.getByText("There is nothing here yet")).toBeVisible();
   await gate(page, "home signed in");
@@ -104,9 +109,9 @@ test("setup, sign in and out, with every page through the gates", async ({ page,
 
   await expect.poll(async () => (await latestLink(page, admin)) !== setupLink, { timeout: 10_000 }).toBe(true);
   const signin = await latestLink(page, admin);
+  await elsewhere.goto(signin);
+  await gate(elsewhere, "sign in link");
   await page.goto(signin);
-  await gate(page, "sign in link");
-  await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByRole("heading", { name: "Welcome, Pat Admin" })).toBeVisible();
 
   await page.goto(signin);

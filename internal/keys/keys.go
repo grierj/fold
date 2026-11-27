@@ -30,6 +30,7 @@ const (
 	Settings Purpose = "settings/v1"
 	Jobs     Purpose = "jobs/v1"
 	Setup    Purpose = "setup/v1"
+	Device   Purpose = "device/v1"
 )
 
 // MinSecretBytes is the shortest secret accepted: 32 random bytes, written as
