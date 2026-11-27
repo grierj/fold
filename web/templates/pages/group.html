@@ -17,6 +17,17 @@
   {{if .Data.Group.About}}<p class="whitespace-pre-line wrap-anywhere">{{.Data.Group.About}}</p>{{else}}<p class="text-text-muted">No description yet.</p>{{end}}
   {{if .Data.CanSeeMembers}}<p class="mt-6">{{template "linkbutton" (linkbutton "secondary" (print "Members (" .Data.Members ")") (print "/groups/" .Data.Group.UID "/members"))}}</p>{{end}}
 
+  <section class="section mt-8" aria-labelledby="coming">
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <h2 id="coming" class="text-xl font-bold">Coming up</h2>
+      {{if and .Data.CanSchedule .Data.Coming}}{{template "linkbutton" (linkbutton "secondary" "Schedule an event" (print "/groups/" .Data.Group.UID "/events/new"))}}{{end}}
+    </div>
+    {{if .Data.Coming}}<ul class="mt-2 divide-y divide-border border-y border-border">{{range .Data.Coming}}{{template "daterow" .}}{{end}}</ul>
+    {{else if .Data.CanSchedule}}<p class="mt-2 text-text-muted">Nothing is scheduled yet. Add the group's first meeting so people know when to come.</p>
+    <p class="mt-3">{{template "linkbutton" (linkbutton "primary" "Schedule an event" (print "/groups/" .Data.Group.UID "/events/new"))}}</p>
+    {{else}}<p class="mt-2 text-text-muted">Nothing is scheduled yet. Dates show here when the group's leaders add them.</p>{{end}}
+  </section>
+
   {{if or .Data.CanLeave .Data.LastLeader .Data.CanArchive .Data.CanUnarchive .Data.CanDelete}}
   <details class="section mt-10">
     <summary class="text-link">More</summary>

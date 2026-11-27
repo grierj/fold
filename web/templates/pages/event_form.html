@@ -1,0 +1,48 @@
+{{define "title"}}{{.Data.Heading}}{{end}}
+{{define "content"}}<div class="page-form">
+  <h1 class="text-2xl font-bold sm:text-3xl">{{.Data.Heading}}</h1>
+  {{with .Data.GroupName}}<p class="mt-2 text-text-muted wrap-anywhere">For {{.}}</p>{{end}}
+  {{if .Data.TooMany}}<div class="mt-4">{{template "notice" (notice "warning" "That's a lot of changes in a short time" "So this one wasn't saved. Try again in a little while.")}}</div>{{end}}
+  {{if .Data.Conflict}}<div class="mt-4">{{template "notice" (notice "warning" "That could not be saved" "Someone else changed this event while you were editing. Here is what it says now; make your change again.")}}</div>{{end}}
+  <form class="form-stack mt-6" method="post" action="{{.Data.Action}}" novalidate>
+    {{template "csrf" .}}
+    {{template "hidden" (hidden "version" .Data.Version)}}
+    {{template "hidden" (hidden "timing" .Data.Timing)}}
+    {{template "errorsummary" .Data.Errors}}
+    {{template "field" .Data.Title}}
+    {{template "textarea" .Data.About}}
+    <fieldset class="form-stack repeat-settings">
+      <legend class="text-xl font-bold">When</legend>
+      <p class="text-sm text-text-muted">{{.Data.ZoneHint}}</p>
+      {{template "field" .Data.Day}}
+      {{template "field" .Data.Time}}
+      <fieldset>
+        <legend class="label">How long</legend>
+        <div class="grid grid-cols-2 gap-4">{{template "field" .Data.Hours}}{{template "field" .Data.Minutes}}</div>
+      </fieldset>
+      <fieldset>
+        <legend class="label">Repeats</legend>
+        {{range .Data.Repeat}}{{template "choice" .}}{{end}}
+      </fieldset>
+      <fieldset class="month-week">
+        <legend class="label">Which week of the month</legend>
+        <p class="field-hint">On the same weekday as the date. If the date is the 2nd Tuesday, choose 2nd.</p>
+        {{range .Data.MonthWeek}}{{template "choice" .}}{{end}}
+      </fieldset>
+      <div class="until-field">{{template "field" .Data.Until}}</div>
+      {{with .Data.Warning}}<div id="dst-warning">{{template "notice" (notice "warning" "The clocks change on a night this meets" .)}}</div>{{end}}
+    </fieldset>
+    {{template "field" .Data.Place}}
+    <details class="section"{{range .Data.Visibility}}{{if .Error}} open{{end}}{{end}}>
+      <summary class="text-link">More options</summary>
+      <fieldset class="mt-3">
+        <legend class="label">Who can see it</legend>
+        {{range .Data.Visibility}}{{template "choice" .}}{{end}}
+      </fieldset>
+    </details>
+    <div class="flex flex-wrap gap-3">
+      {{template "button" (button "primary" .Data.Submit)}}
+      {{template "linkbutton" (linkbutton "secondary" "Cancel" .Data.Back)}}
+    </div>
+  </form>
+</div>{{end}}

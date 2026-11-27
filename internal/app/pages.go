@@ -4,11 +4,9 @@ import (
 	"database/sql"
 	"net/http"
 	"strings"
-	"time"
 
 	"fold/internal/httpx"
 	"fold/internal/policy"
-	"fold/internal/settings"
 )
 
 // Helpers every page shares: who may load it, the church's clock, and the
@@ -60,15 +58,6 @@ func (a *App) adminPage(w http.ResponseWriter, r *http.Request, extra func(q *sq
 		return f, false
 	}
 	return f, true
-}
-
-// churchZone is the church's time zone, for times shown before a person has
-// a zone of their own (DEC-58 arrives in slice 2).
-func churchZone(f pageFacts) *time.Location {
-	if loc, err := time.LoadLocation(f.setup[settings.ChurchZone]); err == nil && f.setup[settings.ChurchZone] != "" {
-		return loc
-	}
-	return time.UTC
 }
 
 // allowStrangerMail spends one unit of the allowance for mailing an address
