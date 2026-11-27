@@ -33,7 +33,7 @@ func (a *App) getNotices(w http.ResponseWriter, r *http.Request) {
 	zone := churchZone(f)
 	items := make([]NoticeItem, 0, len(list))
 	for _, n := range list {
-		items = append(items, NoticeItem{ID: n.ID, Text: n.Text, When: n.At.In(zone).Format("Mon 2 Jan, 3:04 pm"), Read: n.Read, CSRF: a.csrfToken(r)})
+		items = append(items, NoticeItem{ID: n.ID, Text: n.Text, Note: n.Note, When: n.At.In(zone).Format("Mon 2 Jan, 3:04 pm"), Read: n.Read, CSRF: a.csrfToken(r)})
 	}
 	f.Data = struct{ Notices []NoticeItem }{items}
 	a.render(w, r, http.StatusOK, "notices", "", f.page)

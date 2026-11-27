@@ -30,6 +30,9 @@ var (
 	// ErrSignedOut is an actor whose session ended, expired, or whose account
 	// is no longer active, between the page and the write.
 	ErrSignedOut = errors.New("write: the session is no longer valid")
+	// ErrConflict is a save whose row changed since the form was opened
+	// (P16). Nothing is saved; the form shows the current values.
+	ErrConflict = errors.New("write: changed by someone else")
 	// ErrNothing is a command deciding there is nothing to change. The
 	// transaction is rolled back, no audit row is written, and Run returns nil.
 	ErrNothing = errors.New("write: nothing to change")

@@ -1,6 +1,7 @@
 {{define "title"}}Account requests{{end}}
 {{define "content"}}<div class="page-narrow">
   <div class="page-header"><h1 class="text-2xl font-bold sm:text-3xl">Account requests</h1></div>
+  {{template "adminnav" "requests"}}
   {{with .Data.Status}}<div class="mb-6">{{template "status" .}}</div>{{end}}
   {{if .Data.Requests}}
   <ul class="divide-y divide-border border-y border-border">

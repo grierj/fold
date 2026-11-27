@@ -267,6 +267,25 @@ func text(r *http.Request, name string, max int) (string, bool) {
 	return v, true
 }
 
+// multiline is text for a few lines: valid UTF-8, at most max characters,
+// no control characters but line breaks and tabs.
+func multiline(v string, max int) bool {
+	if !utf8.ValidString(v) || utf8.RuneCountInString(v) > max {
+		return false
+	}
+	for _, c := range v {
+		if (c < 0x20 && c != '\n' && c != '\r' && c != '\t') || c == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+// trimLines trims the ends and turns Windows line breaks into plain ones.
+func trimLines(v string) string {
+	return strings.TrimSpace(strings.ReplaceAll(v, "\r\n", "\n"))
+}
+
 func (a *App) postSetup(w http.ResponseWriter, r *http.Request) {
 	done, ok := a.setupState(w, r)
 	if !ok {

@@ -67,4 +67,51 @@ test("account requests and notices, through the gates", async ({ page, browser }
   await expect(visitor.getByRole("heading", { name: "Welcome, Sam Member" })).toBeVisible();
   await visitor.goto("/notices");
   await gate(visitor, "notices empty");
+
+  // Sam starts a group; it waits; Pat approves it.
+  await visitor.goto("/groups");
+  await gate(visitor, "groups empty");
+  await visitor.getByRole("link", { name: "Start a group" }).first().click();
+  await gate(visitor, "group form");
+  await visitor.getByRole("button", { name: "Start the group" }).click();
+  await expect(visitor.getByText("Check these, then try again")).toBeVisible();
+  await gate(visitor, "group form errors");
+  await visitor.getByLabel("Name").fill("Tuesday Bible Study");
+  await visitor.getByLabel("About the group").fill("We read a chapter a week.\nCoffee provided.");
+  await visitor.getByLabel("Church only").check();
+  await visitor.getByRole("button", { name: "Start the group" }).click();
+  await expect(visitor.getByText("Waiting for approval")).toBeVisible();
+  await gate(visitor, "group waiting");
+
+  await page.goto("/admin/groups");
+  await gate(page, "admin groups");
+  await page.locator("summary", { hasText: "Turn it down" }).click();
+  await gate(page, "admin groups reject open");
+  await page.getByRole("button", { name: "Approve" }).click();
+  await expect(page.getByText("Approved. Its leaders have been told.")).toBeVisible();
+
+  await visitor.goto("/notices");
+  await expect(visitor.getByText(/was approved/)).toBeVisible();
+  await visitor.getByRole("button", { name: /was approved/ }).click();
+  await expect(visitor.getByRole("heading", { name: "Tuesday Bible Study" })).toBeVisible();
+  await gate(visitor, "group leader");
+  await visitor.getByRole("link", { name: "Edit" }).click();
+  await gate(visitor, "group edit");
+  await visitor.getByLabel("Invite only").check();
+  await visitor.getByRole("button", { name: "Save" }).click();
+  await expect(visitor.getByText("Nobody is removed.")).toBeVisible();
+  await gate(visitor, "group more private");
+  await visitor.getByRole("button", { name: "Make it Invite only" }).click();
+  await expect(visitor.getByText("Saved.")).toBeVisible();
+
+  // Pat, an admin, sees and joins it; the list and home show it.
+  await page.goto("/groups");
+  await gate(page, "groups list");
+  await page.getByRole("link", { name: "Tuesday Bible Study" }).click();
+  await gate(page, "group admin view");
+  await page.getByRole("button", { name: "Join" }).click();
+  await expect(page.getByText("You joined the group.")).toBeVisible();
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Your groups" })).toBeVisible();
+  await gate(page, "home with groups");
 });

@@ -4,6 +4,9 @@
 
 {{define "csrf"}}<input type="hidden" name="csrf" value="{{.CSRF}}">{{end}}
 
+{{/* hidden: a value a form carries back unchanged. */}}
+{{define "hidden"}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}
+
 {{/* button: kind is primary, secondary, danger, danger-outline or ghost. */}}
 {{define "button"}}<button class="btn-{{.Kind}}{{if .Wide}} w-full{{end}}{{if .Busy}} btn-busy{{end}}" type="{{or .Type "submit"}}"
 {{- with .ID}} id="{{.}}"{{end}}
@@ -36,6 +39,20 @@
     {{- if .Error}} aria-invalid="true"{{end}}
     {{- if or .Hint .Error}} aria-describedby="{{if .Hint}}{{.ID}}-hint{{end}}{{if and .Hint .Error}} {{end}}{{if .Error}}{{.ID}}-error{{end}}"{{end}}>
   {{with .Options}}<datalist id="{{$.List}}">{{range .}}<option value="{{.}}"></option>{{end}}</datalist>{{end}}
+  {{with .Error}}<p class="field-error" id="{{$.ID}}-error"><span aria-hidden="true">⚠</span><span>{{.}}</span></p>{{end}}
+</div>{{end}}
+
+{{/* textarea: like field, for a few lines of text. */}}
+{{define "textarea"}}<div>
+  <label class="label" for="{{.ID}}">{{.Label}}</label>
+  {{with .Hint}}<p class="field-hint" id="{{$.ID}}-hint">{{.}}</p>{{end}}
+  <textarea class="input min-h-32" id="{{.ID}}" name="{{.Name}}" rows="5"
+    {{- with .MaxLength}} maxlength="{{.}}"{{end}}
+    {{- if .Required}} required{{end}}
+    {{- if .Disabled}} disabled{{end}}
+    {{- if .Autofocus}} autofocus{{end}}
+    {{- if .Error}} aria-invalid="true"{{end}}
+    {{- if or .Hint .Error}} aria-describedby="{{if .Hint}}{{.ID}}-hint{{end}}{{if and .Hint .Error}} {{end}}{{if .Error}}{{.ID}}-error{{end}}"{{end}}>{{.Value}}</textarea>
   {{with .Error}}<p class="field-error" id="{{$.ID}}-error"><span aria-hidden="true">⚠</span><span>{{.}}</span></p>{{end}}
 </div>{{end}}
 
@@ -102,6 +119,7 @@
   <input type="hidden" name="csrf" value="{{.CSRF}}">
   <button class="notice-item" type="submit">
     <span class="flex items-start gap-2">{{if not .Read}}<span class="unread-dot" aria-hidden="true"></span><span class="sr-only">Unread: </span>{{end}}<span>{{.Text}}</span></span>
+    {{with .Note}}<span class="mt-1 block whitespace-pre-line wrap-anywhere text-text-muted">{{.}}</span>{{end}}
     <span class="block text-sm text-text-muted">{{.When}}</span>
   </button>
 </form>{{end}}

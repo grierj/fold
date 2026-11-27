@@ -185,6 +185,15 @@ func DecideGroupStatus(p *Person, r Rel, from, to string) GroupStatusDecision {
 	return GroupStatusForbidden
 }
 
+// GroupReasons are what an admin may give for a group decision (R31).
+// "other" carries a note.
+var GroupReasons = map[string]string{
+	"similar": "A similar group already exists.",
+	"detail":  "It needs a little more detail.",
+	"office":  "Please talk with the church office first.",
+	"other":   "",
+}
+
 // CanDeleteGroup: only an admin deletes a group, and its members are told
 // (R29, DEC-177).
 func CanDeleteGroup(p *Person, g Group) bool { return IsAdmin(p) && g.Status != GroupDeleted }

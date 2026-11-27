@@ -21,14 +21,17 @@
       <img src="{{asset "brand/fold-icon-1.svg"}}" alt="" width="28" height="28">
       <span>{{if .Church}}{{.Church}}{{else}}{{.Product}}{{end}}</span>
     </a>
+    <nav aria-label="Main" class="flex flex-wrap items-center gap-2">
+      <a class="text-link px-2" href="/groups">Groups</a>
     {{if .Viewer}}
-    <nav aria-label="Account" class="flex flex-wrap items-center gap-2">
       <a class="text-link px-2" href="/notices">Notices{{if .Unread}} <span class="badge">{{.Unread}}<span class="sr-only"> unread</span></span>{{end}}</a>
       {{if .Viewer.IsAdmin}}<a class="text-link px-2" href="/admin/requests">Requests</a>{{end}}
       <span class="text-sm text-text-muted">{{.Viewer.Name}}</span>
       <form method="post" action="/signout">{{template "csrf" .}}{{template "button" (button "secondary" "Sign out")}}</form>
-    </nav>
+    {{else}}
+      <a class="text-link px-2" href="/signin">Sign in</a>
     {{end}}
+    </nav>
   </div>
 </header>
 <main id="main" tabindex="-1">

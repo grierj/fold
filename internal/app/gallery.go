@@ -14,6 +14,7 @@ type galleryData struct {
 	Buttons      [][]Button
 	LinkButtons  []LinkButton
 	Fields       []Field
+	Areas        []Field
 	Choices      []Choice
 	Chips        []Chip
 	Segment      Segment
@@ -71,6 +72,10 @@ func (a *App) gallery(w http.ResponseWriter, r *http.Request) {
 			{ID: "g-readonly", Name: "g-readonly", Label: "Time zone", Value: "America/Boise", ReadOnly: true},
 			{ID: "g-password", Name: "g-password", Label: "Token", Type: "password", Hint: "One is saved. Leave this blank to keep it."},
 			{ID: "g-list", Name: "g-list", Label: "With suggestions", List: "g-list-options", Options: []string{"America/Boise", "America/Denver"}},
+		},
+		Areas: []Field{
+			{ID: "g-about", Name: "g-about", Label: "About the group", Hint: "What you do and who it's for.", Value: "We read a chapter a week and talk about it over coffee.", MaxLength: 2000},
+			{ID: "g-about-err", Name: "g-about-err", Label: "A note", Error: "Write a short note, or choose a reason above.", MaxLength: 500},
 		},
 		Choices: []Choice{
 			{ID: "g-c1", Name: "g-c1", Type: "checkbox", Value: "1", Label: "Email me about new groups"},

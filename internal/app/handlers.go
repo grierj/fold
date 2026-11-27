@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"fold/internal/accounts"
+	"fold/internal/groups"
 	"fold/internal/mail"
 	"fold/internal/people"
 	"fold/internal/policy"
@@ -17,11 +18,22 @@ import (
 
 // home is the signed-in home page, or the church's front page. Before setup
 // it sends the visitor to setup.
+// home greets a signed-in person with their groups (DEC-94 begins here;
+// what is coming up arrives with events), and shows a visitor the church's
+// public groups.
 func (a *App) home(w http.ResponseWriter, r *http.Request) {
 	var f pageFacts
+	var list []groups.Listed
 	err := a.reader.Read(r.Context(), func(q *sql.Tx) error {
 		var err error
-		f, err = a.load(r.Context(), r, q)
+		if f, err = a.load(r.Context(), r, q); err != nil {
+			return err
+		}
+		if f.session != nil {
+			list, err = groups.Mine(r.Context(), q, f.session.Person.ID)
+		} else {
+			list, err = groups.Directory(r.Context(), q, groups.Viewer{}, "", 12)
+		}
 		return err
 	})
 	if err != nil {
@@ -36,7 +48,10 @@ func (a *App) home(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("welcome") == "1" && f.Viewer != nil {
 		status = "You're signed in."
 	}
-	f.Data = struct{ Status string }{status}
+	f.Data = struct {
+		Status string
+		Groups []groups.Listed
+	}{status, list}
 	a.render(w, r, http.StatusOK, "home", "", f.page)
 }
 
