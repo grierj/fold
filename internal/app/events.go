@@ -615,7 +615,7 @@ func (a *App) postEditEvent(w http.ResponseWriter, r *http.Request) {
 	v := readEventForm(r)
 	version, _ := strconv.ParseInt(r.PostFormValue("version"), 10, 64)
 	now := a.clock.Now()
-	in, errs := v.check(loc, now, v.Day+"T"+v.Time != f.event.StartsLocal)
+	in, errs := v.check(loc, now, v.Day != f.event.StartsLocal[:10])
 	show := func(status int, d eventFormData) {
 		if d.Version == 0 {
 			d.Version = version

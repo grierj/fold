@@ -181,7 +181,13 @@ func (c *Edit) Apply(tx *write.Tx) error {
 		return err
 	}
 	p := c.Pattern
-	if p.Start != e.StartsLocal {
+	// Only a new first day is bounded, so an event that began over a year
+	// ago can still change its time.
+	newDay, err := p.StartDay()
+	if err != nil {
+		return err
+	}
+	if oldDay, _ := e.Pattern().StartDay(); !newDay.Equal(oldDay) {
 		if err := CheckStart(p, loc, tx.Now); err != nil {
 			return err
 		}

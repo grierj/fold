@@ -1,12 +1,14 @@
 package app_test
 
 import (
+	"context"
 	"html"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The fake clock starts on Wed 25 Nov 2026 in Boise, the church's zone.
@@ -443,5 +445,22 @@ func TestEventFormChecksEveryField(t *testing.T) {
 	s.schedule(admin, group, form)
 	if s.Count(t, `SELECT count(*) FROM events WHERE month_week = -1`) != 1 {
 		t.Fatal("the last Tuesday was not saved")
+	}
+}
+
+// The server runs the nightly job that keeps dates 18 months ahead.
+func TestDatesAreExtendedNightly(t *testing.T) {
+	s := newSite(t)
+	admin := s.finishSetup()
+	group := s.start(admin, "Study", "public")
+	s.schedule(admin, group, eventForm("Study", "2026-12-01", "19:00", "weekly"))
+	before := s.Count(t, `SELECT count(*) FROM dates`)
+	if err := s.runner.Schedule(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	s.Clock.Advance(31 * 24 * time.Hour)
+	s.work()
+	if after := s.Count(t, `SELECT count(*) FROM dates`); after < before+3 {
+		t.Fatalf("%d dates before, %d a month on", before, after)
 	}
 }

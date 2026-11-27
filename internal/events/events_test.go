@@ -325,3 +325,24 @@ func TestExtend(t *testing.T) {
 		t.Fatal("a one-time event grew")
 	}
 }
+
+// An event that began over a year ago can still change its time; only a new
+// first day is held to the bounds.
+func TestOldEventChangesItsTime(t *testing.T) {
+	env := setup(t)
+	addGroup(t, env, 1, policy.GroupActive, policy.Public)
+	c := &events.Create{GroupUID: "g1", Input: weekly("2026-12-01T19:00")}
+	if err := run(t, env, 2, c); err != nil {
+		t.Fatal(err)
+	}
+	env.Clock.Advance(396 * 24 * time.Hour) // 13 months on
+	if err := run(t, env, 2, &events.Edit{UID: c.UID, Input: weekly("2026-12-01T19:30"), Version: 1}); err != nil {
+		t.Fatalf("changing only the time: %v", err)
+	}
+	if rows := dateRows(t, env, c.UID); rows["2026-12-01"] != "19:00 scheduled " || rows["2028-01-04"] != "19:30 scheduled " {
+		t.Fatalf("past %s, future %s", rows["2026-12-01"], rows["2028-01-04"])
+	}
+	if err := run(t, env, 2, &events.Edit{UID: c.UID, Input: weekly("2026-12-08T19:30"), Version: 2}); !errors.Is(err, events.ErrStartRange) {
+		t.Fatalf("a new first day over a year back: %v", err)
+	}
+}
