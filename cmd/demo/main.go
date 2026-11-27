@@ -60,16 +60,27 @@ func seed(ctx context.Context, dir string, out io.Writer) (err error) {
 	if err != nil {
 		return err
 	}
+	// Checked first, so every database file left after a failure is this
+	// run's own and a running server's never is.
+	l, err := server.Lock(dir)
+	if err != nil {
+		return err
+	}
+	l.Close()
+	removeDB := func() { // a half-built site would be served as if whole
+		for _, suffix := range []string{"", "-wal", "-shm"} {
+			os.Remove(path + suffix)
+		}
+	}
 	o, err := server.Open(ctx, dir, env.Keys, clock.Real{})
 	if err != nil {
+		removeDB()
 		return err
 	}
 	defer func() {
 		o.Close()
-		if err != nil { // a half-built site would be served as if whole
-			for _, suffix := range []string{"", "-wal", "-shm"} {
-				os.Remove(path + suffix)
-			}
+		if err != nil {
+			removeDB()
 		}
 	}()
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))

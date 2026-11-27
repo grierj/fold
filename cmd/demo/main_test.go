@@ -17,6 +17,9 @@ import (
 )
 
 func TestSeed(t *testing.T) {
+	for _, k := range []string{"SITE_URL", "LISTEN", "SECRET_KEY", "SECRET_KEY_PREVIOUS", "TRUSTED_PROXIES"} {
+		t.Setenv(k, "") // the developer's shell must not change the result
+	}
 	ctx := context.Background()
 	dir := t.TempDir()
 	if err := seed(ctx, dir, io.Discard); err != nil {
