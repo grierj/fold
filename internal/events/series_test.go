@@ -39,10 +39,10 @@ func TestPlanSeries(t *testing.T) {
 		storedAt(2, "2026-12-08", "19:00"), // past
 		storedAt(3, "2026-12-15", "19:00"), // moves to 20:00
 		storedAt(4, "2026-12-22", "19:00"), // the new repeat drops it
-		personCancelled,                  // stays cancelled
-		seriesCancelled,                  // comes back
-		stillDropped,                     // still not made: left alone
-		pastCancelled,                    // past: left alone though made again
+		personCancelled,                    // stays cancelled
+		seriesCancelled,                    // comes back
+		stillDropped,                       // still not made: left alone
+		pastCancelled,                      // past: left alone though made again
 	}
 	next := []Date{
 		date("2026-11-24", "20:00"), date("2026-12-01", "20:00"), date("2026-12-08", "20:00"),
