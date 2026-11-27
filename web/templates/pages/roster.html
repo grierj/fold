@@ -21,9 +21,12 @@
     </li>{{end}}
   </ul>
 
+  {{with .Data.Waiting}}<p class="mt-4 text-sm text-text-muted">Waiting for an answer: {{range $i, $n := .}}{{if $i}}, {{end}}{{$n}}{{end}}.</p>{{end}}
+
   {{if .Data.CanAdd}}
   <section class="section mt-10" aria-labelledby="add-h">
-    <h2 id="add-h" class="mb-4 text-xl font-bold">Add someone</h2>
+    <h2 id="add-h" class="mb-2 text-xl font-bold">Invite someone who has an account</h2>
+    <p class="mb-4 text-text-muted">They get a notice and join once they accept.{{if .Data.CanAddDirectly}} As an administrator you can also add someone at once, for example someone who's away from a computer.{{end}}</p>
     <form class="flex flex-wrap items-end gap-3" method="get" action="/groups/{{.Data.Group.UID}}/members" role="search">
       <div class="min-w-0 flex-1">{{template "field" .Data.Find}}</div>
       {{template "button" (button "secondary" "Find")}}
@@ -33,7 +36,10 @@
       <ul class="mt-4 divide-y divide-border border-y border-border">
         {{range .Data.Found}}<li class="flex flex-wrap items-center justify-between gap-3 py-3">
           <span class="font-semibold wrap-anywhere">{{.Name}}</span>
-          <form method="post" action="/groups/{{$.Data.Group.UID}}/members/add">{{template "csrf" $}}{{template "hidden" (hidden "person" .UID)}}{{template "button" (button "secondary" "Add")}}</form>
+          <div class="flex flex-wrap gap-2">
+            <form method="post" action="/groups/{{$.Data.Group.UID}}/members/ask">{{template "csrf" $}}{{template "hidden" (hidden "person" .UID)}}{{template "button" (button "secondary" "Invite")}}</form>
+            {{if $.Data.CanAddDirectly}}<form method="post" action="/groups/{{$.Data.Group.UID}}/members/add">{{template "csrf" $}}{{template "hidden" (hidden "person" .UID)}}{{template "button" (button "ghost" "Add now")}}</form>{{end}}
+          </div>
         </li>{{end}}
       </ul>
       {{else}}<p class="mt-4 text-text-muted">Nobody by that name who isn't already in the group.{{if .Data.CanInvite}} You can invite them by email below.{{end}}</p>{{end}}
@@ -44,7 +50,7 @@
   {{if .Data.CanInvite}}
   <section class="section mt-10" aria-labelledby="invite-h">
     <h2 id="invite-h" class="mb-2 text-xl font-bold">Invite by email</h2>
-    <p class="mb-4 text-text-muted">For someone who doesn't have an account yet. They won't need an administrator's approval.</p>
+    <p class="mb-4 text-text-muted">They get an email, and join once they open it and accept. They won't need an administrator's approval.</p>
     {{template "inviteform" (dict "Form" .Data.Invite "CSRF" .CSRF)}}
   </section>
   {{end}}

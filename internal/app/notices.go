@@ -16,15 +16,15 @@ import (
 // The bell's list: opening a notice marks it read and goes where it points.
 
 // noticeReader is a signed-in person as the notices package reads them.
-func noticeReader(p people.Person) notices.Reader {
-	return notices.Reader{ID: p.ID, Admin: policy.IsAdmin(p.Policy())}
+func (a *App) noticeReader(p people.Person) notices.Reader {
+	return notices.Reader{ID: p.ID, Admin: policy.IsAdmin(p.Policy()), Now: a.clock.Now()}
 }
 
 func (a *App) getNotices(w http.ResponseWriter, r *http.Request) {
 	var list []notices.Notice
 	f, ok := a.signedIn(w, r, func(q *sql.Tx, f *pageFacts) error {
 		var err error
-		list, err = notices.List(r.Context(), q, noticeReader(f.session.Person), 100)
+		list, err = notices.List(r.Context(), q, a.noticeReader(f.session.Person), 100)
 		return err
 	})
 	if !ok {
@@ -46,7 +46,7 @@ func (a *App) postNoticeOpen(w http.ResponseWriter, r *http.Request) {
 	var gone bool
 	_, ok := a.signedIn(w, r, func(q *sql.Tx, f *pageFacts) error {
 		var err error
-		n, err = notices.One(r.Context(), q, noticeReader(f.session.Person), id)
+		n, err = notices.One(r.Context(), q, a.noticeReader(f.session.Person), id)
 		if errors.Is(err, notices.ErrGone) {
 			gone, err = true, nil
 		}

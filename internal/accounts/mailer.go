@@ -31,7 +31,7 @@ type Mailer struct {
 func (m *Mailer) Register(r *write.Runner) {
 	r.Handle(JobLinkMail, m.SendLink)
 	r.Handle(JobApprovedMail, m.SendLink)
-	r.Handle(JobInvitedMail, m.SendLink)
+	r.Handle(JobInvitationMail, m.SendInvitation)
 	r.Handle(JobAccountExists, m.toPerson(existsEmail))
 	r.Handle(JobRequestReceived, m.toPerson(receivedEmail))
 	r.Handle(notices.JobMail, m.SendNotice)
@@ -89,11 +89,8 @@ func (m *Mailer) SendLink(ctx context.Context, j write.Job) error {
 	}
 	church, url := s[settings.ChurchName], m.SiteURL+"/l/"+string(j.Secret)
 	e := linkEmail(purpose, church, url)
-	switch j.Kind {
-	case JobApprovedMail:
+	if j.Kind == JobApprovedMail {
 		e = approvedEmail(church, url, m.SiteURL)
-	case JobInvitedMail:
-		e = invitedEmail(church, url, m.SiteURL)
 	}
 	return m.send(ctx, s, to, e)
 }
@@ -131,7 +128,7 @@ func (m *Mailer) SendNotice(ctx context.Context, j write.Job) error {
 	var s settings.Settings
 	err := m.Reader.Read(ctx, func(q *sql.Tx) error {
 		var err error
-		if n, to, err = notices.ForMail(ctx, q, j.Ref); err != nil {
+		if n, to, err = notices.ForMail(ctx, q, j.Ref, m.Clock.Now()); err != nil {
 			return err
 		}
 		s, err = settings.Load(ctx, q)
@@ -195,15 +192,46 @@ func receivedEmail(church, _ string) mail.Email {
 		After:  []string{"If you didn't ask for an account, you can ignore this message."}}
 }
 
-func invitedEmail(church, url, site string) mail.Email {
-	return mail.Email{Church: church, Subject: "You're invited to " + church + "'s groups", Footer: footer(church),
+// SendInvitation emails an invitation (JobInvitationMail), worded when sent
+// from the inviter's and the group's current names. An invitation since
+// replaced, answered or expired sends nothing.
+func (m *Mailer) SendInvitation(ctx context.Context, j write.Job) error {
+	if j.Secret == nil {
+		return write.Permanent(errors.New("the invitation's token is gone"))
+	}
+	var v Invitation
+	var to string
+	var ok bool
+	var s settings.Settings
+	err := m.Reader.Read(ctx, func(q *sql.Tx) error {
+		var err error
+		if v, ok, err = InvitationForToken(ctx, q, string(j.Secret), m.Clock.Now()); err != nil || !ok {
+			return err
+		}
+		if err := q.QueryRowContext(ctx, `SELECT email FROM invitations WHERE id = ?`, j.Ref).Scan(&to); err != nil {
+			return err
+		}
+		s, err = settings.Load(ctx, q)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	if !ok || !v.Open {
+		return nil
+	}
+	church := s[settings.ChurchName]
+	what := church + "'s groups"
+	if v.GroupName != "" {
+		what = "\u201c" + v.GroupName + "\u201d at " + church
+	}
+	return m.send(ctx, s, to, mail.Email{Church: church, Subject: v.Inviter + " invited you to " + what, Footer: footer(church),
 		Before: []string{
-			church + " uses this site for its small groups and what's coming up. Someone there invited you, so your account is ready.",
-			"Press the button to sign in.",
+			v.Inviter + " invited you to " + what + ". " + church + " uses this site for its small groups and what's coming up.",
+			"Press the button to accept. You won't need an administrator's approval.",
 		},
-		Button: &mail.Button{Label: "Sign in", URL: url},
+		Button: &mail.Button{Label: "Accept the invitation", URL: m.SiteURL + "/invite/" + string(j.Secret)},
 		After: []string{
-			"The button works once, within 24 hours. After that, ask for a new sign-in link at " + site + "/signin.",
-			"If you don't know anyone at " + church + ", you can ignore this message.",
-		}}
+			"The link works for 24 hours. If you don't know " + v.Inviter + ", you can ignore this message.",
+		}})
 }

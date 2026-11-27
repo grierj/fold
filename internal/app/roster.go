@@ -35,6 +35,7 @@ func (a *App) getRoster(w http.ResponseWriter, r *http.Request) {
 	var found []groups.Found
 	var leaders int
 	var leadsActive bool
+	var waiting []string
 	f, ok := a.loadGroup(w, r, func(q *sql.Tx, f *groupFacts) error {
 		if !policy.CanSeeRoster(f.viewer(), f.group.Policy(), f.rel) {
 			return nil
@@ -47,6 +48,9 @@ func (a *App) getRoster(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		if leadsActive, err = groups.LeadsActive(r.Context(), q, f.session.Person.ID); err != nil {
+			return err
+		}
+		if waiting, err = accounts.OpenByName(r.Context(), q, f.group.ID, a.clock.Now()); err != nil {
 			return err
 		}
 		if len([]rune(find)) >= 2 && policy.CanAddToGroup(f.viewer(), f.group.Policy(), f.rel) && policy.CanSearchPeople(f.viewer(), leadsActive) {
@@ -89,19 +93,23 @@ func (a *App) getRoster(w http.ResponseWriter, r *http.Request) {
 		Found             []groups.Found
 		Invite            inviteForm
 		Status            string
+		Waiting           []string
+		CanAddDirectly    bool
 	}{f.group, rows, canAdd, canInvite,
 		Field{ID: "find", Name: "find", Label: "Add someone by name", Hint: "Type at least two letters of their name.", Type: "search", Value: find, MaxLength: 100},
 		map[bool]string{true: find, false: ""}[len([]rune(find)) >= 2], found, newInviteForm("/groups/"+f.group.UID+"/invite", "", "", false, nil),
-		rosterStatuses[r.URL.Query().Get("done")]}
+		rosterStatuses[r.URL.Query().Get("done")], waiting, policy.CanAddDirectly(viewer, g)}
 	a.render(w, r, http.StatusOK, "roster", "", f.page)
 }
 
 var rosterStatuses = map[string]string{
 	"added":   "Added. They've been told and can leave if it isn't for them.",
+	"asked":   "Invited. They'll join once they accept.",
+	"waiting": "They already have an invitation waiting.",
 	"leader":  "They're now a leader.",
 	"member":  "They're a member again.",
 	"removed": "Removed.",
-	"invited": "Invitation sent. If that address is new, they'll get an email to sign in.",
+	"invited": "Invitation sent. They'll join once they accept.",
 	"refused": "That could not be done. The list shows how things stand now.",
 	"same":    "That was already done, so nothing changed.",
 	"many":    "That's a lot of invitations for one day, so this one wasn't sent. Try again tomorrow.",
@@ -128,6 +136,8 @@ func (a *App) runRoster(w http.ResponseWriter, r *http.Request, c write.Command,
 		done = "refused"
 	case errors.Is(err, groups.ErrUnchanged):
 		done = "same"
+	case errors.Is(err, accounts.ErrInvited):
+		done = "waiting"
 	case errors.Is(err, write.ErrSignedOut):
 		http.Redirect(w, r, "/signin", http.StatusSeeOther)
 		return
@@ -138,8 +148,15 @@ func (a *App) runRoster(w http.ResponseWriter, r *http.Request, c write.Command,
 	http.Redirect(w, r, "/groups/"+f.group.UID+"/members?done="+done, http.StatusSeeOther)
 }
 
+// postAddMember is an admin adding someone directly (R32).
 func (a *App) postAddMember(w http.ResponseWriter, r *http.Request) {
 	a.runRoster(w, r, groups.Add{GroupUID: r.PathValue("uid"), PersonUID: r.PostFormValue("person")}, "added")
+}
+
+// postInvitePerson invites someone found by name; they join once they
+// accept (R32).
+func (a *App) postInvitePerson(w http.ResponseWriter, r *http.Request) {
+	a.runRoster(w, r, accounts.InviteByName{GroupUID: r.PathValue("uid"), PersonUID: r.PostFormValue("person")}, "asked")
 }
 
 func (a *App) postMakeLeader(w http.ResponseWriter, r *http.Request) {
@@ -214,11 +231,11 @@ func (a *App) postInvite(w http.ResponseWriter, r *http.Request) {
 		a.renderInviteErrors(w, r, f.pageFacts, newInviteForm("/groups/"+f.group.UID+"/invite", name, email, adult, errs), "/groups/"+f.group.UID+"/members")
 		return
 	}
-	if !a.limits.invites.Allow(f.session.Person.UID) {
+	if !a.limits.invites.Allow(f.session.Person.UID) || !a.limits.invitesSite.Allow("site") {
 		http.Redirect(w, r, "/groups/"+f.group.UID+"/members?done=many", http.StatusSeeOther)
 		return
 	}
-	a.runRoster(w, r, accounts.Invite{GroupUID: f.group.UID, Name: name, Email: email}, "invited")
+	a.runRoster(w, r, accounts.InviteByEmail{GroupUID: f.group.UID, Name: name, Email: email}, "invited")
 }
 
 func (a *App) renderInviteErrors(w http.ResponseWriter, r *http.Request, f pageFacts, form inviteForm, back string) {
@@ -254,7 +271,15 @@ func (a *App) postAdminInvite(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	})
-	err := a.exec.Run(r.Context(), write.Session(accounts.Hash(a.sessionToken(r))), accounts.Invite{Name: name, Email: email})
+	if done != "invited" {
+		http.Redirect(w, r, "/admin/requests?done="+done, http.StatusSeeOther)
+		return
+	}
+	if !a.limits.invites.Allow(f.session.Person.UID) || !a.limits.invitesSite.Allow("site") {
+		http.Redirect(w, r, "/admin/requests?done=many", http.StatusSeeOther)
+		return
+	}
+	err := a.exec.Run(r.Context(), write.Session(accounts.Hash(a.sessionToken(r))), accounts.InviteByEmail{Name: name, Email: email})
 	switch {
 	case errors.Is(err, write.ErrSignedOut):
 		http.Redirect(w, r, "/signin", http.StatusSeeOther)

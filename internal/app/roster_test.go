@@ -43,9 +43,11 @@ func TestRosterShowsWhatEachMaySee(t *testing.T) {
 	}
 }
 
-// P6: a leader finds a person by name and adds them; they are told and can
-// leave. Search shows names, never addresses, and needs an active group.
-func TestAddByName(t *testing.T) {
+var invitationPattern = regexp.MustCompile(`/invitations/([a-z0-9]+)`)
+
+// R32: a leader invites someone found by name; nothing changes until they
+// join, so their email shows on the roster only after they chose the group.
+func TestInviteByName(t *testing.T) {
 	s := newSite(t)
 	admin := s.finishSetup()
 	mel := s.member("Mel Leader", "mel@example.org")
@@ -55,24 +57,75 @@ func TestAddByName(t *testing.T) {
 	if !strings.Contains(r.body, "Ann Newcomer") || strings.Contains(r.body, "ann@example.org") {
 		t.Fatal("search shows the wrong thing")
 	}
-	if strings.Contains(mel.get("/groups/"+uid+"/members?find=Mel").body, `value="`+personUID(s, "mel@example.org")) {
-		t.Fatal("search offers someone already in the group")
+	if strings.Contains(r.body, "Add now") {
+		t.Fatal("a leader is offered a direct add")
 	}
-	mel.post("/groups/"+uid+"/members", "/groups/"+uid+"/members/add", url.Values{"person": {personUID(s, "ann@example.org")}})
-	if r := ann.get("/notices"); !strings.Contains(r.body, "Mel Leader added you to") {
-		t.Fatal("the added person was not told")
+	mel.post("/groups/"+uid+"/members", "/groups/"+uid+"/members/ask", url.Values{"person": {personUID(s, "ann@example.org")}})
+	if r := mel.get("/groups/" + uid + "/members"); strings.Contains(r.body, "ann@example.org") || !strings.Contains(r.body, "Waiting for an answer: Ann Newcomer") {
+		t.Fatal("an invited person's address shows before they joined, or they aren't listed as waiting")
 	}
-	if r := ann.post("/groups/"+uid, "/groups/"+uid+"/leave", nil); !strings.HasSuffix(r.header.Get("Location"), "done=left") {
-		t.Fatal("an added person cannot leave")
+	page := ann.get("/notices")
+	if !strings.Contains(page.body, "Mel Leader invited you to join") {
+		t.Fatal("no invitation at the bell")
 	}
-	// A member cannot search or add.
+	inv := invitationPattern.FindStringSubmatch(page.body)
+	if inv == nil {
+		// the notice links through its open form; read the invitation from the table
+		var u string
+		s.Writer.QueryRow(`SELECT uid FROM invitations WHERE state = 'open'`).Scan(&u)
+		inv = []string{"", u}
+	}
+	if r := s.member("Oscar", "oscar@example.org").get("/invitations/" + inv[1]); r.status != http.StatusNotFound {
+		t.Fatal("someone else can see the invitation")
+	}
+	if r := ann.post("/invitations/"+inv[1], "/invitations/"+inv[1]+"/accept", nil); !strings.HasSuffix(r.header.Get("Location"), "done=joined") {
+		t.Fatalf("accept: %s", r.header.Get("Location"))
+	}
+	if r := mel.get("/groups/" + uid + "/members"); !strings.Contains(r.body, "ann@example.org") {
+		t.Fatal("the member's address should show once they joined (P5)")
+	}
+	// A member cannot invite by name.
 	mia := s.member("Mia Member", "mia@example.org")
 	mia.post("/groups/"+uid, "/groups/"+uid+"/join", nil)
-	if strings.Contains(mia.get("/groups/"+uid+"/members?find=Ann").body, "Ann Newcomer") {
-		t.Fatal("a member can search people")
+	if r := mia.post("/groups/"+uid+"/members", "/groups/"+uid+"/members/ask", url.Values{"person": {personUID(s, "oscar@example.org")}}); !strings.HasSuffix(r.header.Get("Location"), "done=refused") {
+		t.Fatal("a member invited")
 	}
-	if r := mia.post("/groups/"+uid+"/members", "/groups/"+uid+"/members/add", url.Values{"person": {personUID(s, "ann@example.org")}}); !strings.HasSuffix(r.header.Get("Location"), "done=refused") {
-		t.Fatal("a member added someone")
+}
+
+func TestDeclinedInvitationChangesNothing(t *testing.T) {
+	s := newSite(t)
+	admin := s.finishSetup()
+	mel := s.member("Mel Leader", "mel@example.org")
+	uid := s.approvedGroup(admin, mel, "Study")
+	ann := s.member("Ann Newcomer", "ann@example.org")
+	mel.post("/groups/"+uid+"/members", "/groups/"+uid+"/members/ask", url.Values{"person": {personUID(s, "ann@example.org")}})
+	var inv string
+	s.Writer.QueryRow(`SELECT uid FROM invitations`).Scan(&inv)
+	ann.post("/invitations/"+inv, "/invitations/"+inv+"/decline", nil)
+	if n := s.Count(t, `SELECT count(*) FROM memberships WHERE person_id = (SELECT id FROM people WHERE email = 'ann@example.org')`); n != 0 {
+		t.Fatal("a declined invitation made a membership")
+	}
+	if r := ann.post("/invitations/"+inv, "/invitations/"+inv+"/accept", nil); !strings.HasSuffix(r.header.Get("Location"), "/invitations/"+inv) {
+		t.Fatal("a declined invitation was accepted")
+	}
+}
+
+// R32: admins may add someone directly; the person is told and can leave.
+func TestAdminAddsDirectly(t *testing.T) {
+	s := newSite(t)
+	admin := s.finishSetup()
+	mel := s.member("Mel Leader", "mel@example.org")
+	uid := s.approvedGroup(admin, mel, "Study")
+	ann := s.member("Ann Newcomer", "ann@example.org")
+	if r := mel.post("/groups/"+uid+"/members", "/groups/"+uid+"/members/add", url.Values{"person": {personUID(s, "ann@example.org")}}); !strings.HasSuffix(r.header.Get("Location"), "done=refused") {
+		t.Fatal("a leader added someone directly")
+	}
+	admin.post("/groups/"+uid+"/members", "/groups/"+uid+"/members/add", url.Values{"person": {personUID(s, "ann@example.org")}})
+	if r := ann.get("/notices"); !strings.Contains(r.body, "Pat Admin added you to") {
+		t.Fatal("not told about being added")
+	}
+	if r := ann.post("/groups/"+uid, "/groups/"+uid+"/leave", nil); !strings.HasSuffix(r.header.Get("Location"), "done=left") {
+		t.Fatal("cannot leave")
 	}
 }
 
@@ -88,12 +141,10 @@ func TestCoLeadersAndRemoval(t *testing.T) {
 	if r := mia.get("/notices"); !strings.Contains(r.body, "made you a leader") {
 		t.Fatal("not told about leading")
 	}
-	// Mia leads now; Mel can step down; the group keeps a leader.
 	mel.post("/groups/"+uid+"/members", "/groups/"+uid+"/members/"+melUID+"/member", nil)
 	if r := mia.post("/groups/"+uid+"/members", "/groups/"+uid+"/members/"+miaUID+"/member", nil); !strings.HasSuffix(r.header.Get("Location"), "done=refused") {
 		t.Fatal("the last leader was made a member")
 	}
-	// A leader cannot remove an admin (DEC-35).
 	admin.post("/groups/"+uid, "/groups/"+uid+"/join", nil)
 	if r := mia.post("/groups/"+uid+"/members", "/groups/"+uid+"/members/"+personUID(s, "pat@cloverdale.example")+"/remove", nil); !strings.HasSuffix(r.header.Get("Location"), "done=refused") {
 		t.Fatal("a leader removed an admin")
@@ -102,16 +153,36 @@ func TestCoLeadersAndRemoval(t *testing.T) {
 	if r := mel.post("/groups/"+uid, "/groups/"+uid+"/join", nil); !strings.HasSuffix(r.header.Get("Location"), "done=refused") {
 		t.Fatal("a removed person rejoined on their own")
 	}
-	// A leader adds them back.
-	mia.post("/groups/"+uid+"/members", "/groups/"+uid+"/members/add", url.Values{"person": {melUID}})
+	// A leader invites them back, and they accept (DEC-35, R32).
+	mia.post("/groups/"+uid+"/members", "/groups/"+uid+"/members/ask", url.Values{"person": {melUID}})
+	var inv string
+	s.Writer.QueryRow(`SELECT uid FROM invitations WHERE state = 'open'`).Scan(&inv)
+	mel.post("/invitations/"+inv, "/invitations/"+inv+"/accept", nil)
 	if n := s.Count(t, `SELECT count(*) FROM active_memberships WHERE person_id = (SELECT id FROM people WHERE email = 'mel@example.org')`); n != 1 {
-		t.Fatal("a leader could not add a removed person back")
+		t.Fatal("a removed person could not be invited back")
 	}
 }
 
-// DEC-4: a leader invites by email and the person skips review. The page
-// answers the same however the address stands.
-func TestInvite(t *testing.T) {
+var invitePattern = regexp.MustCompile(`/invite/([A-Za-z0-9_-]{43})`)
+
+func (s *site) inviteLink(email string) string {
+	s.t.Helper()
+	s.work()
+	m, ok := s.outbox.LatestTo(email)
+	if !ok {
+		s.t.Fatalf("no invitation to %s", email)
+	}
+	l := invitePattern.FindStringSubmatch(m.Text)
+	if l == nil {
+		s.t.Fatalf("no invitation link in %q", m.Text)
+	}
+	return l[1]
+}
+
+// DEC-4, R32: an emailed invitation skips review, but the invited person
+// says they are an adult and accepts before anything exists. Nothing on the
+// roster changes until then, whatever the address.
+func TestInviteByEmail(t *testing.T) {
 	s := newSite(t)
 	admin := s.finishSetup()
 	mel := s.member("Mel Leader", "mel@example.org")
@@ -119,50 +190,78 @@ func TestInvite(t *testing.T) {
 	invite := func(name, email string) resp {
 		return mel.post("/groups/"+uid+"/members", "/groups/"+uid+"/invite", url.Values{"name": {name}, "email": {email}, "adult": {"yes"}})
 	}
-	if r := invite("Nia New", "nia@example.org"); !strings.HasSuffix(r.header.Get("Location"), "done=invited") {
-		t.Fatalf("invite: %s", r.header.Get("Location"))
-	}
-	s.work()
-	m, ok := s.outbox.LatestTo("nia@example.org")
-	if !ok || !strings.Contains(m.Subject, "invited") {
-		t.Fatal("no invitation email")
-	}
-	nia := s.browser()
-	if r := nia.get("/l/" + regexp.MustCompile(`/l/([A-Za-z0-9_-]{43})`).FindStringSubmatch(m.Text)[1]); !strings.Contains(r.body, "Sign in to") {
-		t.Fatal("the invitation link does not lead to sign in")
-	}
-	if n := s.Count(t, `SELECT count(*) FROM active_memberships am JOIN people p ON p.id = am.person_id WHERE p.email = 'nia@example.org' AND p.status = 'active'`); n != 1 {
-		t.Fatal("the invited person is not an active member")
-	}
-	// An existing account is told at the bell, not given a second account.
 	mia := s.member("Mia Member", "mia@example.org")
-	a, b := invite("Mia", "mia@example.org"), invite("Zed", "zed@example.org")
+	before := mel.get("/groups/" + uid + "/members").body
+	a, b := invite("Fake Name", "mia@example.org"), invite("Nia New", "nia@example.org")
 	if a.header.Get("Location") != b.header.Get("Location") {
-		t.Fatal("the answer says whether the address has an account")
+		t.Fatal("the answer depends on the address")
 	}
-	if s.Count(t, `SELECT count(*) FROM people WHERE email = 'mia@example.org'`) != 1 {
-		t.Fatal("a second account")
+	after := mel.get("/groups/" + uid + "/members").body
+	if noisePattern.ReplaceAllString(before, "") != noisePattern.ReplaceAllString(after, "") {
+		t.Fatal("the roster changed before anyone accepted (it would show who has an account)")
 	}
-	if r := mia.get("/notices"); !strings.Contains(r.body, "invited you to") {
-		t.Fatal("an existing member was not told")
+	if s.Count(t, `SELECT count(*) FROM people WHERE email = 'nia@example.org'`) != 0 {
+		t.Fatal("an account exists before the invitation was accepted")
 	}
-	// A waiting request is approved by an invitation.
-	s.browser().post("/request", "/request", requestForm("Wes Waiting", "wes@example.org"))
-	s.work()
-	invite("Wes", "wes@example.org")
-	if s.Count(t, `SELECT count(*) FROM people WHERE email = 'wes@example.org' AND status = 'active'`) != 1 {
-		t.Fatal("an invitation did not skip review")
+	// Nia opens it; opening changes nothing; she accepts as an adult.
+	tok := s.inviteLink("nia@example.org")
+	nia := s.browser()
+	if r := nia.get("/invite/" + tok); !strings.Contains(r.body, "Mel Leader invited you") {
+		t.Fatalf("invitation page: %s", between(r.body, "<main", "</main>"))
 	}
-	// Adults only, in slice 1.
-	if r := mel.post("/groups/"+uid+"/members", "/groups/"+uid+"/invite", url.Values{"name": {"Kid"}, "email": {"kid@example.org"}}); r.status != http.StatusUnprocessableEntity {
-		t.Fatal("an invitation without the age confirmation")
+	r := nia.post("/invite/"+tok, "/invite/"+tok, url.Values{"name": {"Nia New"}, "age": {"adult"}})
+	if !strings.HasSuffix(r.header.Get("Location"), "done=joined") {
+		t.Fatalf("redeem: %d %s", r.status, r.header.Get("Location"))
 	}
-	// A member cannot invite; a leader of an archived group cannot either.
-	if r := mia.post("/groups/"+uid+"/members", "/groups/"+uid+"/invite", url.Values{"name": {"X"}, "email": {"x@example.org"}, "adult": {"yes"}}); r.status == http.StatusSeeOther && !strings.HasSuffix(r.header.Get("Location"), "done=refused") {
-		t.Fatal("a member invited")
+	if r := nia.get("/"); !strings.Contains(r.body, "Welcome, Nia New") {
+		t.Fatal("not signed in after accepting")
 	}
+	// Mia, who has an account, accepts and joins; her name is hers, not the inviter's guess.
+	mtok := s.inviteLink("mia@example.org")
+	mia.post("/invite/"+mtok, "/invite/"+mtok, url.Values{"name": {"Whatever"}, "age": {"adult"}})
+	if s.Count(t, `SELECT count(*) FROM people WHERE email = 'mia@example.org' AND name = 'Mia Member'`) != 1 {
+		t.Fatal("an existing account was changed by an invitation")
+	}
+	// Used once.
+	if r := s.browser().post("/signin", "/invite/"+tok, url.Values{"name": {"X"}, "age": {"adult"}}); r.status == http.StatusSeeOther {
+		t.Fatal("an invitation worked twice")
+	}
+}
+
+// R32: the invited person, not the inviter, says whether they are an adult.
+// Under 18, nothing is created.
+func TestInvitationUnder18CreatesNothing(t *testing.T) {
+	s := newSite(t)
+	admin := s.finishSetup()
+	mel := s.member("Mel Leader", "mel@example.org")
+	uid := s.approvedGroup(admin, mel, "Youth Group")
+	mel.post("/groups/"+uid+"/members", "/groups/"+uid+"/invite", url.Values{"name": {"Teen"}, "email": {"teen@example.org"}, "adult": {"yes"}})
+	tok := s.inviteLink("teen@example.org")
+	r := s.browser().post("/invite/"+tok, "/invite/"+tok, url.Values{"name": {"Teen"}, "age": {"young"}})
+	if !strings.Contains(r.body, "under-18s aren") {
+		t.Fatalf("under-18 answer: %d", r.status)
+	}
+	if s.Count(t, `SELECT count(*) FROM people WHERE email = 'teen@example.org'`) != 0 {
+		t.Fatal("an account was made for someone under 18")
+	}
+	if r := s.browser().post("/signin", "/invite/"+tok, url.Values{"name": {"Teen"}, "age": {"adult"}}); r.status == http.StatusSeeOther {
+		t.Fatal("the invitation still works after an under-18 answer")
+	}
+}
+
+// #155: an invitation is checked against the inviter's right when used.
+func TestInvitationDiesWithTheInvitersRight(t *testing.T) {
+	s := newSite(t)
+	admin := s.finishSetup()
+	mel := s.member("Mel Leader", "mel@example.org")
+	uid := s.approvedGroup(admin, mel, "Study")
+	mel.post("/groups/"+uid+"/members", "/groups/"+uid+"/invite", url.Values{"name": {"Nia"}, "email": {"nia@example.org"}, "adult": {"yes"}})
+	tok := s.inviteLink("nia@example.org")
 	mel.post("/groups/"+uid, "/groups/"+uid+"/archive", nil)
-	if r := invite("Y", "y@example.org"); !strings.HasSuffix(r.header.Get("Location"), "done=refused") {
+	if r := s.browser().post("/signin", "/invite/"+tok, url.Values{"name": {"Nia"}, "age": {"adult"}}); r.status == http.StatusSeeOther {
+		t.Fatal("an invitation into a group archived since worked")
+	}
+	if r := mel.post("/groups/"+uid+"/members", "/groups/"+uid+"/invite", url.Values{"name": {"Y"}, "email": {"y@example.org"}, "adult": {"yes"}}); !strings.HasSuffix(r.header.Get("Location"), "done=refused") {
 		t.Fatal("a leader of an archived group invited (DEC-88)")
 	}
 }
@@ -173,10 +272,7 @@ func TestAdminInvitesWithNoGroup(t *testing.T) {
 	if r := admin.post("/admin/requests", "/admin/invite", url.Values{"name": {"Sue Staff"}, "email": {"sue@example.org"}, "adult": {"yes"}}); r.header.Get("Location") != "/admin/requests?done=invited" {
 		t.Fatalf("admin invite: %s", r.header.Get("Location"))
 	}
-	s.work()
-	if _, ok := s.outbox.LatestTo("sue@example.org"); !ok {
-		t.Fatal("no invitation email")
-	}
+	s.inviteLink("sue@example.org")
 	if r := s.member("Mia", "mia@example.org").post("/", "/admin/invite", url.Values{"name": {"X"}, "email": {"x@example.org"}, "adult": {"yes"}}); r.status != http.StatusNotFound {
 		t.Fatal("a member used the admin invite")
 	}

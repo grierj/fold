@@ -62,6 +62,7 @@ type limits struct {
 	newGroups     *ratelimit.Limiter // groups one person starts
 	groupActions  *ratelimit.Limiter // other changes one person makes to groups
 	invites       *ratelimit.Limiter // invitations sent by one person
+	invitesSite   *ratelimit.Limiter // invitations sent from the whole site
 }
 
 type Deps struct {
@@ -93,6 +94,7 @@ func New(cfg Config, d Deps) (*App, error) {
 			newGroups:     ratelimit.New(c, ratelimit.Rule{N: 5, Per: 24 * time.Hour}),
 			groupActions:  ratelimit.New(c, ratelimit.Rule{N: 120, Per: time.Hour}),
 			invites:       ratelimit.New(c, ratelimit.Rule{N: 20, Per: 24 * time.Hour}),
+			invitesSite:   ratelimit.New(c, ratelimit.Rule{N: 100, Per: 24 * time.Hour}),
 		}}
 	return a, nil
 }
@@ -228,7 +230,7 @@ func (a *App) load(ctx context.Context, r *http.Request, q *sql.Tx) (pageFacts, 
 		if err == nil {
 			f.session = &sess
 			f.Viewer = &viewerInfo{Name: sess.Person.Name, IsAdmin: sess.Person.IsAdmin}
-			if f.Unread, err = notices.Unread(ctx, q, noticeReader(sess.Person)); err != nil {
+			if f.Unread, err = notices.Unread(ctx, q, a.noticeReader(sess.Person)); err != nil {
 				return pageFacts{}, err
 			}
 		} else if !errors.Is(err, people.ErrNotFound) {

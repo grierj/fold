@@ -251,6 +251,11 @@ func CanAddToGroup(p *Person, g Group, r Rel) bool {
 	return CanManageGroup(p, g, r) && (g.Status == GroupActive || IsAdmin(p))
 }
 
+// CanAddDirectly: only an admin puts someone into a group without their
+// accepting an invitation (R32), for someone who has trouble with the site
+// or is away from a computer. The person is told and can leave.
+func CanAddDirectly(p *Person, g Group) bool { return IsAdmin(p) && g.Status != GroupDeleted }
+
 // LeadsApprovedGroup reports whether any of the groups p actively leads is
 // active. Powers that reach past one group, such as inviting a person or
 // searching people by name, count only an approved group.

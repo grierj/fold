@@ -38,19 +38,19 @@ func member(tx *write.Tx, groupID int64, personUID string) (people.Person, polic
 	return p, rel, err
 }
 
-// Add puts a person a leader found by name into the group. An adult is
-// told and can leave (P6). A person a leader removed may be added back by a
-// leader; they cannot rejoin on their own (DEC-35).
+// Add is an admin putting a person straight into a group, without an
+// invitation (R32). The person is told and can leave. Anyone else invites
+// (accounts.InviteByName). A removed person may be added back (DEC-35).
 type Add struct{ GroupUID, PersonUID string }
 
 func (Add) Action() string { return "group.add" }
 
 func (c Add) Apply(tx *write.Tx) error {
-	g, rel, err := target(tx, c.GroupUID)
+	g, _, err := target(tx, c.GroupUID)
 	if err != nil {
 		return err
 	}
-	if !policy.CanAddToGroup(actor(tx), g.Policy(), rel) {
+	if !policy.CanAddDirectly(actor(tx), g.Policy()) {
 		return write.ErrNotAllowed
 	}
 	p, prel, err := member(tx, g.ID, c.PersonUID)
@@ -64,6 +64,11 @@ func (c Add) Apply(tx *write.Tx) error {
 		return ErrUnchanged
 	}
 	if err := addMembership(tx, g.ID, p.ID); err != nil {
+		return err
+	}
+	// Any invitation waiting for them to this group is answered by this.
+	if _, err := tx.Exec(`UPDATE invitations SET state = 'accepted', decided_at = ? WHERE group_id = ? AND person_id = ? AND state = 'open'`,
+		tx.Now.Unix(), g.ID, p.ID); err != nil {
 		return err
 	}
 	tx.Subject(g.UID)

@@ -125,6 +125,7 @@ type row struct {
 type Reader struct {
 	ID    int64
 	Admin bool
+	Now   time.Time // for whether an invitation is still open
 }
 
 // List is a person's notices, newest first, worded for them. A notice whose
@@ -158,25 +159,20 @@ func List(ctx context.Context, q db.Querier, r Reader, limit int) ([]Notice, err
 	return out, nil
 }
 
-// adminOnly are the kinds only an admin reads. Someone who stops being an
-// admin keeps the rows but no longer sees or counts them.
-var adminOnly = []string{AccountRequested, GroupRequested}
-
-// Unread is the bell's one plain count (DEC-44): the unread notices the
-// reader would see in the list. A notice whose subject has since gone is
-// deleted with it, so only the admin-only kinds need leaving out here.
+// Unread is the bell's one plain count (DEC-44): exactly the unread
+// notices the reader's list would show, worded through the same rules.
 func Unread(ctx context.Context, q db.Querier, r Reader) (int, error) {
-	query := `SELECT count(*) FROM notices WHERE person_id = ? AND read_at IS NULL`
-	args := []any{r.ID}
-	if !r.Admin {
-		for _, k := range adminOnly {
-			query += ` AND kind <> ?`
-			args = append(args, k)
+	list, err := List(ctx, q, r, 200)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, x := range list {
+		if !x.Read {
+			n++
 		}
 	}
-	var n int
-	err := q.QueryRowContext(ctx, query, args...).Scan(&n)
-	return n, err
+	return n, nil
 }
 
 // ErrGone is a notice that is missing, not the reader's, or no longer worded
@@ -203,7 +199,7 @@ func One(ctx context.Context, q db.Querier, r Reader, id int64) (Notice, error) 
 
 // ForMail reads a notice for the email job: the notice, its person's
 // address, and the reader to word it for.
-func ForMail(ctx context.Context, q db.Querier, id int64) (Notice, string, error) {
+func ForMail(ctx context.Context, q db.Querier, id int64, now time.Time) (Notice, string, error) {
 	var personID int64
 	var email, status string
 	var admin bool
@@ -215,7 +211,7 @@ func ForMail(ctx context.Context, q db.Querier, id int64) (Notice, string, error
 	if err != nil {
 		return Notice{}, "", err
 	}
-	n, err := One(ctx, q, Reader{ID: personID, Admin: admin}, id)
+	n, err := One(ctx, q, Reader{ID: personID, Admin: admin, Now: now}, id)
 	return n, email, err
 }
 
@@ -370,40 +366,52 @@ func Cleanup(e *write.Executor) write.Handler {
 	return func(ctx context.Context, _ write.Job) error { return e.Run(ctx, write.System(), cleanup{}) }
 }
 
-// wordMember words the notices to a person about their own membership. It
-// shows only while they are still in the group, so a notice never points
-// at something they can no longer see.
+// wordMember words the notices to a person about their own membership,
+// through the same visibility rule as the group's page: it shows only
+// while they may see the group. An invitation notice points at the open
+// invitation, and goes once it is answered.
 func wordMember(ctx context.Context, q db.Querier, r Reader, x row, n Notice) (Notice, bool, error) {
 	who := "Someone"
 	if x.actorID.Valid {
 		q.QueryRowContext(ctx, `SELECT name FROM people WHERE id = ?`, x.actorID.Int64).Scan(&who)
 	}
 	if !x.group.Valid {
-		if x.kind != Invited {
-			return n, false, nil
-		}
-		n.Text, n.Href, n.Subject = who+" invited you. Welcome!", "/groups", "Welcome"
-		return n, true, nil
+		return n, false, nil
 	}
-	var uid, name string
-	var in bool
-	err := q.QueryRowContext(ctx, `SELECT g.uid, g.name, EXISTS (SELECT 1 FROM active_memberships am WHERE am.group_id = g.id AND am.person_id = ?)
-		FROM groups g WHERE g.id = ?`, r.ID, x.group.Int64).Scan(&uid, &name, &in)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && !in) {
+	var uid, name, status, visibility, role string
+	err := q.QueryRowContext(ctx, `SELECT g.uid, g.name, g.status, g.visibility,
+		coalesce((SELECT am.role FROM active_memberships am WHERE am.group_id = g.id AND am.person_id = ?), '')
+		FROM groups g WHERE g.id = ?`, r.ID, x.group.Int64).Scan(&uid, &name, &status, &visibility, &role)
+	if errors.Is(err, sql.ErrNoRows) {
 		return n, false, nil
 	}
 	if err != nil {
 		return n, false, err
 	}
 	quoted := "\u201c" + name + "\u201d"
+	rel := policy.Rel{Member: role != "", Leader: role == "leader"}
+	if x.kind == Invited {
+		var inv string
+		err := q.QueryRowContext(ctx, `SELECT uid FROM invitations WHERE group_id = ? AND person_id = ? AND state = 'open' AND expires_at > ?
+			ORDER BY id DESC LIMIT 1`, x.group.Int64, r.ID, r.Now.Unix()).Scan(&inv)
+		if errors.Is(err, sql.ErrNoRows) || status != policy.GroupActive {
+			return n, false, nil
+		}
+		if err != nil {
+			return n, false, err
+		}
+		n.Text, n.Href, n.Subject = who+" invited you to join "+quoted+".", "/invitations/"+inv, "An invitation"
+		return n, true, nil
+	}
+	if !rel.Member || !policy.CanSeeGroup(&policy.Person{ID: r.ID, Admin: r.Admin}, policy.Group{Status: status, Visibility: visibility}, rel) {
+		return n, false, nil
+	}
 	n.Href = "/groups/" + uid
 	switch x.kind {
 	case MemberAdded:
 		n.Text, n.Subject = who+" added you to "+quoted+". If it isn't for you, you can leave it from its page.", "You were added to a group"
 	case MadeLeader:
 		n.Text, n.Subject = who+" made you a leader of "+quoted+".", "You're a group leader"
-	case Invited:
-		n.Text, n.Subject = who+" invited you to "+quoted+". Welcome!", "Welcome"
 	}
 	return n, true, nil
 }
