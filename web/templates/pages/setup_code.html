@@ -1,0 +1,13 @@
+{{define "title"}}Set up{{end}}
+{{define "content"}}<div class="page-form">
+  <img src="{{asset "brand/setup-welcome-1.svg"}}" alt="" width="240" height="180" class="mb-4 h-auto w-32 sm:w-40">
+  <h1 class="text-2xl font-bold sm:text-3xl">Welcome, let's set up your site</h1>
+  <p class="mt-2 text-text-muted">This page appears once. To make sure the person setting it up is the person who installed it, enter the setup code from the server's log.</p>
+  <form class="form-stack mt-6" method="post" action="/setup/code" novalidate>
+    {{template "csrf" .}}
+    {{with .Data.Error}}{{template "notice" (notice "danger" "" .)}}{{end}}
+    {{template "field" .Data.Code}}
+    {{template "button" (wide (button "primary" "Continue"))}}
+  </form>
+  <p class="mt-6 text-sm text-text-muted">On the server, run <code class="rounded-sm bg-sunken px-1">docker compose logs app | grep "setup code"</code> to see it.</p>
+</div>{{end}}

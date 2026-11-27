@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>{{.Subject}}</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f5f5f4;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f5f5f4;">
+<tr><td align="center" style="padding:24px 12px;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;background-color:#ffffff;border-radius:8px;">
+<tr><td style="padding:20px 24px 0 24px;font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:20px;color:#57534e;font-weight:bold;">{{.Church}}</td></tr>
+<tr><td style="padding:8px 24px 24px 24px;font-family:Helvetica,Arial,sans-serif;font-size:16px;line-height:24px;color:#1c1917;">
+{{range .Before}}<p style="margin:0 0 16px 0;">{{.}}</p>{{end}}
+{{with .Button}}<p style="margin:8px 0 24px 0;"><a href="{{.URL}}" style="display:inline-block;background-color:#7f47c7;color:#ffffff;text-decoration:none;font-weight:bold;padding:12px 20px;border-radius:8px;">{{.Label}}</a></p>{{end}}
+{{range .After}}<p style="margin:0 0 16px 0;color:#57534e;font-size:14px;line-height:20px;">{{.}}</p>{{end}}
+</td></tr>
+</table>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;">
+<tr><td style="padding:16px 24px;font-family:Helvetica,Arial,sans-serif;font-size:13px;line-height:20px;color:#57534e;">{{.Footer}}</td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>

@@ -1,0 +1,34 @@
+{{define "title"}}Set up{{end}}
+{{define "content"}}<div class="page-form">
+  <h1 class="text-2xl font-bold sm:text-3xl">Set up your site</h1>
+  <p class="mt-2 text-text-muted">We will send a test message to your email. Setup finishes when you open it and press its button, so you know mail works before anyone else is invited.</p>
+  <form class="form-stack mt-6" method="post" action="/setup" novalidate>
+    {{template "csrf" .}}
+    {{template "errorsummary" .Data.Errors}}
+    <fieldset class="form-stack">
+      <legend class="mb-2 text-xl font-bold">Your church</legend>
+      {{template "field" .Data.ChurchName}}
+      {{template "field" .Data.Zone}}
+    </fieldset>
+    <fieldset class="form-stack section">
+      <legend class="mb-2 pt-6 text-xl font-bold">You, the first administrator</legend>
+      {{template "field" .Data.Name}}
+      {{template "field" .Data.Email}}
+      {{template "choice" .Data.Adult}}
+    </fieldset>
+    <fieldset class="form-stack section mail-settings">
+      <legend class="mb-2 pt-6 text-xl font-bold">Mail</legend>
+      <p class="field-hint">The service that sends your site's email. Postmark is the one we suggest; any mail server that offers encryption works too.</p>
+      {{range .Data.Providers}}{{template "choice" .}}{{end}}
+      {{template "field" .Data.From}}
+      <div class="form-stack mail-postmark">{{template "field" .Data.PostmarkToken}}</div>
+      <div class="form-stack mail-smtp">
+        {{template "field" .Data.SMTPHost}}
+        {{template "field" .Data.SMTPPort}}
+        {{template "field" .Data.SMTPUsername}}
+        {{template "field" .Data.SMTPPassword}}
+      </div>
+    </fieldset>
+    {{template "button" (wide (button "primary" "Send the test message"))}}
+  </form>
+</div>{{end}}

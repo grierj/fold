@@ -1,0 +1,11 @@
+{{define "title"}}Home{{end}}
+{{define "content"}}<div class="page-narrow">
+{{if .Viewer}}
+  <div class="page-header"><h1 class="text-2xl font-bold sm:text-3xl">Welcome, {{.Viewer.Name}}</h1></div>
+  {{with .Data.Status}}<div class="mb-6">{{template "status" .}}</div>{{end}}
+  {{template "empty" (empty "all-caught-up.svg" "There is nothing here yet" "Groups and events will appear here once they are added." nil)}}
+{{else}}
+  <div class="page-header"><h1 class="text-2xl font-bold sm:text-3xl">{{.Church}}</h1></div>
+  {{template "empty" (empty "hero-signed-out.svg" "Welcome" "Sign in to see what is coming up." (linkbutton "primary" "Sign in" "/signin"))}}
+{{end}}
+</div>{{end}}

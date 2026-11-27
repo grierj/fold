@@ -1,0 +1,38 @@
+{{define "base"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>{{block "title" .}}{{.Church}}{{end}}{{if .Church}} · {{.Church}}{{else}} · {{.Product}}{{end}}</title>
+<link rel="icon" type="image/svg+xml" href="{{asset "brand/fold-icon-1.svg"}}">
+<link rel="apple-touch-icon" href="{{asset "brand/fold-touch-180.png"}}">
+<link rel="stylesheet" href="{{asset "app.css"}}">
+{{/* htmx runs with evaluation, script tags and its own inline styles off, and
+     keeps no page copies in browser storage (signed-in pages are no-store). */}}
+<meta name="htmx-config" content='{"allowEval":false,"allowScriptTags":false,"includeIndicatorStyles":false,"historyCacheSize":0,"refreshOnHistoryMiss":true,"selfRequestsOnly":true,"getCacheBusterParam":false}'>
+<script src="{{asset "htmx-2.0.11.min.js"}}" defer></script>
+</head>
+<body class="min-h-screen">
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="site-header-row">
+    <a class="inline-flex min-h-11 items-center gap-2 font-bold text-text no-underline" href="/">
+      <img src="{{asset "brand/fold-icon-1.svg"}}" alt="" width="28" height="28">
+      <span>{{if .Church}}{{.Church}}{{else}}{{.Product}}{{end}}</span>
+    </a>
+    {{if .Viewer}}
+    <nav aria-label="Account" class="flex flex-wrap items-center gap-2">
+      {{if .Viewer.IsAdmin}}<a class="text-link px-2" href="/admin/gallery">Components</a>{{end}}
+      <span class="text-sm text-text-muted">{{.Viewer.Name}}</span>
+      <form method="post" action="/signout">{{template "csrf" .}}{{template "button" (button "secondary" "Sign out")}}</form>
+    </nav>
+    {{end}}
+  </div>
+</header>
+<main id="main" tabindex="-1">
+{{template "content" .}}
+</main>
+<footer class="mx-auto px-4 py-8 text-center text-sm text-text-muted">{{.Product}}</footer>
+</body>
+</html>{{end}}

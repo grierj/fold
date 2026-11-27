@@ -1,0 +1,24 @@
+{{define "title"}}Check your email{{end}}
+{{define "content"}}<div class="page-form">
+  <img src="{{asset "illustrations/request-sent.svg"}}" alt="" width="160" height="120" class="mb-4 h-auto w-32">
+  <h1 class="text-2xl font-bold sm:text-3xl">Check your email</h1>
+  {{template "setupstatus" .}}
+  <div class="mt-6 flex flex-wrap gap-3">
+    <form method="post" action="/setup/resend">{{template "csrf" .}}{{template "button" (button "secondary" "Send it again")}}</form>
+    {{template "linkbutton" (linkbutton "ghost" "Change the settings" "/setup?edit=1")}}
+  </div>
+</div>{{end}}
+{{define "setupstatus"}}<div id="setup-status" class="mt-4"{{if eq .Data.State "pending"}} hx-get="/setup/status" hx-trigger="every 3s" hx-swap="outerHTML"{{end}}>
+  {{if eq .Data.State "done"}}
+    <p>We sent the test message to <strong class="wrap-anywhere">{{.Data.Email}}</strong>. Open it and press <strong>Finish setup</strong>. The button works once, within 24 hours.</p>
+    <p class="mt-3 text-text-muted">If it has not arrived in a few minutes, look in your spam folder, then send it again.</p>
+  {{else if eq .Data.State "failed"}}
+    {{template "notice" (notice "danger" "The test message could not be sent" .Data.Problem)}}
+    <p class="mt-3">Change the mail settings and we will try again.</p>
+  {{else if eq .Data.State "pending"}}
+    <p>Sending the test message to <strong class="wrap-anywhere">{{.Data.Email}}</strong>…</p>
+    {{if .Data.Problem}}<p class="mt-3 text-text-muted">The first try did not go through ({{.Data.Problem}}). We will keep trying for a few minutes.</p>{{end}}
+  {{else}}
+    <p>No test message is waiting. Change the settings to send one.</p>
+  {{end}}
+</div>{{end}}
