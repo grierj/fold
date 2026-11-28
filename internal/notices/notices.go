@@ -32,13 +32,13 @@ const (
 	// To the people signed up to a date (Going, Maybe or waiting), about
 	// that date; event and date. Where one change touches many dates, each
 	// person gets one notice naming the first of theirs.
-	Promoted      = "answer.promoted"  // moved up off the waitlist (DEC-84)
-	NoRoom        = "answer.no_room"   // turned back on, and a date said Going to is full (DEC-47)
-	DateCancelled = "date.cancelled"   // one date cancelled by hand
-	EventDeleted  = "event.deleted"    // the event deleted (DEC-175)
-	DatesDropped  = "dates.dropped"    // a series edit no longer makes the dates (DEC-91)
-	DatesMoved    = "dates.moved"      // a series edit moved the dates to other days (R40)
-	DatesRestored = "dates.restored"   // dates back on, answers as they were (DEC-91)
+	Promoted      = "answer.promoted" // moved up off the waitlist (DEC-84)
+	NoRoom        = "answer.no_room"  // turned back on, and a date said Going to is full (DEC-47)
+	DateCancelled = "date.cancelled"  // one date cancelled by hand
+	EventDeleted  = "event.deleted"   // the event deleted (DEC-175)
+	DatesDropped  = "dates.dropped"   // a series edit no longer makes the dates (DEC-91)
+	DatesMoved    = "dates.moved"     // a series edit moved the dates to other days (R40)
+	DatesRestored = "dates.restored"  // dates back on, answers as they were (DEC-91)
 )
 
 // JobMail emails one notice to its person, for the kinds that are required
