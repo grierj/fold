@@ -27,6 +27,9 @@ type galleryData struct {
 	Errors       []FieldError
 	Toggle       Chip
 	ToggleStatus string
+	Pick         Pick
+	CalRows      []calRow
+	Share        Field
 }
 
 func (a *App) galleryFacts(w http.ResponseWriter, r *http.Request) (pageFacts, bool) {
@@ -110,6 +113,13 @@ func (a *App) gallery(w http.ResponseWriter, r *http.Request) {
 			{ID: 2, Text: "Your group \u201cBible Study\u201d was approved.", When: "Wed, Nov 26, 9:15 am", Read: true, CSRF: a.csrfToken(r)},
 		},
 		Toggle: Chip{Label: "Remind me", Name: "on", Value: "1", Type: "submit"},
+		Pick:   Pick{Label: "Calendar view", Options: []PickOption{{Label: "Agenda", Href: "#pick", Current: true}, {Label: "Week", Href: "#pick"}, {Label: "Month", Href: "#pick"}}},
+		CalRows: []calRow{
+			{UID: "going", Title: "Tuesday study", When: "7:00 to 8:30 pm", Place: "Room 4", Group: "Bible Study", Mark: "going", Label: "Going"},
+			{UID: "maybe", Title: "Harvest supper", When: "5:30 to 7:00 pm", Place: "Fellowship hall", ChurchWide: true, Mark: "ghost", Label: "Not answered"},
+			{UID: "other", Title: "Choir practice", When: "7:00 to 8:00 pm", Place: "Sanctuary"},
+		},
+		Share: Field{ID: "share-link", Name: "link", Label: "Link to this date", Value: a.origin + "/dates/example", ReadOnly: true},
 	}
 	f.Data = d
 	a.render(w, r, http.StatusOK, "gallery", "", f.page)

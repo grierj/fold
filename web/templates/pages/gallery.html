@@ -25,6 +25,15 @@
     <section class="section" aria-labelledby="g-segment"><h2 id="g-segment" class="mb-4 text-xl font-bold">Segment control</h2>
       <form class="max-w-md" action="/admin/gallery" method="get">{{template "segment" .Data.Segment}}</form>
     </section>
+    <section class="section" id="pick" aria-labelledby="g-pick-h"><h2 id="g-pick-h" class="mb-4 text-xl font-bold">Links that pick a page</h2>
+      {{template "pick" .Data.Pick}}
+    </section>
+    <section class="section" aria-labelledby="g-cal-h"><h2 id="g-cal-h" class="mb-4 text-xl font-bold">Calendar rows</h2>
+      <ul class="max-w-md space-y-2">{{range .Data.CalRows}}<li>{{template "calrow" .}}</li>{{end}}</ul>
+    </section>
+    <section class="section" aria-labelledby="g-share-h"><h2 id="g-share-h" class="mb-4 text-xl font-bold">A link to share</h2>
+      <div class="max-w-xl">{{template "share" .Data.Share}}</div>
+    </section>
     <section class="section" id="menu" aria-labelledby="g-menu-h"><h2 id="g-menu-h" class="mb-4 text-xl font-bold">Menu and dialog</h2>
       <div class="flex flex-wrap gap-3">{{template "menu" .Data.Menu}}{{template "dialog" .Data.Dialog}}</div>
     </section>

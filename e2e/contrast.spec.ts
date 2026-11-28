@@ -28,6 +28,7 @@ const pairs: [string, string, number][] = [
   ["primary", "page", 4.5], ["primary", "surface", 4.5], ["primary-hover", "surface", 4.5],
   ["primary-foreground", "primary", 4.5], ["primary-foreground", "primary-hover", 4.5], ["primary-foreground", "primary-active", 4.5],
   ["primary-on-subtle", "primary-subtle", 4.5], ["primary-border", "surface", 3],
+  ["text", "primary-subtle", 4.5], ["text-muted", "primary-subtle", 4.5], ["primary-border", "primary-subtle", 3],
   ["border-strong", "surface", 3], ["border-strong", "page", 3],
   ["text", "page", 4.5], ["text", "surface", 4.5], ["text", "sunken", 4.5],
   ["text-muted", "page", 4.5], ["text-muted", "surface", 4.5], ["text-muted", "sunken", 4.5],
