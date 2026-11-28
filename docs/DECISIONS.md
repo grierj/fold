@@ -70,6 +70,7 @@ the code or the pull request.
 | R47 | **A guest taken off a date is told by email** (under the urgent daily cap), since guests rarely see the bell. Members are still told at the bell only (R44). | 2026-11-27. Chose "Email them". |
 | R48 | **Admins see guests on the people page**, tagged "Guest", and can turn one off like any account; that takes their answers off upcoming dates. | 2026-11-27. Chose "Yes, on the people page". |
 | R49 | **A guest who answered Going gets the event's video link**, like anyone Going (R41). | 2026-11-27. Chose "Yes, like any Going". |
+| R50 | **R42 holds per account.** A removed person who RSVPs to a public event under another address is not detected; leaders see them on the list, tagged Guest (R46), and can take them off, and admins can turn the guest off (R48). Public events stay open to guests without approval. | 2026-11-27. Chose "R42 is per account" over leaders approving guests and over a per-group switch for guest RSVP. |
 
 Standing yardsticks, in Grier's words from the Fold work. They apply to every design choice.
 
