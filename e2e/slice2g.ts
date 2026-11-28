@@ -12,6 +12,12 @@ export async function milestone4b(page: Page) {
   await expect(page.getByText("This link is shown only now")).toBeVisible();
   const first = await page.getByLabel("Your calendar's address").inputValue();
   expect(first).toMatch(/\/feed\/[A-Za-z0-9_-]{43}\/calendar\.ics$/);
+  const webcal = first.replace(/^https?:/, "webcal:");
+  await expect(page.getByRole("link", { name: "Subscribe on iPhone or Mac" })).toHaveAttribute("href", webcal);
+  await expect(page.getByRole("link", { name: "Add to Google Calendar" })).toHaveAttribute("href", `https://calendar.google.com/calendar/r?cid=${encodeURIComponent(webcal)}`);
+  await expect(page.getByRole("img", { name: "QR code for your calendar feed" })).toBeVisible();
+  // Kept for checking the code scans (zbarimg), by hand or in CI.
+  await page.getByRole("img", { name: "QR code for your calendar feed" }).screenshot({ path: "test-results/screens/feed-qr.png" });
   await gate(page, "profile feed made");
   const feed = await page.request.get(first);
   expect(feed.status()).toBe(200);
@@ -48,6 +54,7 @@ export async function milestone4b(page: Page) {
   await expect(page).toHaveURL(/day=tue/);
   await gate(page, "groups filtered");
   await page.goto("/groups?q=nothing-matches-this&day=sun&time=morning");
-  await expect(page.getByRole("heading", { name: "No groups meet then" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "No groups match that search on those days and times" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Clear filters" })).toHaveAttribute("href", "/groups?q=nothing-matches-this");
   await gate(page, "groups filtered none");
 }
