@@ -26,6 +26,7 @@
 </div>{{end}}
 {{define "contact"}}<form id="contact" class="flex flex-wrap items-center gap-3" method="post" action="/profile/contact" hx-post="/profile/contact" hx-target="this" hx-swap="outerHTML">
   {{template "csrf" .}}{{template "chip" .Data.Contact}}{{template "status" .Data.Status}}
+  {{with .Data.ContactErr}}<p class="field-error w-full" role="alert"><span aria-hidden="true">⚠</span><span>{{.}}</span></p>{{end}}
 </form>{{end}}
 
 {{define "zone"}}<form id="zone-form" class="form-stack" method="post" action="/profile/zone">

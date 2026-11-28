@@ -49,3 +49,32 @@ func TestPersonTimeZone(t *testing.T) {
 		t.Fatal("an alias zone isn't shown")
 	}
 }
+
+// A person's own profile changes are limited, so one account cannot keep
+// the one writer busy; the browser's guess never writes over a zone.
+func TestProfileChangesAreLimited(t *testing.T) {
+	s := newSite(t)
+	s.finishSetup()
+	mia := s.member("Mia Member", "mia@example.org")
+	mia.post("/profile", "/profile/zone", url.Values{"zone": {"America/Chicago"}})
+	var before int
+	s.Writer.QueryRow(`SELECT count(*) FROM audit_log`).Scan(&before)
+	if r := mia.post("/profile", "/profile/zone", url.Values{"zone": {"Europe/London"}, "first": {"1"}}); r.status != http.StatusNoContent {
+		t.Fatalf("guess over a zone: %d", r.status)
+	}
+	var after int
+	s.Writer.QueryRow(`SELECT count(*) FROM audit_log`).Scan(&after)
+	if after != before {
+		t.Fatal("a guess over a chosen zone still ran a write")
+	}
+	var last resp
+	for range 30 {
+		last = mia.post("/profile", "/profile/zone", url.Values{"zone": {"America/Denver"}})
+	}
+	if last.status != http.StatusUnprocessableEntity || !strings.Contains(last.body, "could not be saved") {
+		t.Fatalf("change past the limit: %d", last.status)
+	}
+	if r := mia.post("/profile", "/profile/name", url.Values{"name": {"Mia M"}, "version": {"1"}}); !strings.Contains(r.body, "could not be saved") {
+		t.Fatal("the name isn't limited with the rest of the profile")
+	}
+}

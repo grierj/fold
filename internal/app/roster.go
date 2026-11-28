@@ -113,7 +113,7 @@ var rosterStatuses = map[string]string{
 	"refused": "That could not be done. The list shows how things stand now.",
 	"same":    "That was already done, so nothing changed.",
 	"many":    "That's a lot of invitations for one day, so this one wasn't sent. Try again tomorrow.",
-	"busy":    "That's a lot of changes in a short time, so this one wasn't made. Try again in a little while.",
+	"busy":    "That's a lot of changes in a short time, so this one could not be saved. Try again in a little while.",
 }
 
 // runRoster runs a roster command and comes back to the roster.

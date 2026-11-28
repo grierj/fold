@@ -36,24 +36,30 @@ func zoneSelect(f pageFacts, zoneErr string) Select {
 	return s
 }
 
-func (a *App) profileView(f pageFacts, name string, version int64, nameErr string, conflict bool, status, zoneStatus, zoneErr string) any {
+type profilePage struct {
+	Name       Field
+	Version    int64
+	Email      string
+	Contact    Chip
+	ContactErr string
+	Status     string
+	Conflict   bool
+	Zone       Select
+	ZoneStatus string
+}
+
+func (a *App) profileView(f pageFacts, name string, version int64, nameErr string, conflict bool, status, zoneStatus, zoneErr string) profilePage {
 	p := f.session.Person
 	nameF := Field{ID: "name", Name: "name", Label: "Your name", Hint: "As people at church know you. It's shown on rosters and notices.",
 		Value: name, MaxLength: maxName, Required: true, Error: nameErr, Autocomplete: "name"}
-	return struct {
-		Name       Field
-		Version    int64
-		Email      string
-		Contact    Chip
-		Status     string
-		Conflict   bool
-		Zone       Select
-		ZoneStatus string
-	}{nameF, version, p.Email,
+	return profilePage{Name: nameF, Version: version, Email: p.Email,
 		// Pressing the switch posts the state it changes to.
-		Chip{Label: "Show my email to leaders of my groups", Name: "hide", Value: map[bool]string{true: "0", false: "1"}[p.ContactHidden], Type: "submit", Pressed: !p.ContactHidden},
-		status, conflict, zoneSelect(f, zoneErr), zoneStatus}
+		Contact: Chip{Label: "Show my email to leaders of my groups", Name: "hide", Value: map[bool]string{true: "0", false: "1"}[p.ContactHidden], Type: "submit", Pressed: !p.ContactHidden},
+		Status:  status, Conflict: conflict, Zone: zoneSelect(f, zoneErr), ZoneStatus: zoneStatus}
 }
+
+// tooMany is what a person sees when their own changes outpace the limit.
+const tooMany = "That's a lot of changes in a short time, so this one could not be saved. Try again in a little while."
 
 func (a *App) getProfile(w http.ResponseWriter, r *http.Request) {
 	f, ok := a.signedIn(w, r, nil)
@@ -73,6 +79,11 @@ func (a *App) postProfileName(w http.ResponseWriter, r *http.Request) {
 	version, _ := strconv.ParseInt(r.PostFormValue("version"), 10, 64)
 	if !okName || name == "" {
 		f.Data = a.profileData(r, f, name, version, "Enter your name.", false)
+		a.render(w, r, http.StatusUnprocessableEntity, "profile", "", f.page)
+		return
+	}
+	if !a.limits.profile.Allow(f.session.Person.UID) {
+		f.Data = a.profileData(r, f, name, version, tooMany, false)
 		a.render(w, r, http.StatusUnprocessableEntity, "profile", "", f.page)
 		return
 	}
@@ -100,6 +111,17 @@ func (a *App) postProfileContact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hidden := r.PostFormValue("hide") == "1"
+	if !a.limits.profile.Allow(f.session.Person.UID) {
+		d := a.profileView(f, f.session.Person.Name, f.session.Person.Version, "", false, "", "", "")
+		d.ContactErr = tooMany
+		f.Data = d
+		if r.Header.Get("HX-Request") == "true" {
+			a.render(w, r, http.StatusOK, "profile", "contact", f.page) // htmx swaps only a 200
+			return
+		}
+		a.render(w, r, http.StatusUnprocessableEntity, "profile", "", f.page)
+		return
+	}
 	err := a.exec.Run(r.Context(), write.Session(accounts.Hash(a.sessionToken(r))), accounts.SetContactHidden{Hidden: hidden})
 	if errors.Is(err, write.ErrSignedOut) {
 		http.Redirect(w, r, "/signin", http.StatusSeeOther)
@@ -129,6 +151,23 @@ func (a *App) postProfileZone(w http.ResponseWriter, r *http.Request) {
 	}
 	first := r.PostFormValue("first") == "1"
 	zone := r.PostFormValue("zone")
+	if first && f.session.Person.Zone != "" {
+		w.WriteHeader(http.StatusNoContent) // a guess never replaces a zone, so skip the write
+		return
+	}
+	if !a.limits.profile.Allow(f.session.Person.UID) {
+		if first {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		f.Data = a.profileView(f, f.session.Person.Name, f.session.Person.Version, "", false, "", "", tooMany)
+		if r.Header.Get("HX-Request") == "true" {
+			a.render(w, r, http.StatusOK, "profile", "zone", f.page) // htmx swaps only a 200
+			return
+		}
+		a.render(w, r, http.StatusUnprocessableEntity, "profile", "", f.page)
+		return
+	}
 	err := a.exec.Run(r.Context(), write.Session(accounts.Hash(a.sessionToken(r))), accounts.SetZone{Zone: zone, First: first})
 	if first {
 		if err != nil && !errors.Is(err, write.ErrNotAllowed) && !errors.Is(err, write.ErrSignedOut) {
