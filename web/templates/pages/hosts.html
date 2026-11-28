@@ -1,0 +1,37 @@
+{{define "title"}}Hosts of {{.Data.Event.Title}}{{end}}
+{{define "content"}}<div class="page-narrow">
+  <div class="page-header">
+    <div class="min-w-0">
+      <p class="text-sm"><a class="text-link wrap-anywhere" href="/events/{{.Data.Event.UID}}">{{.Data.Event.Title}}</a></p>
+      <h1 class="text-2xl font-bold sm:text-3xl">Hosts</h1>
+    </div>
+  </div>
+  {{with .Data.Status}}<div class="mb-6">{{template "status" .}}</div>{{end}}
+  <p class="mb-4 text-text-muted">Hosts can change this event, cancel and bring back its dates, and name other hosts. Admins always can.</p>
+  {{if .Data.Hosts}}
+  <ul class="divide-y divide-border border-y border-border">
+    {{range .Data.Hosts}}<li class="flex flex-wrap items-center justify-between gap-3 py-3">
+      <span class="font-semibold wrap-anywhere">{{.Name}}</span>
+      {{template "dialog" .Remove}}
+    </li>{{end}}
+  </ul>
+  {{else}}<p class="text-text-muted">No hosts yet. Find someone below to host it.</p>{{end}}
+  <section class="section mt-10" aria-labelledby="add-h">
+    <h2 id="add-h" class="mb-2 text-xl font-bold">Name a host</h2>
+    <p class="mb-4 text-text-muted">They get a notice that they're hosting.</p>
+    <form class="flex flex-wrap items-end gap-3" method="get" action="/events/{{.Data.Event.UID}}/hosts" role="search">
+      <div class="min-w-0 flex-1">{{template "field" .Data.Find}}</div>
+      {{template "button" (button "secondary" "Find")}}
+    </form>
+    {{if .Data.Searched}}
+      {{if .Data.Found}}
+      <ul class="mt-4 divide-y divide-border border-y border-border">
+        {{range .Data.Found}}<li class="flex flex-wrap items-center justify-between gap-3 py-3">
+          <span class="font-semibold wrap-anywhere">{{.Name}}</span>
+          <form method="post" action="/events/{{$.Data.Event.UID}}/hosts/add">{{template "csrf" $}}{{template "hidden" (hidden "person" .UID)}}{{template "button" (button "secondary" "Make a host")}}</form>
+        </li>{{end}}
+      </ul>
+      {{else}}<p class="mt-4 text-text-muted">Nobody by that name who isn't already a host.</p>{{end}}
+    {{end}}
+  </section>
+</div>{{end}}

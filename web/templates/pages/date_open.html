@@ -1,0 +1,19 @@
+{{define "title"}}Who can see this date{{end}}
+{{define "content"}}<div class="page-form">
+  <h1 class="text-2xl font-bold sm:text-3xl">Who can see this date</h1>
+  <p class="mt-2 text-text-muted wrap-anywhere">{{.Data.Event.Title}}, {{.Data.Day}}</p>
+  <p class="mt-3">One date can be open to more people than the rest of the event, never fewer. Everyone who can see the event can still see it.</p>
+  <form class="form-stack mt-6 vis-settings" method="post" action="/dates/{{.Data.UID}}/open" data-group="{{.Data.GroupVis}}" novalidate>
+    {{template "csrf" .}}
+    {{template "errorsummary" .Data.Errors}}
+    <fieldset>
+      <legend class="label">Who can see it</legend>
+      {{range .Data.Visibility}}{{template "choice" .}}{{end}}
+    </fieldset>
+    {{if .Data.ShowReason}}<div class="reason-field">{{template "textarea" .Data.Reason}}</div>{{end}}
+    <div class="flex flex-wrap gap-3">
+      {{template "button" (button "primary" "Save")}}
+      {{template "linkbutton" (linkbutton "secondary" "Cancel" (print "/dates/" .Data.UID))}}
+    </div>
+  </form>
+</div>{{end}}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"fold/internal/db"
+	"fold/internal/groups"
 	"fold/internal/policy"
 )
 
@@ -35,10 +36,17 @@ type Event struct {
 	Until       string
 	Status      string
 	Version     int64
+	OpenReason  string // why it was opened wider than its group
 }
 
-// Policy is the event in policy's terms.
-func (e Event) Policy() policy.Event { return policy.Event{Status: e.Status, Visibility: e.Visibility} }
+// ChurchWide is an event with no group (DEC-7).
+func (e Event) ChurchWide() bool { return e.GroupID == 0 }
+
+// Policy is the event in policy's terms; host is whether the person asking
+// hosts it.
+func (e Event) Policy(host bool) policy.Event {
+	return policy.Event{Status: e.Status, Visibility: e.Visibility, ChurchWide: e.ChurchWide(), Host: host}
+}
 
 // Pattern is when the event happens.
 func (e Event) Pattern() Pattern {
@@ -49,12 +57,12 @@ func (e Event) Pattern() Pattern {
 var ErrNotFound = errors.New("events: not found")
 
 const eventColumns = `e.id, e.uid, coalesce(e.group_id, 0), e.title, e.about, e.place, e.visibility, e.zone, e.starts_local,
-	e.minutes, e.repeat, coalesce(e.month_week, 0), coalesce(e.until, ''), e.status, e.version`
+	e.minutes, e.repeat, coalesce(e.month_week, 0), coalesce(e.until, ''), e.status, e.version, e.open_reason`
 
 func scanEvent(row interface{ Scan(...any) error }) (Event, error) {
 	var e Event
 	err := row.Scan(&e.ID, &e.UID, &e.GroupID, &e.Title, &e.About, &e.Place, &e.Visibility, &e.Zone, &e.StartsLocal,
-		&e.Minutes, &e.Repeat, &e.MonthWeek, &e.Until, &e.Status, &e.Version)
+		&e.Minutes, &e.Repeat, &e.MonthWeek, &e.Until, &e.Status, &e.Version, &e.OpenReason)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Event{}, ErrNotFound
 	}
@@ -79,14 +87,22 @@ type Row struct {
 	Moved       bool
 	Cancelled   bool
 	BySeries    bool
+	Visibility  string // its own when opened wider than its series (P7), else ""
+	OpenReason  string
 }
 
-const dateColumns = `d.id, d.uid, d.event_id, d.day, d.starts_at, d.ends_at, d.starts_local, d.moved, d.status = 'cancelled', coalesce(d.cancelled_by, '') = 'series'`
+// State is the date in policy's terms.
+func (d Row) State(now time.Time) policy.DateState {
+	return policy.DateState{Started: !d.StartsAt.After(now), Cancelled: d.Cancelled, BySeries: d.BySeries}
+}
+
+const dateColumns = `d.id, d.uid, d.event_id, d.day, d.starts_at, d.ends_at, d.starts_local, d.moved, d.status = 'cancelled',
+	coalesce(d.cancelled_by, '') = 'series', coalesce(d.visibility, ''), d.open_reason`
 
 func scanDate(row interface{ Scan(...any) error }) (Row, error) {
 	var d Row
 	var starts, ends int64
-	err := row.Scan(&d.ID, &d.UID, &d.EventID, &d.Day, &starts, &ends, &d.StartsLocal, &d.Moved, &d.Cancelled, &d.BySeries)
+	err := row.Scan(&d.ID, &d.UID, &d.EventID, &d.Day, &starts, &ends, &d.StartsLocal, &d.Moved, &d.Cancelled, &d.BySeries, &d.Visibility, &d.OpenReason)
 	d.StartsAt, d.EndsAt = time.Unix(starts, 0).UTC(), time.Unix(ends, 0).UTC()
 	return d, err
 }
@@ -130,35 +146,44 @@ type Viewer struct {
 	Admin bool
 }
 
-// visibleSQL is policy.CanSeeEvent as SQL, so a list of dates is filtered
+// visibleSQL is policy.CanSeeDate as SQL, so a list of dates is filtered
 // before it is limited (docs/HAZARDS.md section 2). ?1 is the viewer's id
-// (0 signed out) and ?2 is 1 for an admin. The inner join to groups leaves
-// out an event with no group until church-wide events have a rule of their
-// own (milestone 1b). A test checks this against the policy function.
-const visibleSQL = `e.status = 'active' AND g.status <> 'deleted' AND (
-	?2 = 1
-	OR (g.status = 'active' AND (
-		e.visibility = 'public'
-		OR (e.visibility = 'church' AND ?1 > 0)
+// (0 signed out) and ?2 is 1 for an admin. It needs dates d, events e and a
+// left join of groups g. A test checks it against the policy function.
+const visibleSQL = `e.status = 'active' AND (
+	(?2 = 1 AND (e.group_id IS NULL OR g.status <> 'deleted'))
+	OR (e.group_id IS NULL AND (` + seenByVisibility + `
+		OR EXISTS (SELECT 1 FROM event_hosts h JOIN people hp ON hp.id = h.person_id
+			WHERE h.event_id = e.id AND h.person_id = ?1 AND hp.status = 'active')))
+	OR (e.group_id IS NOT NULL AND g.status = 'active' AND (` + seenByVisibility + `
 		OR EXISTS (SELECT 1 FROM active_memberships am WHERE am.group_id = g.id AND am.person_id = ?1)))
-	OR (g.status <> 'active' AND EXISTS (SELECT 1 FROM active_memberships am
+	OR (e.group_id IS NOT NULL AND g.status IN ('pending', 'archived') AND EXISTS (SELECT 1 FROM active_memberships am
 		WHERE am.group_id = g.id AND am.person_id = ?1 AND am.role = 'leader')))`
+
+// seenByVisibility is the date's visibility, the wider of its own and its
+// event's (P7), letting in everyone or everyone signed in.
+const seenByVisibility = `e.visibility = 'public' OR d.visibility = 'public'
+		OR ((e.visibility = 'church' OR d.visibility = 'church') AND ?1 > 0)`
 
 // Listed is a date as a list shows it.
 type Listed struct {
-	UID      string
-	StartsAt time.Time
-	EndsAt   time.Time
-	Moved    bool
-	Event    string // the event's uid
-	Title    string
-	Zone     string
+	UID       string
+	StartsAt  time.Time
+	EndsAt    time.Time
+	Moved     bool
+	Cancelled bool // only in a list asked to include dates cancelled by hand
+	Event     string // the event's uid
+	Title     string
+	Zone      string
 }
 
-// Filter narrows a list of dates to one group or one event.
+// Filter narrows a list of dates.
 type Filter struct {
 	GroupID int64
 	EventID int64
+	// ByHand includes future dates cancelled by hand, for the people who run
+	// the event: the only way back to one to restore it.
+	ByHand bool
 }
 
 // Upcoming lists the scheduled dates the viewer may see that have not ended
@@ -169,11 +194,12 @@ func Upcoming(ctx context.Context, q db.Querier, v Viewer, f Filter, now time.Ti
 	if v.Admin {
 		admin = 1
 	}
-	rows, err := q.QueryContext(ctx, `SELECT d.uid, d.starts_at, d.ends_at, d.moved, e.uid, e.title, e.zone
-		FROM dates d JOIN events e ON e.id = d.event_id JOIN groups g ON g.id = e.group_id
-		WHERE `+visibleSQL+` AND d.status = 'scheduled' AND d.ends_at > ?3
+	rows, err := q.QueryContext(ctx, `SELECT d.uid, d.starts_at, d.ends_at, d.moved, d.status = 'cancelled', e.uid, e.title, e.zone
+		FROM dates d JOIN events e ON e.id = d.event_id LEFT JOIN groups g ON g.id = e.group_id
+		WHERE `+visibleSQL+` AND d.ends_at > ?3
+		AND (d.status = 'scheduled' OR (?6 = 1 AND d.cancelled_by = 'person' AND d.starts_at > ?3))
 		AND (?4 = 0 OR e.group_id = ?4) AND (?5 = 0 OR e.id = ?5)
-		ORDER BY d.starts_at, d.id LIMIT `+strconv.Itoa(limit), v.ID, admin, now.Unix(), f.GroupID, f.EventID)
+		ORDER BY d.starts_at, d.id LIMIT `+strconv.Itoa(limit), v.ID, admin, now.Unix(), f.GroupID, f.EventID, f.ByHand)
 	if err != nil {
 		return nil, err
 	}
@@ -182,11 +208,74 @@ func Upcoming(ctx context.Context, q db.Querier, v Viewer, f Filter, now time.Ti
 	for rows.Next() {
 		var l Listed
 		var starts, ends int64
-		if err := rows.Scan(&l.UID, &starts, &ends, &l.Moved, &l.Event, &l.Title, &l.Zone); err != nil {
+		if err := rows.Scan(&l.UID, &starts, &ends, &l.Moved, &l.Cancelled, &l.Event, &l.Title, &l.Zone); err != nil {
 			return nil, err
 		}
 		l.StartsAt, l.EndsAt = time.Unix(starts, 0).UTC(), time.Unix(ends, 0).UTC()
 		out = append(out, l)
+	}
+	return out, rows.Err()
+}
+
+// IsHost reports whether a person hosts an event. A host's account must be
+// active; a disabled host runs nothing.
+func IsHost(ctx context.Context, q db.Querier, eventID, personID int64) (bool, error) {
+	var yes bool
+	err := q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM event_hosts h JOIN people p ON p.id = h.person_id
+		WHERE h.event_id = ? AND h.person_id = ? AND p.status = 'active')`, eventID, personID).Scan(&yes)
+	return yes, err
+}
+
+// Person is someone named on an event page: a name, never contact details.
+type Person struct{ UID, Name string }
+
+func hostRows(ctx context.Context, q db.Querier, query string, args ...any) ([]Person, error) {
+	rows, err := q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Person
+	for rows.Next() {
+		var p Person
+		if err := rows.Scan(&p.UID, &p.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// Hosts are an event's hosts whose accounts are active, by name.
+func Hosts(ctx context.Context, q db.Querier, eventID int64) ([]Person, error) {
+	return hostRows(ctx, q, `SELECT p.uid, p.name FROM event_hosts h JOIN people p ON p.id = h.person_id
+		WHERE h.event_id = ? AND p.status = 'active' ORDER BY p.name COLLATE NOCASE`, eventID)
+}
+
+// FindHosts searches active people by name who do not host the event yet.
+// The caller has asked policy.CanFindHosts.
+func FindHosts(ctx context.Context, q db.Querier, eventID int64, name string, limit int) ([]Person, error) {
+	return hostRows(ctx, q, `SELECT p.uid, p.name FROM people p
+		WHERE p.status = 'active' AND p.name LIKE ? ESCAPE '\'
+		AND NOT EXISTS (SELECT 1 FROM event_hosts h WHERE h.event_id = ? AND h.person_id = p.id)
+		ORDER BY p.name COLLATE NOCASE LIMIT ?`, "%"+groups.EscapeLike(name)+"%", eventID, limit)
+}
+
+// ChurchWide lists the church-wide events that are not deleted, by title.
+func ChurchWide(ctx context.Context, q db.Querier) ([]Event, error) {
+	rows, err := q.QueryContext(ctx, `SELECT `+eventColumns+` FROM events e WHERE e.group_id IS NULL AND e.status = 'active'
+		ORDER BY e.title COLLATE NOCASE, e.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Event
+	for rows.Next() {
+		e, err := scanEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, e)
 	}
 	return out, rows.Err()
 }

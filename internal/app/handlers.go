@@ -48,6 +48,9 @@ func (a *App) home(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("welcome") == "1" && f.Viewer != nil {
 		status = "You're signed in."
 	}
+	if r.URL.Query().Get("done") == "event-deleted" && f.Viewer != nil {
+		status = "The event is deleted."
+	}
 	f.Data = struct {
 		Status string
 		Groups []groups.Listed

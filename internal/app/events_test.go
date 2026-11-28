@@ -98,6 +98,7 @@ func TestInviteOnlyEventIsMissingToOutsiders(t *testing.T) {
 	for _, b := range []*browser{outsider, stranger} {
 		for _, p := range [][2]string{{"/events/" + uid, "/events/" + fake}, {"/events/" + uid + "/edit", "/events/" + fake + "/edit"},
 			{"/events/" + uid + "?all=1", "/events/" + fake + "?all=1"}, {"/dates/" + date, "/dates/" + fake},
+			{"/dates/" + date + "/open", "/dates/" + fake + "/open"}, {"/events/" + uid + "/hosts", "/events/" + fake + "/hosts"},
 			{"/groups/" + group + "/events/new", "/groups/" + fake + "/events/new"}} {
 			a, z := b.get(p[0]), b.get(p[1])
 			if a.status != http.StatusNotFound || a.status != z.status || noisePattern.ReplaceAllString(a.body, "") != noisePattern.ReplaceAllString(z.body, "") {
@@ -105,6 +106,8 @@ func TestInviteOnlyEventIsMissingToOutsiders(t *testing.T) {
 			}
 		}
 		for _, p := range [][2]string{{"/events/" + uid + "/edit", "/events/" + fake + "/edit"}, {"/events/" + uid + "/delete", "/events/" + fake + "/delete"},
+			{"/dates/" + date + "/cancel", "/dates/" + fake + "/cancel"}, {"/dates/" + date + "/restore", "/dates/" + fake + "/restore"},
+			{"/dates/" + date + "/open", "/dates/" + fake + "/open"}, {"/events/" + uid + "/hosts/add", "/events/" + fake + "/hosts/add"},
 			{"/groups/" + group + "/events/new", "/groups/" + fake + "/events/new"}} {
 			edit := eventForm("Taken", "2026-12-02", "20:00", "weekly")
 			edit.Set("version", "1")
@@ -118,7 +121,8 @@ func TestInviteOnlyEventIsMissingToOutsiders(t *testing.T) {
 			t.Error("the group page leaks the event")
 		}
 	}
-	if s.Count(t, `SELECT count(*) FROM events WHERE title = 'Taken' OR status = 'deleted'`) != 0 || s.Count(t, `SELECT count(*) FROM events`) != 1 {
+	if s.Count(t, `SELECT count(*) FROM events WHERE title = 'Taken' OR status = 'deleted'`) != 0 || s.Count(t, `SELECT count(*) FROM events`) != 1 ||
+		s.Count(t, `SELECT count(*) FROM dates WHERE status = 'cancelled' OR visibility IS NOT NULL`) != 0 {
 		t.Fatal("an outsider changed the event")
 	}
 }
@@ -308,21 +312,43 @@ func TestClearingOptionalEventFields(t *testing.T) {
 	}
 }
 
-// Visibility is checked by the command: a leader cannot open an event wider
-// than its group in 1a, whatever the form offered.
-func TestEventCannotBeWiderThanItsGroup(t *testing.T) {
+// DEC-6, DEC-28: a leader may open an event wider than its group; the
+// admins hear, with the reason, and the event's pages never name the
+// invite-only group to those outside it.
+func TestOpeningAnEventWiderThanItsGroup(t *testing.T) {
 	s := newSite(t)
 	admin := s.finishSetup()
-	group := s.start(admin, "Men's Breakfast", "church")
-	if r := admin.get("/groups/" + group + "/events/new"); strings.Contains(r.body, `value="public"`) {
-		t.Fatal("the form offers wider than the group")
-	}
+	mel := s.member("Mel Leader", "mel@example.org")
+	group := s.start(mel, "Elders Prayer", "invite_only")
+	admin.post("/admin/groups", "/admin/groups/"+group+"/approve", nil)
 	page := "/groups/" + group + "/events/new"
-	if r := admin.post(page, page, eventForm("Breakfast", "2026-12-05", "08:00", "weekly")); r.status != http.StatusNotFound {
-		t.Fatalf("a wider event: %d", r.status)
+	r := mel.get(page)
+	if !strings.Contains(r.body, `value="public"`) || !strings.Contains(r.body, "wider than the group, so its other leaders and the admins are told") {
+		t.Fatal("the form doesn't offer, or explain, opening wider")
 	}
-	if s.Count(t, `SELECT count(*) FROM events`) != 0 {
-		t.Fatal("it was saved")
+	form := eventForm("Prayer breakfast", "2026-12-05", "08:00", "weekly")
+	form.Set("reason", "Everyone is welcome to this one.")
+	uid := s.schedule(mel, group, form)
+	n := admin.get("/notices")
+	if !strings.Contains(n.body, "Mel Leader opened “Prayer breakfast” to everyone.") || !strings.Contains(n.body, "Everyone is welcome to this one.") {
+		t.Fatalf("the admin's notice: %s", between(n.body, "<main", "</main>"))
+	}
+	if r := mel.get("/notices"); strings.Contains(r.body, "opened") {
+		t.Fatal("the leader was told about what they did")
+	}
+	var text string
+	s.Writer.QueryRow(`SELECT text FROM audit_log WHERE action = 'event.create'`).Scan(&text)
+	if text != "Everyone is welcome to this one." {
+		t.Fatalf("the reason is not in the audit row (R30): %q", text)
+	}
+	stranger := s.browser()
+	r = stranger.get("/events/" + uid)
+	date := firstDate(r.body)
+	for _, p := range []string{"/events/" + uid, "/dates/" + date} {
+		r := stranger.get(p)
+		if r.status != http.StatusOK || strings.Contains(r.body, "Elders Prayer") || strings.Contains(r.body, group) || strings.Contains(r.body, "Mel Leader") {
+			t.Errorf("%s: %d, or it names the invite-only group", p, r.status)
+		}
 	}
 }
 
