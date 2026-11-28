@@ -194,9 +194,19 @@ func (s *seeder) build() {
 	}
 	for _, e := range eventList {
 		g := groupNamed(e.group)
-		c := &events.Create{GroupUID: uids[g.name], Input: events.Input{Title: e.title, Place: e.place, Visibility: g.vis, Pattern: pattern(e)}}
+		c := &events.Create{GroupUID: uids[g.name], Input: events.Input{Title: e.title, Place: e.place, Visibility: g.vis, Pattern: pattern(e), VideoURL: e.video}}
 		s.run(email(g.leader), c)
 		made[e.title] = c.UID
+		// Members answer the first date: mostly going, some maybe, some
+		// can't go; one answers every date still to come.
+		first := s.nthDate(c.UID, 0)
+		for i, m := range s.members(uids[g.name]) {
+			a := &events.Answer{DateUID: first, Status: []string{"cant", "maybe", "going", "going"}[i%4], Scope: "date"}
+			if i == 2 && e.repeat != events.Once {
+				a.Scope = "all"
+			}
+			s.run(m, a)
+		}
 	}
 	// One date cancelled by hand, and one date of an invite-only group's
 	// event opened to the church (P7, DEC-28).
@@ -366,4 +376,23 @@ func (s *seeder) nthDate(eventUID string, n int) (uid string) {
 			WHERE e.uid = ? ORDER BY d.starts_at LIMIT 1 OFFSET ?`, eventUID, n).Scan(&uid)
 	})
 	return uid
+}
+
+// members are the addresses of a group's active members who are not leaders.
+func (s *seeder) members(groupUID string) (out []string) {
+	s.read(func(q *sql.Tx) error {
+		rows, err := q.QueryContext(s.ctx, `SELECT p.email FROM active_memberships am JOIN people p ON p.id = am.person_id
+			JOIN groups g ON g.id = am.group_id WHERE g.uid = ? AND am.role = 'member' ORDER BY p.email`, groupUID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var e string
+			rows.Scan(&e)
+			out = append(out, e)
+		}
+		return rows.Err()
+	})
+	return out
 }
