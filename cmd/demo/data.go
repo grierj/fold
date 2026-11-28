@@ -98,13 +98,14 @@ type demoEvent struct {
 	monthWeek, minutes      int
 	untilWeeks              int
 	video                   string
+	seats                   int
 }
 
 var eventList = []demoEvent{
 	{group: "Tuesday Men's Bible Study", title: "Men's Bible Study", place: "Fellowship hall", at: "06:30", weekday: time.Tuesday, repeat: events.Weekly, minutes: 75, video: "https://meet.example.org/mens-bible-study"},
 	{group: "Couples Small Group", title: "Couples night", place: "The Whitakers' home, 412 Alder Lane", at: "19:00", weekday: time.Friday, repeat: events.Biweekly, minutes: 120},
 	{group: "Food Pantry Team", title: "Pantry distribution", place: "Church parking lot, north entrance", at: "09:00", weekday: time.Saturday, repeat: events.Monthly, monthWeek: 2, minutes: 180},
-	{group: "Young Adults", title: "Game night and chili supper", place: "Youth room", at: "18:30", weekday: time.Friday, repeat: events.Once, minutes: 150},
+	{group: "Young Adults", title: "Game night and chili supper", place: "Youth room", at: "18:30", weekday: time.Friday, repeat: events.Once, minutes: 150, seats: 3},
 	{group: "Choir", title: "Christmas cantata rehearsal", place: "Choir room", at: "19:00", weekday: time.Wednesday, repeat: events.Weekly, minutes: 90, untilWeeks: 6},
 	{group: "Senior Saints Lunch", title: "Senior Saints lunch", place: "Fellowship hall", at: "12:00", weekday: time.Wednesday, repeat: events.Monthly, monthWeek: 1, minutes: 90},
 	{group: "Grief Share", title: "Grief Share evening", place: "Church library", at: "19:00", weekday: time.Monday, repeat: events.Weekly, minutes: 90},
