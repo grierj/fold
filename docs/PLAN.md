@@ -16,7 +16,7 @@ The only place status is kept. Update the row in the pull request that changes i
 |---|---|---|
 | 0 | Foundation and install | Done (v0.2.0). The timed install by a person waits for an installer who is not Grier |
 | 1 | People, groups, approvals, notices | Done (v0.3.0). A real volunteer admin approving from their phone is in `docs/FIRST-CHURCH-CHECKS.md` |
-| 2 | Events, dates, RSVP, calendar | Planned below (R33 to R51). Milestones 1 to 3 and 4a done; milestone 4b in review |
+| 2 | Events, dates, RSVP, calendar | Done (R33 to R52). Measured below. Inviting one person to one private date waits (R51); the iPhone feed check is in `docs/FIRST-CHURCH-CHECKS.md` |
 | 3 | Announcements, reminders, email choices | Not started |
 | 4 | First-church readiness. **Pilot goes live.** | Not started |
 | 5 | Households, children, teens | Waits for the pilot |
@@ -344,7 +344,33 @@ An estimate to test the ceilings, not a schema.
 - **Tables:** 24 of 35 (R13). Room for push, SMS or sign-up sheets when a church asks.
 - **Routes:** a form is usually two routes (show it, post it). A rough count by slice comes to
   about 100 to 110 by slice 6, against 200 (R13).
-- **Lines and test time:** unknown until the measuring gate after slice 2.
+- **Lines and test time:** measured after slice 2, below.
+
+### Measured after slice 2 (2026-11-27)
+
+| Budget | Ceiling | After slice 2 |
+|---|---|---|
+| Go and templates, not tests | 25,000 lines | 20,096 (plus 48 lines of our own JavaScript and 304 of CSS source) |
+| Tables | 35 | 15 real tables. `make budgets` prints 17 because its grep also counts the two "new table, copy, swap" rebuilds of `people` |
+| Routes | 200 | 91 |
+| Whole test suite | 3 minutes, no containers | 8.3 seconds for `go test -count=1 ./...`; the browser gates take about 2.5 minutes more and run in CI |
+| Containers a church runs | 2 | 2 (the app and Caddy) |
+| Go modules required directly | few | 2: the SQLite driver and `rsc.io/qr` (the feed's QR code) |
+
+**Against Fold for the same behaviour.** Fold at the pinned commit had 76,231 lines of non-test Go
+and 40,532 lines of TypeScript for its separate client, 116,763 in all, and 215 API routes. Leaving
+out every Fold file whose name belongs to a feature this project has not built (rooms, messages,
+households, teens, push, contact requests, departure, reminders, erasure, import, attendance,
+avatars, consent, passwords, audit, bounces, export) still leaves about 48,400 lines of Go and
+30,300 of TypeScript, about 78,700. That count is generous to Fold, because the files it keeps
+also carry parts of the features it leaves out. This project does the same work in 20,096 lines,
+about a quarter, with 10,038 lines of tests against Fold's 186,499.
+
+**Verdict: clearly smaller.** The gate passes. The one budget to watch is lines: slice 2 used
+about 9,000 of the remaining 15,000, with slices 3 and 4 still to come. Slice 3 should stay under
+about 2,500 lines so slice 4 has room; if it cannot, it asks Grier to raise the ceiling (R13's
+spirit) rather than squeezing. The timed install by someone who is not Grier still waits, as in
+slice 0.
 
 ## Where each carried rule lands
 
