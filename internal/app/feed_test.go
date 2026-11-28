@@ -59,14 +59,14 @@ func TestFeedLifecycle(t *testing.T) {
 	if r := mia.get("/profile"); feedPattern.MatchString(r.body) || !strings.Contains(r.body, "Your calendar feed is on") || !strings.Contains(r.body, "Make a new link") {
 		t.Fatal("the profile shows the link again, or not that the feed is on")
 	}
-	second := turnOnFeed(t, mia)
+	turnOnFeed(t, mia)
 	if r := mia.get("/profile"); !strings.Contains(r.body, "Your calendar feed is on") {
 		t.Fatal("the feed is not on after a new link")
 	}
 	if r := mia.post("/profile", "/profile/feed/new", nil); !strings.Contains(r.body, "The one before it no longer works") {
 		t.Fatal("making a new link does not say the old one stopped")
 	}
-	second = turnOnFeed(t, mia)
+	second := turnOnFeed(t, mia)
 	gone(t, s, first, "a replaced link")
 	if r := s.browser().get(second); r.status != http.StatusOK {
 		t.Fatalf("the new link: %d", r.status)
