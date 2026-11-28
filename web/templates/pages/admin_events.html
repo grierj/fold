@@ -1,0 +1,18 @@
+{{define "title"}}Church events{{end}}
+{{define "content"}}<div class="page-narrow">
+  <div class="page-header">
+    <h1 class="text-2xl font-bold sm:text-3xl">Church events</h1>
+    {{if .Data.Events}}{{template "linkbutton" (linkbutton "primary" "Schedule a church-wide event" "/events/new")}}{{end}}
+  </div>
+  {{template "adminnav" "events"}}
+  {{if .Data.Events}}
+  <ul class="divide-y divide-border border-y border-border">
+    {{range .Data.Events}}<li class="py-3">
+      <a class="text-link wrap-anywhere" href="/events/{{.UID}}">{{.Title}}</a>
+      <p class="text-sm text-text-muted">{{.Pattern}}</p>
+    </li>{{end}}
+  </ul>
+  {{else}}
+  {{template "empty" (empty "all-caught-up.svg" "No church-wide events yet" "Events for the whole church, not one group, are listed here. You can name hosts to run each one." (linkbutton "primary" "Schedule a church-wide event" "/events/new"))}}
+  {{end}}
+</div>{{end}}

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"fold/internal/db"
+	"fold/internal/events"
 	"fold/internal/groups"
 	"fold/internal/people"
 	"fold/internal/policy"
@@ -181,5 +182,31 @@ func (c SetContactHidden) Apply(tx *write.Tx) error {
 	}
 	tx.Subject(p.UID)
 	tx.Detail("hidden", map[bool]string{true: "1", false: "0"}[c.Hidden])
+	return nil
+}
+
+// SetZone saves a person's own time zone, which their pages and email use
+// (DEC-58). First is the browser's guess on a first visit: it saves only
+// while the person has none, so it never overrides a choice. The zone
+// stays out of the audit row, like the rest of a profile (R30).
+type SetZone struct {
+	Zone  string
+	First bool
+}
+
+func (SetZone) Action() string { return "profile.zone" }
+
+func (c SetZone) Apply(tx *write.Tx) error {
+	p := tx.Actor.Person
+	if _, err := events.LoadZone(c.Zone); err != nil {
+		return write.ErrNotAllowed
+	}
+	if (c.First && p.Zone != "") || p.Zone == c.Zone {
+		return write.ErrNothing
+	}
+	if _, err := tx.Exec(`UPDATE people SET zone = ?, updated_at = ? WHERE id = ?`, c.Zone, tx.Now.Unix(), p.ID); err != nil {
+		return err
+	}
+	tx.Subject(p.UID)
 	return nil
 }

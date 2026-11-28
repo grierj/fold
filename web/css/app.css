@@ -229,6 +229,14 @@
   .repeat-settings:has(#repeat-once:checked) .until-field { display: none; }
 }
 
+/* The reason for opening an event or date wider than its group shows only
+   when a wider choice is checked, without script. */
+@layer components {
+  .vis-settings[data-group="public"] .reason-field,
+  .vis-settings[data-group="church"]:not(:has(#vis-public:checked)) .reason-field,
+  .vis-settings[data-group="invite_only"]:not(:has(#vis-public:checked, #vis-church:checked)) .reason-field { display: none; }
+}
+
 /* The bell and the notice list. */
 @layer components {
   .badge { @apply ml-1 inline-flex min-w-6 items-center justify-center rounded-full bg-primary px-1.5 text-xs font-semibold text-primary-foreground; }

@@ -118,7 +118,7 @@ func (a *App) runGroup(w http.ResponseWriter, r *http.Request, c write.Command, 
 var groupStatuses = map[string]string{
 	"joined":        "You joined the group.",
 	"already":       "You're already in this group.",
-	"many":          "That's a lot of changes in a short time, so this one wasn't made. Try again in a little while.",
+	"many":          "That's a lot of changes in a short time, so this one could not be saved. Try again in a little while.",
 	"left":          "You left the group.",
 	"saved":         "Saved.",
 	"archived":      "The group is archived. It no longer shows in the list.",

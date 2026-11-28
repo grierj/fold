@@ -17,6 +17,7 @@
     </section>
     <section class="section" aria-labelledby="g-choices"><h2 id="g-choices" class="mb-4 text-xl font-bold">Checkboxes and choices</h2>
       <form class="max-w-xl" action="/admin/gallery" method="get" novalidate>{{range .Data.Choices}}{{template "choice" .}}{{end}}</form>
+      <form class="form-stack mt-6 max-w-xl" action="/admin/gallery" method="get" novalidate>{{range .Data.Selects}}{{template "select" .}}{{end}}</form>
     </section>
     <section class="section" aria-labelledby="g-chips"><h2 id="g-chips" class="mb-4 text-xl font-bold">Chips</h2>
       <div class="flex flex-wrap gap-2">{{range .Data.Chips}}{{template "chip" .}}{{end}}</div>

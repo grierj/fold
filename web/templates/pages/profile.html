@@ -15,6 +15,10 @@
     <p class="mt-2 text-text-muted">You sign in with it. Admins can always see it. Leaders of your groups see it unless you turn this off.</p>
     <div class="mt-4">{{template "contact" .}}</div>
   </section>
+  <section class="section mt-10" aria-labelledby="zone-h">
+    <h2 id="zone-h" class="text-xl font-bold">Time zone</h2>
+    <div class="mt-4">{{template "zone" .}}</div>
+  </section>
   <section class="section mt-10 flex flex-wrap items-center gap-3" aria-label="More">
     {{if .Viewer.IsAdmin}}{{template "linkbutton" (linkbutton "secondary" "Admin" "/admin/requests")}}{{template "linkbutton" (linkbutton "ghost" "Components" "/admin/gallery")}}{{end}}
     <form method="post" action="/signout">{{template "csrf" .}}{{template "button" (button "secondary" "Sign out")}}</form>
@@ -22,4 +26,11 @@
 </div>{{end}}
 {{define "contact"}}<form id="contact" class="flex flex-wrap items-center gap-3" method="post" action="/profile/contact" hx-post="/profile/contact" hx-target="this" hx-swap="outerHTML">
   {{template "csrf" .}}{{template "chip" .Data.Contact}}{{template "status" .Data.Status}}
+  {{with .Data.ContactErr}}<p class="field-error w-full" role="alert"><span aria-hidden="true">⚠</span><span>{{.}}</span></p>{{end}}
+</form>{{end}}
+
+{{define "zone"}}<form id="zone-form" class="form-stack" method="post" action="/profile/zone">
+  {{template "csrf" .}}{{template "select" .Data.Zone}}
+  <noscript>{{template "button" (button "secondary" "Save")}}</noscript>
+  {{template "status" .Data.ZoneStatus}}
 </form>{{end}}

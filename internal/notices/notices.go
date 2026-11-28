@@ -26,6 +26,8 @@ const (
 	MemberAdded      = "member.added"      // to the person a leader added (P6)
 	MadeLeader       = "member.leader"     // to the person made a leader
 	Invited          = "member.invited"    // to the person invited; actor: who invited; group, if any
+	EventOpened      = "event.opened"      // to a group's other leaders and the admins; actor; event, and date if one date
+	HostNamed        = "event.host"        // to the person made a host; actor; event
 )
 
 // JobMail emails one notice to its person, for the kinds that are required
@@ -46,6 +48,8 @@ type New struct {
 	ActorID   int64 // 0 when nobody in particular
 	SubjectID int64 // the person it is about, 0 if none
 	GroupID   int64 // 0 if none
+	EventID   int64 // 0 if none
+	DateID    int64 // 0 if none
 }
 
 func nullID(id int64) any {
@@ -57,8 +61,8 @@ func nullID(id int64) any {
 
 // Add writes a notice, and queues its email when the kind is mailed.
 func Add(tx *write.Tx, n New) error {
-	res, err := tx.Exec(`INSERT INTO notices (person_id, kind, actor_id, subject_id, group_id, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		n.PersonID, n.Kind, nullID(n.ActorID), nullID(n.SubjectID), nullID(n.GroupID), tx.Now.Unix())
+	res, err := tx.Exec(`INSERT INTO notices (person_id, kind, actor_id, subject_id, group_id, event_id, date_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		n.PersonID, n.Kind, nullID(n.ActorID), nullID(n.SubjectID), nullID(n.GroupID), nullID(n.EventID), nullID(n.DateID), tx.Now.Unix())
 	if err != nil {
 		return err
 	}
@@ -117,6 +121,7 @@ type row struct {
 	id, personID              int64
 	kind                      string
 	actorID, subjectID, group sql.NullInt64
+	event, date               sql.NullInt64
 	at                        int64
 	read                      sql.NullInt64
 }
@@ -131,7 +136,7 @@ type Reader struct {
 // List is a person's notices, newest first, worded for them. A notice whose
 // subject they may no longer see is left out.
 func List(ctx context.Context, q db.Querier, r Reader, limit int) ([]Notice, error) {
-	rows, err := q.QueryContext(ctx, `SELECT id, person_id, kind, actor_id, subject_id, group_id, created_at, read_at
+	rows, err := q.QueryContext(ctx, `SELECT id, person_id, kind, actor_id, subject_id, group_id, event_id, date_id, created_at, read_at
 		FROM notices WHERE person_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`, r.ID, limit)
 	if err != nil {
 		return nil, err
@@ -139,7 +144,7 @@ func List(ctx context.Context, q db.Querier, r Reader, limit int) ([]Notice, err
 	var raw []row
 	for rows.Next() {
 		var x row
-		if err := rows.Scan(&x.id, &x.personID, &x.kind, &x.actorID, &x.subjectID, &x.group, &x.at, &x.read); err != nil {
+		if err := rows.Scan(&x.id, &x.personID, &x.kind, &x.actorID, &x.subjectID, &x.group, &x.event, &x.date, &x.at, &x.read); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -182,8 +187,8 @@ var ErrGone = errors.New("notices: gone")
 // One reads a single notice for its person.
 func One(ctx context.Context, q db.Querier, r Reader, id int64) (Notice, error) {
 	var x row
-	err := q.QueryRowContext(ctx, `SELECT id, person_id, kind, actor_id, subject_id, group_id, created_at, read_at
-		FROM notices WHERE id = ?`, id).Scan(&x.id, &x.personID, &x.kind, &x.actorID, &x.subjectID, &x.group, &x.at, &x.read)
+	err := q.QueryRowContext(ctx, `SELECT id, person_id, kind, actor_id, subject_id, group_id, event_id, date_id, created_at, read_at
+		FROM notices WHERE id = ?`, id).Scan(&x.id, &x.personID, &x.kind, &x.actorID, &x.subjectID, &x.group, &x.event, &x.date, &x.at, &x.read)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && x.personID != r.ID) {
 		return Notice{}, ErrGone
 	}
@@ -245,6 +250,8 @@ func word(ctx context.Context, q db.Querier, r Reader, x row) (Notice, bool, err
 		return wordGroup(ctx, q, r, x, n)
 	case MemberAdded, MadeLeader, Invited:
 		return wordMember(ctx, q, r, x, n)
+	case EventOpened, HostNamed:
+		return wordEvent(ctx, q, r, x, n)
 	}
 	return n, false, nil
 }
@@ -301,6 +308,69 @@ func wordGroup(ctx context.Context, q db.Querier, r Reader, x row, n Notice) (No
 		n.Text, n.Subject = strings.TrimSpace("Your group "+quoted+" wasn't approved. "+policy.GroupReasons[reason]), "About your group"
 	}
 	n.Note = note
+	return n, true, nil
+}
+
+// audiences words who an opened event or date now lets in.
+var audiences = map[string]string{policy.Public: "everyone", policy.Church: "everyone signed in at the church"}
+
+// wordEvent words the event notices, while the event is not deleted. An
+// opening shows to an admin, or to someone who still leads the event's
+// group, with the reason given (DEC-28); a host's notice only while they
+// are still its host.
+func wordEvent(ctx context.Context, q db.Querier, r Reader, x row, n Notice) (Notice, bool, error) {
+	if !x.event.Valid {
+		return n, false, nil
+	}
+	var uid, title, status, visibility, reason string
+	var groupID sql.NullInt64
+	err := q.QueryRowContext(ctx, `SELECT uid, title, status, visibility, open_reason, group_id FROM events WHERE id = ?`, x.event.Int64).
+		Scan(&uid, &title, &status, &visibility, &reason, &groupID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return n, false, nil
+	}
+	if err != nil || status != policy.EventActive {
+		return n, false, err
+	}
+	who := "Someone"
+	if x.actorID.Valid {
+		q.QueryRowContext(ctx, `SELECT name FROM people WHERE id = ?`, x.actorID.Int64).Scan(&who)
+	}
+	quoted := "\u201c" + title + "\u201d"
+	n.Href = "/events/" + uid
+	if x.kind == HostNamed {
+		var hosts bool
+		q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM event_hosts WHERE event_id = ? AND person_id = ?)`, x.event.Int64, r.ID).Scan(&hosts)
+		if !hosts {
+			return n, false, nil
+		}
+		n.Text, n.Subject = who+" made you a host of "+quoted+".", "You're hosting an event"
+		return n, true, nil
+	}
+	var leads bool
+	var groupStatus, groupVis string
+	if groupID.Valid {
+		q.QueryRowContext(ctx, `SELECT status, visibility, EXISTS (SELECT 1 FROM active_memberships WHERE group_id = g.id AND person_id = ? AND role = 'leader')
+			FROM groups g WHERE g.id = ?`, r.ID, groupID.Int64).Scan(&groupStatus, &groupVis, &leads)
+	}
+	if !groupID.Valid || groupStatus == policy.GroupDeleted || (!leads && !r.Admin) {
+		return n, false, nil
+	}
+	what := quoted
+	if x.date.Valid {
+		var duid, dvis string
+		err := q.QueryRowContext(ctx, `SELECT uid, coalesce(visibility, ''), open_reason FROM dates WHERE id = ?`, x.date.Int64).Scan(&duid, &dvis, &reason)
+		if err != nil {
+			return n, false, nil
+		}
+		visibility = policy.Widest(visibility, dvis)
+		what, n.Href = "a date of "+quoted, "/dates/"+duid
+	}
+	if !policy.MoreOpen(visibility, groupVis) {
+		return n, false, nil // the opening was undone; the audit row keeps it
+	}
+	to := audiences[visibility]
+	n.Text, n.Subject, n.Note = who+" opened "+what+" to "+to+".", "An event was opened wider", reason
 	return n, true, nil
 }
 

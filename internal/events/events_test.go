@@ -2,8 +2,10 @@ package events_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -57,18 +59,42 @@ func weekly(start string) events.Input {
 	return events.Input{Title: "Study", Visibility: policy.Public, Pattern: events.Pattern{Start: start, Minutes: 90, Repeat: events.Weekly}}
 }
 
-// The SQL filter on every list of dates is policy.CanSeeEvent, for every
-// viewer, group status, group and event visibility, and event status.
+// The SQL filter on every list of dates is policy.CanSeeDate, for every
+// viewer, group status, group, event and date visibility, event status,
+// church-wide or not, host or not, and a stray host row on a group's event.
 func TestVisibleSQLMatchesPolicy(t *testing.T) {
 	env := setup(t)
 	ctx := context.Background()
 	type made struct {
-		uid string
-		g   policy.Group
-		e   policy.Event
-		gid int64
+		date, event string
+		eventID     int64
+		g           policy.Group
+		e           events.Event
+		dvis        string
+		gid         int64
 	}
 	var all []made
+	dvisAll := []string{"", policy.Public, policy.Church, policy.InviteOnly}
+	add := func(gid int64, g policy.Group, ev, es string) {
+		uid := fmt.Sprintf("e%d", len(all))
+		res, err := env.Writer.Exec(`INSERT INTO events (uid, group_id, title, visibility, zone, starts_local, minutes, repeat, status, created_at, updated_at)
+			VALUES (?, ?, 'x', ?, 'America/Boise', '2026-12-01T19:00', 60, 'once', ?, 0, 0)`, uid, sql.NullInt64{Int64: gid, Valid: gid != 0}, ev, es)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, _ := res.LastInsertId()
+		// Person 2 hosts every other event; on a group's event that grants nothing.
+		if id%2 == 0 {
+			exec(t, env, `INSERT INTO event_hosts (event_id, person_id, created_at) VALUES (?, 2, 0)`, id)
+		}
+		for i, dv := range dvisAll {
+			duid := fmt.Sprintf("%s-%d", uid, i)
+			exec(t, env, `INSERT INTO dates (uid, event_id, day, starts_at, ends_at, starts_local, visibility) VALUES (?, ?, ?, ?, ?, '2026-12-01T19:00', ?)`,
+				duid, id, fmt.Sprintf("2026-12-0%d", i+1), testenv.Start.Add(time.Hour).Unix(), testenv.Start.Add(2*time.Hour).Unix(), sql.NullString{String: dv, Valid: dv != ""})
+			e := events.Event{ID: id, GroupID: gid, Status: es, Visibility: ev}
+			all = append(all, made{duid, uid, id, g, e, dv, gid})
+		}
+	}
 	n := 0
 	vis := []string{policy.Public, policy.Church, policy.InviteOnly}
 	for _, status := range []string{policy.GroupPending, policy.GroupActive, policy.GroupArchived, policy.GroupDeleted} {
@@ -77,38 +103,42 @@ func TestVisibleSQLMatchesPolicy(t *testing.T) {
 			addGroup(t, env, n, status, gv)
 			for _, ev := range vis {
 				for _, es := range []string{policy.EventActive, policy.EventDeleted} {
-					uid := fmt.Sprintf("e-%d-%s-%s", n, ev, es)
-					res, err := env.Writer.Exec(`INSERT INTO events (uid, group_id, title, visibility, zone, starts_local, minutes, repeat, status, created_at, updated_at)
-						VALUES (?, ?, 'x', ?, 'America/Boise', '2026-12-01T19:00', 60, 'once', ?, 0, 0)`, uid, n, ev, es)
-					if err != nil {
-						t.Fatal(err)
-					}
-					id, _ := res.LastInsertId()
-					exec(t, env, `INSERT INTO dates (uid, event_id, day, starts_at, ends_at, starts_local) VALUES (?, ?, '2026-12-01', ?, ?, '2026-12-01T19:00')`,
-						"d"+uid, id, testenv.Start.Add(time.Hour).Unix(), testenv.Start.Add(2*time.Hour).Unix())
-					all = append(all, made{uid, policy.Group{Status: status, Visibility: gv}, policy.Event{Status: es, Visibility: ev}, int64(n)})
+					add(int64(n), policy.Group{Status: status, Visibility: gv}, ev, es)
 				}
 			}
 		}
 	}
-	for viewer := 0; viewer <= 6; viewer++ {
+	for _, ev := range vis {
+		for _, es := range []string{policy.EventActive, policy.EventDeleted} {
+			for range 2 { // one hosted by person 2, one not
+				add(0, policy.Group{}, ev, es)
+			}
+		}
+	}
+	exec(t, env, `INSERT INTO people (id, uid, name, email, status, created_at, updated_at) VALUES (7, 'p7', 'Off', 'p7@example.org', 'disabled', 0, 0)`)
+	exec(t, env, `INSERT INTO event_hosts (event_id, person_id, created_at) SELECT id, 7, 0 FROM events WHERE group_id IS NULL`)
+	for viewer := 0; viewer <= 7; viewer++ {
 		v := events.Viewer{ID: int64(viewer), Admin: viewer == 1}
 		var p *policy.Person
 		if viewer > 0 {
-			p = &policy.Person{ID: int64(viewer), Admin: viewer == 1}
+			p = &policy.Person{ID: int64(viewer), Admin: viewer == 1, Inactive: viewer == 7}
 		}
-		list, err := events.Upcoming(ctx, env.Writer, v, events.Filter{}, testenv.Start, 10000)
+		list, err := events.Upcoming(ctx, env.Writer, v, events.Filter{}, testenv.Start, 100000)
 		if err != nil {
 			t.Fatal(err)
 		}
 		listed := map[string]bool{}
 		for _, l := range list {
-			listed[l.Event] = true
+			listed[l.UID] = true
 		}
 		for _, m := range all {
-			r, _ := groups.RelOf(ctx, env.Writer, m.gid, int64(viewer))
-			if want := policy.CanSeeEvent(p, m.e, m.g, r); listed[m.uid] != want {
-				t.Errorf("viewer %d, group %+v, event %+v: listed %v, policy %v", viewer, m.g, m.e, listed[m.uid], want)
+			var r policy.Rel
+			if m.gid != 0 {
+				r, _ = groups.RelOf(ctx, env.Writer, m.gid, int64(viewer))
+			}
+			host, _ := events.IsHost(ctx, env.Writer, m.eventID, int64(viewer))
+			if want := policy.CanSeeDate(p, m.e.Policy(host), m.dvis, m.g, r); listed[m.date] != want {
+				t.Errorf("viewer %d, group %+v, event %+v, date %q, host %v: listed %v, policy %v", viewer, m.g, m.e.Policy(host), m.dvis, host, listed[m.date], want)
 			}
 		}
 	}
@@ -278,7 +308,7 @@ func TestWhoMaySchedule(t *testing.T) {
 		{"member", 3, "g1", policy.Church, write.ErrNotAllowed},
 		{"outsider", 4, "g1", policy.Church, write.ErrNotAllowed},
 		{"removed", 5, "g1", policy.Church, write.ErrNotAllowed},
-		{"wider than the group", 2, "g1", policy.Public, write.ErrNotAllowed},
+		{"wider than the group, which is told", 2, "g1", policy.Public, nil},
 		{"a waiting group", 2, "g2", policy.Public, write.ErrNotAllowed},
 		{"an archived group", 1, "g3", policy.Public, write.ErrNotAllowed},
 		{"no such group", 1, "nope", policy.Public, write.ErrNotAllowed},
@@ -344,5 +374,206 @@ func TestOldEventChangesItsTime(t *testing.T) {
 	}
 	if err := run(t, env, 2, &events.Edit{UID: c.UID, Input: weekly("2026-12-08T19:30"), Version: 2}); !errors.Is(err, events.ErrStartRange) {
 		t.Fatalf("a new first day over a year back: %v", err)
+	}
+}
+
+func dateUID(t *testing.T, env *testenv.Env, event, day string) string {
+	t.Helper()
+	var uid string
+	if err := env.Writer.QueryRow(`SELECT d.uid FROM dates d JOIN events e ON e.id = d.event_id WHERE e.uid = ? AND d.day = ?`, event, day).Scan(&uid); err != nil {
+		t.Fatalf("no date on %s: %v", day, err)
+	}
+	return uid
+}
+
+// P7 and DEC-91: one date cancelled by hand stays cancelled through a series
+// edit, keeps its clock, and comes back only by hand, on the event's
+// current times, while the repeat still makes its day.
+func TestCancelAndRestoreOneDate(t *testing.T) {
+	env := setup(t)
+	addGroup(t, env, 1, policy.GroupActive, policy.Public)
+	c := &events.Create{GroupUID: "g1", Input: weekly("2026-12-01T19:00")}
+	run(t, env, 2, c)
+	d := dateUID(t, env, c.UID, "2026-12-08")
+	if err := run(t, env, 3, events.CancelDate{UID: d}); !errors.Is(err, write.ErrNotAllowed) {
+		t.Fatalf("a member cancelled a date: %v", err)
+	}
+	if err := run(t, env, 2, events.CancelDate{UID: d}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(t, env, 2, events.CancelDate{UID: d}); !errors.Is(err, events.ErrDateGone) {
+		t.Fatalf("cancelled twice: %v", err)
+	}
+	if err := run(t, env, 2, &events.Edit{UID: c.UID, Input: weekly("2026-12-01T20:00"), Version: 1}); err != nil {
+		t.Fatal(err)
+	}
+	rows := dateRows(t, env, c.UID)
+	if rows["2026-12-08"] != "19:00 cancelled person" || rows["2026-12-15"] != "20:00 scheduled " {
+		t.Fatalf("after a series edit: %s / %s", rows["2026-12-08"], rows["2026-12-15"])
+	}
+	if err := run(t, env, 2, events.RestoreDate{UID: d}); err != nil {
+		t.Fatal(err)
+	}
+	if rows := dateRows(t, env, c.UID); rows["2026-12-08"] != "20:00 scheduled " {
+		t.Fatalf("restored on the old clock: %s", rows["2026-12-08"])
+	}
+	// A series-cancelled date is not restored by hand, and a hand-cancelled
+	// day the repeat no longer makes cannot come back.
+	run(t, env, 2, events.CancelDate{UID: d})
+	if err := run(t, env, 2, &events.Edit{UID: c.UID, Input: weekly("2026-12-02T20:00"), Version: 2, Confirmed: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(t, env, 2, events.RestoreDate{UID: d}); !errors.Is(err, events.ErrDateGone) {
+		t.Fatalf("restored a day the repeat no longer makes: %v", err)
+	}
+	if err := run(t, env, 2, events.RestoreDate{UID: dateUID(t, env, c.UID, "2026-12-15")}); !errors.Is(err, events.ErrDateGone) {
+		t.Fatalf("restored a series-cancelled date by hand: %v", err)
+	}
+	// A date that has begun is history.
+	env.Clock.Set(time.Date(2026, 12, 10, 4, 0, 0, 0, time.UTC))
+	if err := run(t, env, 2, events.CancelDate{UID: dateUID(t, env, c.UID, "2026-12-09")}); !errors.Is(err, events.ErrDateGone) {
+		t.Fatalf("cancelled a started date: %v", err)
+	}
+	if n := env.Count(t, `SELECT count(*) FROM audit_log WHERE action IN ('date.cancel', 'date.restore')`); n != 3 {
+		t.Fatalf("%d audit rows", n)
+	}
+}
+
+func notices(t *testing.T, env *testenv.Env, kind string) map[int64]int {
+	t.Helper()
+	rows, err := env.Writer.Query(`SELECT person_id, count(*) FROM notices WHERE kind = ? GROUP BY person_id`, kind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	out := map[int64]int{}
+	for rows.Next() {
+		var id int64
+		var n int
+		rows.Scan(&id, &n)
+		out[id] = n
+	}
+	return out
+}
+
+// DEC-6, DEC-28: opening an event or one date wider than its group tells
+// the group's other leaders and the admins, once each, with the reason kept
+// in the audit row; a later edit that opens nothing tells nobody.
+func TestOpeningWiderIsTold(t *testing.T) {
+	env := setup(t)
+	addGroup(t, env, 1, policy.GroupActive, policy.InviteOnly)
+	exec(t, env, `UPDATE memberships SET role = 'leader' WHERE person_id = 3`) // a co-leader
+	in := weekly("2026-12-01T19:00")
+	in.Visibility = policy.InviteOnly
+	c := &events.Create{GroupUID: "g1", Input: in}
+	run(t, env, 2, c)
+	if len(notices(t, env, "event.opened")) != 0 {
+		t.Fatal("an event at its group's visibility was told")
+	}
+	open := weekly("2026-12-01T19:00")
+	open.Visibility, open.Reason = policy.Church, "For the whole church this time."
+	if err := run(t, env, 2, &events.Edit{UID: c.UID, Input: open, Version: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if got := notices(t, env, "event.opened"); len(got) != 2 || got[1] != 1 || got[3] != 1 {
+		t.Fatalf("told: %v; want the admin and the co-leader once each", got)
+	}
+	var text, subjects string
+	env.Writer.QueryRow(`SELECT text, subjects FROM audit_log WHERE action = 'event.edit' ORDER BY seq DESC LIMIT 1`).Scan(&text, &subjects)
+	if text != open.Reason || !strings.Contains(subjects, `"p1"`) || !strings.Contains(subjects, `"p3"`) {
+		t.Fatalf("audit: %q %s", text, subjects)
+	}
+	retitled := open
+	retitled.Title, retitled.Reason = "Study night", ""
+	run(t, env, 2, &events.Edit{UID: c.UID, Input: retitled, Version: 2})
+	if got := notices(t, env, "event.opened"); got[1] != 1 {
+		t.Fatalf("a title edit told again: %v", got)
+	}
+	if n := env.Count(t, `SELECT count(*) FROM events WHERE open_reason = ?`, open.Reason); n != 1 {
+		t.Fatal("a title edit lost the reason")
+	}
+	// One date opened to the public: told again, with its own reason; never narrower.
+	d := dateUID(t, env, c.UID, "2026-12-08")
+	if err := run(t, env, 2, events.OpenDate{UID: d, Visibility: policy.InviteOnly}); !errors.Is(err, write.ErrNotAllowed) {
+		t.Fatalf("a date narrower than its event: %v", err)
+	}
+	if err := run(t, env, 2, events.OpenDate{UID: d, Visibility: policy.Public, Reason: "Open house"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := notices(t, env, "event.opened"); got[1] != 2 || got[3] != 2 {
+		t.Fatalf("opening a date: %v", got)
+	}
+	list, _ := events.Upcoming(context.Background(), env.Writer, events.Viewer{}, events.Filter{}, testenv.Start, 100)
+	if len(list) != 1 || list[0].UID != d {
+		t.Fatalf("a stranger sees %d dates; want only the opened one", len(list))
+	}
+	// Back to the series': nothing is told, and the reason goes.
+	run(t, env, 2, events.OpenDate{UID: d})
+	if n := env.Count(t, `SELECT count(*) FROM dates WHERE uid = ? AND visibility IS NULL AND open_reason = ''`, d); n != 1 {
+		t.Fatal("not put back to the series'")
+	}
+	if got := notices(t, env, "event.opened"); got[1] != 2 {
+		t.Fatalf("narrowing told: %v", got)
+	}
+}
+
+// DEC-7: only admins make church-wide events, public or church only; hosts
+// run them, a disabled or removed host does not, and the series grows nightly.
+func TestChurchWideEventsAndHosts(t *testing.T) {
+	env := setup(t)
+	in := weekly("2026-12-06T10:00")
+	in.Visibility = policy.InviteOnly
+	if err := run(t, env, 1, &events.Create{Input: in}); !errors.Is(err, write.ErrNotAllowed) {
+		t.Fatalf("an invite-only church-wide event: %v", err)
+	}
+	in.Visibility = policy.Church
+	if err := run(t, env, 2, &events.Create{Input: in}); !errors.Is(err, write.ErrNotAllowed) {
+		t.Fatalf("a member made a church-wide event: %v", err)
+	}
+	c := &events.Create{Input: in}
+	if err := run(t, env, 1, c); err != nil {
+		t.Fatal(err)
+	}
+	retimed := weekly("2026-12-06T11:00")
+	retimed.Visibility = policy.Church
+	if err := run(t, env, 2, &events.Edit{UID: c.UID, Input: retimed, Version: 1}); !errors.Is(err, write.ErrNotAllowed) {
+		t.Fatalf("a non-host edited: %v", err)
+	}
+	if err := run(t, env, 1, events.AddHost{EventUID: c.UID, PersonUID: "p2"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := notices(t, env, "event.host"); got[2] != 1 {
+		t.Fatalf("the host was not told: %v", got)
+	}
+	if err := run(t, env, 2, &events.Edit{UID: c.UID, Input: retimed, Version: 1}); err != nil {
+		t.Fatalf("a host could not edit: %v", err)
+	}
+	if err := run(t, env, 2, events.AddHost{EventUID: c.UID, PersonUID: "p3"}); err != nil {
+		t.Fatalf("a host could not name another: %v", err)
+	}
+	exec(t, env, `UPDATE people SET status = 'disabled' WHERE id = 6`)
+	if err := run(t, env, 2, events.AddHost{EventUID: c.UID, PersonUID: "p6"}); !errors.Is(err, write.ErrNotAllowed) {
+		t.Fatalf("a disabled person made a host: %v", err)
+	}
+	// Removing yourself, then the last host, is fine; admins still run it.
+	run(t, env, 2, events.RemoveHost{EventUID: c.UID, PersonUID: "p2"})
+	if err := run(t, env, 2, events.CancelDate{UID: dateUID(t, env, c.UID, "2026-12-13")}); !errors.Is(err, write.ErrNotAllowed) {
+		t.Fatalf("a removed host acted: %v", err)
+	}
+	exec(t, env, `UPDATE people SET status = 'disabled' WHERE id = 3`)
+	if err := run(t, env, 3, events.CancelDate{UID: dateUID(t, env, c.UID, "2026-12-13")}); !errors.Is(err, write.ErrSignedOut) {
+		t.Fatalf("a disabled host acted: %v", err)
+	}
+	if err := run(t, env, 1, events.RemoveHost{EventUID: c.UID, PersonUID: "p3"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(t, env, 1, events.CancelDate{UID: dateUID(t, env, c.UID, "2026-12-13")}); err != nil {
+		t.Fatalf("an admin with no hosts left: %v", err)
+	}
+	before := env.Count(t, `SELECT count(*) FROM dates`)
+	env.Clock.Advance(31 * 24 * time.Hour)
+	events.Extend(env.Exec)(context.Background(), write.Job{})
+	if env.Count(t, `SELECT count(*) FROM dates`) <= before {
+		t.Fatal("a church-wide series did not grow")
 	}
 }

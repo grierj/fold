@@ -111,8 +111,9 @@ type page struct {
 }
 
 type viewerInfo struct {
-	Name    string
-	IsAdmin bool
+	Name      string
+	IsAdmin   bool
+	ZoneUnset bool // the page asks the browser for its zone (DEC-58)
 }
 
 // render writes a whole page, or one named block of it for a fragment

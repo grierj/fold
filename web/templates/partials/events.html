@@ -3,7 +3,7 @@
 {{define "daterow"}}<li class="py-3">
   {{if .Title}}<a class="text-link wrap-anywhere" href="/dates/{{.UID}}">{{.Title}}</a>
   <p class="text-sm text-text-muted">{{.When}}{{if .Moved}} · Moved for the clocks changing{{end}}</p>
-  {{else}}<a class="text-link" href="/dates/{{.UID}}">{{.When}}</a>{{if .Moved}}<p class="text-sm text-text-muted">Moved for the clocks changing</p>{{end}}{{end}}
+  {{else}}<a class="text-link" href="/dates/{{.UID}}">{{.When}}</a>{{if .Cancelled}} <span class="tag">Cancelled</span>{{end}}{{if .Moved}}<p class="text-sm text-text-muted">Moved for the clocks changing</p>{{end}}{{end}}
 </li>{{end}}
 
 {{/* place: where an event is, with a plain link to a maps search (R37). */}}

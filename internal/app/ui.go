@@ -41,6 +41,20 @@ type Field struct {
 	Autofocus             bool
 }
 
+// Select is a drop-down of options. With Trigger set it saves when changed
+// (DEC-98), posting to Trigger by htmx.
+type Select struct {
+	ID, Name, Label, Hint string
+	Options               []Option
+	Error                 string
+	Trigger               string // the URL a change posts to, or ""
+}
+
+type Option struct {
+	Value, Label string
+	Selected     bool
+}
+
 type Choice struct {
 	ID, Name, Type, Value string // Type is checkbox or radio
 	Label, Hint           string
