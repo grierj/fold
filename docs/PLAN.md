@@ -16,7 +16,7 @@ The only place status is kept. Update the row in the pull request that changes i
 |---|---|---|
 | 0 | Foundation and install | Done (v0.2.0). The timed install by a person waits for an installer who is not Grier |
 | 1 | People, groups, approvals, notices | Done (v0.3.0). A real volunteer admin approving from their phone is in `docs/FIRST-CHURCH-CHECKS.md` |
-| 2 | Events, dates, RSVP, calendar | Planned below (R33 to R41). Milestone 1a done; 1b in review |
+| 2 | Events, dates, RSVP, calendar | Planned below (R33 to R41). Milestone 1 done; 2a (answers) in review |
 | 3 | Announcements, reminders, email choices | Not started |
 | 4 | First-church readiness. **Pilot goes live.** | Not started |
 | 5 | Households, children, teens | Waits for the pilot |
@@ -204,7 +204,10 @@ people signed up. Then the measuring gate.
    invite-only group's name, place or members (DEC-6, DEC-17, DEC-28). Each person gets a time
    zone (DEC-58, R29): the church's by default, set from the browser the first time, changed on
    the profile.
-2. **Answers, seats and the waitlist.** Going, Maybe, Can't go, and Cancelled as its own state
+2. **Answers, seats and the waitlist**, in two pull requests: **2a** is answers (the states and
+   their moves, who may answer, the series answer, counts and names, the video link, leaving a
+   group, disabled accounts); **2b** is seats, the waitlist and its one promotion function, and
+   every flow that tells the people signed up. Going, Maybe, Can't go, and Cancelled as its own state
    (DEC-54). Membership is a standing invitation, a church-wide event invites every member, and a
    public event is not an invitation until the person answers (DEC-72, DEC-73). The series dialog
    says that dates added later are not answered for them, and a status line stays after each

@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { gate, watchCSP } from "./gates";
 import { signIn } from "./session";
 import { milestone1b } from "./slice2b";
+import { milestone2a } from "./slice2c";
 
 // Slice 2, milestone 1a: events and dates through the gates. Runs after
 // slice1.spec.ts on the same site: Pat, an admin, co-leads Sam's
@@ -115,4 +116,5 @@ test("scheduling, the event and date pages, and the series edit, through the gat
   await expect(page.getByText("The event is deleted.")).toBeVisible();
 
   await milestone1b(page, browser);
+  await milestone2a(page);
 });
