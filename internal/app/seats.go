@@ -3,7 +3,6 @@ package app
 import (
 	"errors"
 	"net/http"
-	"strings"
 
 	"fold/internal/accounts"
 	"fold/internal/events"
@@ -109,9 +108,9 @@ func (a *App) removeAnswer(w http.ResponseWriter, r *http.Request, f eventFacts,
 }
 
 func (a *App) removeDone(w http.ResponseWriter, r *http.Request, f eventFacts, htmx bool, target, back string, code int, text, done string) {
-	switch {
-	case htmx && strings.HasPrefix(target, "unseen-"):
-		f.Data = removed{ID: target, Text: text}
+	switch row := "unseen-" + r.PathValue("person"); {
+	case htmx && target == row:
+		f.Data = removed{ID: row, Text: text}
 		a.render(w, r, code, "event_private", "removed", f.page)
 	case htmx && target == "answer" && f.date.UID != "":
 		f, af, ok := a.loadDate(w, r)

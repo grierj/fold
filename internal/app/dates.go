@@ -23,6 +23,7 @@ var dateStatuses = map[string]string{
 	"restored":  "This date is back on.",
 	"removed":   "Removed from this date.",
 	"opened":    "Saved.",
+	"closed":    "Saved. This date is back to who can see the rest of the event.",
 	"gone":      "That could not be done. The page shows how things stand now.",
 	"many":      "That's a lot of changes in a short time, so this one could not be saved. Try again in a little while.",
 }
@@ -274,7 +275,8 @@ func (a *App) doneLine(f eventFacts, af answerFacts, done string) string {
 		return ""
 	case done == "cancelled" && !f.date.Cancelled,
 		done == "restored" && f.date.Cancelled,
-		done == "opened" && !policy.MoreOpen(f.date.Visibility, f.event.Visibility):
+		done == "opened" && !policy.MoreOpen(f.date.Visibility, f.event.Visibility),
+		done == "closed" && f.date.Visibility != "":
 		return ""
 	}
 	return dateStatuses[done]
@@ -565,5 +567,9 @@ func (a *App) postOpenDate(w http.ResponseWriter, r *http.Request) {
 		a.serverError(w, r, err)
 		return
 	}
-	http.Redirect(w, r, "/dates/"+f.date.UID+"?done=opened", http.StatusSeeOther)
+	done := "opened"
+	if vis == "" {
+		done = "closed"
+	}
+	http.Redirect(w, r, "/dates/"+f.date.UID+"?done="+done, http.StatusSeeOther)
 }

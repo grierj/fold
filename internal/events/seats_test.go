@@ -492,4 +492,3 @@ func TestMorePrivateListsWhoLosesSight(t *testing.T) {
 		t.Fatalf("closing a date: %v %+v", err, closeIt.Unseen)
 	}
 }
-

@@ -14,7 +14,8 @@ function day(weekday: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-export async function milestone1b(page: Page, browser: Browser) {
+// It hands back Zed's browser and the date it opened to everyone, for 2b.
+export async function milestone1b(page: Page, browser: Browser): Promise<{ zed: Page; opened: string }> {
   // A weekly invite-only event, then one date of it.
   await page.goto("/groups");
   await page.getByRole("link", { name: "Tuesday Bible Study" }).click();
@@ -121,4 +122,5 @@ export async function milestone1b(page: Page, browser: Browser) {
     await zed.goto("/profile");
     return zed.getByLabel("Your time zone").inputValue();
   }, { timeout: 10_000 }).toBe("America/Chicago");
+  return { zed, opened };
 }
