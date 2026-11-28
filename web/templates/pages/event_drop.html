@@ -19,6 +19,7 @@
     {{template "hidden" (hidden "until" .Data.Form.Until)}}
     {{template "hidden" (hidden "visibility" .Data.Form.Visibility)}}
     {{template "hidden" (hidden "reason" .Data.Form.Reason)}}
+    {{template "hidden" (hidden "video" .Data.Form.Video)}}
     {{template "hidden" (hidden "confirmed" "yes")}}
     {{template "button" (button "primary" (print "Save and cancel " .Data.Count))}}
     {{template "linkbutton" (linkbutton "secondary" "Go back" (print "/events/" .Data.Event.UID "/edit"))}}

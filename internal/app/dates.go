@@ -1,11 +1,15 @@
 package app
 
 import (
+	"database/sql"
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"fold/internal/accounts"
+	"fold/internal/answers"
 	"fold/internal/events"
 	"fold/internal/policy"
 	"fold/internal/write"
@@ -41,11 +45,152 @@ func seriesMakes(e events.Event, d events.Row, now time.Time) bool {
 	return false
 }
 
+// answerFacts are what the date page shows about answers, read in the
+// page's one read. Can't go is read only for those who may see it (DEC-64).
+type answerFacts struct {
+	mine               string
+	counts             answers.Counts
+	going, maybe, cant []string
+}
+
+// loadDate loads a date page's facts and its answers.
+func (a *App) loadDate(w http.ResponseWriter, r *http.Request) (eventFacts, answerFacts, bool) {
+	var af answerFacts
+	f, ok := a.loadEvent(w, r, true, func(q *sql.Tx, f *eventFacts) error {
+		ctx, p, ev, g := r.Context(), f.viewer(), f.ev(), f.group.Policy()
+		var err error
+		if f.session != nil {
+			if af.mine, err = answers.Mine(ctx, q, f.date.ID, f.session.Person.ID); err != nil {
+				return err
+			}
+		}
+		cants := policy.CanSeeCantGo(p, ev, g, f.rel)
+		if af.counts, err = answers.CountsFor(ctx, q, f.date.ID, cants); err != nil {
+			return err
+		}
+		if !policy.CanSeeAttendeeNames(p, ev, f.date.Visibility, g, f.rel) {
+			return nil
+		}
+		if af.going, err = answers.Names(ctx, q, f.date.ID, policy.AnswerGoing); err != nil {
+			return err
+		}
+		if af.maybe, err = answers.Names(ctx, q, f.date.ID, policy.AnswerMaybe); err != nil {
+			return err
+		}
+		if cants {
+			af.cant, err = answers.Names(ctx, q, f.date.ID, policy.AnswerCant)
+		}
+		return err
+	})
+	return f, af, ok
+}
+
+// answerBlock is the part of the date page that answering swaps: the
+// control, the status line that stays (DEC-92), who is coming, and the video
+// link. Can't go is in it only for those running the event (DEC-64).
+type answerBlock struct {
+	UID                string
+	CanAnswer, SignIn  bool
+	Heading            string
+	Segment            Segment
+	Series             bool
+	Scopes             []Choice
+	Status             string
+	Counts             string
+	Names, ShowCant    bool
+	Going, Maybe, Cant []string
+	Video              string
+	Confirm            *answerConfirm
+	CSRF               string
+}
+
+// answerConfirm asks before a Can't go for several dates (Fold's 5.4).
+type answerConfirm struct {
+	Count string
+	Scope string
+}
+
+var answerLabels = map[string]string{policy.AnswerGoing: "Going", policy.AnswerMaybe: "Maybe", policy.AnswerCant: "Can't go"}
+
+// answerStatus is the line that stays after an answer (DEC-92).
+func answerStatus(answer string, dates int) string {
+	switch answer {
+	case policy.AnswerGoing:
+		if dates > 1 {
+			return "You're going to " + strconv.Itoa(dates) + " dates. See you there!"
+		}
+		return "You're going. See you there!"
+	case policy.AnswerMaybe:
+		if dates > 1 {
+			return "You said maybe to " + strconv.Itoa(dates) + " dates. Change it anytime."
+		}
+		return "You said maybe. Change it anytime."
+	case policy.AnswerCant:
+		return "Got it. Only the people running the event see this."
+	}
+	return ""
+}
+
+func (a *App) answerView(f eventFacts, af answerFacts, r *http.Request, status string, confirm *answerConfirm) answerBlock {
+	now := a.clock.Now()
+	p, ev, g := f.viewer(), f.ev(), f.group.Policy()
+	ended := !f.date.EndsAt.After(now)
+	b := answerBlock{UID: f.date.UID, Status: status, CSRF: a.csrfToken(r), Confirm: confirm,
+		CanAnswer: policy.CanAnswer(p, ev, f.date.Visibility, g, f.rel, f.date.Cancelled, ended),
+		Names:     policy.CanSeeAttendeeNames(p, ev, f.date.Visibility, g, f.rel),
+		ShowCant:  policy.CanSeeCantGo(p, ev, g, f.rel), Going: af.going, Maybe: af.maybe, Cant: af.cant}
+	b.SignIn = f.session == nil && !f.date.Cancelled && !ended
+	b.Heading = "Who's coming"
+	if b.CanAnswer {
+		b.Heading = "Are you going?"
+		b.Segment = Segment{Label: "Your answer", Name: "answer"}
+		for _, v := range []string{policy.AnswerGoing, policy.AnswerMaybe, policy.AnswerCant} {
+			b.Segment.Options = append(b.Segment.Options, SegmentOption{Label: answerLabels[v], Value: v, Pressed: af.mine == v})
+		}
+		if policy.CanAnswerSeries(p, ev, g, f.rel, f.event.Repeat != events.Once) {
+			b.Series = true
+			for _, sc := range []struct{ v, label string }{{policy.ScopeDate, "Just this date"}, {policy.ScopeFollowing, "This date and the ones after it"}, {policy.ScopeAll, "All dates still to come"}} {
+				b.Scopes = append(b.Scopes, Choice{ID: "scope-" + sc.v, Name: "scope", Type: "radio", Value: sc.v, Label: sc.label, Checked: sc.v == policy.ScopeDate})
+			}
+		}
+	}
+	var parts []string
+	if n := af.counts.Going; n > 0 {
+		parts = append(parts, strconv.Itoa(n)+" going")
+	}
+	if n := af.counts.Maybe; n > 0 {
+		parts = append(parts, strconv.Itoa(n)+" maybe")
+	}
+	if n := af.counts.Cant; n > 0 && b.ShowCant {
+		parts = append(parts, strconv.Itoa(n)+" can't go")
+	}
+	b.Counts = strings.Join(parts, " · ")
+	if b.Counts == "" {
+		b.Counts = "No one has answered yet."
+	}
+	if f.event.VideoURL != "" && policy.CanSeeVideo(f.canManage(), af.mine) {
+		b.Video = f.event.VideoURL
+	}
+	return b
+}
+
 func (a *App) getDate(w http.ResponseWriter, r *http.Request) {
-	f, ok := a.loadEvent(w, r, true, nil)
+	f, af, ok := a.loadDate(w, r)
 	if !ok {
 		return
 	}
+	q := r.URL.Query()
+	status := dateStatuses[q.Get("done")]
+	if policy.IsAnswer(q.Get("done")) {
+		n, _ := strconv.Atoi(q.Get("n"))
+		status = answerStatus(q.Get("done"), min(max(n, 1), events.MaxDates))
+	}
+	a.showDate(w, r, f, af, http.StatusOK, status, "", nil)
+}
+
+// showDate renders the date page, or with block "answer" just the answer
+// part, for htmx.
+func (a *App) showDate(w http.ResponseWriter, r *http.Request, f eventFacts, af answerFacts, code int, status, block string, confirm *answerConfirm) {
 	now := a.clock.Now()
 	loc := viewerZone(f.pageFacts)
 	start, end := f.date.StartsAt.In(loc), f.date.EndsAt.In(loc)
@@ -67,6 +212,10 @@ func (a *App) getDate(w http.ResponseWriter, r *http.Request) {
 	if f.date.Visibility != "" && policy.MoreOpen(f.date.Visibility, f.event.Visibility) && manages {
 		opened = "This date is open wider than the rest of the event: " + visibilityLabels[f.date.Visibility] + ", where the event is " + visibilityLabels[f.event.Visibility] + "."
 	}
+	pageStatus, answerStatus := status, ""
+	if block == "answer" || strings.HasPrefix(status, "You") || strings.HasPrefix(status, "Got it") {
+		pageStatus, answerStatus = "", status
+	}
 	f.Data = struct {
 		Event                events.Event
 		Day, When, ZoneLine  string
@@ -81,12 +230,13 @@ func (a *App) getDate(w http.ResponseWriter, r *http.Request) {
 		CanRestore           bool
 		UID                  string
 		Cancel, Restore      Dialog
+		Answer               answerBlock
 	}{
 		Event: f.event, Day: longDay(start), When: when, ZoneLine: zoneLine(f.event.Zone, loc), Moved: moved, Opened: opened,
 		Visibility: visibilityLabels[policy.Widest(f.event.Visibility, f.date.Visibility)],
 		Cancelled:  f.date.Cancelled, BySeries: f.date.BySeries, Past: !f.date.EndsAt.After(now), SeesEvent: f.seesEvent(),
 		GroupName: groupName, GroupHref: groupHref, Maps: mapsLink(f.event.Place),
-		Status:     dateStatuses[r.URL.Query().Get("done")],
+		Status:     pageStatus,
 		CanCancel:  policy.CanCancelDate(manages, state),
 		CanOpen:    policy.CanOpenDate(manages, state),
 		CanRestore: policy.CanRestoreDate(manages, state, manages && f.date.Cancelled && !f.date.BySeries && seriesMakes(f.event, f.date, now)),
@@ -99,8 +249,71 @@ func (a *App) getDate(w http.ResponseWriter, r *http.Request) {
 			Title: "Bring back " + dayWords(start, now) + "?", Text: "It goes back on at the event's usual time.",
 			CancelLabel: "Not now", ConfirmLabel: "Bring it back", ConfirmKind: "primary",
 			Action: "/dates/" + f.date.UID + "/restore", CSRF: a.csrfToken(r)},
+		Answer: a.answerView(f, af, r, answerStatus, confirm),
 	}
-	a.render(w, r, http.StatusOK, "date", "", f.page)
+	a.render(w, r, code, "date", block, f.page)
+}
+
+// postAnswer saves a person's answer. A signed-out visitor who may see the
+// date is sent to sign in; anyone who may not see it gets the not-found
+// page, as for something missing.
+func (a *App) postAnswer(w http.ResponseWriter, r *http.Request) {
+	f, ok := a.loadEvent(w, r, true, nil)
+	if !ok {
+		return
+	}
+	if f.session == nil {
+		http.Redirect(w, r, "/signin", http.StatusSeeOther)
+		return
+	}
+	htmx := r.Header.Get("HX-Request") == "true"
+	block := ""
+	if htmx {
+		block = "answer"
+	}
+	again := func(code int, status string, confirm *answerConfirm) {
+		f, af, ok := a.loadDate(w, r)
+		if !ok {
+			return
+		}
+		a.showDate(w, r, f, af, code, status, block, confirm)
+	}
+	if !a.limits.answers.Allow(f.session.Person.UID) {
+		again(http.StatusTooManyRequests, "That's a lot of answers in a short time, so this one could not be saved. Try again in a little while.", nil)
+		return
+	}
+	scope := r.PostFormValue("scope")
+	if scope == "" {
+		scope = policy.ScopeDate
+	}
+	c := &events.Answer{DateUID: f.date.UID, Status: r.PostFormValue("answer"), Scope: scope, Confirmed: r.PostFormValue("confirmed") == "yes"}
+	err := a.exec.Run(r.Context(), write.Session(accounts.Hash(a.sessionToken(r))), c)
+	switch {
+	case errors.Is(err, events.ErrConfirmCantGo):
+		again(http.StatusOK, "", &answerConfirm{Count: strconv.Itoa(c.Dates) + " dates", Scope: scope})
+		return
+	case errors.Is(err, events.ErrDateGone):
+		again(http.StatusConflict, "This date can't be answered now. The page shows how things stand.", nil)
+		return
+	case errors.Is(err, write.ErrSignedOut):
+		http.Redirect(w, r, "/signin", http.StatusSeeOther)
+		return
+	case errors.Is(err, write.ErrNotAllowed):
+		if !policy.IsAnswer(c.Status) || !policy.ValidScope(scope) {
+			again(http.StatusUnprocessableEntity, "Choose Going, Maybe or Can't go.", nil)
+			return
+		}
+		a.notFound(w, r)
+		return
+	case err != nil:
+		a.serverError(w, r, err)
+		return
+	}
+	if !htmx {
+		http.Redirect(w, r, "/dates/"+f.date.UID+"?done="+c.Status+"&n="+strconv.Itoa(c.Dates), http.StatusSeeOther)
+		return
+	}
+	again(http.StatusOK, answerStatus(c.Status, c.Dates), nil)
 }
 
 // runDate runs a date command for someone who may see the date, and comes

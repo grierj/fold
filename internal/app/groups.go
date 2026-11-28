@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"fold/internal/accounts"
+	"fold/internal/answers"
 	"fold/internal/events"
 	"fold/internal/groups"
 	"fold/internal/policy"
@@ -285,6 +286,7 @@ func (a *App) getGroup(w http.ResponseWriter, r *http.Request) {
 	var leaders []string
 	var leaderCount, members int
 	var coming []events.Listed
+	var standing int
 	now := a.clock.Now()
 	f, ok := a.loadGroup(w, r, func(q *sql.Tx, f *groupFacts) error {
 		var err error
@@ -297,6 +299,11 @@ func (a *App) getGroup(w http.ResponseWriter, r *http.Request) {
 		if err = q.QueryRowContext(r.Context(), `SELECT count(*) FROM active_memberships WHERE group_id = ?`, f.group.ID).Scan(&members); err != nil {
 			return err
 		}
+		if f.session != nil && f.rel.Member {
+			if standing, err = answers.StandingOnGroup(r.Context(), q, f.group.ID, f.session.Person.ID, now); err != nil {
+				return err
+			}
+		}
 		leaderCount, err = groups.LeaderCount(r.Context(), q, f.group.ID)
 		return err
 	})
@@ -304,6 +311,14 @@ func (a *App) getGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p, g := f.viewer(), f.group.Policy()
+	// DEC-74: leaving says first how many dates it takes the person off.
+	leaveText := "You can join again any time."
+	switch {
+	case standing == 1:
+		leaveText = "You said you'd come to 1 date of this group that's still to come. Leaving takes you off it. You can join again any time."
+	case standing > 1:
+		leaveText = "You said you'd come to " + strconv.Itoa(standing) + " dates of this group that are still to come. Leaving takes you off them. You can join again any time."
+	}
 	d := struct {
 		Group                        groups.Group
 		Visibility                   string
@@ -315,7 +330,7 @@ func (a *App) getGroup(w http.ResponseWriter, r *http.Request) {
 		SignedIn, LastLeader         bool
 		CanSeeMembers                bool
 		Members                      int
-		Delete                       Dialog
+		Delete, Leave                Dialog
 		Reason                       string
 		Coming                       []dateItem
 		CanSchedule                  bool
@@ -337,6 +352,9 @@ func (a *App) getGroup(w http.ResponseWriter, r *http.Request) {
 		CanSeeMembers: policy.CanSeeRoster(p, g, f.rel),
 		Members:       members,
 		Reason:        policy.GroupReasons[f.group.DecisionReason],
+		Leave: Dialog{ID: "leave-group", OpenLabel: "Leave the group", OpenKind: "secondary",
+			Title: "Leave " + f.group.Name + "?", Text: leaveText, CancelLabel: "Stay", ConfirmLabel: "Leave", ConfirmKind: "primary",
+			Action: "/groups/" + f.group.UID + "/leave", CSRF: a.csrfToken(r)},
 		Delete: Dialog{ID: "delete-group", OpenLabel: "Delete the group", OpenKind: "danger-outline",
 			Title: "Delete " + f.group.Name + "?", Text: "Its members will be told. This cannot be undone.",
 			CancelLabel: "Keep it", ConfirmLabel: "Delete", ConfirmKind: "danger",

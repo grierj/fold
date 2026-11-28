@@ -18,6 +18,7 @@
     {{with .Data.Opened}}<p class="mt-1 text-sm text-text-muted">{{.}}</p>{{end}}
   </section>
   {{template "place" (dict "Place" .Data.Event.Place "Maps" .Data.Maps)}}
+  {{if not .Data.Cancelled}}{{template "answer" .}}{{end}}
   {{if .Data.SeesEvent}}<p class="section mt-6">{{template "linkbutton" (linkbutton "secondary" "About this event and its other dates" (print "/events/" .Data.Event.UID))}}</p>{{end}}
   {{if or .Data.CanCancel .Data.CanRestore .Data.CanOpen}}
   <details class="section mt-10">
@@ -30,3 +31,38 @@
   </details>
   {{end}}
 </div>{{end}}
+
+{{/* answer: what answering swaps (htmx): the control, the status line that
+     stays, who is coming and the video link. Can't go is here only for
+     those running the event (DEC-64). */}}
+{{define "answer"}}{{with .Data.Answer}}<section id="answer" class="section mt-6" aria-labelledby="answer-h">
+  <h2 id="answer-h" class="text-lg font-bold">{{.Heading}}</h2>
+  {{if .Confirm}}
+  <p class="mt-2">Say you can't go to {{.Confirm.Count}}? The people running the event will see it.</p>
+  <form class="mt-3 flex flex-wrap gap-3" method="post" action="/dates/{{.UID}}/answer" hx-post="/dates/{{.UID}}/answer" hx-target="#answer" hx-swap="outerHTML">
+    {{template "hidden" (hidden "csrf" .CSRF)}}{{template "hidden" (hidden "answer" "cant")}}{{template "hidden" (hidden "scope" .Confirm.Scope)}}{{template "hidden" (hidden "confirmed" "yes")}}
+    {{template "button" (button "primary" (print "Yes, I can't go to " .Confirm.Count))}}
+    {{template "linkbutton" (linkbutton "secondary" "Keep my answers" (print "/dates/" .UID))}}
+  </form>
+  {{else if .CanAnswer}}
+  <form class="mt-3 form-stack" method="post" action="/dates/{{.UID}}/answer" hx-post="/dates/{{.UID}}/answer" hx-target="#answer" hx-swap="outerHTML">
+    {{template "hidden" (hidden "csrf" .CSRF)}}
+    {{if .Series}}<fieldset>
+      <legend class="label">Answer for</legend>
+      {{range .Scopes}}{{template "choice" .}}{{end}}
+      <p class="field-hint">New dates added later won't be answered for you.</p>
+    </fieldset>{{end}}
+    {{template "segment" .Segment}}
+  </form>
+  {{else if .SignIn}}<p class="mt-3">{{template "linkbutton" (linkbutton "primary" "Sign in to answer" "/signin")}}</p>{{end}}
+  <div class="mt-2">{{template "status" .Status}}</div>
+  <p class="mt-2">{{.Counts}}</p>
+  {{if and .Names (or .Going .Maybe .Cant)}}<details class="mt-2">
+    <summary class="text-link">Show who's coming</summary>
+    {{with .Going}}<h3 class="mt-2 font-semibold">Going</h3><p class="wrap-anywhere">{{range $i, $n := .}}{{if $i}}, {{end}}{{$n}}{{end}}</p>{{end}}
+    {{with .Maybe}}<h3 class="mt-2 font-semibold">Maybe</h3><p class="wrap-anywhere">{{range $i, $n := .}}{{if $i}}, {{end}}{{$n}}{{end}}</p>{{end}}
+    {{if .ShowCant}}{{with .Cant}}<h3 class="mt-2 font-semibold">Can't go</h3><p class="wrap-anywhere">{{range $i, $n := .}}{{if $i}}, {{end}}{{$n}}{{end}}</p>{{end}}{{end}}
+  </details>{{end}}
+  {{with .Video}}<p class="mt-3"><a class="text-link" href="{{.}}" rel="noopener noreferrer">Join the video call</a></p>
+  <p class="text-sm text-text-muted">Only people coming, and the people running the event, see this link.</p>{{end}}
+</section>{{end}}{{end}}
