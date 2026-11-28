@@ -4,7 +4,9 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"html/template"
 	"net/http"
+	"net/url"
 	"time"
 
 	"fold/internal/accounts"
@@ -14,6 +16,8 @@ import (
 	"fold/internal/policy"
 	"fold/internal/settings"
 	"fold/internal/write"
+
+	"rsc.io/qr"
 )
 
 // A person's calendar feed (DEC-71, PLAN slice 2 milestone 4b): their Just
@@ -92,6 +96,9 @@ func (a *App) getFeed(w http.ResponseWriter, r *http.Request) {
 type feedView struct {
 	On           bool
 	URL          Field
+	Subscribe    template.URL // the webcal:// link calendar apps subscribe from (R52)
+	Google       string       // Google Calendar's page that adds it
+	QR           qrCode       // the webcal:// link, for a phone to scan
 	Status       string
 	Error        string
 	Replace, Off Dialog
@@ -108,10 +115,51 @@ func (a *App) feedSection(r *http.Request, print, token, status string) feedView
 		Off: Dialog{ID: "feed-off", OpenLabel: "Turn off", OpenKind: "danger-outline", Title: "Turn off your calendar feed?",
 			Text:        "Its link stops working at once, and calendars using it stop updating. You can turn it on again with a new link.",
 			CancelLabel: "Keep it on", ConfirmLabel: "Turn off", ConfirmKind: "danger", Action: "/profile/feed/off", CSRF: a.csrfToken(r)}}
-	if token != "" {
+	if token != "" && accounts.ValidTokenShape(token) {
 		v.URL = Field{ID: "feed-url", Name: "feed", Label: "Your calendar's address", Value: a.origin + feedPath(token), ReadOnly: true}
+		// webcal:// is the scheme calendar apps subscribe from; html/template
+		// lets only http, https and mailto through unless the URL is typed.
+		// It is built here alone, from the configured site and a token of
+		// the server's own making (R52).
+		webcal := "webcal://" + a.cfg.SiteURL.Host + feedPath(token)
+		v.Subscribe = template.URL(webcal)
+		v.Google = "https://calendar.google.com/calendar/r?cid=" + url.QueryEscape(webcal)
+		v.QR, _ = qrOf(webcal)
 	}
 	return v
+}
+
+// qrCode is a QR code as rows of dark runs, drawn by the template as an
+// inline SVG of rects: no image file, no data: address, nothing the strict
+// content security policy refuses. Size counts the four-module quiet zone.
+type qrCode struct {
+	Size int
+	Runs []qrRun
+}
+
+type qrRun struct{ X, Y, W int }
+
+func qrOf(text string) (qrCode, error) {
+	c, err := qr.Encode(text, qr.M)
+	if err != nil {
+		return qrCode{}, err
+	}
+	const quiet = 4
+	out := qrCode{Size: c.Size + 2*quiet}
+	for y := range c.Size {
+		for x := 0; x < c.Size; {
+			if !c.Black(x, y) {
+				x++
+				continue
+			}
+			start := x
+			for x < c.Size && c.Black(x, y) {
+				x++
+			}
+			out.Runs = append(out.Runs, qrRun{X: start + quiet, Y: y + quiet, W: x - start})
+		}
+	}
+	return out, nil
 }
 
 // postFeed turns the feed on or makes a new link, and shows the link on the

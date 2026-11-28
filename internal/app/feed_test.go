@@ -3,6 +3,7 @@ package app_test
 import (
 	"bytes"
 	"context"
+	"html"
 	"net/http"
 	"net/url"
 	"os"
@@ -68,7 +69,17 @@ func TestFeedLifecycle(t *testing.T) {
 	if r := mia.get("/profile"); !strings.Contains(r.body, "Turn on the calendar feed") || feedPattern.MatchString(r.body) {
 		t.Fatal("the profile does not offer the feed")
 	}
-	first := turnOnFeed(t, mia)
+	made := mia.post("/profile", "/profile/feed/new", nil)
+	first := feedPattern.FindString(made.body)
+	host := strings.TrimPrefix(s.srv.URL, "http://")
+	webcal := "webcal://" + host + first
+	for _, want := range []string{`href="` + webcal + `">Subscribe on iPhone or Mac`,
+		`href="https://calendar.google.com/calendar/r?cid=` + url.QueryEscape(webcal) + `"`,
+		`role="img" aria-label="QR code for your calendar feed"`, `value="` + s.srv.URL + first + `"`} {
+		if !strings.Contains(html.UnescapeString(made.body), html.UnescapeString(want)) {
+			t.Errorf("the page that makes the link lacks %s", want)
+		}
+	}
 	r := s.browser().get(first)
 	if r.status != http.StatusOK || r.header.Get("Content-Type") != "text/calendar; charset=utf-8" || r.header.Get("Cache-Control") != "private, no-store" ||
 		r.header.Get("Set-Cookie") != "" || !strings.Contains(r.body, "X-WR-CALNAME:Cloverdale Church of God") {
