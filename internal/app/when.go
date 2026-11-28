@@ -68,6 +68,12 @@ func timeSpan(start, end, now time.Time) string {
 	return clockWords(start) + " to " + dayWords(end, now) + ", " + clockWords(end)
 }
 
+// meetingWords is when a group next meets: "Tue, Dec 8, 7:00 pm".
+func meetingWords(t time.Time, loc *time.Location, now time.Time) string {
+	t = t.In(loc)
+	return dayWords(t, now) + ", " + clockWords(t)
+}
+
 // monthWords is "December 2026", for the calendar's month.
 func monthWords(t time.Time) string { return t.Format("January 2006") }
 

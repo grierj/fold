@@ -149,23 +149,10 @@ type Viewer struct {
 }
 
 // visibleSQL is policy.CanSeeDate as SQL, so a list of dates is filtered
-// before it is limited (docs/HAZARDS.md section 2). ?1 is the viewer's id
-// (0 signed out) and ?2 is 1 for an admin. It needs dates d, events e and a
-// left join of groups g. A test checks it against the policy function.
-const visibleSQL = `e.status = 'active' AND (
-	(?2 = 1 AND (e.group_id IS NULL OR g.status <> 'deleted'))
-	OR (e.group_id IS NULL AND (` + seenByVisibility + `
-		OR EXISTS (SELECT 1 FROM event_hosts h JOIN people hp ON hp.id = h.person_id
-			WHERE h.event_id = e.id AND h.person_id = ?1 AND hp.status = 'active')))
-	OR (e.group_id IS NOT NULL AND g.status = 'active' AND (` + seenByVisibility + `
-		OR EXISTS (SELECT 1 FROM active_memberships am WHERE am.group_id = g.id AND am.person_id = ?1)))
-	OR (e.group_id IS NOT NULL AND g.status IN ('pending', 'archived') AND EXISTS (SELECT 1 FROM active_memberships am
-		WHERE am.group_id = g.id AND am.person_id = ?1 AND am.role = 'leader')))`
-
-// seenByVisibility is the date's visibility, the wider of its own and its
-// event's (P7), letting in everyone or everyone signed in.
-const seenByVisibility = `e.visibility = 'public' OR d.visibility = 'public'
-		OR ((e.visibility = 'church' OR d.visibility = 'church') AND ?1 > 0)`
+// before it is limited (docs/HAZARDS.md section 2). It lives in package
+// groups, whose directory needs it for each group's next meeting; the test
+// that holds it to the policy function is here.
+const visibleSQL = groups.DateVisibleSQL
 
 // Listed is a date as a list shows it.
 type Listed struct {

@@ -99,7 +99,7 @@ func (a *App) showAdminPerson(w http.ResponseWriter, r *http.Request, status int
 		if p, err = people.ByID(r.Context(), q, id); err != nil {
 			return err
 		}
-		if mine, err = groups.Mine(r.Context(), q, p.ID); err != nil {
+		if mine, err = groups.Mine(r.Context(), q, groups.Viewer{ID: p.ID, Admin: p.IsAdmin}, a.clock.Now()); err != nil {
 			return err
 		}
 		sole, err := accounts.SoleLed(r.Context(), q, p.ID)
@@ -143,13 +143,13 @@ func (a *App) showAdminPerson(w http.ResponseWriter, r *http.Request, status int
 	self := f.session.Person.ID == p.ID
 	f.Data = struct {
 		Person     people.Person
-		Groups     []groups.Listed
+		Groups     []groupItem
 		Succession []successorChoice
 		Self       bool
 		Guest      bool // a guest, or one turned off (R48)
 		Message    string
 		Status     string
-	}{p, mine, succession, self, guest, msg, map[string]string{
+	}{p, groupItems(mine, viewerZone(f), a.clock.Now()), succession, self, guest, msg, map[string]string{
 		"disabled": "Disabled. They've been signed out and can't sign in until you turn their account on again. Any seats they held went to the next people waiting.",
 		"enabled":  "Turned on again. Their groups are back as they were, and their answers too where there's room. If a date they said Going to is full now, they've been told to ask a leader.",
 	}[r.URL.Query().Get("done")]}
