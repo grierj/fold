@@ -430,7 +430,8 @@ var repeatLabels = []struct{ value, label string }{
 }
 
 // eventFormView builds the form. allowed is the visibilities it may offer;
-// groupVis is the group's, or "" for a church-wide event.
+// groupVis is what a choice must be wider than to open the event and be
+// told (openedFrom), or "" for a church-wide event.
 func eventFormView(v eventForm, errs map[string]string, zone string, allowed []string, groupVis string) eventFormData {
 	d := eventFormData{
 		Title: Field{ID: "title", Name: "title", Label: "Title", Value: v.Title, MaxLength: events.MaxTitle, Required: true, Error: errs["title"]},
@@ -509,6 +510,16 @@ func visibilityChoices(prefix string, allowed []string, checked, groupVis string
 func reasonField(value, err string) Field {
 	return Field{ID: "reason", Name: "reason", Label: "Why open it wider than the group? (optional)",
 		Hint: "Shown to the group's other leaders and the admins, and kept in the church's records.", Value: value, MaxLength: events.MaxReason, Error: err}
+}
+
+// openedFrom is what a change must be wider than to open the event and be
+// told (DEC-28): its group's visibility, or its own when that is already
+// wider. "" for a church-wide event, which has no group to be wider than.
+func openedFrom(f eventFacts, current string) string {
+	if f.event.ChurchWide() {
+		return ""
+	}
+	return policy.Widest(f.group.Visibility, current)
 }
 
 // visibilities is what an event may be set to, most open first.
@@ -662,7 +673,7 @@ func (a *App) getEditEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	v := formOf(f.event)
-	d := eventFormView(v, nil, f.event.Zone, visibilities(f.event.ChurchWide()), f.group.Visibility)
+	d := eventFormView(v, nil, f.event.Zone, visibilities(f.event.ChurchWide()), openedFrom(f, f.event.Visibility))
 	d.Version, d.Timing = f.event.Version, v.timing()
 	a.showEditEvent(w, r, f, http.StatusOK, d)
 }
@@ -690,7 +701,7 @@ func (a *App) postEditEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	loc := mustZone(f.event.Zone)
 	allowed := visibilities(f.event.ChurchWide())
-	gv := f.group.Visibility
+	gv := openedFrom(f, f.event.Visibility)
 	v := readEventForm(r)
 	version, _ := strconv.ParseInt(r.PostFormValue("version"), 10, 64)
 	now := a.clock.Now()

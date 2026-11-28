@@ -173,3 +173,41 @@ func TestChurchWideEventAndHosts(t *testing.T) {
 	}
 }
 
+// The reason box offers itself only for a change that would open the event
+// or date wider than it already is and than its group: a reason typed for
+// anything else would be kept nowhere.
+func TestReasonOnlyForANewOpening(t *testing.T) {
+	s := newSite(t)
+	admin := s.finishSetup()
+	group := s.start(admin, "Elders Prayer", "invite_only")
+	form := eventForm("Open house", "2026-12-02", "19:00", "weekly")
+	form.Set("visibility", "church")
+	uid := s.schedule(admin, group, form)
+	if r := admin.get("/events/" + uid + "/edit"); !strings.Contains(r.body, `data-group="church"`) {
+		t.Fatal("the edit form measures openings from the group, not from the event's own wider visibility")
+	}
+	date := firstDate(admin.get("/events/" + uid).body)
+	open := "/dates/" + date + "/open"
+	admin.post(open, open, url.Values{"visibility": {"public"}})
+	if r := admin.get(open); !strings.Contains(r.body, `data-group="public"`) {
+		t.Fatal("the date form offers a reason for a date already open to everyone")
+	}
+}
+
+// An opening notice goes when its group is deleted, rather than pointing at
+// a missing page.
+func TestOpeningNoticeGoesWithItsGroup(t *testing.T) {
+	s := newSite(t)
+	admin := s.finishSetup()
+	mel := s.member("Mel Leader", "mel@example.org")
+	group := s.start(mel, "Elders Prayer", "invite_only")
+	admin.post("/admin/groups", "/admin/groups/"+group+"/approve", nil)
+	s.schedule(mel, group, eventForm("Open house", "2026-12-02", "19:00", "once"))
+	if r := admin.get("/notices"); !strings.Contains(r.body, "opened “Open house”") {
+		t.Fatal("no opening notice")
+	}
+	admin.post("/groups/"+group, "/groups/"+group+"/delete", nil)
+	if r := admin.get("/notices"); r.status != http.StatusOK || strings.Contains(r.body, "Open house") {
+		t.Fatalf("after the group was deleted: %d", r.status)
+	}
+}

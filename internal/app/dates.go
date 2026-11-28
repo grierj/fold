@@ -89,10 +89,10 @@ func (a *App) getDate(w http.ResponseWriter, r *http.Request) {
 		Status:     dateStatuses[r.URL.Query().Get("done")],
 		CanCancel:  policy.CanCancelDate(manages, state),
 		CanOpen:    policy.CanOpenDate(manages, state),
-		CanRestore: policy.CanRestoreDate(manages, state, f.date.Cancelled && !f.date.BySeries && seriesMakes(f.event, f.date, now)),
+		CanRestore: policy.CanRestoreDate(manages, state, manages && f.date.Cancelled && !f.date.BySeries && seriesMakes(f.event, f.date, now)),
 		UID:        f.date.UID,
 		Cancel: Dialog{ID: "cancel-date", OpenLabel: "Cancel this date", OpenKind: "danger-outline",
-			Title: "Cancel " + dayWords(start, now) + "?", Text: "Only this date is cancelled; the rest of the event stays as it is. You can bring it back later.",
+			Title: "Cancel " + dayWords(start, now) + "?", Text: "Only this date is cancelled; the rest of the event stays as it is. You can bring it back before it starts, while the event still meets that day.",
 			CancelLabel: "Keep it", ConfirmLabel: "Cancel this date", ConfirmKind: "danger",
 			Action: "/dates/" + f.date.UID + "/cancel", CSRF: a.csrfToken(r)},
 		Restore: Dialog{ID: "restore-date", OpenLabel: "Bring this date back", OpenKind: "secondary",
@@ -165,7 +165,7 @@ func (a *App) openDateView(f eventFacts, checked, reason string, errs map[string
 			wider = append(wider, v)
 		}
 	}
-	gv := f.group.Visibility
+	gv := openedFrom(f, policy.Widest(f.event.Visibility, f.date.Visibility))
 	d := openDateData{Event: f.event, Day: longDay(f.date.StartsAt.In(viewerZone(f.pageFacts))), UID: f.date.UID,
 		Visibility: append([]Choice{same}, visibilityChoices("vis-", wider, checked, gv)...),
 		Reason:     reasonField(reason, errs["reason"]), GroupVis: gv}

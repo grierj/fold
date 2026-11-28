@@ -326,10 +326,10 @@ func wordEvent(ctx context.Context, q db.Querier, r Reader, x row, n Notice) (No
 	var groupID sql.NullInt64
 	err := q.QueryRowContext(ctx, `SELECT uid, title, status, visibility, open_reason, group_id FROM events WHERE id = ?`, x.event.Int64).
 		Scan(&uid, &title, &status, &visibility, &reason, &groupID)
-	if errors.Is(err, sql.ErrNoRows) || status != policy.EventActive {
-		return n, false, err
+	if errors.Is(err, sql.ErrNoRows) {
+		return n, false, nil
 	}
-	if err != nil {
+	if err != nil || status != policy.EventActive {
 		return n, false, err
 	}
 	who := "Someone"
@@ -348,10 +348,12 @@ func wordEvent(ctx context.Context, q db.Querier, r Reader, x row, n Notice) (No
 		return n, true, nil
 	}
 	var leads bool
+	var groupStatus string
 	if groupID.Valid {
-		q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM active_memberships WHERE group_id = ? AND person_id = ? AND role = 'leader')`, groupID.Int64, r.ID).Scan(&leads)
+		q.QueryRowContext(ctx, `SELECT status, EXISTS (SELECT 1 FROM active_memberships WHERE group_id = g.id AND person_id = ? AND role = 'leader')
+			FROM groups g WHERE g.id = ?`, r.ID, groupID.Int64).Scan(&groupStatus, &leads)
 	}
-	if !groupID.Valid || (!leads && !r.Admin) {
+	if !groupID.Valid || groupStatus == policy.GroupDeleted || (!leads && !r.Admin) {
 		return n, false, nil
 	}
 	what := quoted

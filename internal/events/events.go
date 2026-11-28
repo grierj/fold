@@ -171,7 +171,7 @@ type Listed struct {
 	StartsAt  time.Time
 	EndsAt    time.Time
 	Moved     bool
-	Cancelled bool // only in a list asked to include dates cancelled by hand
+	Cancelled bool   // only in a list asked to include dates cancelled by hand
 	Event     string // the event's uid
 	Title     string
 	Zone      string
