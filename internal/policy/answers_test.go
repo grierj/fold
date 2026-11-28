@@ -49,6 +49,8 @@ func TestCanAnswer(t *testing.T) {
 		{"a non-member admin", admin, event(InviteOnly), "", active(InviteOnly), none, false, false, true},
 		{"an outsider on a date opened to the church", adult, event(InviteOnly), Church, active(InviteOnly), none, false, false, true},
 		{"an outsider on an invite-only date", adult, event(InviteOnly), "", active(InviteOnly), none, false, false, false},
+		{"someone removed from the group, public date (R42)", adult, event(Public), "", active(Public), Rel{Removed: true}, false, false, false},
+		{"someone removed, date opened to the church (R42)", adult, event(InviteOnly), Church, active(InviteOnly), Rel{Removed: true}, false, false, false},
 		{"signed out, even public (guests: milestone 3)", guest, event(Public), "", active(Public), none, false, false, false},
 		{"a disabled account", &Person{ID: 9, Inactive: true}, event(Public), "", active(Public), member, false, false, false},
 		{"a cancelled date", adult, event(Public), "", active(Public), member, true, false, false},

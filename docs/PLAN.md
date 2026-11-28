@@ -289,7 +289,7 @@ people signed up. Then the measuring gate.
 - No pictures on events in this slice. Uploads (DEC-49) arrive when a church asks or with a later
   slice.
 
-**Rests on.** R3, R15, R29, R33 to R41, P7, P8, and "Events and dates" and "RSVP" in the decisions.
+**Rests on.** R3, R15, R29, R33 to R43, P7, P8, and "Events and dates" and "RSVP" in the decisions.
 
 **Not in this slice.** Reminders and announcements (slice 3). Children, childcare and teens
 (slice 5). Rooms (slice 6). Attendance (slice 4).

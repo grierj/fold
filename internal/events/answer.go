@@ -52,7 +52,7 @@ func (c *Answer) Apply(tx *write.Tx) error {
 		}
 	}
 	ev := e.Policy(host)
-	if !policy.CanSeeDate(p, ev, d.Visibility, g.Policy(), rel) {
+	if !policy.CanSeeDate(p, ev, d.Visibility, g.Policy(), rel) || rel.Removed {
 		return write.ErrNotAllowed
 	}
 	if !policy.CanAnswer(p, ev, d.Visibility, g.Policy(), rel, d.Cancelled, !d.EndsAt.After(tx.Now)) {

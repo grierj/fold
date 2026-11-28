@@ -58,8 +58,10 @@ func (m AnswerMove) Allows(from, to string) bool {
 // it is on and has not ended. That covers a group's members, every member
 // for a church-wide event (DEC-72), anyone signed in for a public date
 // (DEC-73), and anyone a date was opened to (P7). It adds nobody to a group.
+// Someone removed from the group answers none of its dates, public ones
+// included (R42).
 func CanAnswer(p *Person, e Event, dateVisibility string, g Group, r Rel, cancelled, ended bool) bool {
-	return p != nil && !p.Inactive && !cancelled && !ended && CanSeeDate(p, e, dateVisibility, g, r)
+	return p != nil && !p.Inactive && !r.Removed && !cancelled && !ended && CanSeeDate(p, e, dateVisibility, g, r)
 }
 
 // CanSeeAttendeeNames: those running the event see names. Otherwise anyone

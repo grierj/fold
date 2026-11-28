@@ -62,6 +62,8 @@ the code or the pull request.
 | R39 | **"Open in maps" is a Google Maps search** of the place's text, built as a plain link; the server fetches nothing. | 2026-11-27. "Google Maps is good." |
 | R40 | **Answers do not follow a date that moves to another day.** When an edit moves a one-off event or a series' weekday, the old dates are cancelled and new ones made, and people signed up must answer the new date themselves. | 2026-11-27. "RSVPs should not follow, they'll need to confirm the new date." |
 | R41 | **An event's video link is shown only to people who answered Going or Maybe, and to the people running the event.** Strangers who can read a public event's page do not get the link. It arrives with answers, in slice 2's milestone 2. | 2026-11-27. Chose "Those who said Going/Maybe" over anyone who can see the event and over a per-event choice. |
+| R42 | **Someone removed from a group cannot answer any of its dates**, even a public one or a date opened to the church. They can still read a public page like any visitor. | 2026-11-27. Chose "No, block them": the leader removed them for a reason, and a public event shouldn't be a back door. |
+| R43 | **A series date's answer offers its scope inline**: "Just this date" (chosen first), "This and following" and "All future dates" sit above Going, Maybe and Can't go, with a note that dates added later aren't answered. One tap answers; only Can't go for several dates asks first. Settles how DEC-71 and DEC-92's dialog looks. | 2026-11-27. Chose "Inline choice, one tap" over a dialog after each tap. |
 
 Standing yardsticks, in Grier's words from the Fold work. They apply to every design choice.
 
