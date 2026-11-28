@@ -89,8 +89,12 @@ func (a *App) loadDate(w http.ResponseWriter, r *http.Request) (eventFacts, answ
 		if af.going, err = answers.Names(ctx, q, f.date.ID, policy.AnswerGoing); err != nil {
 			return err
 		}
-		if af.waiting, err = answers.Names(ctx, q, f.date.ID, policy.AnswerWaiting); err != nil {
-			return err
+		// The line's order is for those running it; everyone else sees how
+		// many wait, and their own place.
+		if f.canManage() {
+			if af.waiting, err = answers.Names(ctx, q, f.date.ID, policy.AnswerWaiting); err != nil {
+				return err
+			}
 		}
 		if af.maybe, err = answers.Names(ctx, q, f.date.ID, policy.AnswerMaybe); err != nil {
 			return err

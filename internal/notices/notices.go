@@ -8,6 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -39,6 +40,10 @@ const (
 	DatesDropped  = "dates.dropped"   // a series edit no longer makes the dates (DEC-91)
 	DatesMoved    = "dates.moved"     // a series edit moved the dates to other days (R40)
 	DatesRestored = "dates.restored"  // dates back on, answers as they were (DEC-91)
+	DatesRetimed  = "dates.retimed"   // a series edit moved the dates to new times the same day; answers stay
+	// To a person those running an event took off it; actor (R44).
+	AnswerRemoved    = "answer.removed"     // off one date
+	AnswerRemovedAll = "answer.removed_all" // off every date still to come; date: the first
 )
 
 // JobMail emails one notice to its person, for the kinds that are required
@@ -47,6 +52,14 @@ const JobMail = "mail.notice"
 
 // MailsPerDay is how many emails of one kind a person gets in a day.
 const MailsPerDay = 10
+
+// UrgentPerDay is how many urgent event emails, of every kind together, a
+// person gets in a day, so nobody running an event can fill an inbox by
+// cancelling and restoring. Past it the bell still tells them.
+const UrgentPerDay = 5
+
+// urgent are the event kinds that are emailed (R36).
+var urgent = []string{Promoted, DateCancelled, EventDeleted, DatesDropped, DatesMoved}
 
 // Mails reports whether a notice is also emailed. Until email choices
 // arrive in slice 3 only required mail goes out: account requests, and of
@@ -139,6 +152,19 @@ func AddMany(tx *write.Tx, ns []New) error {
 			}
 			if today > MailsPerDay {
 				continue
+			}
+			if slices.Contains(urgent, x.kind) {
+				// Counted from the jobs already queued, inside the one write,
+				// so the cap is spent as each email is queued.
+				var sent int
+				if err := tx.QueryRow(`SELECT count(*) FROM jobs j JOIN notices n ON n.id = j.ref
+					WHERE j.kind = ? AND j.created_at > ? AND n.person_id = ? AND n.kind IN (`+strings.TrimSuffix(strings.Repeat("?, ", len(urgent)), ", ")+`)`,
+					append([]any{JobMail, tx.Now.Add(-24 * time.Hour).Unix(), x.person}, kinds(urgent)...)...).Scan(&sent); err != nil {
+					return err
+				}
+				if sent >= UrgentPerDay {
+					continue
+				}
 			}
 			if err := tx.Enqueue(write.NewJob{Kind: JobMail, Ref: x.id}); err != nil {
 				return err
@@ -317,7 +343,7 @@ func word(ctx context.Context, q db.Querier, r Reader, x row) (Notice, bool, err
 		return wordMember(ctx, q, r, x, n)
 	case EventOpened, HostNamed:
 		return wordEvent(ctx, q, r, x, n)
-	case Promoted, NoRoom, DateCancelled, EventDeleted, DatesDropped, DatesMoved, DatesRestored:
+	case Promoted, NoRoom, DateCancelled, EventDeleted, DatesDropped, DatesMoved, DatesRestored, DatesRetimed, AnswerRemoved, AnswerRemovedAll:
 		return wordSignedUp(ctx, q, r, x, n)
 	}
 	return n, false, nil
@@ -557,4 +583,12 @@ func wordMember(ctx context.Context, q db.Querier, r Reader, x row, n Notice) (N
 		n.Text, n.Subject = who+" made you a leader of "+quoted+".", "You're a group leader"
 	}
 	return n, true, nil
+}
+
+func kinds(list []string) []any {
+	out := make([]any, len(list))
+	for i, k := range list {
+		out[i] = k
+	}
+	return out
 }

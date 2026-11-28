@@ -136,7 +136,8 @@ func Set(tx *write.Tx, personID int64, dateIDs []int64, to string) (Result, erro
 // change that frees a seat or adds room calls it in the same write, once
 // per command, with every date it touched; on a date with no free seat it
 // moves nobody. Nobody moves up on a date that is cancelled or in a deleted
-// event, or within policy.Cutoff of its start. Each person moved up is told
+// event, or within policy.Cutoff of its start (R45), and nobody who can no
+// longer see the date moves up. Each person moved up is told
 // once, by bell and email (R36), naming their first date; the command's
 // audit row names them and counts the answers moved.
 func Settle(tx *write.Tx, dateIDs []int64) error {
@@ -159,9 +160,21 @@ func Settle(tx *write.Tx, dateIDs []int64) error {
 		if !policy.CanPromote(active, cancelled, time.Unix(starts, 0), tx.Now) {
 			continue
 		}
-		queue, err := scanIDs(tx, `SELECT person_id FROM counted_answers WHERE date_id = ? AND status = 'waiting' ORDER BY waiting_since, id`, dateID)
+		e, err := eventOf(tx.Context(), tx, eventID)
 		if err != nil {
 			return err
+		}
+		waiting, err := signed(tx.Context(), tx, e, []string{policy.AnswerWaiting}, `d.id = ?`, "a.waiting_since, a.id", dateID)
+		if err != nil {
+			return err
+		}
+		// Someone kept on the list who can no longer see the date (R3)
+		// keeps their place, and the seat goes to someone who can come.
+		var queue []int64
+		for _, w := range waiting {
+			if w.Sees(e, e.Visibility, w.DateVis) {
+				queue = append(queue, w.PersonID)
+			}
 		}
 		up := policy.Promote(seats, going, queue)
 		if len(up) == 0 {
@@ -237,25 +250,32 @@ func Withdraw(tx *write.Tx, groupID, personID int64) (int, error) {
 // Remove takes a person off dates that have not begun, as those running the
 // event choose (MoveRemove, DEC-84): their answer is taken back, and the
 // next waiting person moves up only where that frees a seat. The caller has
-// asked policy.CanRemoveAnswer. It returns how many answers it took back.
-func Remove(tx *write.Tx, personID int64, dateIDs []int64) (int, error) {
+// asked policy.CanRemoveAnswer. It returns how many answers it took back,
+// and the first of their dates it took them off.
+func Remove(tx *write.Tx, personID int64, dateIDs []int64) (int, int64, error) {
 	if len(dateIDs) == 0 {
-		return 0, nil
+		return 0, 0, nil
 	}
 	in := `d.starts_at > ? AND d.id IN (` + placeholders(len(dateIDs)) + `)`
 	args := append([]any{tx.Now.Unix()}, ids(dateIDs)...)
+	var first int64
+	if err := tx.QueryRow(`SELECT coalesce((SELECT d.id FROM answers a JOIN dates d ON d.id = a.date_id
+		WHERE a.person_id = ? AND a.status IN (`+quoted(policy.MoveRemove.From())+`) AND `+in+` ORDER BY d.starts_at, d.id LIMIT 1), 0)`,
+		append([]any{personID}, args...)...).Scan(&first); err != nil {
+		return 0, 0, err
+	}
 	freed, err := goingOn(tx, personID, in, args...)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	res, err := tx.Exec(`UPDATE answers SET status = 'cancelled', waiting_since = NULL, updated_at = ?
 		WHERE person_id = ? AND status IN (`+quoted(policy.MoveRemove.From())+`) AND date_id IN (SELECT d.id FROM dates d WHERE `+in+`)`,
 		append([]any{tx.Now.Unix(), personID}, args...)...)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	n, _ := res.RowsAffected()
-	return int(n), Settle(tx, freed)
+	return int(n), first, Settle(tx, freed)
 }
 
 // Disabled moves the waitlist up on every date still to come that a

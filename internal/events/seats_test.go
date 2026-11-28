@@ -3,6 +3,7 @@ package events_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -414,7 +415,7 @@ func TestAHiddenDateTellsNothing(t *testing.T) {
 	t.Run("removed from the group", func(t *testing.T) {
 		env, _, date := seated(t, 1)
 		run(t, env, 2, events.CancelDate{UID: date})
-		if list := read(t, env, 3); len(list) != 1 || list[0].Text != "“Study” on Tuesday, December 1 is cancelled." {
+		if list := read(t, env, 3); len(list) != 1 || list[0].Text != "“Study” on Tue, Dec 1 is cancelled." {
 			t.Fatalf("the member reads %+v", list)
 		}
 		exec(t, env, `UPDATE events SET visibility = 'invite_only'`)
@@ -534,5 +535,173 @@ func TestASeriesEditBringsDatesBack(t *testing.T) {
 				t.Fatal("dates back on were emailed")
 			}
 		})
+	}
+}
+
+func readAs(t *testing.T, env *testenv.Env, person int64) []notices.Notice {
+	t.Helper()
+	list, err := notices.List(context.Background(), env.Writer, notices.Reader{ID: person, Now: env.Clock.Now()}, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return list
+}
+
+// R44: someone taken off a date, or an event, is told plainly at the bell;
+// once they can no longer see it, still told, without naming it.
+func TestTakenOffTheListIsTold(t *testing.T) {
+	env, event, date := seated(t, 1)
+	run(t, env, 2, &events.RemoveAnswer{DateUID: date, PersonUID: "p3"})
+	run(t, env, 2, &events.RemoveAnswer{EventUID: event, PersonUID: "p6"})
+	if list := readAs(t, env, 3); len(list) != 1 || list[0].Text != "Person 2 took you off the list for “Study” on Tue, Dec 1." || list[0].Href != "/dates/"+date {
+		t.Fatalf("taken off a date: %+v", list)
+	}
+	if list := readAs(t, env, 6); len(list) != 1 || list[0].Text != "Person 2 took you off the list for “Study”." || list[0].Href != "/events/"+event {
+		t.Fatalf("taken off the event: %+v", list)
+	}
+	if len(mailJobs(t, env, notices.AnswerRemoved))+len(mailJobs(t, env, notices.AnswerRemovedAll)) != 0 {
+		t.Fatal("R44 is bell only")
+	}
+	exec(t, env, `UPDATE events SET visibility = 'invite_only'`)
+	if list := readAs(t, env, 6); len(list) != 1 || strings.Contains(list[0].Text, "Study") || list[0].Href != "/" {
+		t.Fatalf("someone who can't see it now reads %+v", list)
+	}
+	if err := run(t, env, 6, &events.Answer{DateUID: date, Status: "going", Scope: "date"}); !errors.Is(err, write.ErrNotAllowed) {
+		t.Fatalf("answered an invite-only date from outside: %v", err)
+	}
+	exec(t, env, `UPDATE events SET visibility = 'public'`)
+	if err := run(t, env, 6, &events.Answer{DateUID: date, Status: "going", Scope: "date"}); err != nil {
+		t.Fatalf("may answer again while they can see it: %v", err)
+	}
+	run(t, env, 2, &events.RemoveAnswer{DateUID: date, PersonUID: "p2"})
+	if len(readAs(t, env, 2)) != 0 {
+		t.Fatal("someone taking themselves off was told")
+	}
+}
+
+// Someone R3 kept on the waitlist who can no longer see the date keeps
+// their place, and the freed seat goes to someone who can come.
+func TestTheSeatGoesToSomeoneWhoCanSeeIt(t *testing.T) {
+	env, event, date := seated(t, 1)
+	env.Clock.Advance(time.Minute)
+	run(t, env, 2, &events.Answer{DateUID: date, Status: "going", Scope: "date"}) // the leader, third in line
+	in := weekly("2026-12-01T19:00")
+	in.Pattern.Repeat, in.Seats, in.Visibility = events.Once, 1, policy.InviteOnly
+	if err := run(t, env, 2, &events.Edit{UID: event, Input: in, Version: 1, Private: true}); err != nil {
+		t.Fatal(err)
+	}
+	run(t, env, 3, &events.Answer{DateUID: date, Status: "cant", Scope: "date"})
+	moved(t, env, date, map[int]string{2: "going", 4: "waiting", 6: "waiting"}, 2)
+}
+
+// Each person gets at most UrgentPerDay urgent event emails a day, of every
+// kind together; the bell tells them every time.
+func TestUrgentEmailIsCappedPerPerson(t *testing.T) {
+	env := setup(t)
+	addGroup(t, env, 1, policy.GroupActive, policy.Public)
+	c := &events.Create{GroupUID: "g1", Input: weekly("2026-12-01T19:00")}
+	run(t, env, 2, c)
+	run(t, env, 3, &events.Answer{DateUID: dateUID(t, env, c.UID, "2026-12-01"), Status: "going", Scope: "all"})
+	for _, day := range []string{"2026-12-01", "2026-12-08", "2026-12-15", "2026-12-22", "2026-12-29", "2027-01-05", "2027-01-12"} {
+		if err := run(t, env, 2, events.CancelDate{UID: dateUID(t, env, c.UID, day)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if bell, mail := noticesOf(t, env, notices.DateCancelled), mailJobs(t, env, notices.DateCancelled); bell[3] != 7 || mail[3] != notices.UrgentPerDay {
+		t.Fatalf("told %d times, mailed %d", bell[3], mail[3])
+	}
+	run(t, env, 2, events.Delete{UID: c.UID})
+	if bell, mail := noticesOf(t, env, notices.EventDeleted), mailJobs(t, env, notices.EventDeleted); bell[3] != 1 || mail[3] != 0 {
+		t.Fatalf("the cap isn't shared across kinds: told %d, mailed %d", bell[3], mail[3])
+	}
+	env.Clock.Advance(25 * time.Hour)
+	c2 := &events.Create{GroupUID: "g1", Input: weekly("2026-12-03T19:00")}
+	run(t, env, 2, c2)
+	d := dateUID(t, env, c2.UID, "2026-12-10")
+	run(t, env, 3, &events.Answer{DateUID: d, Status: "going", Scope: "date"})
+	run(t, env, 2, events.CancelDate{UID: d})
+	if mail := mailJobs(t, env, notices.DateCancelled); mail[3] != notices.UrgentPerDay+1 {
+		t.Fatalf("the next day's email didn't go: %d", mail[3])
+	}
+}
+
+// R3's count, and what its Remove takes, are the dates still to come that
+// are on; a cancelled one keeps its answer for when it comes back.
+func TestRemoveFromAnEventCountsDatesThatAreOn(t *testing.T) {
+	env := setup(t)
+	addGroup(t, env, 1, policy.GroupActive, policy.InviteOnly)
+	c := &events.Create{GroupUID: "g1", Input: weekly("2026-12-01T19:00")}
+	run(t, env, 2, c)
+	run(t, env, 4, &events.Answer{DateUID: dateUID(t, env, c.UID, "2026-12-01"), Status: "going", Scope: "all"})
+	dec8 := dateUID(t, env, c.UID, "2026-12-08")
+	run(t, env, 2, events.CancelDate{UID: dec8})
+	on := env.Count(t, `SELECT count(*) FROM answers a JOIN dates d ON d.id = a.date_id WHERE a.person_id = 4 AND d.status = 'scheduled'`)
+	in := weekly("2026-12-01T19:00")
+	in.Visibility = policy.InviteOnly
+	edit := &events.Edit{UID: c.UID, Input: in, Version: 1}
+	if err := run(t, env, 2, edit); !errors.Is(err, events.ErrMorePrivate) || len(edit.Unseen) != 1 || edit.Unseen[0].Dates != on {
+		t.Fatalf("R3 counts %+v, want %d dates that are on", edit.Unseen, on)
+	}
+	rm := &events.RemoveAnswer{EventUID: c.UID, PersonUID: "p4"}
+	if err := run(t, env, 2, rm); err != nil || rm.Removed != on {
+		t.Fatalf("removed %d, the confirmation said %d: %v", rm.Removed, on, err)
+	}
+	if answerOf(t, env, 4, dec8) != "going" {
+		t.Fatal("a cancelled date's answer was taken")
+	}
+}
+
+// DEC-177: deleting a group tells its members, and everyone else signed up
+// to its dates still to come, once each, as its confirmation counts.
+func TestDeletingAGroupTellsThePeopleSignedUp(t *testing.T) {
+	env := setup(t)
+	addGroup(t, env, 1, policy.GroupActive, policy.Public)
+	a := &events.Create{GroupUID: "g1", Input: weekly("2026-12-01T19:00")}
+	b := &events.Create{GroupUID: "g1", Input: weekly("2026-12-03T19:00")}
+	run(t, env, 2, a)
+	run(t, env, 2, b)
+	run(t, env, 3, &events.Answer{DateUID: dateUID(t, env, a.UID, "2026-12-08"), Status: "going", Scope: "date"})
+	run(t, env, 4, &events.Answer{DateUID: dateUID(t, env, b.UID, "2026-12-03"), Status: "maybe", Scope: "date"})
+	run(t, env, 4, &events.Answer{DateUID: dateUID(t, env, a.UID, "2026-12-08"), Status: "going", Scope: "date"})
+	run(t, env, 6, &events.Answer{DateUID: dateUID(t, env, a.UID, "2026-12-15"), Status: "cant", Scope: "date"})
+	counted, err := answers.GroupAudience(context.Background(), env.Writer, 1, env.Clock.Now(), 1)
+	if err != nil || len(counted) != 1 {
+		t.Fatalf("the confirmation counts %d: %v", len(counted), err)
+	}
+	if err := run(t, env, 1, groups.Delete{UID: "g1"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := noticesOf(t, env, notices.EventDeleted); len(got) != 1 || got[4] != 1 {
+		t.Fatalf("signed up told %v; members get their own notice", got)
+	}
+	if got := mailJobs(t, env, notices.EventDeleted); got[4] != 1 {
+		t.Fatal("a Going or Maybe isn't emailed (R36)")
+	}
+	if list := readAs(t, env, 4); len(list) != 1 || list[0].Text != "“Study” was deleted, so its dates are off, starting Thu, Dec 3." {
+		t.Fatalf("reads %+v", list)
+	}
+}
+
+// A same-day time change tells the people signed up to the dates it moves,
+// at the bell; their answers stay.
+func TestANewTimeIsTold(t *testing.T) {
+	env := setup(t)
+	addGroup(t, env, 1, policy.GroupActive, policy.Public)
+	c := &events.Create{GroupUID: "g1", Input: weekly("2026-12-01T19:00")}
+	run(t, env, 2, c)
+	dec8 := dateUID(t, env, c.UID, "2026-12-08")
+	run(t, env, 3, &events.Answer{DateUID: dec8, Status: "going", Scope: "following"})
+	run(t, env, 4, &events.Answer{DateUID: dec8, Status: "cant", Scope: "date"})
+	if err := run(t, env, 2, &events.Edit{UID: c.UID, Input: weekly("2026-12-01T20:00"), Version: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if got := noticesOf(t, env, notices.DatesRetimed); len(got) != 1 || got[3] != 1 {
+		t.Fatalf("told %v", got)
+	}
+	if len(mailJobs(t, env, notices.DatesRetimed)) != 0 || answerOf(t, env, 3, dec8) != "going" {
+		t.Fatal("a new time was emailed, or the answer didn't stay")
+	}
+	if list := readAs(t, env, 3); len(list) != 1 || list[0].Text != "The time of “Study” changed, starting Tue, Dec 8. Your answer stays as it was." {
+		t.Fatalf("reads %+v", list)
 	}
 }

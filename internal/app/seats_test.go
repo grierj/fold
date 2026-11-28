@@ -66,6 +66,12 @@ func TestAFullDateAndItsWaitlist(t *testing.T) {
 	if strings.Contains(r.body, "/remove") {
 		t.Error("a member is offered Remove")
 	}
+	// The line's order is for those running it; others see how many wait.
+	cal := s.member("Cal Coming", "cal@example.org")
+	if r := cal.get("/dates/" + date); !strings.Contains(r.body, "1 on the waitlist") || !strings.Contains(r.body, "Mia Member") ||
+		strings.Contains(r.body, "Ned Next") || strings.Contains(r.body, "On the waitlist, in order") {
+		t.Errorf("someone allowed names sees the waitlist's order: %s", between(r.body, `id="answer"`, "</section>"))
+	}
 	remove := "/dates/" + date + "/people/" + s.uidOf("mia@example.org") + "/remove"
 	if r := ned.post("/dates/"+date, remove, nil); r.status != http.StatusNotFound {
 		t.Fatalf("a member removed someone: %d", r.status)
@@ -78,7 +84,7 @@ func TestAFullDateAndItsWaitlist(t *testing.T) {
 		!strings.Contains(h.body, "1 going") || strings.Contains(h.body, "on the waitlist") {
 		t.Fatalf("remove in place: %d %s", h.status, h.body)
 	}
-	if r := ned.get("/notices"); !strings.Contains(r.body, "A seat opened, so you&#39;re going to “Supper” on Tuesday, December 1.") {
+	if r := ned.get("/notices"); !strings.Contains(r.body, "A seat opened, so you&#39;re going to “Supper” on Tue, Dec 1.") {
 		t.Fatalf("the person moved up isn't told: %s", between(r.body, "<main", "</main>"))
 	}
 	s.work()
@@ -127,8 +133,11 @@ func TestDeleteAndCancelSayHowMany(t *testing.T) {
 	if r := admin.get("/events/" + uid); !strings.Contains(r.body, "1 other person signed up will be told.") {
 		t.Fatal("the delete confirmation has no count")
 	}
+	if r := admin.get("/groups/" + group); !strings.Contains(r.body, "So will 1 other person signed up to its dates.") {
+		t.Fatal("the group delete confirmation has no count (DEC-177)")
+	}
 	admin.post("/events/"+uid, "/events/"+uid+"/delete", nil)
-	if r := mia.get("/notices"); !strings.Contains(r.body, "“Supper” was deleted, so its dates are off, starting Tuesday, December 1.") {
+	if r := mia.get("/notices"); !strings.Contains(r.body, "“Supper” was deleted, so its dates are off, starting Tue, Dec 1.") {
 		t.Fatalf("mia isn't told: %s", between(r.body, "<main", "</main>"))
 	}
 	if r := admin.get("/notices"); strings.Contains(r.body, "was deleted") {

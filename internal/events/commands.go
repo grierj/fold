@@ -250,8 +250,8 @@ var ErrMorePrivate = errors.New("events: the edit makes it more private")
 // that makes it more private until they have seen who would lose sight of
 // it (docs/HAZARDS.md section 7, R3). Each question has its own answer.
 // The people signed up to cancelled dates are told, and answers never
-// follow a date to another day (R40); those signed up to dates back on are
-// told too (DEC-91). Raising or clearing the seat limit moves the waitlist
+// follow a date to another day (R40); those signed up to dates back on, or
+// on new times the same day, are told too and keep their answers (DEC-91). Raising or clearing the seat limit moves the waitlist
 // up; lowering it bumps nobody. The zone never changes: edit forms use the
 // event's own (DEC-57).
 type Edit struct {
@@ -306,7 +306,7 @@ func (c *Edit) Apply(tx *write.Tx) error {
 		return write.ErrNotAllowed
 	}
 	plan := PlanSeries(have, next, tx.Now)
-	var dropped []Signed
+	var dropped []answers.Signed
 	if len(plan.Cancel) > 0 {
 		where, args := dateIDs(plan.Cancel)
 		if dropped, err = signedUp(tx.Context(), tx, e, g, where, args...); err != nil {
@@ -327,7 +327,7 @@ func (c *Edit) Apply(tx *write.Tx) error {
 		if err != nil {
 			return err
 		}
-		if c.Unseen, err = unseen(tx.Context(), tx, list, e, g, c.Visibility, func(s Signed) string { return s.DateVis }, tx.Now, false); err != nil {
+		if c.Unseen, err = unseen(tx.Context(), tx, list, e, g, c.Visibility, func(s answers.Signed) string { return s.DateVis }, tx.Now, false); err != nil {
 			return err
 		}
 		return ErrMorePrivate
@@ -373,6 +373,18 @@ func (c *Edit) Apply(tx *write.Tx) error {
 		tx.Detail("seats", strconv.Itoa(c.Seats))
 	}
 	ns := told
+	if len(plan.Move) > 0 {
+		var retimed []int64
+		for _, ch := range plan.Move {
+			retimed = append(retimed, ch.ID)
+		}
+		where, args := dateIDs(retimed)
+		list, err := signedUp(tx.Context(), tx, e, g, where, args...)
+		if err != nil {
+			return err
+		}
+		ns = append(ns, audience(list, e, g, c.Visibility, tx.Actor.Person.ID, notices.DatesRetimed)...)
+	}
 	var settle []int64
 	if len(plan.Restore) > 0 {
 		var back []int64
@@ -576,7 +588,7 @@ func (c *OpenDate) Apply(tx *write.Tx) error {
 		if err != nil {
 			return err
 		}
-		if c.Unseen, err = unseen(tx.Context(), tx, list, e, g, e.Visibility, func(Signed) string { return c.Visibility }, tx.Now, true); err != nil {
+		if c.Unseen, err = unseen(tx.Context(), tx, list, e, g, e.Visibility, func(answers.Signed) string { return c.Visibility }, tx.Now, true); err != nil {
 			return err
 		}
 		return ErrMorePrivate

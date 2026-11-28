@@ -19,9 +19,10 @@ type dateSeen struct {
 }
 
 // seeDate loads a date and its event and asks policy whether the reader may
-// see the date now, by the same rule as the date page. A deleted event is
-// asked about as if it were not deleted, so the people it was taken from
-// still read why; nothing else about it is shown. This loads the reader's
+// see the date now, by the same rule as the date page. A deleted event, or
+// an event of a deleted group, is asked about as if neither were deleted,
+// so the people it was taken from still read why; nothing else about it is
+// shown. This loads the reader's
 // relation as groups.RelOf does (notices cannot import groups); a test holds
 // the notices to the pages.
 func seeDate(ctx context.Context, q db.Querier, r Reader, eventID, dateID int64, deleted bool) (dateSeen, bool, error) {
@@ -42,13 +43,17 @@ func seeDate(ctx context.Context, q db.Querier, r Reader, eventID, dateID int64,
 	if err != nil {
 		return d, false, err
 	}
-	if deleted != (status == policy.EventDeleted) {
+	gone := status == policy.EventDeleted || groupStatus == policy.GroupDeleted
+	if deleted != gone {
 		return d, false, nil
+	}
+	if groupStatus == policy.GroupDeleted {
+		groupStatus = policy.GroupActive
 	}
 	d.day, _ = time.Parse("2006-01-02", day)
 	p := &policy.Person{ID: r.ID, Admin: r.Admin}
 	ev := policy.Event{Status: policy.EventActive, Visibility: vis, ChurchWide: !groupID.Valid, Host: host}
-	active := state == "active" && groupStatus != policy.GroupDeleted
+	active := state == "active"
 	g, rel := policy.Group{Status: groupStatus, Visibility: groupVis}, policy.Rel{Member: active, Leader: active && role == "leader", Removed: state == "removed"}
 	d.seesEvent = policy.CanSeeEvent(p, ev, g, rel)
 	return d, policy.CanSeeDate(p, ev, dvis, g, rel), nil
@@ -61,13 +66,26 @@ func wordSignedUp(ctx context.Context, q db.Querier, r Reader, x row, n Notice) 
 		return n, false, nil
 	}
 	d, ok, err := seeDate(ctx, q, r, x.event.Int64, x.date.Int64, x.kind == EventDeleted)
-	if err != nil || !ok {
+	if err != nil {
 		return n, false, err
 	}
+	who := "Someone"
+	if x.actorID.Valid {
+		q.QueryRowContext(ctx, `SELECT name FROM people WHERE id = ?`, x.actorID.Int64).Scan(&who)
+	}
+	if !ok {
+		// R44: someone taken off a date they can no longer see is still
+		// told, without a word about what it was.
+		if x.kind == AnswerRemoved || x.kind == AnswerRemovedAll {
+			n.Text, n.Subject, n.Href = who+" took you off the list for a date you'd answered.", "You were taken off a list", "/"
+			return n, true, nil
+		}
+		return n, false, nil
+	}
 	quoted := "“" + d.title + "”"
-	day := d.day.Format("Monday, January 2")
+	day := d.day.Format("Mon, Jan 2")
 	n.Href = "/dates/" + d.dateUID
-	if d.seesEvent && (x.kind == DatesDropped || x.kind == DatesMoved) {
+	if d.seesEvent && (x.kind == DatesDropped || x.kind == DatesMoved || x.kind == AnswerRemovedAll) {
 		n.Href = "/events/" + d.eventUID
 	}
 	switch x.kind {
@@ -85,6 +103,12 @@ func wordSignedUp(ctx context.Context, q db.Querier, r Reader, x row, n Notice) 
 		n.Text, n.Subject = quoted+" moved to new times, so dates you answered are off, starting "+day+". Answers don't move with it, so answer the new dates if you can come.", "An event moved"
 	case DatesRestored:
 		n.Text, n.Subject = quoted+" is back on, starting "+day+", with your answer as it was.", "A date is back on"
+	case DatesRetimed:
+		n.Text, n.Subject = "The time of "+quoted+" changed, starting "+day+". Your answer stays as it was.", "A time changed"
+	case AnswerRemoved:
+		n.Text, n.Subject = who+" took you off the list for "+quoted+" on "+day+".", "You were taken off a list"
+	case AnswerRemovedAll:
+		n.Text, n.Subject = who+" took you off the list for "+quoted+".", "You were taken off a list"
 	}
 	return n, true, nil
 }

@@ -16,56 +16,14 @@ import (
 	"fold/internal/write"
 )
 
-// Signed is one person signed up to one date (Going, Maybe or waiting),
-// with what policy needs to know whether they may see it.
-type Signed struct {
-	PersonID int64
-	UID      string
-	Name     string
-	Answer   string
-	DateID   int64
-	DateVis  string
-	person   policy.Person
-	rel      policy.Rel
-	host     bool
+func (e Event) answers(g groups.Group) answers.Event {
+	return answers.Event{ID: e.ID, GroupID: e.GroupID, Visibility: e.Visibility, ChurchWide: e.ChurchWide(), Group: g.Policy()}
 }
 
-// sees asks policy whether the person may see their date with the event at
-// the given visibility, as if the event were not deleted (a delete tells
-// the people who could see it).
-func (s Signed) sees(e Event, g groups.Group, eventVis string) bool {
-	ev := e.Policy(s.host)
-	ev.Status, ev.Visibility = policy.EventActive, eventVis
-	return policy.CanSeeDate(&s.person, ev, s.DateVis, g.Policy(), s.rel)
-}
-
-// signedUp lists the active accounts signed up to an event's dates that
-// match where, soonest date first.
-func signedUp(ctx context.Context, q db.Querier, e Event, g groups.Group, where string, args ...any) ([]Signed, error) {
-	rows, err := q.QueryContext(ctx, `SELECT a.person_id, p.uid, p.name, p.is_admin, a.status, d.id, coalesce(d.visibility, ''),
-		coalesce(m.role, ''), coalesce(m.state, ''),
-		EXISTS (SELECT 1 FROM event_hosts h WHERE h.event_id = d.event_id AND h.person_id = a.person_id)
-		FROM answers a JOIN people p ON p.id = a.person_id JOIN dates d ON d.id = a.date_id
-		LEFT JOIN memberships m ON m.group_id = ? AND m.person_id = a.person_id
-		WHERE d.event_id = ? AND p.status = 'active' AND a.status IN (`+inList(policy.SignedUp)+`) AND `+where+`
-		ORDER BY d.starts_at, d.id, p.name COLLATE NOCASE`, append([]any{e.GroupID, e.ID}, args...)...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Signed
-	for rows.Next() {
-		var s Signed
-		var role, state string
-		if err := rows.Scan(&s.PersonID, &s.UID, &s.Name, &s.person.Admin, &s.Answer, &s.DateID, &s.DateVis, &role, &state, &s.host); err != nil {
-			return nil, err
-		}
-		s.person.ID = s.PersonID
-		active := state == "active" && g.Status != policy.GroupDeleted
-		s.rel = policy.Rel{Member: active, Leader: active && role == "leader", Removed: state == "removed"}
-		out = append(out, s)
-	}
-	return out, rows.Err()
+// signedUp lists the people signed up to an event's dates that match
+// where, soonest date first.
+func signedUp(ctx context.Context, q db.Querier, e Event, g groups.Group, where string, args ...any) ([]answers.Signed, error) {
+	return answers.SignedUp(ctx, q, e.answers(g), where, args...)
 }
 
 func inList(states []string) string {
@@ -79,29 +37,9 @@ func inList(states []string) string {
 // upcoming are the dates still to come that are on.
 const upcoming = `d.status = 'scheduled' AND d.starts_at > ?`
 
-// audience is who a change to dates tells: everyone signed up who may see
-// their date with the event at eventVis, but the person making the change.
-// Each person is told once, about their first date, and by email when any
-// of theirs was Going or Maybe (R36). Every confirmation that says how many
-// people will be told counts with this.
-func audience(list []Signed, e Event, g groups.Group, eventVis string, except int64, kind string) []notices.New {
-	at := map[int64]int{}
-	var out []notices.New
-	for _, s := range list {
-		if s.PersonID == except || !s.sees(e, g, eventVis) {
-			continue
-		}
-		i, seen := at[s.PersonID]
-		if !seen {
-			at[s.PersonID] = len(out)
-			out = append(out, notices.New{PersonID: s.PersonID, Kind: kind, EventID: e.ID, DateID: s.DateID, Answer: s.Answer})
-			continue
-		}
-		if policy.Urgent(s.Answer) {
-			out[i].Answer = s.Answer
-		}
-	}
-	return out
+// audience is who a change to dates tells (answers.Audience).
+func audience(list []answers.Signed, e Event, g groups.Group, eventVis string, except int64, kind string) []notices.New {
+	return answers.Audience(list, e.answers(g), eventVis, except, kind)
 }
 
 // tell adds the audience's notices, and records how many were told.
@@ -143,13 +81,12 @@ type Unseen struct {
 
 // unseen lists who among list may see their date now and would not with
 // the event at eventVis and each date at dateVis(date) instead.
-func unseen(ctx context.Context, q db.Querier, list []Signed, e Event, g groups.Group, eventVis string, dateVis func(Signed) string, now time.Time, oneDate bool) ([]Unseen, error) {
+func unseen(ctx context.Context, q db.Querier, list []answers.Signed, e Event, g groups.Group, eventVis string, dateVis func(answers.Signed) string, now time.Time, oneDate bool) ([]Unseen, error) {
 	seen := map[int64]bool{}
 	var out []Unseen
+	ae := e.answers(g)
 	for _, s := range list {
-		after := s
-		after.DateVis = dateVis(s)
-		if seen[s.PersonID] || !s.sees(e, g, e.Visibility) || after.sees(e, g, eventVis) {
+		if seen[s.PersonID] || !s.Sees(ae, e.Visibility, s.DateVis) || s.Sees(ae, eventVis, dateVis(s)) {
 			continue
 		}
 		seen[s.PersonID] = true
@@ -166,9 +103,9 @@ func unseen(ctx context.Context, q db.Querier, list []Signed, e Event, g groups.
 	return out, nil
 }
 
-// removable are an event's dates still to come, cancelled for now or not:
-// what removing someone from the event takes them off.
-const removable = `d.event_id = ? AND d.starts_at > ?`
+// removable are an event's dates still to come that are on: what removing
+// someone from the event takes them off, and what its count says.
+const removable = `d.event_id = ? AND d.status = 'scheduled' AND d.starts_at > ?`
 
 // Answers counts a person's answers on an event's dates still to come that
 // Remove would take back: the count its confirmation states.
@@ -180,9 +117,10 @@ func Answers(ctx context.Context, q db.Querier, eventID, personID int64, now tim
 }
 
 // RemoveAnswer takes a person off one date, or with no DateUID off every
-// date of the event still to come, for those running the event (DEC-84,
-// R3). The next waiting person moves up only where that frees a seat. It
-// is also what R3's list offers beside each name.
+// date of the event still to come that is on, for those running the event
+// (DEC-84, R3). The next waiting person moves up only where that frees a
+// seat, and the person is told (R44); they may answer again while they can
+// see the date. It is also what R3's list offers beside each name.
 type RemoveAnswer struct {
 	DateUID, EventUID string
 	PersonUID         string
@@ -228,7 +166,7 @@ func (c *RemoveAnswer) Apply(tx *write.Tx) error {
 		}
 		return err
 	}
-	n, err := answers.Remove(tx, personID, ids)
+	n, first, err := answers.Remove(tx, personID, ids)
 	if err != nil {
 		return err
 	}
@@ -238,5 +176,13 @@ func (c *RemoveAnswer) Apply(tx *write.Tx) error {
 	c.Removed = n
 	tx.Subject(c.PersonUID)
 	tx.Detail("removed", strconv.Itoa(n))
-	return nil
+	if personID == tx.Actor.Person.ID {
+		return nil // nobody is told about what they did themselves
+	}
+	kind := notices.AnswerRemoved
+	if c.DateUID == "" {
+		kind = notices.AnswerRemovedAll
+	}
+	// R44: told plainly, at the bell, with no reason.
+	return notices.Add(tx, notices.New{PersonID: personID, Kind: kind, ActorID: tx.Actor.Person.ID, EventID: e.ID, DateID: first})
 }
