@@ -268,6 +268,10 @@ func RegisterJobs(r *write.Runner, d JobDeps) {
 	(&backup.Jobs{Exec: d.Exec, Reader: d.Reader, DataDir: d.DataDir, Outbox: d.Outbox, Dev: d.Dev, Log: d.Log}).Register(r)
 	r.Handle(notices.JobCleanup, notices.Cleanup(d.Exec))
 	r.Handle(accounts.JobInvitationCleanup, accounts.CleanupInvitations(d.Exec))
+	r.Handle(accounts.JobGuestCleanup, accounts.CleanupGuests(d.Exec))
+	r.Every(write.Recurring{Kind: accounts.JobGuestCleanup, Next: func(now time.Time) time.Time {
+		return now.UTC().Truncate(time.Hour).Add(time.Hour + 20*time.Minute)
+	}})
 	r.Every(write.Recurring{Kind: accounts.JobInvitationCleanup, Next: func(now time.Time) time.Time {
 		return now.UTC().Truncate(24 * time.Hour).Add(29*time.Hour + 30*time.Minute)
 	}})

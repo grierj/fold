@@ -9,7 +9,7 @@
     <p class="mt-1 text-text-muted">Remove anyone who shouldn't come any more. Each removal is saved at once.</p>
     <ul class="mt-2 divide-y divide-border border-y border-border">
       {{range .Data.Rows}}<li id="{{.ID}}" class="flex flex-wrap items-center justify-between gap-3 py-3">
-        <div class="min-w-0"><p class="font-semibold wrap-anywhere">{{.Name}}</p>{{with .Dates}}<p class="text-sm text-text-muted">{{.}} still to come</p>{{end}}</div>
+        <div class="min-w-0"><p class="font-semibold wrap-anywhere">{{.Name}}{{if .Guest}} <span class="tag">Guest</span>{{end}}</p>{{with .Dates}}<p class="text-sm text-text-muted">{{.}} still to come</p>{{end}}</div>
         {{template "dialog" .Remove}}
       </li>{{end}}
     </ul>

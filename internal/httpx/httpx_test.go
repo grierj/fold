@@ -44,6 +44,9 @@ func TestRedactPath(t *testing.T) {
 	if got := RedactPath("/l/abcdefsecret"); got != "/l/REDACTED" {
 		t.Fatal(got)
 	}
+	if got := RedactPath("/g/abcdefsecret"); got != "/g/REDACTED" {
+		t.Fatal(got)
+	}
 	if got := RedactPath("/signin"); got != "/signin" {
 		t.Fatal(got)
 	}

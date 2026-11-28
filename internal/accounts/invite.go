@@ -47,7 +47,7 @@ func (InviteByName) Action() string { return "group.invite" }
 
 func (c InviteByName) Apply(tx *write.Tx) error {
 	actor := tx.Actor.Person.Policy()
-	g, rel, err := groupFor(tx, c.GroupUID, actor.ID)
+	g, rel, err := groupFor(tx, c.GroupUID, tx.Actor.Person.ID)
 	if err != nil {
 		return err
 	}
@@ -77,12 +77,12 @@ func (c InviteByName) Apply(tx *write.Tx) error {
 		return ErrInvited
 	}
 	if _, err := tx.Exec(`INSERT INTO invitations (uid, inviter_id, group_id, person_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		people.NewUID(), actor.ID, g.ID, p.ID, tx.Now.Unix(), tx.Now.Add(NameInviteLife).Unix()); err != nil {
+		people.NewUID(), tx.Actor.Person.ID, g.ID, p.ID, tx.Now.Unix(), tx.Now.Add(NameInviteLife).Unix()); err != nil {
 		return err
 	}
 	tx.Subject(g.UID)
 	tx.Subject(p.UID)
-	return notices.Add(tx, notices.New{PersonID: p.ID, Kind: notices.Invited, ActorID: actor.ID, GroupID: g.ID})
+	return notices.Add(tx, notices.New{PersonID: p.ID, Kind: notices.Invited, ActorID: tx.Actor.Person.ID, GroupID: g.ID})
 }
 
 // InviteByEmail invites an address, into a group or none. The same thing
@@ -102,7 +102,7 @@ func (c InviteByEmail) Apply(tx *write.Tx) error {
 	var target *policy.Group
 	var leadsTarget bool
 	if c.GroupUID != "" {
-		g, rel, err := groupFor(tx, c.GroupUID, actor.ID)
+		g, rel, err := groupFor(tx, c.GroupUID, tx.Actor.Person.ID)
 		if err != nil {
 			return err
 		}
@@ -110,7 +110,7 @@ func (c InviteByEmail) Apply(tx *write.Tx) error {
 		target, leadsTarget, groupID = &pg, rel.Leader, g.ID
 		tx.Subject(g.UID)
 	}
-	leadsAnywhere, err := groups.LeadsActive(tx.Context(), tx, actor.ID)
+	leadsAnywhere, err := groups.LeadsActive(tx.Context(), tx, tx.Actor.Person.ID)
 	if err != nil {
 		return err
 	}
@@ -139,7 +139,7 @@ func (c InviteByEmail) Apply(tx *write.Tx) error {
 	}
 	token := NewToken()
 	res, err := tx.Exec(`INSERT INTO invitations (uid, inviter_id, group_id, name, email, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		people.NewUID(), actor.ID, groupID, c.Name, c.Email, Hash(token), tx.Now.Unix(), tx.Now.Add(LinkLife).Unix())
+		people.NewUID(), tx.Actor.Person.ID, groupID, c.Name, c.Email, Hash(token), tx.Now.Unix(), tx.Now.Add(LinkLife).Unix())
 	if err != nil {
 		return err
 	}
@@ -319,8 +319,10 @@ func (c *RedeemInvitation) Apply(tx *write.Tx) error {
 		p = people.Person{ID: id, UID: uid, Status: people.StatusActive}
 	case err != nil:
 		return err
-	case p.Status == people.StatusPending:
-		if _, err := tx.Exec(`UPDATE people SET status = 'active', updated_at = ?, version = version + 1 WHERE id = ?`, tx.Now.Unix(), p.ID); err != nil {
+	case p.Status == people.StatusPending, p.Guest():
+		// A leader's invitation needs no approval (DEC-4): a waiting request
+		// or a guest becomes a member, a guest keeping their answers.
+		if _, err := tx.Exec(`UPDATE people SET status = 'active', requested_at = NULL, updated_at = ?, version = version + 1 WHERE id = ?`, tx.Now.Unix(), p.ID); err != nil {
 			return err
 		}
 	case p.Status != people.StatusActive:

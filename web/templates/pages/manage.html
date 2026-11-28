@@ -1,0 +1,19 @@
+{{define "title"}}{{if .Data.Works}}Your RSVP{{else}}This link no longer works{{end}}{{end}}
+{{define "content"}}<div class="page-form">
+{{if .Data.Works}}
+  <h1 class="text-2xl font-bold wrap-anywhere sm:text-3xl">{{.Data.Event.Title}}</h1>
+  <p class="mt-2 text-lg">{{.Data.Day}}</p>
+  <p>{{.Data.When}}</p>
+  <p class="mt-1 text-sm text-text-muted">{{.Data.ZoneLine}}</p>
+  {{with .Data.Event.Place}}<p class="mt-3 wrap-anywhere">{{.}}</p>{{end}}
+  {{if .Data.Cancelled}}<div class="mt-4">{{template "notice" (notice "warning" "This date is cancelled" "The people running the event cancelled this date.")}}</div>{{end}}
+  <p class="mt-4 font-semibold">{{.Data.Answer}}</p>
+  <form class="mt-6" method="post" action="{{.Data.Action}}">
+    {{template "csrf" .}}
+    {{template "button" (button "danger-outline" "Cancel my RSVP")}}
+  </form>
+  <p class="mt-3 text-sm text-text-muted">Cancelling frees your seat for someone else. This link stops working when you cancel or when the date is over.</p>
+{{else}}
+  {{template "empty" (emptypage "link-expired.svg" "This link no longer works" "It stops working once an RSVP is cancelled or the date is over." (linkbutton "primary" "See what's coming up" "/groups"))}}
+{{end}}
+</div>{{end}}

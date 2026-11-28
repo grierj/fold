@@ -18,7 +18,10 @@ import (
 // A new address becomes a person waiting for an admin, every admin gets a
 // notice and an email, and the person is told their request is waiting. An
 // address with an active account is told so by email instead; that email is
-// the only hint, and only its owner reads it. Anything else changes nothing.
+// the only hint, and only its owner reads it. A guest's address asks for
+// them: they stay a guest, with their answers, until an admin decides; the
+// form is anyone's, so it changes nothing about them but the ask. Anything
+// else changes nothing.
 type RequestAccount struct {
 	Name  string
 	Email string
@@ -41,6 +44,20 @@ func (c RequestAccount) Apply(tx *write.Tx) error {
 		tx.Subject(p.UID)
 		tx.Detail("outcome", "exists")
 		return tx.Enqueue(write.NewJob{Kind: JobAccountExists, Ref: p.ID})
+	case err == nil && p.Guest():
+		res, err := tx.Exec(`UPDATE people SET requested_at = ? WHERE id = ? AND requested_at IS NULL`, tx.Now.Unix(), p.ID)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return write.ErrNothing // already asked
+		}
+		tx.Subject(p.UID)
+		tx.Detail("outcome", "guest")
+		if err := notices.ToAdmins(tx, notices.New{Kind: notices.AccountRequested, SubjectID: p.ID}); err != nil {
+			return err
+		}
+		return tx.Enqueue(write.NewJob{Kind: JobRequestReceived, Ref: p.ID})
 	case err == nil:
 		return write.ErrNothing // waiting, disabled, or the first admin mid-setup
 	case !errors.Is(err, people.ErrNotFound):
@@ -63,7 +80,8 @@ func (c RequestAccount) Apply(tx *write.Tx) error {
 
 // DecideAccount is an admin approving or declining a waiting request. An
 // approved person is sent a sign-in link; a declined one is deleted, with
-// nothing about them kept (R27).
+// nothing about them kept (R27). A guest who asked becomes a member with
+// their answers, or, declined, stays a guest: they have answers to keep.
 type DecideAccount struct {
 	PersonUID string
 	Approve   bool
@@ -81,7 +99,8 @@ func (c DecideAccount) Apply(tx *write.Tx) error {
 		return write.ErrNotAllowed
 	}
 	var id int64
-	err := tx.QueryRow(`SELECT id FROM people WHERE uid = ? AND status = 'pending'`, c.PersonUID).Scan(&id)
+	var guest bool
+	err := tx.QueryRow(`SELECT id, status = 'guest' FROM people WHERE uid = ? AND `+asking, c.PersonUID).Scan(&id, &guest)
 	if errors.Is(err, sql.ErrNoRows) {
 		return write.ErrNotAllowed // already decided, or never asked
 	}
@@ -90,10 +109,14 @@ func (c DecideAccount) Apply(tx *write.Tx) error {
 	}
 	tx.Subject(c.PersonUID)
 	if c.Approve {
-		if _, err := tx.Exec(`UPDATE people SET status = 'active', updated_at = ?, version = version + 1 WHERE id = ?`, tx.Now.Unix(), id); err != nil {
+		if _, err := tx.Exec(`UPDATE people SET status = 'active', requested_at = NULL, updated_at = ?, version = version + 1 WHERE id = ?`, tx.Now.Unix(), id); err != nil {
 			return err
 		}
 		_, err := issueLinkAs(tx, id, "signin", JobApprovedMail)
+		return err
+	}
+	if guest {
+		_, err := tx.Exec(`UPDATE people SET requested_at = NULL WHERE id = ?`, id)
 		return err
 	}
 	// A waiting person cannot sign in, so has no session or link; the deletes
@@ -114,11 +137,15 @@ type Request struct {
 	At    time.Time
 }
 
+// asking are the people waiting for an admin: requests, and guests who
+// asked to become members.
+const asking = `(status = 'pending' OR (status = 'guest' AND requested_at IS NOT NULL))`
+
 // Waiting lists up to limit requests waiting for an admin, oldest first,
 // and how many wait in all.
 func Waiting(ctx context.Context, q db.Querier, limit int) ([]Request, int, error) {
 	var total int
-	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM people WHERE status = 'pending'`).Scan(&total); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM people WHERE `+asking).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	list, err := waiting(ctx, q, limit)
@@ -126,7 +153,8 @@ func Waiting(ctx context.Context, q db.Querier, limit int) ([]Request, int, erro
 }
 
 func waiting(ctx context.Context, q db.Querier, limit int) ([]Request, error) {
-	rows, err := q.QueryContext(ctx, `SELECT uid, name, email, created_at FROM people WHERE status = 'pending' ORDER BY created_at, id LIMIT ?`, limit)
+	rows, err := q.QueryContext(ctx, `SELECT uid, name, email, coalesce(requested_at, created_at) FROM people WHERE `+asking+`
+		ORDER BY coalesce(requested_at, created_at), id LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}

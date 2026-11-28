@@ -278,6 +278,28 @@ func Remove(tx *write.Tx, personID int64, dateIDs []int64) (int, int64, error) {
 	return int(n), first, Settle(tx, freed)
 }
 
+// GuestCancel takes back a guest's own Going or place in line on one date
+// (MoveGuestCancel, DEC-55); a seat it frees moves the next person up. The
+// caller has asked policy.GuestCanCancel. It reports whether it changed
+// anything.
+func GuestCancel(tx *write.Tx, personID, dateID int64) (bool, error) {
+	var was string
+	if err := tx.QueryRow(`SELECT coalesce((SELECT status FROM answers WHERE person_id = ? AND date_id = ?), '')`, personID, dateID).Scan(&was); err != nil {
+		return false, err
+	}
+	if !policy.MoveGuestCancel.Allows(was, policy.AnswerCancelled) {
+		return false, nil
+	}
+	if _, err := tx.Exec(`UPDATE answers SET status = 'cancelled', waiting_since = NULL, updated_at = ? WHERE person_id = ? AND date_id = ?`,
+		tx.Now.Unix(), personID, dateID); err != nil {
+		return false, err
+	}
+	if was != policy.AnswerGoing {
+		return true, nil
+	}
+	return true, Settle(tx, []int64{dateID})
+}
+
 // Disabled moves the waitlist up on every date still to come that a
 // person, whose account was just turned off, held a seat on: their answers
 // stay, hidden and not counted (DEC-38). Call it after the account's
@@ -359,8 +381,12 @@ func CountsFor(ctx context.Context, q db.Querier, dateID int64, withCant bool) (
 }
 
 // Named is one person with an answer: their public name, never their
-// address, and their id for the people running the event.
-type Named struct{ UID, Name string }
+// address, their id for the people running the event, and whether they are
+// a guest, whose name is their own say-so (R46).
+type Named struct {
+	UID, Name string
+	Guest     bool
+}
 
 // Names are the people with one answer on a date, by name; the waitlist is
 // in its order.
@@ -369,7 +395,7 @@ func Names(ctx context.Context, q db.Querier, dateID int64, status string) ([]Na
 	if status == policy.AnswerWaiting {
 		order = "a.waiting_since, a.id"
 	}
-	rows, err := q.QueryContext(ctx, `SELECT p.uid, p.name FROM counted_answers a JOIN people p ON p.id = a.person_id
+	rows, err := q.QueryContext(ctx, `SELECT p.uid, p.name, p.status = 'guest' FROM counted_answers a JOIN people p ON p.id = a.person_id
 		WHERE a.date_id = ? AND a.status = ? ORDER BY `+order, dateID, status)
 	if err != nil {
 		return nil, err
@@ -378,7 +404,7 @@ func Names(ctx context.Context, q db.Querier, dateID int64, status string) ([]Na
 	var out []Named
 	for rows.Next() {
 		var n Named
-		if err := rows.Scan(&n.UID, &n.Name); err != nil {
+		if err := rows.Scan(&n.UID, &n.Name, &n.Guest); err != nil {
 			return nil, err
 		}
 		out = append(out, n)

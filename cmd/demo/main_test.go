@@ -95,6 +95,9 @@ func TestSeed(t *testing.T) {
 			WHERE e.seats = 3 AND a.status = 'going'`); n != 3 {
 			t.Errorf("%d going on the full event, want 3", n)
 		}
+		if n := count(q, `SELECT count(*) FROM people p JOIN answers a ON a.person_id = p.id WHERE p.status = 'guest' AND a.status = 'going'`); n != 1 {
+			t.Errorf("%d guest answers, want 1", n)
+		}
 		if n := count(q, `SELECT count(*) FROM events WHERE video_url <> ''`); n != 1 {
 			t.Errorf("%d events with a video link", n)
 		}
@@ -107,8 +110,8 @@ func TestSeed(t *testing.T) {
 		if n := count(q, `SELECT count(*) FROM dates d JOIN events e ON e.id = d.event_id WHERE e.repeat = 'monthly' AND d.status = 'scheduled'`); n < 30 {
 			t.Errorf("%d monthly dates, want 18 months of two monthly events", n)
 		}
-		if n := count(q, `SELECT count(*) FROM jobs WHERE state IN ('pending', 'failed')`); n != 1 {
-			t.Errorf("%d jobs unfinished, want only the emailed invitation", n)
+		if n := count(q, `SELECT count(*) FROM jobs WHERE state IN ('pending', 'failed') AND kind LIKE 'mail.%'`); n != 1 {
+			t.Errorf("%d emails unsent, want only the emailed invitation", n)
 		}
 		return nil
 	})

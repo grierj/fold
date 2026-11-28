@@ -9,9 +9,11 @@ import (
 
 	"fold/internal/brand"
 	"fold/internal/db"
+	"fold/internal/events"
 	"fold/internal/keys"
 	"fold/internal/mail"
 	"fold/internal/notices"
+	"fold/internal/policy"
 	"fold/internal/settings"
 	"fold/internal/write"
 )
@@ -35,6 +37,110 @@ func (m *Mailer) Register(r *write.Runner) {
 	r.Handle(JobAccountExists, m.toPerson(existsEmail))
 	r.Handle(JobRequestReceived, m.toPerson(receivedEmail))
 	r.Handle(notices.JobMail, m.SendNotice)
+	r.Handle(JobGuestConfirm, m.SendGuestConfirm)
+	r.Handle(JobGuestGoing, m.SendGuestGoing)
+}
+
+// guestWhen words a date for a guest's email in the event's own zone:
+// "Tuesday, December 8 at 7:00 pm (Boise time)". A guest has no zone.
+func guestWhen(d events.Row, e events.Event) string {
+	loc, err := events.LoadZone(e.Zone)
+	if err != nil {
+		loc = time.UTC
+	}
+	t := d.StartsAt.In(loc)
+	return t.Format("Monday, January 2") + " at " + t.Format("3:04 pm") + " (" + events.ZoneCity(e.Zone) + " time)"
+}
+
+// SendGuestConfirm emails a guest's confirm link (JobGuestConfirm). Its
+// address is unproven, so nothing the asker typed is in it: only the
+// church, the event and the date. A link since replaced, used or expired,
+// or a date no longer open to guests, sends nothing.
+func (m *Mailer) SendGuestConfirm(ctx context.Context, j write.Job) error {
+	if j.Secret == nil {
+		return write.Permanent(errors.New("the link's token is gone"))
+	}
+	var to, what string
+	var send bool
+	var s settings.Settings
+	err := m.Reader.Read(ctx, func(q *sql.Tx) error {
+		var sealed []byte
+		var dateUID string
+		var expires int64
+		var cancelled sql.NullInt64
+		err := q.QueryRowContext(ctx, `SELECT l.sealed, l.expires_at, l.cancelled_at, d.uid FROM links l JOIN dates d ON d.id = l.date_id
+			WHERE l.id = ? AND l.purpose = 'guest'`, j.Ref).Scan(&sealed, &expires, &cancelled, &dateUID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		g, err := openGuest(m.Keys, sealed)
+		if err != nil || cancelled.Valid || !m.Clock.Now().Before(time.Unix(expires, 0)) {
+			return nil
+		}
+		d, e, err := events.DateByUID(ctx, q, dateUID)
+		if err != nil {
+			return err
+		}
+		_, _, _, open, err := dateFacts(ctx, q, d, e, m.Clock.Now())
+		if err != nil || !open {
+			return err
+		}
+		to, what, send = g.Email, "\u201c"+e.Title+"\u201d on "+guestWhen(d, e), true
+		s, err = settings.Load(ctx, q)
+		return err
+	})
+	if err != nil || !send {
+		return err
+	}
+	church := s[settings.ChurchName]
+	return m.send(ctx, s, to, mail.Email{Church: church, Subject: "Confirm your RSVP at " + church, Footer: footer(church),
+		Before: []string{"Someone, probably you, asked to RSVP to " + what + " at " + church + ".",
+			"Press the button to say you're going. Until you do, nothing is saved."},
+		Button: &mail.Button{Label: "Confirm my RSVP", URL: m.SiteURL + "/l/" + string(j.Secret)},
+		After: []string{"The link works once, within 24 hours.",
+			"If you didn't ask, you can ignore this message. What was typed is erased within a day."}})
+}
+
+// SendGuestGoing emails the manage link after a confirm (JobGuestGoing),
+// saying where the person stands: going, or on the waitlist (DEC-55).
+func (m *Mailer) SendGuestGoing(ctx context.Context, j write.Job) error {
+	if j.Secret == nil {
+		return write.Permanent(errors.New("the link's token is gone"))
+	}
+	var to, what string
+	var mg Manage
+	var s settings.Settings
+	err := m.Reader.Read(ctx, func(q *sql.Tx) error {
+		var err error
+		if mg, err = LookUpManage(ctx, q, string(j.Secret), m.Clock.Now()); err != nil || !mg.Works {
+			return err
+		}
+		if err := q.QueryRowContext(ctx, `SELECT email FROM people WHERE id = ?`, mg.PersonID).Scan(&to); err != nil {
+			return err
+		}
+		d, e, err := events.DateByUID(ctx, q, mg.DateUID)
+		if err != nil {
+			return err
+		}
+		what = "\u201c" + e.Title + "\u201d on " + guestWhen(d, e)
+		s, err = settings.Load(ctx, q)
+		return err
+	})
+	if err != nil || !mg.Works {
+		return err
+	}
+	church := s[settings.ChurchName]
+	line, subject := "You're going to "+what+". See you there!", "You're going"
+	if mg.Answer == policy.AnswerWaiting {
+		line, subject = what+" is full, so you're on the waitlist. If a seat opens, you'll move up and we'll email you.", "You're on the waitlist"
+	}
+	return m.send(ctx, s, to, mail.Email{Church: church, Subject: subject + " at " + church, Footer: footer(church),
+		Before: []string{line},
+		Button: &mail.Button{Label: "See or cancel your RSVP", URL: m.SiteURL + "/g/" + string(j.Secret)},
+		After:  []string{"Keep this email: the button works until you cancel or the date is over."}})
 }
 
 // send writes one email through the church's mail settings.
@@ -141,9 +247,12 @@ func (m *Mailer) SendNotice(ctx context.Context, j write.Job) error {
 		return err
 	}
 	church := s[settings.ChurchName]
+	button := &mail.Button{Label: "Open " + church, URL: m.SiteURL + n.Href}
+	if j.Secret != nil {
+		button = &mail.Button{Label: "See your answer", URL: m.SiteURL + "/g/" + string(j.Secret)}
+	}
 	return m.send(ctx, s, to, mail.Email{Church: church, Subject: n.Subject + " at " + church, Footer: footer(church),
-		Before: []string{n.Text},
-		Button: &mail.Button{Label: "Open " + church, URL: m.SiteURL + n.Href}})
+		Before: []string{n.Text}, Button: button})
 }
 
 func linkEmail(purpose, church, url string) mail.Email {

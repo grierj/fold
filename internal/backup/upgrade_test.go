@@ -162,3 +162,61 @@ func format1Hash(seq, at int64, action, actor, subjects, details string, prev []
 	field(prev)
 	return h.Sum(nil)
 }
+
+// Migration 9 rebuilds people and links under the views and every table
+// that points at them: rows in each come through, keys still hold, and the
+// views count guests' answers but never make them members.
+func TestUpgradeToGuests(t *testing.T) {
+	ctx := context.Background()
+	w, err := db.OpenWriter(filepath.Join(t.TempDir(), "app.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	if err := db.MigrateTo(ctx, w, 8); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`INSERT INTO people (id, uid, name, email, status, contact_hidden, created_at, updated_at) VALUES (1, 'a', 'A', 'a@x.org', 'active', 1, 0, 0)`,
+		`INSERT INTO sessions (token_hash, person_id, created_at, renewed_at, expires_at) VALUES (x'01', 1, 0, 0, 9)`,
+		`INSERT INTO links (purpose, person_id, token_hash, created_at, expires_at) VALUES ('signin', 1, x'02', 0, 9)`,
+		`INSERT INTO groups (id, uid, name, visibility, status, created_at, updated_at) VALUES (1, 'g', 'G', 'public', 'active', 0, 0)`,
+		`INSERT INTO memberships (group_id, person_id, role, state, created_at, updated_at) VALUES (1, 1, 'leader', 'active', 0, 0)`,
+		`INSERT INTO events (id, uid, group_id, title, visibility, zone, starts_local, minutes, repeat, created_at, updated_at) VALUES (1, 'e', 1, 'E', 'public', 'UTC', '2026-12-01T19:00', 60, 'once', 0, 0)`,
+		`INSERT INTO dates (id, uid, event_id, day, starts_at, ends_at, starts_local) VALUES (1, 'd', 1, '2026-12-01', 1, 2, '2026-12-01T19:00')`,
+		`INSERT INTO answers (date_id, person_id, status, created_at, updated_at) VALUES (1, 1, 'going', 0, 0)`,
+		`INSERT INTO notices (person_id, kind, date_id, created_at) VALUES (1, 'date.cancelled', 1, 0)`,
+	} {
+		if _, err := w.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if err := db.Migrate(ctx, w); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	count := func(q string) int {
+		var n int
+		if err := w.QueryRow(q).Scan(&n); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+		return n
+	}
+	if count(`SELECT count(*) FROM people WHERE contact_hidden = 1`) != 1 || count(`SELECT count(*) FROM links WHERE person_id = 1`) != 1 ||
+		count(`SELECT count(*) FROM sessions`) != 1 || count(`SELECT count(*) FROM notices`) != 1 || count(`SELECT count(*) FROM active_memberships`) != 1 {
+		t.Fatal("rows lost in the rebuild")
+	}
+	if _, err := w.Exec(`INSERT INTO people (id, uid, name, email, status, created_at, updated_at) VALUES (2, 'b', 'B', 'b@x.org', 'guest', 0, 0)`); err != nil {
+		t.Fatalf("guest refused: %v", err)
+	}
+	w.Exec(`INSERT INTO answers (date_id, person_id, status, created_at, updated_at) VALUES (1, 2, 'going', 0, 0)`)
+	w.Exec(`INSERT INTO memberships (group_id, person_id, role, state, created_at, updated_at) VALUES (1, 2, 'member', 'active', 0, 0)`)
+	if count(`SELECT count(*) FROM counted_answers`) != 2 || count(`SELECT count(*) FROM active_memberships`) != 1 {
+		t.Fatal("a guest's answer doesn't count, or a guest is a member")
+	}
+	if _, err := w.Exec(`INSERT INTO links (purpose, token_hash, created_at, expires_at) VALUES ('guest', x'03', 0, 9)`); err == nil {
+		t.Fatal("a confirm link without its sealed address and date was stored")
+	}
+	if _, err := w.Exec(`INSERT INTO sessions (token_hash, person_id, created_at, renewed_at, expires_at) VALUES (x'04', 99, 0, 0, 0)`); err == nil {
+		t.Fatal("foreign keys are not enforced after the rebuild")
+	}
+}

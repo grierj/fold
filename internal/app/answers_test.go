@@ -107,7 +107,7 @@ func TestCantGoOnlyForThoseRunningIt(t *testing.T) {
 	if h.status != http.StatusOK || strings.Contains(h.body, "Cara") || strings.Contains(h.body, "can&#39;t go") || strings.Contains(h.body, `font-semibold">Can't go`) {
 		t.Fatal("the htmx fragment carries can't go to a member")
 	}
-	if r := s.browser().get("/dates/" + date); strings.Contains(r.body, "Mia Member") || !strings.Contains(r.body, "1 going") || !strings.Contains(r.body, "Sign in to answer") {
+	if r := s.browser().get("/dates/" + date); strings.Contains(r.body, "Mia Member") || !strings.Contains(r.body, "1 going") || !strings.Contains(r.body, "RSVP as a guest") {
 		t.Error("a visitor sees names, or no count, or no way to answer")
 	}
 	r := admin.get("/dates/" + date)

@@ -24,7 +24,14 @@
       <img src="{{asset "brand/fold-icon-1.svg"}}" alt="" width="28" height="28">
       <span>{{if .Church}}{{.Church}}{{else}}{{.Product}}{{end}}</span>
     </a>
-    {{if .Viewer}}
+    {{if and .Viewer .Viewer.Guest}}
+    <nav aria-label="Main" class="site-nav">
+      <a class="text-link px-2" href="/groups">Groups</a>
+      <a class="text-link px-2" href="/notices">Notices{{if .Unread}} <span class="badge">{{.Unread}}<span class="sr-only"> unread</span></span>{{end}}</a>
+      <span class="px-2 text-sm text-text-muted">{{.Viewer.Name}}, guest</span>
+      <form method="post" action="/signout">{{template "csrf" .}}{{template "button" (button "secondary" "Sign out")}}</form>
+    </nav>
+    {{else if .Viewer}}
     <nav aria-label="Main" class="site-nav">
       <a class="text-link px-2" href="/groups">Groups</a>
       <a class="text-link px-2" href="/notices">Notices{{if .Unread}} <span class="badge">{{.Unread}}<span class="sr-only"> unread</span></span>{{end}}</a>
@@ -49,7 +56,7 @@
   <a class="tab" href="/"{{if eq .Path "/"}} aria-current="page"{{end}}>Home</a>
   <a class="tab" href="/groups"{{if or (eq .Path "/groups") (hasPrefix .Path "/groups/")}} aria-current="page"{{end}}>Groups</a>
   <a class="tab" href="/notices"{{if eq .Path "/notices"}} aria-current="page"{{end}}>Notices{{if .Unread}} <span class="badge">{{.Unread}}<span class="sr-only"> unread</span></span>{{end}}</a>
-  <a class="tab" href="/profile"{{if eq .Path "/profile"}} aria-current="page"{{end}}>You</a>
+  {{if not .Viewer.Guest}}<a class="tab" href="/profile"{{if eq .Path "/profile"}} aria-current="page"{{end}}>You</a>{{end}}
 </nav>
 {{end}}
 </body>

@@ -214,6 +214,10 @@ func (s *seeder) build() {
 	s.run(email(groupList[0].leader), events.CancelDate{UID: s.nthDate(made[eventList[0].title], 2)})
 	grief := groupNamed(openedDate.group)
 	s.run(email(grief.leader), &events.OpenDate{UID: s.nthDate(made[openedDate.event], 1), Visibility: policy.Church, Reason: openedDate.reason})
+	// A visitor RSVPs to the choir's public rehearsal as a guest (R35).
+	rehearsal := s.nthDate(made["Christmas cantata rehearsal"], 0)
+	s.run("", accounts.RequestGuest{Name: guestName, Email: email(guestName), DateUID: rehearsal})
+	s.run("", &accounts.UseGuestLink{Token: s.token(email(guestName))})
 	// A church-wide event with two hosts (DEC-7).
 	wide := &events.Create{Input: events.Input{Title: churchEvent.title, Place: churchEvent.place, Visibility: policy.Church, Pattern: pattern(churchEvent)}}
 	s.run(adminEmail, wide)
@@ -228,7 +232,7 @@ func (s *seeder) build() {
 	s.drain()
 	var unfinished int
 	s.read(func(q *sql.Tx) error {
-		return q.QueryRowContext(s.ctx, `SELECT count(*) FROM jobs WHERE state IN ('pending', 'failed')`).Scan(&unfinished)
+		return q.QueryRowContext(s.ctx, `SELECT count(*) FROM jobs WHERE state IN ('pending', 'failed') AND kind LIKE 'mail.%'`).Scan(&unfinished)
 	})
 	if s.err == nil && unfinished > 0 {
 		s.err = fmt.Errorf("%d emails could not be sent while seeding", unfinished)

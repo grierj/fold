@@ -30,7 +30,7 @@ func (c Disable) Apply(tx *write.Tx) error {
 	if err != nil {
 		return err
 	}
-	if target.Status != people.StatusActive {
+	if !target.SignsIn() {
 		return write.ErrNotAllowed
 	}
 	var admins int
@@ -66,7 +66,10 @@ func (c Disable) Apply(tx *write.Tx) error {
 		}
 		handovers = append(handovers, handover{g, s})
 	}
-	if !policy.CanDisable(tx.Actor.Person.Policy(), target.Policy(), admins, leaderless) {
+	// The target as an account, guest or not: an admin may turn a guest off
+	// too (R48), though policy sees a guest as nobody everywhere else.
+	whom := &policy.Person{ID: target.ID, Admin: target.IsAdmin}
+	if !policy.CanDisable(tx.Actor.Person.Policy(), whom, admins, leaderless) {
 		return write.ErrNotAllowed
 	}
 	for _, h := range handovers {
@@ -80,7 +83,7 @@ func (c Disable) Apply(tx *write.Tx) error {
 	}
 	now := tx.Now.Unix()
 	for _, q := range []string{
-		`UPDATE people SET status = 'disabled', updated_at = ?1, version = version + 1 WHERE id = ?2`,
+		`UPDATE people SET status = 'disabled', disabled_from = status, requested_at = NULL, updated_at = ?1, version = version + 1 WHERE id = ?2`,
 		`UPDATE sessions SET ended_at = ?1 WHERE person_id = ?2 AND ended_at IS NULL`,
 		`UPDATE links SET cancelled_at = ?1 WHERE person_id = ?2 AND used_at IS NULL AND cancelled_at IS NULL`,
 	} {
@@ -92,7 +95,8 @@ func (c Disable) Apply(tx *write.Tx) error {
 	return answers.Disabled(tx, target.ID)
 }
 
-// Enable turns an account on again. Its memberships come back with it,
+// Enable turns an account on again, as the member or guest it was. Its
+// memberships come back with it,
 // since no group has a member limit yet. Its answers come back where there
 // is room; a Going on a date now full is dropped and the person told to ask
 // a leader (DEC-47).
@@ -114,7 +118,8 @@ func (c *Enable) Apply(tx *write.Tx) error {
 	if target.Status != people.StatusDisabled {
 		return write.ErrNotAllowed
 	}
-	if _, err := tx.Exec(`UPDATE people SET status = 'active', updated_at = ?, version = version + 1 WHERE id = ?`, tx.Now.Unix(), target.ID); err != nil {
+	if _, err := tx.Exec(`UPDATE people SET status = coalesce(disabled_from, 'active'), disabled_from = NULL, updated_at = ?, version = version + 1 WHERE id = ?`,
+		tx.Now.Unix(), target.ID); err != nil {
 		return err
 	}
 	tx.Subject(target.UID)
@@ -163,6 +168,9 @@ func (EditName) Action() string { return "profile.name" }
 
 func (c EditName) Apply(tx *write.Tx) error {
 	p := tx.Actor.Person
+	if p.Policy() == nil {
+		return write.ErrNotAllowed // a guest has no profile (R15)
+	}
 	if p.Version != c.Version {
 		return write.ErrConflict
 	}
@@ -182,6 +190,9 @@ func (SetContactHidden) Action() string { return "profile.contact" }
 
 func (c SetContactHidden) Apply(tx *write.Tx) error {
 	p := tx.Actor.Person
+	if p.Policy() == nil {
+		return write.ErrNotAllowed // a guest has no profile (R15)
+	}
 	if p.ContactHidden == c.Hidden {
 		return write.ErrNothing
 	}
@@ -206,6 +217,9 @@ func (SetZone) Action() string { return "profile.zone" }
 
 func (c SetZone) Apply(tx *write.Tx) error {
 	p := tx.Actor.Person
+	if p.Policy() == nil {
+		return write.ErrNotAllowed // a guest has no profile (R15)
+	}
 	if _, err := events.LoadZone(c.Zone); err != nil {
 		return write.ErrNotAllowed
 	}

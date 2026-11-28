@@ -66,6 +66,11 @@ the code or the pull request.
 | R43 | **A series date's answer offers its scope inline**: "Just this date" (chosen first), "This and following" and "All future dates" sit above Going, Maybe and Can't go, with a note that dates added later aren't answered. One tap answers; only Can't go for several dates asks first. Settles how DEC-71 and DEC-92's dialog looks. | 2026-11-27. Chose "Inline choice, one tap" over a dialog after each tap. |
 | R44 | **Someone taken off a date by those running it is told plainly**, at the bell ("Sam took you off the list for Tue, Dec 8."), with no reason field. They may answer again while they can see the date. | 2026-11-27. Chose "Tell them, plainly": it avoids someone showing up thinking they're on the list. |
 | R45 | **A seat freed in the last 2 hours before a date goes to whoever answers Going next.** Nobody is moved up automatically inside that window (Fold's rule), and leaders are not asked to. | 2026-11-27. Chose "First to press Going gets it" over telling the leaders with a one-click move up. |
+| R46 | **Guests are marked "Guest" beside their name** wherever names of the people coming are shown, since the name is self-reported and they are not church members. | 2026-11-27. Chose "Label them 'Guest'". |
+| R47 | **A guest taken off a date is told by email** (under the urgent daily cap), since guests rarely see the bell. Members are still told at the bell only (R44). | 2026-11-27. Chose "Email them". |
+| R48 | **Admins see guests on the people page**, tagged "Guest", and can turn one off like any account; that takes their answers off upcoming dates. | 2026-11-27. Chose "Yes, on the people page". |
+| R49 | **A guest who answered Going gets the event's video link**, like anyone Going (R41). | 2026-11-27. Chose "Yes, like any Going". |
+| R50 | **R42 holds per account.** A removed person who RSVPs to a public event under another address is not detected; leaders see them on the list, tagged Guest (R46), and can take them off, and admins can turn the guest off (R48). Public events stay open to guests without approval. | 2026-11-27. Chose "R42 is per account" over leaders approving guests and over a per-group switch for guest RSVP. |
 
 Standing yardsticks, in Grier's words from the Fold work. They apply to every design choice.
 

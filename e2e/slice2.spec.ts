@@ -4,6 +4,7 @@ import { signIn } from "./session";
 import { milestone1b } from "./slice2b";
 import { milestone2a } from "./slice2c";
 import { milestone2b } from "./slice2d";
+import { milestone3a } from "./slice2e";
 
 // Slice 2, milestone 1a: events and dates through the gates. Runs after
 // slice1.spec.ts on the same site: Pat, an admin, co-leads Sam's
@@ -119,4 +120,5 @@ test("scheduling, the event and date pages, and the series edit, through the gat
   const { zed, opened } = await milestone1b(page, browser);
   await milestone2a(page);
   await milestone2b(page, zed, opened);
+  await milestone3a(page, browser);
 });

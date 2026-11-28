@@ -46,7 +46,7 @@ func LinkActsWhenOpened(usable, sameDevice bool) bool { return usable && sameDev
 // Account is the facts about the person a sign-in is for.
 type Account struct {
 	Exists bool
-	Active bool
+	Active bool // the account may sign in: active, or a guest (R15)
 }
 
 // SendSignInLink: only an active account gets a sign-in link. The form's

@@ -16,7 +16,7 @@ The only place status is kept. Update the row in the pull request that changes i
 |---|---|---|
 | 0 | Foundation and install | Done (v0.2.0). The timed install by a person waits for an installer who is not Grier |
 | 1 | People, groups, approvals, notices | Done (v0.3.0). A real volunteer admin approving from their phone is in `docs/FIRST-CHURCH-CHECKS.md` |
-| 2 | Events, dates, RSVP, calendar | Planned below (R33 to R41). Milestone 1 and 2a done; Milestone 2b in review |
+| 2 | Events, dates, RSVP, calendar | Planned below (R33 to R41). Milestones 1 and 2 done; Milestone 3a in review |
 | 3 | Announcements, reminders, email choices | Not started |
 | 4 | First-church readiness. **Pilot goes live.** | Not started |
 | 5 | Households, children, teens | Waits for the pilot |
@@ -289,7 +289,7 @@ people signed up. Then the measuring gate.
 - No pictures on events in this slice. Uploads (DEC-49) arrive when a church asks or with a later
   slice.
 
-**Rests on.** R3, R15, R29, R33 to R45, P7, P8, and "Events and dates" and "RSVP" in the decisions.
+**Rests on.** R3, R15, R29, R33 to R50, P7, P8, and "Events and dates" and "RSVP" in the decisions.
 
 **Not in this slice.** Reminders and announcements (slice 3). Children, childcare and teens
 (slice 5). Rooms (slice 6). Attendance (slice 4).

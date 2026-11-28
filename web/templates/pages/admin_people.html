@@ -9,7 +9,7 @@
   {{if .Data.People}}
   <ul class="divide-y divide-border border-y border-border">
     {{range .Data.People}}<li class="py-3">
-      <a class="text-link" href="/admin/people/{{.UID}}">{{.Name}}</a>{{if .Admin}} <span class="tag">Admin</span>{{end}}{{if eq .Status "disabled"}} <span class="tag">Turned off</span>{{end}}
+      <a class="text-link" href="/admin/people/{{.UID}}">{{.Name}}</a>{{if .Admin}} <span class="tag">Admin</span>{{end}}{{if .Guest}} <span class="tag">Guest</span>{{end}}{{if eq .Status "disabled"}} <span class="tag">Turned off</span>{{end}}
       <p class="text-sm text-text-muted wrap-anywhere">{{.Email}}</p>
     </li>{{end}}
   </ul>

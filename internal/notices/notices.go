@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"fold/internal/db"
+	"fold/internal/keys"
 	"fold/internal/policy"
 	"fold/internal/write"
 )
@@ -59,18 +60,21 @@ const MailsPerDay = 10
 const UrgentPerDay = 5
 
 // urgent are the event kinds that are emailed (R36).
-var urgent = []string{Promoted, DateCancelled, EventDeleted, DatesDropped, DatesMoved}
+var urgent = []string{Promoted, DateCancelled, EventDeleted, DatesDropped, DatesMoved, AnswerRemoved, AnswerRemovedAll}
 
 // Mails reports whether a notice is also emailed. Until email choices
 // arrive in slice 3 only required mail goes out: account requests, and of
-// event notices only the urgent ones (R36): moving up off a waitlist, and a
-// date the person said Going or Maybe to going away.
-func Mails(kind, answer string) bool {
-	switch kind {
+// event notices only the urgent ones (R36): moving up off a waitlist, a
+// date the person said Going or Maybe to going away, and a guest taken off
+// a date, who rarely sees the bell (R47).
+func Mails(n New) bool {
+	switch n.Kind {
 	case AccountRequested, Promoted:
 		return true
 	case DateCancelled, EventDeleted, DatesDropped, DatesMoved:
-		return policy.Urgent(answer)
+		return policy.Urgent(n.Answer)
+	case AnswerRemoved, AnswerRemovedAll:
+		return n.Guest
 	}
 	return false
 }
@@ -84,9 +88,10 @@ type New struct {
 	GroupID   int64 // 0 if none
 	EventID   int64 // 0 if none
 	DateID    int64 // 0 if none
-	// Answer is the person's answer to the date, for R36's mail rule. It is
-	// not stored.
+	// Answer is the person's answer to the date, for R36's mail rule, and
+	// Guest whether they are a guest, for R47's. Neither is stored.
 	Answer string
+	Guest  bool
 }
 
 func nullID(id int64) any {
@@ -113,7 +118,7 @@ func AddMany(tx *write.Tx, ns []New) error {
 		mail := map[[2]any]bool{}
 		for _, n := range chunk {
 			args = append(args, n.PersonID, n.Kind, nullID(n.ActorID), nullID(n.SubjectID), nullID(n.GroupID), nullID(n.EventID), nullID(n.DateID), tx.Now.Unix())
-			if Mails(n.Kind, n.Answer) {
+			if Mails(n) {
 				mail[[2]any{n.PersonID, n.Kind}] = true
 			}
 		}
@@ -166,7 +171,15 @@ func AddMany(tx *write.Tx, ns []New) error {
 					continue
 				}
 			}
-			if err := tx.Enqueue(write.NewJob{Kind: JobMail, Ref: x.id}); err != nil {
+			job := write.NewJob{Kind: JobMail, Ref: x.id}
+			if x.kind == Promoted {
+				// A guest has no pages to sign in to: their mail carries a
+				// new manage link to the date they moved up on (DEC-55).
+				if job.Secret, err = guestManageLink(tx, x.id); err != nil {
+					return err
+				}
+			}
+			if err := tx.Enqueue(job); err != nil {
 				return err
 			}
 		}
@@ -221,6 +234,7 @@ type row struct {
 type Reader struct {
 	ID    int64
 	Admin bool
+	Guest bool      // reads as a signed-out visitor sees (R15)
 	Now   time.Time // for whether an invitation is still open
 }
 
@@ -301,13 +315,13 @@ func ForMail(ctx context.Context, q db.Querier, id int64, now time.Time) (Notice
 	var admin bool
 	err := q.QueryRowContext(ctx, `SELECT p.id, p.email, p.status, p.is_admin FROM notices n JOIN people p ON p.id = n.person_id WHERE n.id = ?`, id).
 		Scan(&personID, &email, &status, &admin)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && status != "active") {
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && status != "active" && status != "guest") {
 		return Notice{}, "", ErrGone
 	}
 	if err != nil {
 		return Notice{}, "", err
 	}
-	n, err := One(ctx, q, Reader{ID: personID, Admin: admin, Now: now}, id)
+	n, err := One(ctx, q, Reader{ID: personID, Admin: admin, Guest: status == "guest", Now: now}, id)
 	return n, email, err
 }
 
@@ -321,12 +335,16 @@ func word(ctx context.Context, q db.Querier, r Reader, x row) (Notice, bool, err
 			return n, false, nil
 		}
 		var name, status string
-		err := q.QueryRowContext(ctx, `SELECT name, status FROM people WHERE id = ?`, x.subjectID.Int64).Scan(&name, &status)
+		err := q.QueryRowContext(ctx, `SELECT name, CASE WHEN status = 'guest' AND requested_at IS NOT NULL THEN 'pending' ELSE status END
+			FROM people WHERE id = ?`, x.subjectID.Int64).Scan(&name, &status)
 		if errors.Is(err, sql.ErrNoRows) {
 			return n, false, nil // declined: nothing about them is kept (R27)
 		}
 		if err != nil {
 			return n, false, err
+		}
+		if status == "guest" {
+			return n, false, nil // a guest's ask was declined: they stay a guest
 		}
 		n.Subject = "New account request"
 		n.Href = "/admin/requests"
@@ -591,4 +609,61 @@ func kinds(list []string) []any {
 		out[i] = k
 	}
 	return out
+}
+
+// guestManageLink makes a manage link for a notice's date when its person
+// is a guest, and returns its token, or nil for anyone else.
+func guestManageLink(tx *write.Tx, noticeID int64) ([]byte, error) {
+	var personID, dateID int64
+	var guest bool
+	if err := tx.QueryRow(`SELECT n.person_id, coalesce(n.date_id, 0), p.status = 'guest' FROM notices n JOIN people p ON p.id = n.person_id WHERE n.id = ?`,
+		noticeID).Scan(&personID, &dateID, &guest); err != nil {
+		return nil, err
+	}
+	if !guest || dateID == 0 {
+		return nil, nil
+	}
+	_, token, err := ManageLink(tx, personID, dateID)
+	return []byte(token), err
+}
+
+// JobManageMail emails a manage link after a person's own answer: the
+// "You're going" email. Its ref is the manage link and its secret the token.
+const JobManageMail = "mail.guest_going"
+
+// ManageMailsPerDay is how many "You're going" emails a person gets in a
+// day; past it their answer still stands, and their latest link works.
+const ManageMailsPerDay = 5
+
+// SendManage makes a manage link to a date and queues the "You're going"
+// email that carries it (DEC-55), within ManageMailsPerDay.
+func SendManage(tx *write.Tx, personID, dateID int64) error {
+	var today int
+	if err := tx.QueryRow(`SELECT count(*) FROM jobs j JOIN links l ON l.id = j.ref WHERE j.kind = ? AND l.person_id = ? AND j.created_at > ?`,
+		JobManageMail, personID, tx.Now.Add(-24*time.Hour).Unix()).Scan(&today); err != nil {
+		return err
+	}
+	if today >= ManageMailsPerDay {
+		return nil
+	}
+	id, token, err := ManageLink(tx, personID, dateID)
+	if err != nil {
+		return err
+	}
+	return tx.Enqueue(write.NewJob{Kind: JobManageMail, Ref: id, Secret: []byte(token)})
+}
+
+// ManageLink makes a standing link to one date for the person who answered
+// it (DEC-55): random, stored hashed, never logged, and working until they
+// cancel or the date ends (policy.ManageLinkWorks). It lives here because a
+// guest's mail is where it travels.
+func ManageLink(tx *write.Tx, personID, dateID int64) (int64, string, error) {
+	token := keys.Token()
+	res, err := tx.Exec(`INSERT INTO links (purpose, person_id, date_id, token_hash, created_at, expires_at)
+		SELECT 'manage', ?, d.id, ?, ?, d.ends_at FROM dates d WHERE d.id = ?`, personID, keys.TokenHash(token), tx.Now.Unix(), dateID)
+	if err != nil {
+		return 0, "", err
+	}
+	id, _ := res.LastInsertId()
+	return id, token, nil
 }

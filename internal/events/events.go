@@ -187,6 +187,9 @@ type Filter struct {
 	// ByHand includes future dates cancelled by hand, for the people who run
 	// the event: the only way back to one to restore it.
 	ByHand bool
+	// Answerer keeps only dates this person is signed up to, and shows
+	// their answer: a guest's own list, read as a signed-out viewer.
+	Answerer int64
 }
 
 // Upcoming lists the scheduled dates the viewer may see that have not ended
@@ -198,12 +201,13 @@ func Upcoming(ctx context.Context, q db.Querier, v Viewer, f Filter, now time.Ti
 		admin = 1
 	}
 	rows, err := q.QueryContext(ctx, `SELECT d.uid, d.starts_at, d.ends_at, d.moved, d.status = 'cancelled',
-		coalesce((SELECT a.status FROM answers a WHERE a.date_id = d.id AND a.person_id = ?1), ''), e.uid, e.title, e.zone
+		coalesce((SELECT a.status FROM answers a WHERE a.date_id = d.id AND a.person_id = coalesce(nullif(?7, 0), ?1)), ''), e.uid, e.title, e.zone
 		FROM dates d JOIN events e ON e.id = d.event_id LEFT JOIN groups g ON g.id = e.group_id
 		WHERE `+visibleSQL+` AND d.ends_at > ?3
 		AND (d.status = 'scheduled' OR (?6 = 1 AND d.cancelled_by = 'person' AND d.starts_at > ?3))
 		AND (?4 = 0 OR e.group_id = ?4) AND (?5 = 0 OR e.id = ?5)
-		ORDER BY d.starts_at, d.id LIMIT `+strconv.Itoa(limit), v.ID, admin, now.Unix(), f.GroupID, f.EventID, f.ByHand)
+		AND (?7 = 0 OR EXISTS (SELECT 1 FROM answers x WHERE x.date_id = d.id AND x.person_id = ?7 AND x.status IN ('going', 'maybe', 'waiting')))
+		ORDER BY d.starts_at, d.id LIMIT `+strconv.Itoa(limit), v.ID, admin, now.Unix(), f.GroupID, f.EventID, f.ByHand, f.Answerer)
 	if err != nil {
 		return nil, err
 	}
