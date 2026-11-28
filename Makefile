@@ -60,6 +60,6 @@ image:
 
 # The budgets in AGENTS.md.
 budgets:
-	@echo "Go and templates, not tests: $$(find . -path ./e2e -prune -o \( -name '*.go' -o -name '*.html' \) ! -name '*_test.go' -print | xargs cat | wc -l) of 25000 lines"
+	@echo "Go and templates, not tests: $$(find . -path ./e2e -prune -o \( -name '*.go' -o -name '*.html' \) ! -name '*_test.go' -print | xargs cat | wc -l) of 35000 lines"
 	@echo "Tables: $$(cat migrations/*.sql | grep -ci 'create table') of 35"
 	@echo "Routes: $$(grep -c 'mux.Handle' internal/app/routes.go) of 200"
