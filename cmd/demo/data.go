@@ -97,10 +97,11 @@ type demoEvent struct {
 	repeat                  string
 	monthWeek, minutes      int
 	untilWeeks              int
+	video                   string
 }
 
 var eventList = []demoEvent{
-	{group: "Tuesday Men's Bible Study", title: "Men's Bible Study", place: "Fellowship hall", at: "06:30", weekday: time.Tuesday, repeat: events.Weekly, minutes: 75},
+	{group: "Tuesday Men's Bible Study", title: "Men's Bible Study", place: "Fellowship hall", at: "06:30", weekday: time.Tuesday, repeat: events.Weekly, minutes: 75, video: "https://meet.example.org/mens-bible-study"},
 	{group: "Couples Small Group", title: "Couples night", place: "The Whitakers' home, 412 Alder Lane", at: "19:00", weekday: time.Friday, repeat: events.Biweekly, minutes: 120},
 	{group: "Food Pantry Team", title: "Pantry distribution", place: "Church parking lot, north entrance", at: "09:00", weekday: time.Saturday, repeat: events.Monthly, monthWeek: 2, minutes: 180},
 	{group: "Young Adults", title: "Game night and chili supper", place: "Youth room", at: "18:30", weekday: time.Friday, repeat: events.Once, minutes: 150},

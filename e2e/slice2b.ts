@@ -24,6 +24,7 @@ export async function milestone1b(page: Page, browser: Browser) {
   await page.getByLabel("Starts at").fill("18:00");
   await page.getByLabel("Every week").check();
   await page.getByLabel("Where").fill("The chapel");
+  await page.getByLabel("Video call link (optional)").fill("https://meet.example.org/thursday-prayer");
   await page.locator("summary", { hasText: "More options" }).click();
   await expect(page.getByLabel("Why open it wider than the group? (optional)")).toBeHidden();
   await page.getByLabel("Public").check();

@@ -64,6 +64,7 @@ type limits struct {
 	newEvents     *ratelimit.Limiter // events one person schedules
 	eventChanges  *ratelimit.Limiter // edits one person makes to events
 	hostSearch    *ratelimit.Limiter // name searches one person makes for hosts
+	answers       *ratelimit.Limiter // answers one person gives
 	profile       *ratelimit.Limiter // changes one person makes to their own profile
 	invites       *ratelimit.Limiter // invitations sent by one person
 	invitesSite   *ratelimit.Limiter // invitations sent from the whole site
@@ -100,6 +101,7 @@ func New(cfg Config, d Deps) (*App, error) {
 			newEvents:     ratelimit.New(c, ratelimit.Rule{N: 20, Per: 24 * time.Hour}),
 			eventChanges:  ratelimit.New(c, ratelimit.Rule{N: 120, Per: time.Hour}),
 			hostSearch:    ratelimit.New(c, ratelimit.Rule{N: 60, Per: time.Hour}),
+			answers:       ratelimit.New(c, ratelimit.Rule{N: 120, Per: time.Hour}),
 			profile:       ratelimit.New(c, ratelimit.Rule{N: 30, Per: time.Hour}),
 			invites:       ratelimit.New(c, ratelimit.Rule{N: 20, Per: 24 * time.Hour}),
 			invitesSite:   ratelimit.New(c, ratelimit.Rule{N: 100, Per: 24 * time.Hour}),

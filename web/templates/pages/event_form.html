@@ -33,6 +33,7 @@
       {{with .Data.Warning}}<div id="dst-warning">{{template "notice" (notice "warning" "The clocks change on a night this meets" .)}}</div>{{end}}
     </fieldset>
     {{template "field" .Data.Place}}
+    {{template "field" .Data.Video}}
     <details class="section vis-settings" data-group="{{.Data.GroupVisibility}}"{{range .Data.Visibility}}{{if .Error}} open{{end}}{{end}}{{if .Data.Reason.Error}} open{{end}}>
       <summary class="text-link">More options</summary>
       <fieldset class="mt-3">

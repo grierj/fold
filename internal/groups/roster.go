@@ -1,9 +1,12 @@
 package groups
 
 import (
+	"strconv"
+
 	"context"
 	"database/sql"
 	"errors"
+	"fold/internal/answers"
 
 	"fold/internal/db"
 	"fold/internal/notices"
@@ -160,8 +163,15 @@ func (c Remove) Apply(tx *write.Tx) error {
 		tx.Now.Unix(), g.ID, p.ID); err != nil {
 		return err
 	}
+	n, err := answers.Withdraw(tx, g.ID, p.ID)
+	if err != nil {
+		return err
+	}
 	tx.Subject(g.UID)
 	tx.Subject(p.UID)
+	if n > 0 {
+		tx.Detail("answers", strconv.Itoa(n))
+	}
 	return nil
 }
 

@@ -107,6 +107,7 @@ func TestInviteOnlyEventIsMissingToOutsiders(t *testing.T) {
 		}
 		for _, p := range [][2]string{{"/events/" + uid + "/edit", "/events/" + fake + "/edit"}, {"/events/" + uid + "/delete", "/events/" + fake + "/delete"},
 			{"/dates/" + date + "/cancel", "/dates/" + fake + "/cancel"}, {"/dates/" + date + "/restore", "/dates/" + fake + "/restore"},
+			{"/dates/" + date + "/answer", "/dates/" + fake + "/answer"},
 			{"/dates/" + date + "/open", "/dates/" + fake + "/open"}, {"/events/" + uid + "/hosts/add", "/events/" + fake + "/hosts/add"},
 			{"/groups/" + group + "/events/new", "/groups/" + fake + "/events/new"}} {
 			edit := eventForm("Taken", "2026-12-02", "20:00", "weekly")
@@ -122,7 +123,7 @@ func TestInviteOnlyEventIsMissingToOutsiders(t *testing.T) {
 		}
 	}
 	if s.Count(t, `SELECT count(*) FROM events WHERE title = 'Taken' OR status = 'deleted'`) != 0 || s.Count(t, `SELECT count(*) FROM events`) != 1 ||
-		s.Count(t, `SELECT count(*) FROM dates WHERE status = 'cancelled' OR visibility IS NOT NULL`) != 0 {
+		s.Count(t, `SELECT count(*) FROM dates WHERE status = 'cancelled' OR visibility IS NOT NULL`) != 0 || s.Count(t, `SELECT count(*) FROM answers`) != 0 {
 		t.Fatal("an outsider changed the event")
 	}
 }
@@ -227,7 +228,7 @@ func TestDroppedDatesAskFirst(t *testing.T) {
 		t.Fatal("asking saved something")
 	}
 	confirm := url.Values{}
-	for _, name := range []string{"version", "timing", "title", "about", "place", "date", "time", "hours", "minutes", "repeat", "month_week", "until", "visibility", "confirmed"} {
+	for _, name := range []string{"version", "timing", "title", "about", "place", "date", "time", "hours", "minutes", "repeat", "month_week", "until", "visibility", "reason", "video", "confirmed"} {
 		confirm.Set(name, html.UnescapeString(between(r.body, `name="`+name+`" value="`, `"`)))
 	}
 	if r := admin.post(edit, edit, confirm); r.status != http.StatusSeeOther {

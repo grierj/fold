@@ -82,6 +82,14 @@ func TestSeed(t *testing.T) {
 		if n := count(q, `SELECT count(*) FROM event_hosts h JOIN events e ON e.id = h.event_id WHERE e.group_id IS NULL`); n != len(churchHosts) {
 			t.Errorf("%d church-wide hosts", n)
 		}
+		for _, status := range []string{"going", "maybe", "cant"} {
+			if n := count(q, `SELECT count(*) FROM answers WHERE status = ?`, status); n == 0 {
+				t.Errorf("no %s answers", status)
+			}
+		}
+		if n := count(q, `SELECT count(*) FROM events WHERE video_url <> ''`); n != 1 {
+			t.Errorf("%d events with a video link", n)
+		}
 		if n := count(q, `SELECT count(*) FROM dates WHERE cancelled_by = 'person'`); n != 1 {
 			t.Errorf("%d dates cancelled by hand", n)
 		}

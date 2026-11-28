@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"fold/internal/accounts"
+	"fold/internal/answers"
 	"fold/internal/events"
 	"fold/internal/groups"
 	"fold/internal/policy"
@@ -120,13 +121,17 @@ func (a *App) loadEvent(w http.ResponseWriter, r *http.Request, byDate bool, ext
 // dateItem is one date in a list.
 type dateItem struct {
 	UID, Title, When string
+	Mine             string // the viewer's own answer, in words
 	Moved, Cancelled bool
 }
+
+// mineWords is a person's own answer as a list shows it.
+var mineWords = map[string]string{policy.AnswerGoing: "You're going", policy.AnswerMaybe: "You said maybe", policy.AnswerCant: "You can't go"}
 
 func dateItems(list []events.Listed, loc *time.Location, now time.Time, titled bool) []dateItem {
 	out := make([]dateItem, 0, len(list))
 	for _, d := range list {
-		it := dateItem{UID: d.UID, When: span(d.StartsAt, d.EndsAt, loc, now), Moved: d.Moved, Cancelled: d.Cancelled}
+		it := dateItem{UID: d.UID, When: span(d.StartsAt, d.EndsAt, loc, now), Moved: d.Moved, Cancelled: d.Cancelled, Mine: mineWords[d.Mine]}
 		if titled {
 			it.Title = d.Title
 		}
@@ -173,9 +178,15 @@ func (a *App) getEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	var list []events.Listed
 	var hosts []events.Person
+	var coming bool
 	now := a.clock.Now()
 	f, ok := a.loadEvent(w, r, false, func(q *sql.Tx, f *eventFacts) error {
 		var err error
+		if f.session != nil && f.event.VideoURL != "" {
+			if coming, err = answers.GoingOrMaybe(r.Context(), q, f.event.ID, f.session.Person.ID, now); err != nil {
+				return err
+			}
+		}
 		filter := events.Filter{EventID: f.event.ID, ByHand: f.canManage()}
 		if list, err = events.Upcoming(r.Context(), q, f.listViewer(), filter, now, limit); err != nil {
 			return err
@@ -210,9 +221,11 @@ func (a *App) getEvent(w http.ResponseWriter, r *http.Request) {
 		More, All            bool
 		CanManage, Frozen    bool
 		CanHosts             bool
+		Video                string
 		Status               string
 		Delete               Dialog
 	}{
+		Video: map[bool]string{true: f.event.VideoURL}[f.event.VideoURL != "" && policy.CanSeeVideo(f.canManage(), map[bool]string{true: policy.AnswerGoing}[coming])],
 		Event: f.event, Pattern: pattern(f.event, now), ZoneLine: zoneLine(f.event.Zone, loc),
 		Visibility: visibilityLabels[f.event.Visibility], GroupName: groupName, GroupHref: groupHref,
 		ChurchWide: f.event.ChurchWide(), Hosts: hostNames,
@@ -248,13 +261,14 @@ type eventForm struct {
 	MonthWeek                              string
 	Visibility                             string
 	Reason                                 string // why it opens wider than its group
+	Video                                  string
 }
 
 func readEventForm(r *http.Request) eventForm {
 	get := func(k string) string { return strings.TrimSpace(r.PostFormValue(k)) }
 	return eventForm{Title: r.PostFormValue("title"), About: r.PostFormValue("about"), Place: r.PostFormValue("place"),
 		Day: get("date"), Time: get("time"), Hours: get("hours"), Minutes: get("minutes"), Repeat: get("repeat"),
-		MonthWeek: get("month_week"), Until: get("until"), Visibility: get("visibility"), Reason: r.PostFormValue("reason")}
+		MonthWeek: get("month_week"), Until: get("until"), Visibility: get("visibility"), Reason: r.PostFormValue("reason"), Video: get("video")}
 }
 
 func formOf(e events.Event) eventForm {
@@ -264,7 +278,7 @@ func formOf(e events.Event) eventForm {
 		week = strconv.Itoa(e.MonthWeek)
 	}
 	return eventForm{Title: e.Title, About: e.About, Place: e.Place, Day: e.StartsLocal[:10], Time: e.StartsLocal[11:],
-		Hours: strconv.Itoa(hours), Minutes: strconv.Itoa(mins), Repeat: e.Repeat, MonthWeek: week, Until: e.Until, Visibility: e.Visibility}
+		Hours: strconv.Itoa(hours), Minutes: strconv.Itoa(mins), Repeat: e.Repeat, MonthWeek: week, Until: e.Until, Visibility: e.Visibility, Video: e.VideoURL}
 }
 
 // check validates the form. It returns the input to save and an error per
@@ -335,6 +349,9 @@ func (v *eventForm) check(loc *time.Location, now time.Time, startChanged bool) 
 	if !policy.ValidVisibility(v.Visibility) {
 		errs["visibility"] = "Choose who can see it."
 	}
+	if !validVideo(v.Video) {
+		errs["video"] = "Paste the call's whole link, starting with https://."
+	}
 	if !multiline(v.Reason, events.MaxReason) {
 		errs["reason"] = "Keep it under 500 characters."
 	}
@@ -351,7 +368,24 @@ func (v *eventForm) check(loc *time.Location, now time.Time, startChanged bool) 
 			errs["date"] = "Check the date and time."
 		}
 	}
-	return events.Input{Title: v.Title, About: v.About, Place: v.Place, Visibility: v.Visibility, Pattern: p, Reason: v.Reason}, errs
+	return events.Input{Title: v.Title, About: v.About, Place: v.Place, Visibility: v.Visibility, Pattern: p, Reason: v.Reason, VideoURL: v.Video}, errs
+}
+
+// MaxVideo caps a video link's length.
+const MaxVideo = 500
+
+// validVideo: an optional link out to a video call (DEC-16): https only,
+// with a host and no user name or password in it, one line, length-capped.
+// The server never fetches it.
+func validVideo(v string) bool {
+	if v == "" {
+		return true
+	}
+	if !oneLine(v, MaxVideo) || strings.ContainsAny(v, " \t") {
+		return false
+	}
+	u, err := url.Parse(v)
+	return err == nil && u.Scheme == "https" && u.Host != "" && u.User == nil && u.Opaque == ""
 }
 
 func orZero(s string) string {
@@ -411,7 +445,7 @@ func (v eventForm) timing() string {
 
 type eventFormData struct {
 	Title, About, Place, Day, Time, Hours, Minutes, Until Field
-	Reason                                                Field
+	Reason, Video                                         Field
 	GroupVisibility                                       string // "" for a church-wide event
 	ShowReason                                            bool
 	Repeat, MonthWeek, Visibility                         []Choice
@@ -445,7 +479,10 @@ func eventFormView(v eventForm, errs map[string]string, zone string, allowed []s
 			Value: v.Until, Error: errs["until"]},
 		Place: Field{ID: "place", Name: "place", Label: "Where", Hint: "An address or a room. People get a link to open it in maps.",
 			Value: v.Place, MaxLength: events.MaxPlace, Error: errs["place"]},
-		Reason:          reasonField(v.Reason, errs["reason"]),
+		Reason: reasonField(v.Reason, errs["reason"]),
+		Video: Field{ID: "video", Name: "video", Label: "Video call link (optional)", Type: "url", Inputmode: "url",
+			Hint:  "For people joining online. Only people who say Going or Maybe, and the people running the event, see it.",
+			Value: v.Video, MaxLength: MaxVideo, Error: errs["video"]},
 		ZoneHint:        "Times are in " + events.ZoneCity(zone) + " time (" + zone + ").",
 		GroupVisibility: groupVis,
 	}
@@ -467,7 +504,7 @@ func eventFormView(v eventForm, errs map[string]string, zone string, allowed []s
 	if errs == nil {
 		d.Title.Autofocus = true
 	} else {
-		focusFirstError(&d.Title, &d.About, &d.Day, &d.Time, &d.Hours, &d.Until, &d.Place)
+		focusFirstError(&d.Title, &d.About, &d.Day, &d.Time, &d.Hours, &d.Until, &d.Place, &d.Video, &d.Reason)
 	}
 	d.Errors = errorSummary(d.Title, d.About, d.Day, d.Time, d.Hours)
 	for _, k := range []struct {
@@ -479,7 +516,7 @@ func eventFormView(v eventForm, errs map[string]string, zone string, allowed []s
 			d.Errors = append(d.Errors, FieldError{ID: k.choices[0].ID, Message: e})
 		}
 	}
-	d.Errors = append(d.Errors, errorSummary(d.Until, d.Place, d.Reason)...)
+	d.Errors = append(d.Errors, errorSummary(d.Until, d.Place, d.Video, d.Reason)...)
 	if e := errs["visibility"]; e != "" && len(d.Visibility) > 0 {
 		d.Visibility[0].Error = e
 		d.Errors = append(d.Errors, FieldError{ID: d.Visibility[0].ID, Message: e})

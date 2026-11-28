@@ -14,6 +14,9 @@
     {{with .Data.ZoneLine}}<p class="mt-1 text-sm text-text-muted">{{.}}</p>{{end}}
   </section>
   {{template "place" (dict "Place" .Data.Event.Place "Maps" .Data.Maps)}}
+  {{with .Data.Video}}<section class="section mt-6" aria-labelledby="video-h"><h2 id="video-h" class="text-lg font-bold">Online</h2>
+    <a class="text-link" href="{{.}}" rel="noopener noreferrer">Join the video call</a>
+    <p class="text-sm text-text-muted">Only people coming, and the people running the event, see this link.</p></section>{{end}}
   {{with .Data.Event.About}}<section class="section mt-6" aria-labelledby="about"><h2 id="about" class="text-lg font-bold">About</h2><p class="mt-1 whitespace-pre-line wrap-anywhere">{{.}}</p></section>{{end}}
   <section class="section mt-6" aria-labelledby="dates">
     <h2 id="dates" class="text-lg font-bold">{{if .Data.All}}All coming dates{{else}}Coming up{{end}}</h2>

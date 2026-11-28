@@ -77,7 +77,7 @@ func (a *App) getRoster(w http.ResponseWriter, r *http.Request) {
 			CanRemove:  policy.CanRemoveMember(viewer, g, f.rel, target, trel, leaders),
 		}
 		row.Remove = Dialog{ID: "remove-" + m.UID, OpenLabel: "Remove", OpenKind: "ghost",
-			Title: "Remove " + m.Name + " from " + f.group.Name + "?", Text: "They won't be able to join again on their own. A leader can add them back.",
+			Title: "Remove " + m.Name + " from " + f.group.Name + "?", Text: "They won't be able to join again on their own, and they're taken off the group's dates still to come. A leader can add them back.",
 			CancelLabel: "Keep them", ConfirmLabel: "Remove", ConfirmKind: "danger",
 			Action: "/groups/" + f.group.UID + "/members/" + m.UID + "/remove", CSRF: a.csrfToken(r)}
 		rows = append(rows, row)

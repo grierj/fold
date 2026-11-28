@@ -24,6 +24,8 @@ type Input struct {
 	Pattern                         Pattern
 	// Reason is why it is opened wider than its group, if it is (DEC-28).
 	Reason string
+	// VideoURL is an https link out to a video call, or "" (DEC-16, R41).
+	VideoURL string
 }
 
 func actor(tx *write.Tx) *policy.Person {
@@ -171,9 +173,9 @@ func (c *Create) Apply(tx *write.Tx) error {
 	}
 	c.UID = people.NewUID()
 	res, err := tx.Exec(`INSERT INTO events (uid, group_id, title, about, place, visibility, zone, starts_local, minutes, repeat, month_week, until,
-		open_reason, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		open_reason, video_url, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.UID, nullable(g.ID), c.Title, c.About, c.Place, c.Visibility, zone, p.Start, p.Minutes, p.Repeat, nullable(p.MonthWeek), nullable(p.Until),
-		reason, tx.Actor.Person.ID, tx.Now.Unix(), tx.Now.Unix())
+		reason, c.VideoURL, tx.Actor.Person.ID, tx.Now.Unix(), tx.Now.Unix())
 	if err != nil {
 		return err
 	}
@@ -293,8 +295,8 @@ func (c *Edit) Apply(tx *write.Tx) error {
 		reason = ""
 	}
 	if _, err := tx.Exec(`UPDATE events SET title = ?, about = ?, place = ?, visibility = ?, starts_local = ?, minutes = ?, repeat = ?,
-		month_week = ?, until = ?, open_reason = ?, updated_at = ?, version = version + 1 WHERE id = ?`,
-		c.Title, c.About, c.Place, c.Visibility, p.Start, p.Minutes, p.Repeat, nullable(p.MonthWeek), nullable(p.Until), reason,
+		month_week = ?, until = ?, open_reason = ?, video_url = ?, updated_at = ?, version = version + 1 WHERE id = ?`,
+		c.Title, c.About, c.Place, c.Visibility, p.Start, p.Minutes, p.Repeat, nullable(p.MonthWeek), nullable(p.Until), reason, c.VideoURL,
 		tx.Now.Unix(), e.ID); err != nil {
 		return err
 	}

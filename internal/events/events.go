@@ -37,6 +37,7 @@ type Event struct {
 	Status      string
 	Version     int64
 	OpenReason  string // why it was opened wider than its group
+	VideoURL    string // shown only as policy.CanSeeVideo allows (R41)
 }
 
 // ChurchWide is an event with no group (DEC-7).
@@ -57,12 +58,12 @@ func (e Event) Pattern() Pattern {
 var ErrNotFound = errors.New("events: not found")
 
 const eventColumns = `e.id, e.uid, coalesce(e.group_id, 0), e.title, e.about, e.place, e.visibility, e.zone, e.starts_local,
-	e.minutes, e.repeat, coalesce(e.month_week, 0), coalesce(e.until, ''), e.status, e.version, e.open_reason`
+	e.minutes, e.repeat, coalesce(e.month_week, 0), coalesce(e.until, ''), e.status, e.version, e.open_reason, e.video_url`
 
 func scanEvent(row interface{ Scan(...any) error }) (Event, error) {
 	var e Event
 	err := row.Scan(&e.ID, &e.UID, &e.GroupID, &e.Title, &e.About, &e.Place, &e.Visibility, &e.Zone, &e.StartsLocal,
-		&e.Minutes, &e.Repeat, &e.MonthWeek, &e.Until, &e.Status, &e.Version, &e.OpenReason)
+		&e.Minutes, &e.Repeat, &e.MonthWeek, &e.Until, &e.Status, &e.Version, &e.OpenReason, &e.VideoURL)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Event{}, ErrNotFound
 	}
@@ -172,6 +173,7 @@ type Listed struct {
 	EndsAt    time.Time
 	Moved     bool
 	Cancelled bool   // only in a list asked to include dates cancelled by hand
+	Mine      string // the viewer's own answer, or ""
 	Event     string // the event's uid
 	Title     string
 	Zone      string
@@ -194,7 +196,8 @@ func Upcoming(ctx context.Context, q db.Querier, v Viewer, f Filter, now time.Ti
 	if v.Admin {
 		admin = 1
 	}
-	rows, err := q.QueryContext(ctx, `SELECT d.uid, d.starts_at, d.ends_at, d.moved, d.status = 'cancelled', e.uid, e.title, e.zone
+	rows, err := q.QueryContext(ctx, `SELECT d.uid, d.starts_at, d.ends_at, d.moved, d.status = 'cancelled',
+		coalesce((SELECT a.status FROM answers a WHERE a.date_id = d.id AND a.person_id = ?1), ''), e.uid, e.title, e.zone
 		FROM dates d JOIN events e ON e.id = d.event_id LEFT JOIN groups g ON g.id = e.group_id
 		WHERE `+visibleSQL+` AND d.ends_at > ?3
 		AND (d.status = 'scheduled' OR (?6 = 1 AND d.cancelled_by = 'person' AND d.starts_at > ?3))
@@ -208,7 +211,7 @@ func Upcoming(ctx context.Context, q db.Querier, v Viewer, f Filter, now time.Ti
 	for rows.Next() {
 		var l Listed
 		var starts, ends int64
-		if err := rows.Scan(&l.UID, &starts, &ends, &l.Moved, &l.Cancelled, &l.Event, &l.Title, &l.Zone); err != nil {
+		if err := rows.Scan(&l.UID, &starts, &ends, &l.Moved, &l.Cancelled, &l.Mine, &l.Event, &l.Title, &l.Zone); err != nil {
 			return nil, err
 		}
 		l.StartsAt, l.EndsAt = time.Unix(starts, 0).UTC(), time.Unix(ends, 0).UTC()
