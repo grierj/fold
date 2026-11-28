@@ -33,7 +33,7 @@ test("account requests and notices, through the gates", async ({ page, browser }
   await gate(visitor, "request sent");
 
   await signIn(page, admin);
-  await expect(page.getByRole("heading", { name: "Welcome, Pat Admin" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^Good (morning|afternoon|evening), Pat Admin$/ })).toBeVisible();
   await expect(page.locator(".site-nav .badge")).toHaveText(/1/);
   await page.goto("/notices");
   await expect(page.getByText("Sam Member asked for an account.")).toBeVisible();
@@ -50,7 +50,7 @@ test("account requests and notices, through the gates", async ({ page, browser }
 
   // The visitor's browser asked, so the approval link signs them in at once.
   await visitor.goto(await latestLink(page, "sam@example.org"));
-  await expect(visitor.getByRole("heading", { name: "Welcome, Sam Member" })).toBeVisible();
+  await expect(visitor.getByRole("heading", { name: /^Good (morning|afternoon|evening), Sam Member$/ })).toBeVisible();
   await visitor.goto("/notices");
   await gate(visitor, "notices empty");
 

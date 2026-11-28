@@ -26,6 +26,8 @@ func (a *App) routes(mux *http.ServeMux) {
 	mux.Handle("GET /request", http.HandlerFunc(a.getRequest))
 	mux.Handle("POST /request", http.HandlerFunc(a.postRequest))
 
+	mux.Handle("GET /calendar", http.HandlerFunc(a.getCalendar))
+
 	mux.Handle("GET /notices", http.HandlerFunc(a.getNotices))
 	mux.Handle("POST /notices/{id}/open", http.HandlerFunc(a.postNoticeOpen))
 	mux.Handle("POST /notices/read", http.HandlerFunc(a.postNoticesRead))
@@ -48,6 +50,7 @@ func (a *App) routes(mux *http.ServeMux) {
 	mux.Handle("POST /events/{uid}/edit", http.HandlerFunc(a.postEditEvent))
 	mux.Handle("POST /events/{uid}/delete", http.HandlerFunc(a.postDeleteEvent))
 	mux.Handle("GET /dates/{uid}", http.HandlerFunc(a.getDate))
+	mux.Handle("GET /dates/{uid}/calendar.ics", http.HandlerFunc(a.getDateICS))
 	mux.Handle("POST /dates/{uid}/answer", http.HandlerFunc(a.postAnswer))
 	mux.Handle("GET /dates/{uid}/guest", http.HandlerFunc(a.getGuest))
 	mux.Handle("POST /dates/{uid}/guest", http.HandlerFunc(a.postGuest))

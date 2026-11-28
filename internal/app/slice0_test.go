@@ -136,7 +136,7 @@ func TestSetupWaitsForTheTestMessage(t *testing.T) {
 	if r := b.post("/signin", "/l/"+tok, nil); r.status != http.StatusSeeOther {
 		t.Fatalf("finish: %d", r.status)
 	}
-	if r := b.get("/"); !strings.Contains(r.body, "Welcome, Pat Admin") {
+	if r := b.get("/"); !greeted(r.body, "Pat Admin") {
 		t.Fatal("not signed in after setup")
 	}
 }
@@ -174,7 +174,7 @@ func TestSignInLink(t *testing.T) {
 	if r := b.post("/signin", "/l/"+second, nil); r.status != http.StatusSeeOther {
 		t.Fatalf("new link: %d", r.status)
 	}
-	if r := b.get("/"); !strings.Contains(r.body, "Welcome, Pat Admin") {
+	if r := b.get("/"); !greeted(r.body, "Pat Admin") {
 		t.Fatal("not signed in")
 	}
 	// Once.
@@ -241,7 +241,7 @@ func TestBackupAndRestore(t *testing.T) {
 	}
 	s.Clock.Advance(time.Minute)
 	s.Writer.Exec(`UPDATE settings SET value = 'Renamed' WHERE key = 'church.name'`)
-	if r := admin.get("/"); !strings.Contains(r.body, "Welcome, Pat") {
+	if r := admin.get("/"); !greeted(r.body, "Pat") {
 		t.Fatal("admin not signed in before restore")
 	}
 	b := s.browser()
@@ -256,7 +256,7 @@ func TestBackupAndRestore(t *testing.T) {
 	if name != "Cloverdale Church of God" {
 		t.Fatalf("church name %q after restore", name)
 	}
-	if r := admin.get("/"); strings.Contains(r.body, "Welcome, Pat") {
+	if r := admin.get("/"); greeted(r.body, "Pat") {
 		t.Fatal("a session survived the restore")
 	}
 	if n := s.Count(t, `SELECT count(*) FROM sessions WHERE ended_at IS NULL`); n != 0 {
@@ -329,10 +329,10 @@ func TestSessionRenewsAndSignOutEndsAll(t *testing.T) {
 	s.Clock.Advance(6 * 24 * time.Hour)
 	admin.get("/")
 	s.Clock.Advance(3 * 24 * time.Hour)
-	if r := admin.get("/"); !strings.Contains(r.body, "Welcome, Pat") {
+	if r := admin.get("/"); !greeted(r.body, "Pat") {
 		t.Fatal("a renewed session expired")
 	}
-	if r := second.get("/"); strings.Contains(r.body, "Welcome, Pat") {
+	if r := second.get("/"); greeted(r.body, "Pat") {
 		t.Fatal("an unused session outlived its week")
 	}
 	second.post("/signin", "/signin", url.Values{"email": {"pat@cloverdale.example"}})
@@ -340,7 +340,7 @@ func TestSessionRenewsAndSignOutEndsAll(t *testing.T) {
 	tok = s.linkIn("pat@cloverdale.example")
 	second.post("/signin", "/l/"+tok, nil)
 	admin.post("/", "/signout", nil)
-	if r := second.get("/"); strings.Contains(r.body, "Welcome, Pat") {
+	if r := second.get("/"); greeted(r.body, "Pat") {
 		t.Fatal("signing out in one browser left another signed in")
 	}
 }
@@ -443,7 +443,7 @@ func TestAnyPageRenewsTheSession(t *testing.T) {
 		t.Fatal("renewing a session wrote an audit row (R19)")
 	}
 	s.Clock.Advance(3 * 24 * time.Hour)
-	if r := admin.get("/"); !strings.Contains(r.body, "Welcome, Pat") {
+	if r := admin.get("/"); !greeted(r.body, "Pat") {
 		t.Fatal("visiting another page did not renew the session")
 	}
 }
@@ -466,7 +466,7 @@ func TestLinkActsInTheBrowserThatAskedForIt(t *testing.T) {
 	if r := asker.get("/l/" + tok); r.status != http.StatusSeeOther || r.header.Get("Location") != "/?welcome=1" {
 		t.Fatalf("the asking browser was not signed in by opening the link: %d", r.status)
 	}
-	if r := asker.get("/"); !strings.Contains(r.body, "Welcome, Pat") {
+	if r := asker.get("/"); !greeted(r.body, "Pat") {
 		t.Fatal("not signed in")
 	}
 	// Used now: opening it again shows that it no longer works.
@@ -540,7 +540,7 @@ func TestSetupLinkActsInTheBrowserThatSentIt(t *testing.T) {
 	if r := b.get("/l/" + tok); r.status != http.StatusSeeOther {
 		t.Fatalf("the setup browser was not finished by opening the link: %d", r.status)
 	}
-	if r := b.get("/"); !strings.Contains(r.body, "Welcome, Pat Admin") {
+	if r := b.get("/"); !greeted(r.body, "Pat Admin") {
 		t.Fatal("not signed in after one-click setup")
 	}
 }

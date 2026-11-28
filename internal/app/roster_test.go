@@ -214,7 +214,7 @@ func TestInviteByEmail(t *testing.T) {
 	if !strings.HasSuffix(r.header.Get("Location"), "done=joined") {
 		t.Fatalf("redeem: %d %s", r.status, r.header.Get("Location"))
 	}
-	if r := nia.get("/"); !strings.Contains(r.body, "Welcome, Nia New") {
+	if r := nia.get("/"); !greeted(r.body, "Nia New") {
 		t.Fatal("not signed in after accepting")
 	}
 	// Mia, who has an account, accepts and joins; her name is hers, not the inviter's guess.

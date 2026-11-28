@@ -71,6 +71,7 @@ the code or the pull request.
 | R48 | **Admins see guests on the people page**, tagged "Guest", and can turn one off like any account; that takes their answers off upcoming dates. | 2026-11-27. Chose "Yes, on the people page". |
 | R49 | **A guest who answered Going gets the event's video link**, like anyone Going (R41). | 2026-11-27. Chose "Yes, like any Going". |
 | R50 | **R42 holds per account.** A removed person who RSVPs to a public event under another address is not detected; leaders see them on the list, tagged Guest (R46), and can take them off, and admins can turn the guest off (R48). Public events stay open to guests without approval. | 2026-11-27. Chose "R42 is per account" over leaders approving guests and over a per-group switch for guest RSVP. |
+| R51 | **Inviting one person to one private date (P8) waits until a church asks.** Opening one date wider (P7) and guest RSVP cover bringing a friend for now. | 2026-11-27. Chose "Defer until a church asks" over building it in slice 2. |
 
 Standing yardsticks, in Grier's words from the Fold work. They apply to every design choice.
 
@@ -306,7 +307,7 @@ Standing yardsticks, in Grier's words from the Fold work. They apply to every de
 
 ## 4. Deferred until a church asks
 
-Push notifications and SMS (R2). Guardian copies of messages to teens. Turning a household person
+Push notifications and SMS (R2). Inviting one person to one private date (P8, R51). Guardian copies of messages to teens. Turning a household person
 into their own account. A member limit on groups. Generated video-meeting links. Sign-up sheets
 (first after the pilot goes live). A group "pulse". Relaying replies through the app. Images in
 announcements. Email digests. A second mail adapter, S3 storage, managed-platform installs, sync

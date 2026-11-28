@@ -1,0 +1,69 @@
+{{define "title"}}Calendar{{end}}
+{{define "content"}}<div class="page">
+  <div class="page-header">
+    <div class="min-w-0">
+      <h1 class="text-2xl font-bold sm:text-3xl">Calendar</h1>
+      <p class="mt-1 text-sm text-text-muted">{{.Data.ZoneLine}}</p>
+    </div>
+  </div>
+  <div class="flex flex-wrap items-end gap-x-6 gap-y-4">
+    {{template "pick" .Data.Views}}
+    {{with .Data.Scopes}}{{template "pick" .}}{{end}}
+    {{with .Data.Filter}}<form class="flex flex-wrap items-end gap-3" method="get" action="/calendar">
+      {{range .Hidden}}{{template "hidden" .}}{{end}}
+      {{template "select" .Group}}
+      {{template "button" (button "secondary" "Show")}}
+    </form>{{end}}
+  </div>
+  <div class="mt-8 flex flex-wrap items-center justify-between gap-3">
+    <h2 class="text-xl font-bold">{{.Data.Heading}}</h2>
+    <nav class="flex flex-wrap gap-2" aria-label="Move through the calendar">
+      {{template "linkbutton" .Data.Prev}}{{template "linkbutton" .Data.Today}}{{template "linkbutton" .Data.Next}}
+    </nav>
+  </div>
+  {{if eq .Data.View "week"}}{{template "week" .Data}}{{else if eq .Data.View "month"}}{{template "month" .Data}}{{else}}{{template "agenda" .Data}}{{end}}
+</div>{{end}}
+
+{{define "agenda"}}{{with .Empty}}{{template "empty" .}}{{else}}<ol class="mt-4 space-y-6">
+  {{range .Days}}<li>
+    <h3 class="font-bold">{{.Label}}{{if .Today}} <span class="tag">Today</span>{{end}}</h3>
+    <ul class="mt-2 space-y-2">{{range .Rows}}<li>{{template "calrow" .}}</li>{{end}}</ul>
+  </li>{{end}}
+</ol>{{end}}
+{{if .Full}}<p class="mt-6 text-sm text-text-muted">That's as many dates as one page shows. Choose a group to see fewer.</p>
+{{else if .More}}<p class="mt-6">{{template "linkbutton" (linkbutton "secondary" "Show 30 more days" .More)}}</p>{{end}}{{end}}
+
+{{define "week"}}<ol class="cal-week">
+  {{range .Days}}<li{{if not .Rows}} class="cal-week-empty"{{end}}>
+    <h3 class="font-bold">{{.Label}}{{if .Today}} <span class="tag">Today</span>{{end}}</h3>
+    {{if .Rows}}<ul class="mt-2 space-y-2">{{range .Rows}}<li>{{template "calrow" .}}</li>{{end}}</ul>{{else}}<p class="mt-1 text-sm text-text-muted">Nothing</p>{{end}}
+  </li>{{end}}
+</ol>
+{{with .Empty}}{{template "empty" .}}{{end}}
+{{if .Full}}<p class="mt-6 text-sm text-text-muted">That's as many dates as one page shows. Choose a group to see fewer.</p>{{end}}{{end}}
+
+{{define "month"}}<table class="cal-month">
+  <caption class="sr-only">{{.Heading}}</caption>
+  <thead><tr><th scope="col">Sun</th><th scope="col">Mon</th><th scope="col">Tue</th><th scope="col">Wed</th><th scope="col">Thu</th><th scope="col">Fri</th><th scope="col">Sat</th></tr></thead>
+  <tbody>{{range .Weeks}}<tr>{{range .}}<td class="cal-cell{{if not .InMonth}} cal-out{{end}}">
+    <a class="cal-daybtn" href="{{.Href}}#picked"{{if .Picked}} aria-current="true"{{end}}><span aria-hidden="true">{{.Number}}</span><span class="sr-only">{{.Summary}}</span>
+      <span class="cal-dots" aria-hidden="true">{{range .Dots}}<span class="dot dot-{{.}}"></span>{{end}}</span></a>
+    <div class="cal-wide">
+      <p class="cal-num{{if .Today}} cal-num-today{{end}}"><a href="{{.Href}}#picked" aria-label="{{.Summary}}"{{if .Picked}} aria-current="true"{{end}}>{{.Number}}</a></p>
+      {{with .Shown}}<ul class="cal-chips">{{range .}}<li class="{{.Mark}}"><a href="/dates/{{.UID}}">{{if eq .Mark "going"}}<span aria-hidden="true">✓ </span>{{end}}{{.Starts}} {{.Title}}{{with .Label}}<span class="block font-semibold">{{.}}</span>{{end}}</a></li>{{end}}</ul>{{end}}
+      {{if .More}}<p class="cal-more"><a href="{{.Href}}#picked">+{{.More}} more</a></p>{{end}}
+    </div>
+  </td>{{end}}</tr>{{end}}</tbody>
+</table>
+<ul class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-sm text-text-muted sm:hidden" aria-label="Key to the dots">
+  <li class="inline-flex items-center gap-1.5"><span class="dot dot-going" aria-hidden="true"></span>Going</li>
+  <li class="inline-flex items-center gap-1.5"><span class="dot dot-ghost" aria-hidden="true"></span>Maybe, waiting or not answered</li>
+  <li class="inline-flex items-center gap-1.5"><span class="dot dot-cant" aria-hidden="true"></span>Can't go</li>
+  <li class="inline-flex items-center gap-1.5"><span class="dot dot-other" aria-hidden="true"></span>Other dates</li>
+</ul>
+{{with .Empty}}{{template "empty" .}}{{end}}
+{{with .Picked}}<section id="picked" class="section mt-6" aria-labelledby="picked-h">
+  <h3 id="picked-h" class="font-bold">{{.Label}}{{if .Today}} <span class="tag">Today</span>{{end}}</h3>
+  {{if .Rows}}<ul class="mt-2 space-y-2">{{range .Rows}}<li>{{template "calrow" .}}</li>{{end}}</ul>{{else}}<p class="mt-1 text-text-muted">Nothing on this day.</p>{{end}}
+</section>{{end}}
+{{if .Full}}<p class="mt-6 text-sm text-text-muted">That's as many dates as one page shows. Choose a group to see fewer.</p>{{end}}{{end}}

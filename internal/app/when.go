@@ -58,6 +58,19 @@ func clockSpan(start, end time.Time) string {
 	return clockWords(start) + " to " + clockWords(end)
 }
 
+// timeSpan is a date's times on its own day: "7:00 to 8:30 pm", or "11:00
+// pm to Wed, Dec 2, 1:00 am" when it ends on another. start and end are in
+// the viewer's zone.
+func timeSpan(start, end, now time.Time) string {
+	if start.Format(events.DayLayout) == end.Format(events.DayLayout) {
+		return clockSpan(start, end)
+	}
+	return clockWords(start) + " to " + dayWords(end, now) + ", " + clockWords(end)
+}
+
+// monthWords is "December 2026", for the calendar's month.
+func monthWords(t time.Time) string { return t.Format("January 2006") }
+
 // span words a date's time in loc: "Tue, Dec 8, 7:00 to 8:30 pm", or with
 // both days when it ends on another.
 func span(start, end time.Time, loc *time.Location, now time.Time) string {

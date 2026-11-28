@@ -26,11 +26,11 @@ func TestDisableNeedsASuccessorAndEnableRestores(t *testing.T) {
 	if r.status != http.StatusUnprocessableEntity || !strings.Contains(r.body, "Choose who leads Study next.") {
 		t.Fatalf("disable without a successor: %d", r.status)
 	}
-	if r := mel.get("/"); !strings.Contains(r.body, "Welcome, Mel") {
+	if r := mel.get("/"); !greeted(r.body, "Mel") {
 		t.Fatal("refused disable still signed Mel out")
 	}
 	admin.post("/admin/people/"+melUID, "/admin/people/"+melUID+"/disable", url.Values{"successor-" + uid: {miaUID}})
-	if r := mel.get("/"); strings.Contains(r.body, "Welcome, Mel") {
+	if r := mel.get("/"); greeted(r.body, "Mel") {
 		t.Fatal("a disabled person is still signed in")
 	}
 	if n := s.Count(t, `SELECT count(*) FROM active_memberships WHERE role = 'leader' AND person_id = (SELECT id FROM people WHERE email = 'mia@example.org')`); n != 1 {

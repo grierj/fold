@@ -1,0 +1,28 @@
+BEGIN:VCALENDAR
+PRODID:-//Fold//Events//EN
+VERSION:2.0
+CALSCALE:GREGORIAN
+METHOD:PUBLISH
+BEGIN:VTIMEZONE
+TZID:America/Boise
+BEGIN:STANDARD
+DTSTART:19700101T000000
+TZOFFSETFROM:-0700
+TZOFFSETTO:-0700
+TZNAME:MST
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:d2@church.example.org
+DTSTAMP:20261125T170000Z
+DTSTART;TZID=America/Boise:20261202T180000
+DTEND;TZID=America/Boise:20261202T193000
+STATUS:TENTATIVE
+SUMMARY:Dinner\, study\; prayer\\worship
+DESCRIPTION:First line\nSecond\, line\; with \\ backslash\n\nÜber café 
+ — naïve résumé\, a long line that must fold at seventy-five octets wi
+ thout splitting a character\n\nhttps://church.example.org/dates/d2
+LOCATION:Smith home\, 12 Oak St\; ring twice
+URL:https://church.example.org/dates/d2
+END:VEVENT
+END:VCALENDAR
