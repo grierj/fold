@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"fold/internal/accounts"
+	"fold/internal/events"
 	"fold/internal/groups"
 	"fold/internal/policy"
 	"fold/internal/write"
@@ -35,12 +36,12 @@ type groupFacts struct {
 	rel   policy.Rel
 }
 
-func (f groupFacts) viewer() *policy.Person {
-	if f.session == nil {
-		return nil
-	}
-	return f.session.Person.Policy()
-}
+func (f groupFacts) viewer() *policy.Person { return viewerFacts(f.session) }
+
+func (f groupFacts) listViewer() events.Viewer { return listViewer(f.pageFacts) }
+
+// groupDates is how many dates a group page shows coming up.
+const groupDates = 5
 
 // loadGroup reads the group named in the path, the viewer, and their
 // relation, in one read; ok is false (and the not-found page written) when
@@ -115,16 +116,17 @@ func (a *App) runGroup(w http.ResponseWriter, r *http.Request, c write.Command, 
 }
 
 var groupStatuses = map[string]string{
-	"joined":     "You joined the group.",
-	"already":    "You're already in this group.",
-	"many":       "That's a lot of changes in a short time, so this one wasn't made. Try again in a little while.",
-	"left":       "You left the group.",
-	"saved":      "Saved.",
-	"archived":   "The group is archived. It no longer shows in the list.",
-	"unarchived": "The group is active again.",
-	"refused":    "That could not be done. The page shows how things stand now.",
-	"created":    "Your group is started.",
-	"waiting":    "Your group is waiting for an administrator to approve it. You'll get a notice when they do.",
+	"joined":        "You joined the group.",
+	"already":       "You're already in this group.",
+	"many":          "That's a lot of changes in a short time, so this one wasn't made. Try again in a little while.",
+	"left":          "You left the group.",
+	"saved":         "Saved.",
+	"archived":      "The group is archived. It no longer shows in the list.",
+	"unarchived":    "The group is active again.",
+	"refused":       "That could not be done. The page shows how things stand now.",
+	"created":       "Your group is started.",
+	"event-deleted": "The event is deleted.",
+	"waiting":       "Your group is waiting for an administrator to approve it. You'll get a notice when they do.",
 }
 
 func (a *App) getGroups(w http.ResponseWriter, r *http.Request) {
@@ -282,9 +284,14 @@ func (a *App) postNewGroup(w http.ResponseWriter, r *http.Request) {
 func (a *App) getGroup(w http.ResponseWriter, r *http.Request) {
 	var leaders []string
 	var leaderCount, members int
+	var coming []events.Listed
+	now := a.clock.Now()
 	f, ok := a.loadGroup(w, r, func(q *sql.Tx, f *groupFacts) error {
 		var err error
 		if leaders, err = groups.Leaders(r.Context(), q, f.group.ID); err != nil {
+			return err
+		}
+		if coming, err = events.Upcoming(r.Context(), q, f.listViewer(), events.Filter{GroupID: f.group.ID}, now, groupDates); err != nil {
 			return err
 		}
 		if err = q.QueryRowContext(r.Context(), `SELECT count(*) FROM active_memberships WHERE group_id = ?`, f.group.ID).Scan(&members); err != nil {
@@ -310,8 +317,12 @@ func (a *App) getGroup(w http.ResponseWriter, r *http.Request) {
 		Members                      int
 		Delete                       Dialog
 		Reason                       string
+		Coming                       []dateItem
+		CanSchedule                  bool
 	}{
-		Group: f.group, Visibility: visibilityLabels[f.group.Visibility], Leaders: leaders,
+		Coming:      dateItems(coming, viewerZone(f.pageFacts), now, true),
+		CanSchedule: policy.CanScheduleEvent(p, g, f.rel),
+		Group:       f.group, Visibility: visibilityLabels[f.group.Visibility], Leaders: leaders,
 		Status:        groupStatuses[r.URL.Query().Get("done")],
 		CanJoin:       policy.CanJoinGroup(p, g, f.rel) && !f.rel.Member,
 		CanLeave:      policy.CanLeaveGroup(f.rel, leaderCount),

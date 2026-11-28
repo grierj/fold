@@ -101,8 +101,8 @@ func (a *App) gallery(w http.ResponseWriter, r *http.Request) {
 		},
 		Errors: []FieldError{{ID: "g-error", Message: "Enter an email address like name@example.org."}},
 		NoticeItems: []NoticeItem{
-			{ID: 1, Text: "Sam Member asked for an account.", When: "Thu 27 Nov, 3:04 pm", CSRF: a.csrfToken(r)},
-			{ID: 2, Text: "Your group \u201cBible Study\u201d was approved.", When: "Wed 26 Nov, 9:15 am", Read: true, CSRF: a.csrfToken(r)},
+			{ID: 1, Text: "Sam Member asked for an account.", When: "Thu, Nov 27, 3:04 pm", CSRF: a.csrfToken(r)},
+			{ID: 2, Text: "Your group \u201cBible Study\u201d was approved.", When: "Wed, Nov 26, 9:15 am", Read: true, CSRF: a.csrfToken(r)},
 		},
 		Toggle: Chip{Label: "Remind me", Name: "on", Value: "1", Type: "submit"},
 	}

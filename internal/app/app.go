@@ -61,6 +61,8 @@ type limits struct {
 	requests      *ratelimit.Limiter // account requests from the whole site
 	newGroups     *ratelimit.Limiter // groups one person starts
 	groupActions  *ratelimit.Limiter // other changes one person makes to groups
+	newEvents     *ratelimit.Limiter // events one person schedules
+	eventChanges  *ratelimit.Limiter // edits one person makes to events
 	invites       *ratelimit.Limiter // invitations sent by one person
 	invitesSite   *ratelimit.Limiter // invitations sent from the whole site
 }
@@ -93,6 +95,8 @@ func New(cfg Config, d Deps) (*App, error) {
 			requests:      ratelimit.New(c, ratelimit.Rule{N: 20, Per: time.Hour}, ratelimit.Rule{N: 60, Per: 24 * time.Hour}),
 			newGroups:     ratelimit.New(c, ratelimit.Rule{N: 5, Per: 24 * time.Hour}),
 			groupActions:  ratelimit.New(c, ratelimit.Rule{N: 120, Per: time.Hour}),
+			newEvents:     ratelimit.New(c, ratelimit.Rule{N: 20, Per: 24 * time.Hour}),
+			eventChanges:  ratelimit.New(c, ratelimit.Rule{N: 120, Per: time.Hour}),
 			invites:       ratelimit.New(c, ratelimit.Rule{N: 20, Per: 24 * time.Hour}),
 			invitesSite:   ratelimit.New(c, ratelimit.Rule{N: 100, Per: 24 * time.Hour}),
 		}}

@@ -1,0 +1,25 @@
+{{define "title"}}Cancel {{.Data.Count}}?{{end}}
+{{define "content"}}<div class="page-form">
+  <h1 class="text-2xl font-bold sm:text-3xl">Cancel {{.Data.Count}}?</h1>
+  <p class="mt-3">The new times leave out {{.Data.Count}} of {{.Data.Event.Title}} that {{if eq .Data.Drops 1}}is{{else}}are{{end}} coming up. Saving cancels {{if eq .Data.Drops 1}}it{{else}}them{{end}}. Dates that have already happened stay as they were.</p>
+  <p class="mt-3">Dates this change cancels come back if a later change brings their day back.</p>
+  <form class="mt-6 flex flex-wrap gap-3" method="post" action="/events/{{.Data.Event.UID}}/edit">
+    {{template "csrf" .}}
+    {{template "hidden" (hidden "version" .Data.Version)}}
+    {{template "hidden" (hidden "timing" .Data.Timing)}}
+    {{template "hidden" (hidden "title" .Data.Form.Title)}}
+    {{template "hidden" (hidden "about" .Data.Form.About)}}
+    {{template "hidden" (hidden "place" .Data.Form.Place)}}
+    {{template "hidden" (hidden "date" .Data.Form.Day)}}
+    {{template "hidden" (hidden "time" .Data.Form.Time)}}
+    {{template "hidden" (hidden "hours" .Data.Form.Hours)}}
+    {{template "hidden" (hidden "minutes" .Data.Form.Minutes)}}
+    {{template "hidden" (hidden "repeat" .Data.Form.Repeat)}}
+    {{template "hidden" (hidden "month_week" .Data.Form.MonthWeek)}}
+    {{template "hidden" (hidden "until" .Data.Form.Until)}}
+    {{template "hidden" (hidden "visibility" .Data.Form.Visibility)}}
+    {{template "hidden" (hidden "confirmed" "yes")}}
+    {{template "button" (button "primary" (print "Save and cancel " .Data.Count))}}
+    {{template "linkbutton" (linkbutton "secondary" "Go back" (print "/events/" .Data.Event.UID "/edit"))}}
+  </form>
+</div>{{end}}

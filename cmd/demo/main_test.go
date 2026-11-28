@@ -76,6 +76,12 @@ func TestSeed(t *testing.T) {
 				t.Errorf("%s has %d unread notices (%v), want some", name, n, err)
 			}
 		}
+		if n := count(q, `SELECT count(*) FROM events`); n != len(eventList) {
+			t.Errorf("%d events, want %d", n, len(eventList))
+		}
+		if n := count(q, `SELECT count(*) FROM dates d JOIN events e ON e.id = d.event_id WHERE e.repeat = 'monthly' AND d.status = 'scheduled'`); n < 30 {
+			t.Errorf("%d monthly dates, want 18 months of two monthly events", n)
+		}
 		if n := count(q, `SELECT count(*) FROM jobs WHERE state IN ('pending', 'failed')`); n != 1 {
 			t.Errorf("%d jobs unfinished, want only the emailed invitation", n)
 		}

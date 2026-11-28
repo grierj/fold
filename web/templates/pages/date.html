@@ -1,0 +1,20 @@
+{{define "title"}}{{.Data.Event.Title}}, {{.Data.Day}}{{end}}
+{{define "content"}}<div class="page-narrow">
+  <div class="page-header">
+    <div class="min-w-0">
+      <h1 class="text-2xl font-bold wrap-anywhere sm:text-3xl">{{.Data.Event.Title}}</h1>
+      {{with .Data.GroupName}}<p class="mt-1 text-sm text-text-muted"><a class="text-link" href="{{$.Data.GroupHref}}">{{.}}</a></p>{{end}}
+    </div>
+  </div>
+  {{if .Data.Cancelled}}<div class="mb-6">{{if .Data.BySeries}}{{template "notice" (notice "warning" "This date is cancelled" "The event's times changed, so it no longer happens on this day.")}}{{else}}{{template "notice" (notice "warning" "This date is cancelled" "")}}{{end}}</div>{{end}}
+  <section aria-labelledby="when">
+    <h2 id="when" class="text-lg font-bold">When</h2>
+    <p class="mt-1 text-lg">{{.Data.Day}}</p>
+    <p>{{.Data.When}}</p>
+    {{with .Data.Moved}}<p class="mt-1 text-sm text-text-muted">{{.}}</p>{{end}}
+    {{with .Data.ZoneLine}}<p class="mt-1 text-sm text-text-muted">{{.}}</p>{{end}}
+    {{if .Data.Past}}<p class="mt-1 text-sm text-text-muted">This date has passed.</p>{{end}}
+  </section>
+  {{template "place" (dict "Place" .Data.Event.Place "Maps" .Data.Maps)}}
+  <p class="section mt-6">{{template "linkbutton" (linkbutton "secondary" "About this event and its other dates" (print "/events/" .Data.Event.UID))}}</p>
+</div>{{end}}

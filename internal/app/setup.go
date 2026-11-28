@@ -256,15 +256,21 @@ func (a *App) renderSetupForm(w http.ResponseWriter, r *http.Request, status int
 // is not is refused before any lookup (docs/HAZARDS.md section 3).
 func text(r *http.Request, name string, max int) (string, bool) {
 	v := strings.TrimSpace(r.PostFormValue(name))
+	return v, oneLine(v, max)
+}
+
+// oneLine is text for one line: valid UTF-8, at most max characters, no
+// control characters.
+func oneLine(v string, max int) bool {
 	if !utf8.ValidString(v) || utf8.RuneCountInString(v) > max {
-		return v, false
+		return false
 	}
 	for _, c := range v {
 		if c < 0x20 || c == 0x7f {
-			return v, false
+			return false
 		}
 	}
-	return v, true
+	return true
 }
 
 // multiline is text for a few lines: valid UTF-8, at most max characters,
