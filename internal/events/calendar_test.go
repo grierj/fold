@@ -15,8 +15,9 @@ import (
 
 // The calendar's SQL is policy.CanSeeDate and policy.InScope together, for
 // every kind of viewer, Just mine or not, every answer, church-wide or a
-// group's, public or opened, and each edge of the window; and a row names
-// its group only to someone who may see the group.
+// group's, public or opened, each edge of the window, and with cancelled
+// dates or without; a row names its group only to someone who may see the
+// group, and carries the description and video link only as policy allows.
 func TestCalendarSQLMatchesPolicy(t *testing.T) {
 	env := setup(t)
 	ctx := context.Background()
@@ -41,8 +42,8 @@ func TestCalendarSQLMatchesPolicy(t *testing.T) {
 	}
 	var all []made
 	add := func(gid int64, g policy.Group, ev string) {
-		res, err := env.Writer.Exec(`INSERT INTO events (uid, group_id, title, visibility, zone, starts_local, minutes, repeat, created_at, updated_at)
-			VALUES (?, ?, 'x', ?, 'America/Boise', '2026-12-01T19:00', 60, 'once', 0, 0)`,
+		res, err := env.Writer.Exec(`INSERT INTO events (uid, group_id, title, about, video_url, visibility, zone, starts_local, minutes, repeat, created_at, updated_at)
+			VALUES (?, ?, 'x', 'about', 'https://v.example.org', ?, 'America/Boise', '2026-12-01T19:00', 60, 'once', 0, 0)`,
 			fmt.Sprintf("e%d", len(all)), sql.NullInt64{Int64: gid, Valid: gid != 0}, ev)
 		if err != nil {
 			t.Fatal(err)
@@ -112,8 +113,9 @@ func TestCalendarSQLMatchesPolicy(t *testing.T) {
 		if s.Kind() != kind {
 			t.Fatalf("viewer %d is kind %d", viewer, s.Kind())
 		}
-		for _, mine := range []bool{false, true} {
-			s.JustMine = mine
+		for _, mode := range []struct{ mine, cancelled bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
+			mine := mode.mine
+			s.JustMine, s.Cancelled, s.Details = mine, mode.cancelled, mode.cancelled
 			list, err := events.Calendar(ctx, env.Writer, s, now.Add(-30*24*time.Hour), now.Add(100*24*time.Hour), time.Unix(0, 0), now, 100000)
 			if err != nil {
 				t.Fatal(err)
@@ -133,7 +135,7 @@ func TestCalendarSQLMatchesPolicy(t *testing.T) {
 				}
 				var answer string
 				env.Writer.QueryRow(`SELECT coalesce((SELECT status FROM answers WHERE date_id = ? AND person_id = ?), '')`, m.id, viewer).Scan(&answer)
-				f := policy.CalendarFacts{Seen: !m.cancelled && policy.CanSeeDate(p, m.e.Policy(host), m.dvis, m.g, r), Viewer: kind,
+				f := policy.CalendarFacts{Seen: (mode.cancelled || !m.cancelled) && policy.CanSeeDate(p, m.e.Policy(host), m.dvis, m.g, r), Viewer: kind,
 					InGroup: r.Member, ChurchWide: m.gid == 0, Host: host && m.gid == 0, Answer: answer,
 					Public: policy.Widest(m.e.Visibility, m.dvis) == policy.Public, StartsAt: m.start, EndsAt: m.end}
 				want, _ := policy.InScope(mine, f, now)
@@ -150,6 +152,19 @@ func TestCalendarSQLMatchesPolicy(t *testing.T) {
 				}
 				if named := c.GroupName != ""; named != (m.gid != 0 && policy.CanSeeGroup(p, m.g, r)) {
 					t.Errorf("viewer %d, date %s of group %+v: named %v", viewer, m.uid, m.g, named)
+				}
+				if c.Cancelled != m.cancelled {
+					t.Errorf("viewer %d, date %s: cancelled %v", viewer, m.uid, c.Cancelled)
+				}
+				if !mode.cancelled {
+					continue
+				}
+				ev := m.e.Policy(host)
+				if about := c.About != ""; about != policy.CanSeeEvent(p, ev, m.g, r) {
+					t.Errorf("viewer %d, date %s, event %+v: description %v", viewer, m.uid, ev, about)
+				}
+				if video := c.Video != ""; video != (!m.cancelled && policy.CanSeeVideo(policy.CanManageEvent(p, ev, m.g, r), answer)) {
+					t.Errorf("viewer %d, date %s, answer %q: video %v", viewer, m.uid, answer, video)
 				}
 			}
 		}

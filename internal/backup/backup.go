@@ -257,6 +257,9 @@ func (c restored) Apply(tx *write.Tx) error {
 	if _, err := tx.Exec(`UPDATE links SET cancelled_at = ? WHERE used_at IS NULL AND cancelled_at IS NULL`, now); err != nil {
 		return err
 	}
+	if _, err := tx.Exec(`UPDATE people SET feed_hash = NULL WHERE feed_hash IS NOT NULL`); err != nil {
+		return err
+	}
 	// Mail waiting in the backup would carry expired links. Recurring work
 	// keeps its schedule.
 	if _, err := tx.Exec(`UPDATE jobs SET state = 'cancelled', secret = NULL, finished_at = ? WHERE state = 'pending' AND unique_key IS NULL`, now); err != nil {

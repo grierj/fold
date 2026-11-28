@@ -67,3 +67,7 @@ func InScope(justMine bool, f CalendarFacts, now time.Time) (include, own bool) 
 	}
 	return true, own
 }
+
+// CanHaveFeed: an active member has a calendar feed; a guest, a waiting
+// account or one turned off has none, and theirs answers as never made.
+func CanHaveFeed(p *Person) bool { return p != nil && !p.Inactive }

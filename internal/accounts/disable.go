@@ -83,7 +83,7 @@ func (c Disable) Apply(tx *write.Tx) error {
 	}
 	now := tx.Now.Unix()
 	for _, q := range []string{
-		`UPDATE people SET status = 'disabled', disabled_from = status, requested_at = NULL, updated_at = ?1, version = version + 1 WHERE id = ?2`,
+		`UPDATE people SET status = 'disabled', disabled_from = status, requested_at = NULL, feed_hash = NULL, updated_at = ?1, version = version + 1 WHERE id = ?2`,
 		`UPDATE sessions SET ended_at = ?1 WHERE person_id = ?2 AND ended_at IS NULL`,
 		`UPDATE links SET cancelled_at = ?1 WHERE person_id = ?2 AND used_at IS NULL AND cancelled_at IS NULL`,
 	} {
