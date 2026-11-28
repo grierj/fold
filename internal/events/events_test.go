@@ -577,3 +577,116 @@ func TestChurchWideEventsAndHosts(t *testing.T) {
 		t.Fatal("a church-wide series did not grow")
 	}
 }
+
+func answerRows(t *testing.T, env *testenv.Env, person int) map[string]string {
+	t.Helper()
+	rows, err := env.Writer.Query(`SELECT d.day, a.status FROM answers a JOIN dates d ON d.id = a.date_id WHERE a.person_id = ?`, person)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var day, s string
+		rows.Scan(&day, &s)
+		out[day] = s
+	}
+	return out
+}
+
+// DEC-71, DEC-92: one date, this and following, or every date to come, each
+// in one write; only dates the person may answer; a series answer is only
+// for someone who may see the series.
+func TestAnswers(t *testing.T) {
+	env := setup(t)
+	addGroup(t, env, 1, policy.GroupActive, policy.InviteOnly)
+	in := weekly("2026-12-01T19:00")
+	in.Visibility = policy.InviteOnly
+	c := &events.Create{GroupUID: "g1", Input: in}
+	run(t, env, 2, c)
+	dec15 := dateUID(t, env, c.UID, "2026-12-15")
+	if err := run(t, env, 3, &events.Answer{DateUID: dec15, Status: "going", Scope: "date"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := answerRows(t, env, 3); len(got) != 1 || got["2026-12-15"] != "going" {
+		t.Fatalf("one date: %v", got)
+	}
+	following := &events.Answer{DateUID: dec15, Status: "maybe", Scope: "following"}
+	if err := run(t, env, 3, following); err != nil {
+		t.Fatal(err)
+	}
+	got := answerRows(t, env, 3)
+	if got["2026-12-08"] != "" || got["2026-12-15"] != "maybe" || got["2026-12-22"] != "maybe" || following.Dates < 70 {
+		t.Fatalf("this and following: %d dates, %v", following.Dates, got["2026-12-08"])
+	}
+	all := &events.Answer{DateUID: dec15, Status: "cant", Scope: "all"}
+	if err := run(t, env, 3, all); !errors.Is(err, events.ErrConfirmCantGo) || all.Dates < 70 {
+		t.Fatalf("can't go for many dates without asking: %v", err)
+	}
+	all.Confirmed = true
+	if err := run(t, env, 3, all); err != nil {
+		t.Fatal(err)
+	}
+	if got := answerRows(t, env, 3); got["2026-12-01"] != "cant" || got["2026-12-22"] != "cant" {
+		t.Fatalf("all: %v", got["2026-12-01"])
+	}
+	if n := env.Count(t, `SELECT count(*) FROM audit_log WHERE action = 'answer.set'`); n != 3 {
+		t.Fatalf("%d audit rows; one per answer", n)
+	}
+	for _, bad := range []events.Answer{{DateUID: dec15, Status: "cancelled", Scope: "date"}, {DateUID: dec15, Status: "waiting", Scope: "date"},
+		{DateUID: dec15, Status: "going", Scope: "forever"}} {
+		if err := run(t, env, 3, &bad); !errors.Is(err, write.ErrNotAllowed) {
+			t.Errorf("%+v: %v", bad, err)
+		}
+	}
+	if err := run(t, env, 4, &events.Answer{DateUID: dec15, Status: "going", Scope: "date"}); !errors.Is(err, write.ErrNotAllowed) {
+		t.Fatalf("an outsider answered an invite-only date: %v", err)
+	}
+	// An outsider on a date opened to the church answers that date, and
+	// may not answer the series it would reveal.
+	run(t, env, 2, events.OpenDate{UID: dec15, Visibility: policy.Church})
+	if err := run(t, env, 4, &events.Answer{DateUID: dec15, Status: "going", Scope: "all"}); !errors.Is(err, write.ErrNotAllowed) {
+		t.Fatalf("an outsider's series answer: %v", err)
+	}
+	if err := run(t, env, 4, &events.Answer{DateUID: dec15, Status: "going", Scope: "date"}); err != nil {
+		t.Fatal(err)
+	}
+	// A cancelled date takes no answers.
+	dec22 := dateUID(t, env, c.UID, "2026-12-22")
+	run(t, env, 2, events.CancelDate{UID: dec22})
+	if err := run(t, env, 3, &events.Answer{DateUID: dec22, Status: "going", Scope: "date"}); !errors.Is(err, events.ErrDateGone) {
+		t.Fatalf("answered a cancelled date: %v", err)
+	}
+}
+
+// DEC-74, HAZARDS 7: leaving takes back standing answers on dates to come,
+// never past ones or a Can't go; joining again, the person answers again.
+func TestLeavingTakesBackAnswers(t *testing.T) {
+	env := setup(t)
+	addGroup(t, env, 1, policy.GroupActive, policy.Public)
+	c := &events.Create{GroupUID: "g1", Input: weekly("2026-11-17T19:00")}
+	run(t, env, 2, c)
+	exec(t, env, `INSERT INTO answers (date_id, person_id, status, created_at, updated_at)
+		SELECT d.id, 3, 'going', 0, 0 FROM dates d WHERE d.day IN ('2026-11-17', '2026-12-01')`)
+	run(t, env, 3, &events.Answer{DateUID: dateUID(t, env, c.UID, "2026-12-08"), Status: "cant", Scope: "date"})
+	if err := run(t, env, 3, groups.Leave{UID: "g1"}); err != nil {
+		t.Fatal(err)
+	}
+	got := answerRows(t, env, 3)
+	if got["2026-11-17"] != "going" || got["2026-12-01"] != "cancelled" || got["2026-12-08"] != "cant" {
+		t.Fatalf("after leaving: %v", got)
+	}
+	if err := run(t, env, 3, groups.Join{UID: "g1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(t, env, 3, &events.Answer{DateUID: dateUID(t, env, c.UID, "2026-12-01"), Status: "going", Scope: "date"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := answerRows(t, env, 3); got["2026-12-01"] != "going" {
+		t.Fatalf("answering again: %v", got)
+	}
+	run(t, env, 2, groups.Remove{GroupUID: "g1", PersonUID: "p3"})
+	if got := answerRows(t, env, 3); got["2026-12-01"] != "cancelled" {
+		t.Fatalf("after removal: %v", got)
+	}
+}

@@ -2,6 +2,9 @@ package groups
 
 import (
 	"errors"
+	"strconv"
+
+	"fold/internal/answers"
 
 	"fold/internal/notices"
 	"fold/internal/people"
@@ -327,7 +330,15 @@ func (c Leave) Apply(tx *write.Tx) error {
 		tx.Now.Unix(), g.ID, tx.Actor.Person.ID); err != nil {
 		return err
 	}
+	// Leaving takes the person off the group's dates still to come (DEC-74).
+	n, err := answers.Withdraw(tx, g.ID, tx.Actor.Person.ID)
+	if err != nil {
+		return err
+	}
 	tx.Subject(g.UID)
 	tx.Detail("was", map[bool]string{true: "leader", false: "member"}[rel.Leader])
+	if n > 0 {
+		tx.Detail("answers", strconv.Itoa(n))
+	}
 	return nil
 }
