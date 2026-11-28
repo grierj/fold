@@ -87,6 +87,14 @@ func TestSeed(t *testing.T) {
 				t.Errorf("no %s answers", status)
 			}
 		}
+		if n := count(q, `SELECT count(*) FROM answers a JOIN dates d ON d.id = a.date_id JOIN events e ON e.id = d.event_id
+			WHERE e.seats = 3 AND a.status = 'waiting'`); n != 2 {
+			t.Errorf("%d waiting on the full event, want 2", n)
+		}
+		if n := count(q, `SELECT count(*) FROM answers a JOIN dates d ON d.id = a.date_id JOIN events e ON e.id = d.event_id
+			WHERE e.seats = 3 AND a.status = 'going'`); n != 3 {
+			t.Errorf("%d going on the full event, want 3", n)
+		}
 		if n := count(q, `SELECT count(*) FROM events WHERE video_url <> ''`); n != 1 {
 			t.Errorf("%d events with a video link", n)
 		}

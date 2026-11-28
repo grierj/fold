@@ -126,7 +126,8 @@ type dateItem struct {
 }
 
 // mineWords is a person's own answer as a list shows it.
-var mineWords = map[string]string{policy.AnswerGoing: "You're going", policy.AnswerMaybe: "You said maybe", policy.AnswerCant: "You can't go"}
+var mineWords = map[string]string{policy.AnswerGoing: "You're going", policy.AnswerMaybe: "You said maybe", policy.AnswerCant: "You can't go",
+	policy.AnswerWaiting: "You're on the waitlist"}
 
 func dateItems(list []events.Listed, loc *time.Location, now time.Time, titled bool) []dateItem {
 	out := make([]dateItem, 0, len(list))
@@ -162,6 +163,8 @@ func groupLink(f eventFacts) (name, href string) {
 var eventStatuses = map[string]string{
 	"created": "Your event is scheduled.",
 	"saved":   "Saved.",
+	"removed": "Removed from its dates.",
+	"many":    "That's a lot of changes in a short time, so this one could not be saved. Try again in a little while.",
 }
 
 // The event page shows a few dates, or all of them with ?all=1.
@@ -179,9 +182,15 @@ func (a *App) getEvent(w http.ResponseWriter, r *http.Request) {
 	var list []events.Listed
 	var hosts []events.Person
 	var coming bool
+	var telling int
 	now := a.clock.Now()
 	f, ok := a.loadEvent(w, r, false, func(q *sql.Tx, f *eventFacts) error {
 		var err error
+		if f.canManage() {
+			if telling, err = events.Telling(r.Context(), q, f.event, f.group, 0, now, f.session.Person.ID); err != nil {
+				return err
+			}
+		}
 		if f.session != nil && f.event.VideoURL != "" {
 			if coming, err = answers.GoingOrMaybe(r.Context(), q, f.event.ID, f.session.Person.ID, now); err != nil {
 				return err
@@ -235,7 +244,7 @@ func (a *App) getEvent(w http.ResponseWriter, r *http.Request) {
 		CanHosts:  policy.CanFindHosts(f.viewer(), f.ev()),
 		Status:    eventStatuses[r.URL.Query().Get("done")],
 		Delete: Dialog{ID: "delete-event", OpenLabel: "Delete the event", OpenKind: "danger-outline",
-			Title: "Delete " + f.event.Title + "?", Text: "All its dates will be taken off. This cannot be undone.",
+			Title: "Delete " + f.event.Title + "?", Text: "All its dates will be taken off. " + willTell(telling) + " This cannot be undone.",
 			CancelLabel: "Keep it", ConfirmLabel: "Delete", ConfirmKind: "danger",
 			Action: "/events/" + f.event.UID + "/delete", CSRF: a.csrfToken(r)},
 	}
@@ -262,13 +271,15 @@ type eventForm struct {
 	Visibility                             string
 	Reason                                 string // why it opens wider than its group
 	Video                                  string
+	Seats                                  string // "" is no limit
 }
 
 func readEventForm(r *http.Request) eventForm {
 	get := func(k string) string { return strings.TrimSpace(r.PostFormValue(k)) }
 	return eventForm{Title: r.PostFormValue("title"), About: r.PostFormValue("about"), Place: r.PostFormValue("place"),
 		Day: get("date"), Time: get("time"), Hours: get("hours"), Minutes: get("minutes"), Repeat: get("repeat"),
-		MonthWeek: get("month_week"), Until: get("until"), Visibility: get("visibility"), Reason: r.PostFormValue("reason"), Video: get("video")}
+		MonthWeek: get("month_week"), Until: get("until"), Visibility: get("visibility"), Reason: r.PostFormValue("reason"), Video: get("video"),
+		Seats: get("seats")}
 }
 
 func formOf(e events.Event) eventForm {
@@ -277,8 +288,13 @@ func formOf(e events.Event) eventForm {
 	if e.Repeat == events.Monthly {
 		week = strconv.Itoa(e.MonthWeek)
 	}
+	seats := ""
+	if e.Seats > 0 {
+		seats = strconv.Itoa(e.Seats)
+	}
 	return eventForm{Title: e.Title, About: e.About, Place: e.Place, Day: e.StartsLocal[:10], Time: e.StartsLocal[11:],
-		Hours: strconv.Itoa(hours), Minutes: strconv.Itoa(mins), Repeat: e.Repeat, MonthWeek: week, Until: e.Until, Visibility: e.Visibility, Video: e.VideoURL}
+		Hours: strconv.Itoa(hours), Minutes: strconv.Itoa(mins), Repeat: e.Repeat, MonthWeek: week, Until: e.Until, Visibility: e.Visibility, Video: e.VideoURL,
+		Seats: seats}
 }
 
 // check validates the form. It returns the input to save and an error per
@@ -352,6 +368,14 @@ func (v *eventForm) check(loc *time.Location, now time.Time, startChanged bool) 
 	if !validVideo(v.Video) {
 		errs["video"] = "Paste the call's whole link, starting with https://."
 	}
+	seats := 0
+	if v.Seats != "" {
+		n, err := strconv.Atoi(v.Seats)
+		if err != nil || n < 1 || !policy.ValidSeats(n) {
+			errs["seats"] = "Give a number of seats from 1 to 10,000, or leave it empty for no limit."
+		}
+		seats = n
+	}
 	if !multiline(v.Reason, events.MaxReason) {
 		errs["reason"] = "Keep it under 500 characters."
 	}
@@ -368,7 +392,8 @@ func (v *eventForm) check(loc *time.Location, now time.Time, startChanged bool) 
 			errs["date"] = "Check the date and time."
 		}
 	}
-	return events.Input{Title: v.Title, About: v.About, Place: v.Place, Visibility: v.Visibility, Pattern: p, Reason: v.Reason, VideoURL: v.Video}, errs
+	return events.Input{Title: v.Title, About: v.About, Place: v.Place, Visibility: v.Visibility, Pattern: p, Reason: v.Reason, VideoURL: v.Video,
+		Seats: seats}, errs
 }
 
 // MaxVideo caps a video link's length.
@@ -445,7 +470,7 @@ func (v eventForm) timing() string {
 
 type eventFormData struct {
 	Title, About, Place, Day, Time, Hours, Minutes, Until Field
-	Reason, Video                                         Field
+	Reason, Video, Seats                                  Field
 	GroupVisibility                                       string // "" for a church-wide event
 	ShowReason                                            bool
 	Repeat, MonthWeek, Visibility                         []Choice
@@ -483,6 +508,9 @@ func eventFormView(v eventForm, errs map[string]string, zone string, allowed []s
 		Video: Field{ID: "video", Name: "video", Label: "Video call link (optional)", Type: "url", Inputmode: "url",
 			Hint:  "For people joining online. Only people who say Going or Maybe, and the people running the event, see it.",
 			Value: v.Video, MaxLength: MaxVideo, Error: errs["video"]},
+		Seats: Field{ID: "seats", Name: "seats", Label: "Seats (optional)", Type: "number", Inputmode: "numeric",
+			Hint:  "The most who can say Going to each date. When it's full, people can join a waitlist and move up when a seat opens. Leave it empty for no limit.",
+			Value: v.Seats, MaxLength: 5, Error: errs["seats"]},
 		ZoneHint:        "Times are in " + events.ZoneCity(zone) + " time (" + zone + ").",
 		GroupVisibility: groupVis,
 	}
@@ -504,7 +532,7 @@ func eventFormView(v eventForm, errs map[string]string, zone string, allowed []s
 	if errs == nil {
 		d.Title.Autofocus = true
 	} else {
-		focusFirstError(&d.Title, &d.About, &d.Day, &d.Time, &d.Hours, &d.Until, &d.Place, &d.Video, &d.Reason)
+		focusFirstError(&d.Title, &d.About, &d.Day, &d.Time, &d.Hours, &d.Until, &d.Place, &d.Video, &d.Seats, &d.Reason)
 	}
 	d.Errors = errorSummary(d.Title, d.About, d.Day, d.Time, d.Hours)
 	for _, k := range []struct {
@@ -516,7 +544,7 @@ func eventFormView(v eventForm, errs map[string]string, zone string, allowed []s
 			d.Errors = append(d.Errors, FieldError{ID: k.choices[0].ID, Message: e})
 		}
 	}
-	d.Errors = append(d.Errors, errorSummary(d.Until, d.Place, d.Video, d.Reason)...)
+	d.Errors = append(d.Errors, errorSummary(d.Until, d.Place, d.Video, d.Seats, d.Reason)...)
 	if e := errs["visibility"]; e != "" && len(d.Visibility) > 0 {
 		d.Visibility[0].Error = e
 		d.Errors = append(d.Errors, FieldError{ID: d.Visibility[0].ID, Message: e})
@@ -768,7 +796,7 @@ func (a *App) postEditEvent(w http.ResponseWriter, r *http.Request) {
 		show(http.StatusTooManyRequests, d)
 		return
 	}
-	c := &events.Edit{UID: f.event.UID, Input: in, Version: version, Confirmed: r.PostFormValue("confirmed") == "yes"}
+	c := &events.Edit{UID: f.event.UID, Input: in, Version: version, Confirmed: r.PostFormValue("confirmed") == "yes", Private: r.PostFormValue("private") == "yes"}
 	err := a.exec.Run(r.Context(), write.Session(accounts.Hash(a.sessionToken(r))), c)
 	switch {
 	case errors.Is(err, write.ErrConflict):
@@ -788,10 +816,16 @@ func (a *App) postEditEvent(w http.ResponseWriter, r *http.Request) {
 			Form    eventForm
 			Drops   int
 			Count   string
+			Told    string
 			Version int64
 			Timing  string
-		}{f.event, v, c.Drops, count, version, v.timing()}
+			Private string
+		}{f.event, v, c.Drops, count, willTell(c.Told), version, v.timing(), r.PostFormValue("private")}
 		a.render(w, r, http.StatusOK, "event_drop", "", f.page)
+		return
+	case errors.Is(err, events.ErrMorePrivate):
+		a.showPrivate(w, r, f.pageFacts, privateView{Event: f.event, From: visibilityLabels[f.event.Visibility], To: visibilityLabels[v.Visibility],
+			Action: "/events/" + f.event.UID + "/edit", Back: "/events/" + f.event.UID + "/edit", Hidden: v.hidden(version, r.PostFormValue("confirmed"))}, c.Unseen)
 		return
 	case errors.Is(err, events.ErrStartRange):
 		show(http.StatusUnprocessableEntity, eventFormView(v, map[string]string{"date": "Choose a first date within the last year or the next two years."}, f.event.Zone, allowed, gv))
@@ -806,9 +840,22 @@ func (a *App) postEditEvent(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/events/"+f.event.UID+"?done=saved", http.StatusSeeOther)
 }
 
+// hidden carries the form through a confirmation, with the answer to the
+// other question it may have asked.
+func (v eventForm) hidden(version int64, confirmed string) []Hidden {
+	return []Hidden{{"version", strconv.FormatInt(version, 10)}, {"timing", v.timing()}, {"title", v.Title}, {"about", v.About},
+		{"place", v.Place}, {"date", v.Day}, {"time", v.Time}, {"hours", v.Hours}, {"minutes", v.Minutes}, {"repeat", v.Repeat},
+		{"month_week", v.MonthWeek}, {"until", v.Until}, {"visibility", v.Visibility}, {"reason", v.Reason}, {"video", v.Video},
+		{"seats", v.Seats}, {"confirmed", confirmed}}
+}
+
 func (a *App) postDeleteEvent(w http.ResponseWriter, r *http.Request) {
 	f, ok := a.loadEvent(w, r, false, nil)
 	if !ok {
+		return
+	}
+	if f.canManage() && !a.limits.eventChanges.Allow(f.session.Person.UID) {
+		http.Redirect(w, r, "/events/"+f.event.UID+"?done=many", http.StatusSeeOther)
 		return
 	}
 	err := a.exec.Run(r.Context(), write.Session(accounts.Hash(a.sessionToken(r))), events.Delete{UID: f.event.UID})

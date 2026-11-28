@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strconv"
 
+	"fold/internal/answers"
 	"fold/internal/groups"
 	"fold/internal/notices"
 	"fold/internal/people"
@@ -26,6 +27,9 @@ type Input struct {
 	Reason string
 	// VideoURL is an https link out to a video call, or "" (DEC-16, R41).
 	VideoURL string
+	// Seats is the most who may say Going to each date, or 0 for no limit
+	// (DEC-95). Past it, Going waits.
+	Seats int
 }
 
 func actor(tx *write.Tx) *policy.Person {
@@ -146,7 +150,7 @@ func (c *Create) Apply(tx *write.Tx) error {
 			return write.ErrNotAllowed
 		}
 	}
-	if !policy.CanSetEventVisibility(c.Visibility, churchWide) {
+	if !policy.CanSetEventVisibility(c.Visibility, churchWide) || !policy.ValidSeats(c.Seats) {
 		return write.ErrNotAllowed
 	}
 	s, err := settings.Load(tx.Context(), tx)
@@ -173,9 +177,9 @@ func (c *Create) Apply(tx *write.Tx) error {
 	}
 	c.UID = people.NewUID()
 	res, err := tx.Exec(`INSERT INTO events (uid, group_id, title, about, place, visibility, zone, starts_local, minutes, repeat, month_week, until,
-		open_reason, video_url, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		open_reason, video_url, seats, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.UID, nullable(g.ID), c.Title, c.About, c.Place, c.Visibility, zone, p.Start, p.Minutes, p.Repeat, nullable(p.MonthWeek), nullable(p.Until),
-		reason, c.VideoURL, tx.Actor.Person.ID, tx.Now.Unix(), tx.Now.Unix())
+		reason, c.VideoURL, nullable(c.Seats), tx.Actor.Person.ID, tx.Now.Unix(), tx.Now.Unix())
 	if err != nil {
 		return err
 	}
@@ -189,6 +193,9 @@ func (c *Create) Apply(tx *write.Tx) error {
 	}
 	tx.Detail("repeat", p.Repeat)
 	tx.Detail("visibility", c.Visibility)
+	if c.Seats > 0 {
+		tx.Detail("seats", strconv.Itoa(c.Seats))
+	}
 	if opened {
 		return tellOpened(tx, g.ID, id, 0, reason)
 	}
@@ -228,20 +235,34 @@ func check(tx *write.Tx, e Event) (Event, groups.Group, error) {
 
 // ErrDropsDates is a series edit that would cancel scheduled dates, which
 // the person has not yet been asked about. Nothing is saved; Edit.Drops
-// says how many.
+// and Edit.Told say how many dates and how many people.
 var ErrDropsDates = errors.New("events: the edit drops dates")
+
+// ErrMorePrivate is an edit that makes an event or a date more private,
+// which the person has not yet been asked about (R3). Nothing is saved;
+// Unseen lists who signed up would no longer see it.
+var ErrMorePrivate = errors.New("events: the edit makes it more private")
 
 // Edit saves an event and edits its series onto its future dates (DEC-91,
 // DEC-161). The form carries the version it was opened with; if the event
 // changed since, nothing is saved (P16). An edit that would cancel dates is
-// refused until the person has seen how many (docs/HAZARDS.md section 7).
-// The zone never changes: edit forms use the event's own (DEC-57).
+// refused until the person has seen how many dates and people, and one
+// that makes it more private until they have seen who would lose sight of
+// it (docs/HAZARDS.md section 7, R3). Each question has its own answer.
+// The people signed up to cancelled dates are told, and answers never
+// follow a date to another day (R40); those signed up to dates back on, or
+// on new times the same day, are told too and keep their answers (DEC-91). Raising or clearing the seat limit moves the waitlist
+// up; lowering it bumps nobody. The zone never changes: edit forms use the
+// event's own (DEC-57).
 type Edit struct {
 	UID string
 	Input
 	Version   int64
-	Confirmed bool // the person saw that dates would be cancelled
-	Drops     int  // set when the edit would cancel dates
+	Confirmed bool     // the person saw that dates would be cancelled
+	Private   bool     // the person saw who would no longer see it (R3)
+	Drops     int      // set when the edit would cancel dates
+	Told      int      // with Drops: how many people that tells
+	Unseen    []Unseen // set with ErrMorePrivate
 }
 
 func (*Edit) Action() string { return "event.edit" }
@@ -281,10 +302,35 @@ func (c *Edit) Apply(tx *write.Tx) error {
 	if err != nil {
 		return err
 	}
+	if !policy.ValidSeats(c.Seats) {
+		return write.ErrNotAllowed
+	}
 	plan := PlanSeries(have, next, tx.Now)
+	var dropped []answers.Signed
+	if len(plan.Cancel) > 0 {
+		where, args := dateIDs(plan.Cancel)
+		if dropped, err = signedUp(tx.Context(), tx, e, g, where, args...); err != nil {
+			return err
+		}
+	}
+	dropKind := notices.DatesDropped
+	if len(plan.Add) > 0 {
+		dropKind = notices.DatesMoved
+	}
+	told := audience(dropped, e, g, c.Visibility, tx.Actor.Person.ID, dropKind)
 	if len(plan.Cancel) > 0 && !c.Confirmed {
-		c.Drops = len(plan.Cancel)
+		c.Drops, c.Told = len(plan.Cancel), len(told)
 		return ErrDropsDates
+	}
+	if policy.MorePrivate(e.Visibility, c.Visibility) && !c.Private {
+		list, err := signedUp(tx.Context(), tx, e, g, upcoming, tx.Now.Unix())
+		if err != nil {
+			return err
+		}
+		if c.Unseen, err = unseen(tx.Context(), tx, list, e, g, c.Visibility, func(s answers.Signed) string { return s.DateVis }, tx.Now, false); err != nil {
+			return err
+		}
+		return ErrMorePrivate
 	}
 	opened := policy.OpensWider(e.Visibility, c.Visibility, g.Visibility, e.ChurchWide())
 	reason := e.OpenReason // kept while it stays wider; a title edit tells nobody
@@ -295,9 +341,9 @@ func (c *Edit) Apply(tx *write.Tx) error {
 		reason = ""
 	}
 	if _, err := tx.Exec(`UPDATE events SET title = ?, about = ?, place = ?, visibility = ?, starts_local = ?, minutes = ?, repeat = ?,
-		month_week = ?, until = ?, open_reason = ?, video_url = ?, updated_at = ?, version = version + 1 WHERE id = ?`,
+		month_week = ?, until = ?, open_reason = ?, video_url = ?, seats = ?, updated_at = ?, version = version + 1 WHERE id = ?`,
 		c.Title, c.About, c.Place, c.Visibility, p.Start, p.Minutes, p.Repeat, nullable(p.MonthWeek), nullable(p.Until), reason, c.VideoURL,
-		tx.Now.Unix(), e.ID); err != nil {
+		nullable(c.Seats), tx.Now.Unix(), e.ID); err != nil {
 		return err
 	}
 	for _, ch := range append(plan.Move, plan.Restore...) {
@@ -323,10 +369,68 @@ func (c *Edit) Apply(tx *write.Tx) error {
 		tx.Detail("visibility", c.Visibility)
 		tx.Detail("was", e.Visibility)
 	}
+	if c.Seats != e.Seats {
+		tx.Detail("seats", strconv.Itoa(c.Seats))
+	}
+	ns := told
+	if len(plan.Move) > 0 {
+		var retimed []int64
+		for _, ch := range plan.Move {
+			retimed = append(retimed, ch.ID)
+		}
+		where, args := dateIDs(retimed)
+		list, err := signedUp(tx.Context(), tx, e, g, where, args...)
+		if err != nil {
+			return err
+		}
+		ns = append(ns, audience(list, e, g, c.Visibility, tx.Actor.Person.ID, notices.DatesRetimed)...)
+	}
+	var settle []int64
+	if len(plan.Restore) > 0 {
+		var back []int64
+		for _, ch := range plan.Restore {
+			back = append(back, ch.ID)
+		}
+		where, args := dateIDs(back)
+		list, err := signedUp(tx.Context(), tx, e, g, where, args...)
+		if err != nil {
+			return err
+		}
+		ns = append(ns, audience(list, e, g, c.Visibility, tx.Actor.Person.ID, notices.DatesRestored)...)
+		settle = back
+	}
+	if c.Seats != e.Seats {
+		if settle, err = scanDates(tx, `SELECT d.id FROM dates d WHERE d.event_id = ? AND `+upcoming, e.ID, tx.Now.Unix()); err != nil {
+			return err
+		}
+	}
+	if err := tell(tx, ns); err != nil {
+		return err
+	}
+	if err := answers.Settle(tx, settle); err != nil {
+		return err
+	}
 	if opened {
 		return tellOpened(tx, g.ID, e.ID, 0, reason)
 	}
 	return nil
+}
+
+func scanDates(tx *write.Tx, query string, args ...any) ([]int64, error) {
+	rows, err := tx.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 // retime puts a date on new times and schedules it.
@@ -337,14 +441,18 @@ func retime(tx *write.Tx, id int64, d Date) error {
 }
 
 // Delete deletes an event. Its row and dates stay, marked by the event, and
-// nothing shows them again. Telling the people signed up arrives with
-// answers (milestone 2, DEC-175).
+// nothing shows them again. Everyone signed up to a date still to come who
+// may see it is told once (DEC-175), as Telling counts them.
 type Delete struct{ UID string }
 
 func (Delete) Action() string { return "event.delete" }
 
 func (c Delete) Apply(tx *write.Tx) error {
-	e, _, err := target(tx, c.UID)
+	e, g, err := target(tx, c.UID)
+	if err != nil {
+		return err
+	}
+	list, err := signedUp(tx.Context(), tx, e, g, upcoming, tx.Now.Unix())
 	if err != nil {
 		return err
 	}
@@ -352,7 +460,7 @@ func (c Delete) Apply(tx *write.Tx) error {
 		return err
 	}
 	tx.Subject(e.UID)
-	return nil
+	return tell(tx, audience(list, e, g, e.Visibility, tx.Actor.Person.ID, notices.EventDeleted))
 }
 
 // dateTarget loads one date and its event, and refuses anyone who may not
@@ -383,31 +491,40 @@ var ErrDateGone = errors.New("events: that date can't be changed now")
 var ErrUnchanged = errors.New("events: already so")
 
 // CancelDate cancels one date by hand (P7). A series edit never moves it or
-// brings it back; only RestoreDate does (DEC-91).
+// brings it back; only RestoreDate does (DEC-91). Its answers stay for
+// that, and the people signed up are told, as Telling counts them.
 type CancelDate struct{ UID string }
 
 func (CancelDate) Action() string { return "date.cancel" }
 
 func (c CancelDate) Apply(tx *write.Tx) error {
-	d, _, _, err := dateTarget(tx, c.UID)
+	d, e, g, err := dateTarget(tx, c.UID)
 	if err != nil {
 		return err
 	}
 	if !policy.CanCancelDate(true, d.State(tx.Now)) {
 		return ErrDateGone
 	}
-	_, err = tx.Exec(`UPDATE dates SET status = 'cancelled', cancelled_by = 'person' WHERE id = ?`, d.ID)
-	return err
+	if _, err = tx.Exec(`UPDATE dates SET status = 'cancelled', cancelled_by = 'person' WHERE id = ?`, d.ID); err != nil {
+		return err
+	}
+	list, err := signedUp(tx.Context(), tx, e, g, `d.id = ?`, d.ID)
+	if err != nil {
+		return err
+	}
+	return tell(tx, audience(list, e, g, e.Visibility, tx.Actor.Person.ID, notices.DateCancelled))
 }
 
 // RestoreDate brings back a date cancelled by hand, on the event's times as
-// they are now, while its repeat still makes that day (DEC-91).
+// they are now, while its repeat still makes that day (DEC-91). Its answers
+// come back as they were, a Going over a lowered limit included; the people
+// signed up are told, and a free seat moves the waitlist up.
 type RestoreDate struct{ UID string }
 
 func (RestoreDate) Action() string { return "date.restore" }
 
 func (c RestoreDate) Apply(tx *write.Tx) error {
-	d, e, _, err := dateTarget(tx, c.UID)
+	d, e, g, err := dateTarget(tx, c.UID)
 	if err != nil {
 		return err
 	}
@@ -427,21 +544,34 @@ func (c RestoreDate) Apply(tx *write.Tx) error {
 	if !policy.CanRestoreDate(true, d.State(tx.Now), made && now.StartsAt.After(tx.Now)) {
 		return ErrDateGone
 	}
-	return retime(tx, d.ID, now)
+	if err := retime(tx, d.ID, now); err != nil {
+		return err
+	}
+	list, err := signedUp(tx.Context(), tx, e, g, `d.id = ?`, d.ID)
+	if err != nil {
+		return err
+	}
+	if err := tell(tx, audience(list, e, g, e.Visibility, tx.Actor.Person.ID, notices.DatesRestored)); err != nil {
+		return err
+	}
+	return answers.Settle(tx, []int64{d.ID})
 }
 
 // OpenDate opens one date wider than its series, or puts it back to the
 // series' with "" (P7). It is never narrower than its event. Opening it
-// wider than its group is told, with the reason (DEC-28).
+// wider than its group is told, with the reason (DEC-28). Closing it again
+// removes nobody, and asks first with who would lose sight of it (R3).
 type OpenDate struct {
 	UID        string
 	Visibility string
 	Reason     string
+	Private    bool     // the person saw who would no longer see it (R3)
+	Unseen     []Unseen // set with ErrMorePrivate
 }
 
-func (OpenDate) Action() string { return "date.visibility" }
+func (*OpenDate) Action() string { return "date.visibility" }
 
-func (c OpenDate) Apply(tx *write.Tx) error {
+func (c *OpenDate) Apply(tx *write.Tx) error {
 	d, e, g, err := dateTarget(tx, c.UID)
 	if err != nil {
 		return err
@@ -453,6 +583,16 @@ func (c OpenDate) Apply(tx *write.Tx) error {
 		return ErrDateGone
 	}
 	was, now := policy.Widest(e.Visibility, d.Visibility), policy.Widest(e.Visibility, c.Visibility)
+	if policy.MorePrivate(was, now) && !c.Private {
+		list, err := signedUp(tx.Context(), tx, e, g, `d.id = ?`, d.ID)
+		if err != nil {
+			return err
+		}
+		if c.Unseen, err = unseen(tx.Context(), tx, list, e, g, e.Visibility, func(answers.Signed) string { return c.Visibility }, tx.Now, true); err != nil {
+			return err
+		}
+		return ErrMorePrivate
+	}
 	opened := policy.OpensWider(was, now, g.Visibility, e.ChurchWide())
 	reason := d.OpenReason
 	switch {

@@ -87,6 +87,8 @@ type MenuItem struct{ Label, Href string }
 type Dialog struct {
 	ID                  string
 	OpenLabel, OpenKind string
+	OpenName            string // the opener's accessible name, when its label alone is not enough
+	Target              string // with htmx, the element confirming swaps in place
 	Title, Text         string
 	CancelLabel         string
 	ConfirmLabel        string

@@ -21,6 +21,7 @@ type Answer struct {
 	// would answer (Fold's 5.4).
 	Confirmed bool
 	Dates     int // how many dates it answers
+	Waiting   int // of those it wrote, how many were full, so the Going waits
 }
 
 // ErrConfirmCantGo is a Can't go for several dates not yet confirmed.
@@ -90,14 +91,18 @@ func (c *Answer) Apply(tx *write.Tx) error {
 	if c.Status == policy.AnswerCant && len(ids) > 1 && !c.Confirmed {
 		return ErrConfirmCantGo
 	}
+	tx.Subject(d.UID)
+	tx.Subject(e.UID)
 	n, err := answers.Set(tx, p.ID, ids, c.Status)
 	if err != nil {
 		return err
 	}
-	tx.Subject(d.UID)
-	tx.Subject(e.UID)
+	c.Waiting = n.Waiting
 	tx.Detail("answer", c.Status)
 	tx.Detail("scope", c.Scope)
-	tx.Detail("dates", strconv.Itoa(n))
+	tx.Detail("dates", strconv.Itoa(n.Written))
+	if n.Waiting > 0 {
+		tx.Detail("waiting", strconv.Itoa(n.Waiting))
+	}
 	return nil
 }

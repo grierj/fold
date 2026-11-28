@@ -230,6 +230,10 @@ func TestUndoneOpeningLeavesTheBell(t *testing.T) {
 	edit := "/events/" + uid + "/edit"
 	narrowed := editForm(eventForm("Open house", "2026-12-02", "19:00", "once"), "1")
 	narrowed.Set("visibility", "invite_only")
+	if r := mel.post(edit, edit, narrowed); r.status != http.StatusOK || !strings.Contains(r.body, "Nobody is removed.") {
+		t.Fatalf("narrowing didn't ask first (R3): %d", r.status)
+	}
+	narrowed.Set("private", "yes")
 	if r := mel.post(edit, edit, narrowed); r.status != http.StatusSeeOther {
 		t.Fatalf("narrowing: %d", r.status)
 	}

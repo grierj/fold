@@ -3,6 +3,7 @@ package accounts
 import (
 	"context"
 
+	"fold/internal/answers"
 	"fold/internal/db"
 	"fold/internal/events"
 	"fold/internal/groups"
@@ -11,8 +12,9 @@ import (
 	"fold/internal/write"
 )
 
-// Disable turns an account off. Its memberships stay, hidden and not
-// counted, until it is turned on again (DEC-38). Every session ends and
+// Disable turns an account off. Its memberships and answers stay, hidden
+// and not counted, until it is turned on again (DEC-38); each seat it held
+// moves the waitlist up. Every session ends and
 // every link stops working, so nothing of it comes back on re-enabling.
 // A group the person alone leads needs a successor first (DEC-36), named in
 // Successors by group uid.
@@ -87,16 +89,21 @@ func (c Disable) Apply(tx *write.Tx) error {
 		}
 	}
 	tx.Subject(target.UID)
-	return nil
+	return answers.Disabled(tx, target.ID)
 }
 
 // Enable turns an account on again. Its memberships come back with it,
-// since no group has a member limit yet (DEC-47 applies once one does).
-type Enable struct{ PersonUID string }
+// since no group has a member limit yet. Its answers come back where there
+// is room; a Going on a date now full is dropped and the person told to ask
+// a leader (DEC-47).
+type Enable struct {
+	PersonUID string
+	Dropped   int // set on success: Going answers that found no room
+}
 
-func (Enable) Action() string { return "account.enable" }
+func (*Enable) Action() string { return "account.enable" }
 
-func (c Enable) Apply(tx *write.Tx) error {
+func (c *Enable) Apply(tx *write.Tx) error {
 	if !policy.IsAdmin(tx.Actor.Person.Policy()) {
 		return write.ErrNotAllowed
 	}
@@ -111,7 +118,8 @@ func (c Enable) Apply(tx *write.Tx) error {
 		return err
 	}
 	tx.Subject(target.UID)
-	return nil
+	c.Dropped, err = answers.Restored(tx, target.ID)
+	return err
 }
 
 // SoleLed lists the active groups a person is the only active leader of:

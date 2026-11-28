@@ -1,0 +1,28 @@
+{{define "title"}}Make it more private?{{end}}
+{{define "content"}}<div class="page-form">
+  <h1 class="text-2xl font-bold wrap-anywhere sm:text-3xl">Make {{.Data.Event.Title}}{{with .Data.Day}} on {{.}}{{end}} {{.Data.To}}?</h1>
+  <p class="mt-3">It is {{.Data.From}} now.</p>
+  <p class="mt-3"><strong>Nobody is removed.</strong> Everyone signed up stays signed up, whether or not they can still see it.</p>
+  {{if .Data.Rows}}
+  <section class="section mt-6" aria-labelledby="unseen-h">
+    <h2 id="unseen-h" class="text-lg font-bold">Signed up, and won't be able to see it</h2>
+    <p class="mt-1 text-text-muted">Remove anyone who shouldn't come any more. Each removal is saved at once.</p>
+    <ul class="mt-2 divide-y divide-border border-y border-border">
+      {{range .Data.Rows}}<li id="{{.ID}}" class="flex flex-wrap items-center justify-between gap-3 py-3">
+        <div class="min-w-0"><p class="font-semibold wrap-anywhere">{{.Name}}</p>{{with .Dates}}<p class="text-sm text-text-muted">{{.}} still to come</p>{{end}}</div>
+        {{template "dialog" .Remove}}
+      </li>{{end}}
+    </ul>
+  </section>
+  {{else}}<p class="mt-3">Everyone signed up can still see it.</p>{{end}}
+  <form class="mt-6 flex flex-wrap gap-3" method="post" action="{{.Data.Action}}">
+    {{template "csrf" .}}
+    {{range .Data.Hidden}}{{template "hidden" .}}{{end}}
+    {{template "hidden" (hidden "private" "yes")}}
+    {{template "button" (button "primary" (print "Make it " .Data.To))}}
+    {{template "linkbutton" (linkbutton "secondary" "Go back" .Data.Back)}}
+  </form>
+</div>{{end}}
+
+{{/* removed: what takes a removed person's row, swapped in place. */}}
+{{define "removed"}}<li id="{{.Data.ID}}" class="py-3"><p class="font-semibold" tabindex="-1" autofocus>{{.Data.Text}}</p></li>{{end}}

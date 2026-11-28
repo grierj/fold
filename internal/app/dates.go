@@ -21,7 +21,9 @@ import (
 var dateStatuses = map[string]string{
 	"cancelled": "This date is cancelled.",
 	"restored":  "This date is back on.",
+	"removed":   "Removed from this date.",
 	"opened":    "Saved.",
+	"closed":    "Saved. This date is back to who can see the rest of the event.",
 	"gone":      "That could not be done. The page shows how things stand now.",
 	"many":      "That's a lot of changes in a short time, so this one could not be saved. Try again in a little while.",
 }
@@ -48,9 +50,12 @@ func seriesMakes(e events.Event, d events.Row, now time.Time) bool {
 // answerFacts are what the date page shows about answers, read in the
 // page's one read. Can't go is read only for those who may see it (DEC-64).
 type answerFacts struct {
-	mine               string
-	counts             answers.Counts
-	going, maybe, cant []string
+	mine                        string
+	place                       int // on the waitlist, from 1
+	counts                      answers.Counts
+	going, maybe, cant, waiting []answers.Named
+	telling                     int  // for those running it: whom cancelling tells
+	open                        bool // who's coming stays open, after a removal
 }
 
 // loadDate loads a date page's facts and its answers.
@@ -63,16 +68,33 @@ func (a *App) loadDate(w http.ResponseWriter, r *http.Request) (eventFacts, answ
 			if af.mine, err = answers.Mine(ctx, q, f.date.ID, f.session.Person.ID); err != nil {
 				return err
 			}
+			if af.mine == policy.AnswerWaiting {
+				if af.place, err = answers.Place(ctx, q, f.date.ID, f.session.Person.ID); err != nil {
+					return err
+				}
+			}
 		}
 		cants := policy.CanSeeCantGo(p, ev, g, f.rel)
 		if af.counts, err = answers.CountsFor(ctx, q, f.date.ID, cants); err != nil {
 			return err
+		}
+		if f.canManage() && !f.date.Cancelled {
+			if af.telling, err = events.Telling(ctx, q, f.event, f.group, f.date.ID, a.clock.Now(), f.session.Person.ID); err != nil {
+				return err
+			}
 		}
 		if !policy.CanSeeAttendeeNames(p, ev, f.date.Visibility, g, f.rel) {
 			return nil
 		}
 		if af.going, err = answers.Names(ctx, q, f.date.ID, policy.AnswerGoing); err != nil {
 			return err
+		}
+		// The line's order is for those running it; everyone else sees how
+		// many wait, and their own place.
+		if f.canManage() {
+			if af.waiting, err = answers.Names(ctx, q, f.date.ID, policy.AnswerWaiting); err != nil {
+				return err
+			}
 		}
 		if af.maybe, err = answers.Names(ctx, q, f.date.ID, policy.AnswerMaybe); err != nil {
 			return err
@@ -86,22 +108,31 @@ func (a *App) loadDate(w http.ResponseWriter, r *http.Request) (eventFacts, answ
 }
 
 // answerBlock is the part of the date page that answering swaps: the
-// control, the status line that stays (DEC-92), who is coming, and the video
-// link. Can't go is in it only for those running the event (DEC-64).
+// control, the status line that stays (DEC-92), the person's place on the
+// waitlist, who is coming, and the video link. Can't go is in it only for
+// those running the event (DEC-64), and so is Remove beside each name.
 type answerBlock struct {
-	UID                string
-	CanAnswer, SignIn  bool
-	Heading            string
-	Segment            Segment
-	Series             bool
-	Scopes             []Choice
-	Status             string
-	Counts             string
-	Names, ShowCant    bool
-	Going, Maybe, Cant []string
-	Video              string
-	Confirm            *answerConfirm
-	CSRF               string
+	UID                         string
+	CanAnswer, SignIn           bool
+	Heading                     string
+	Segment                     Segment
+	Series                      bool
+	Scopes                      []Choice
+	Status                      string
+	Waitlist                    string
+	Counts, Seats               string
+	Names, ShowCant, Open       bool
+	Going, Maybe, Cant, Waiting []nameRow
+	Video                       string
+	Confirm                     *answerConfirm
+	CSRF                        string
+}
+
+// nameRow is one name in who's coming, with Remove for those running the
+// event (DEC-84).
+type nameRow struct {
+	Name   string
+	Remove *Dialog
 }
 
 // answerConfirm asks before a Can't go for several dates (Fold's 5.4).
@@ -113,13 +144,22 @@ type answerConfirm struct {
 var answerLabels = map[string]string{policy.AnswerGoing: "Going", policy.AnswerMaybe: "Maybe", policy.AnswerCant: "Can't go"}
 
 // answerStatus is the line that stays after an answer (DEC-92). dates is the
-// count the answer itself wrote; a redirect, which can't carry a count it
-// can vouch for, words it for one date.
-func answerStatus(answer string, dates int) string {
+// count the answer itself wrote, and waiting how many of them were full; a
+// redirect, which can't carry a count it can vouch for, words it for one
+// date. A single date's place on the waitlist has its own line.
+func answerStatus(answer string, dates, waiting int) string {
 	switch answer {
 	case policy.AnswerGoing:
-		if dates > 1 {
+		switch {
+		case dates > 1 && waiting == dates:
+			return "Those " + strconv.Itoa(dates) + " dates are full, so you're on their waitlists. If a seat opens, you'll move up and we'll tell you."
+		case dates > 1 && waiting > 0:
+			return "You're going to " + strconv.Itoa(dates-waiting) + " of " + strconv.Itoa(dates) + " dates. " + strconv.Itoa(waiting) +
+				" are full, so you're on their waitlists; if a seat opens, you'll move up and we'll tell you."
+		case dates > 1:
 			return "You're going to " + strconv.Itoa(dates) + " dates. See you there!"
+		case waiting > 0:
+			return ""
 		}
 		return "You're going. See you there!"
 	case policy.AnswerMaybe:
@@ -140,14 +180,42 @@ func (a *App) answerView(f eventFacts, af answerFacts, r *http.Request, status s
 	b := answerBlock{UID: f.date.UID, Status: status, CSRF: a.csrfToken(r), Confirm: confirm,
 		CanAnswer: policy.CanAnswer(p, ev, f.date.Visibility, g, f.rel, f.date.Cancelled, ended),
 		Names:     policy.CanSeeAttendeeNames(p, ev, f.date.Visibility, g, f.rel),
-		ShowCant:  policy.CanSeeCantGo(p, ev, g, f.rel), Going: af.going, Maybe: af.maybe, Cant: af.cant}
+		ShowCant:  policy.CanSeeCantGo(p, ev, g, f.rel), Open: af.open}
+	remove := policy.CanRemoveAnswer(f.canManage(), f.date.State(now).Started)
+	day := dayWords(f.date.StartsAt.In(viewerZone(f.pageFacts)), now)
+	rows := func(list []answers.Named) []nameRow {
+		out := make([]nameRow, 0, len(list))
+		for _, n := range list {
+			row := nameRow{Name: n.Name}
+			if remove {
+				row.Remove = &Dialog{ID: "remove-" + n.UID, OpenLabel: "Remove", OpenKind: "ghost", OpenName: "Remove " + n.Name,
+					Title: "Take " + n.Name + " off " + day + "?", Text: "Their answer to this date is taken off. If that frees a seat, the next person waiting moves up and is told. They can answer again while they can see it.",
+					CancelLabel: "Keep them", ConfirmLabel: "Remove", ConfirmKind: "danger",
+					Action: "/dates/" + f.date.UID + "/people/" + n.UID + "/remove", CSRF: b.CSRF, Target: "#answer"}
+			}
+			out = append(out, row)
+		}
+		return out
+	}
+	b.Going, b.Waiting, b.Maybe, b.Cant = rows(af.going), rows(af.waiting), rows(af.maybe), rows(af.cant)
+	full := !policy.HasSeat(f.event.Seats, af.counts.Going)
 	b.SignIn = f.session == nil && !f.date.Cancelled && !ended
 	b.Heading = "Who's coming"
+	if af.mine == policy.AnswerWaiting && !f.date.Cancelled {
+		b.Waitlist = "You're on the waitlist, number " + strconv.Itoa(af.place) + ". If a seat opens, you'll move up and we'll tell you."
+	}
 	if b.CanAnswer {
 		b.Heading = "Are you going?"
 		b.Segment = Segment{Label: "Your answer", Name: "answer"}
 		for _, v := range []string{policy.AnswerGoing, policy.AnswerMaybe, policy.AnswerCant} {
-			b.Segment.Options = append(b.Segment.Options, SegmentOption{Label: answerLabels[v], Value: v, Pressed: af.mine == v})
+			o := SegmentOption{Label: answerLabels[v], Value: v, Pressed: af.mine == v}
+			switch {
+			case v == policy.AnswerGoing && af.mine == policy.AnswerWaiting:
+				o.Label, o.Pressed = "On the waitlist", true
+			case v == policy.AnswerGoing && full && af.mine != policy.AnswerGoing:
+				o.Label = "Join the waitlist"
+			}
+			b.Segment.Options = append(b.Segment.Options, o)
 		}
 		if policy.CanAnswerSeries(p, ev, g, f.rel, f.event.Repeat != events.Once) {
 			b.Series = true
@@ -160,6 +228,9 @@ func (a *App) answerView(f eventFacts, af answerFacts, r *http.Request, status s
 	if n := af.counts.Going; n > 0 {
 		parts = append(parts, strconv.Itoa(n)+" going")
 	}
+	if n := af.counts.Waiting; n > 0 {
+		parts = append(parts, strconv.Itoa(n)+" on the waitlist")
+	}
 	if n := af.counts.Maybe; n > 0 {
 		parts = append(parts, strconv.Itoa(n)+" maybe")
 	}
@@ -169,6 +240,16 @@ func (a *App) answerView(f eventFacts, af answerFacts, r *http.Request, status s
 	b.Counts = strings.Join(parts, " · ")
 	if b.Counts == "" {
 		b.Counts = "No one has answered yet."
+	}
+	switch left := f.event.Seats - af.counts.Going; {
+	case f.event.Seats == 0:
+	case left <= 0:
+		b.Seats = "All " + plural(f.event.Seats, "seat", "seats") + " are taken."
+		if f.event.Seats == 1 {
+			b.Seats = "The one seat is taken."
+		}
+	default:
+		b.Seats = strconv.Itoa(left) + " of " + plural(f.event.Seats, "seat", "seats") + " left."
 	}
 	if f.event.VideoURL != "" && policy.CanSeeVideo(f.canManage(), af.mine) {
 		b.Video = f.event.VideoURL
@@ -193,10 +274,13 @@ func (a *App) doneLine(f eventFacts, af answerFacts, done string) string {
 		if af.mine != done {
 			return ""
 		}
-		return answerStatus(done, 1)
+		return answerStatus(done, 1, 0)
+	case done == "removed" && !f.canManage():
+		return ""
 	case done == "cancelled" && !f.date.Cancelled,
 		done == "restored" && f.date.Cancelled,
-		done == "opened" && !policy.MoreOpen(f.date.Visibility, f.event.Visibility):
+		done == "opened" && !policy.MoreOpen(f.date.Visibility, f.event.Visibility),
+		done == "closed" && f.date.Visibility != "":
 		return ""
 	}
 	return dateStatuses[done]
@@ -256,7 +340,8 @@ func (a *App) showDate(w http.ResponseWriter, r *http.Request, f eventFacts, af 
 		CanRestore: policy.CanRestoreDate(manages, state, manages && f.date.Cancelled && !f.date.BySeries && seriesMakes(f.event, f.date, now)),
 		UID:        f.date.UID,
 		Cancel: Dialog{ID: "cancel-date", OpenLabel: "Cancel this date", OpenKind: "danger-outline",
-			Title: "Cancel " + dayWords(start, now) + "?", Text: "Only this date is cancelled; the rest of the event stays as it is. You can bring it back before it starts, while the event still meets that day.",
+			Title: "Cancel " + dayWords(start, now) + "?", Text: "Only this date is cancelled; the rest of the event stays as it is. " + willTell(af.telling) +
+				" You can bring it back before it starts, while the event still meets that day.",
 			CancelLabel: "Keep it", ConfirmLabel: "Cancel this date", ConfirmKind: "danger",
 			Action: "/dates/" + f.date.UID + "/cancel", CSRF: a.csrfToken(r)},
 		Restore: Dialog{ID: "restore-date", OpenLabel: "Bring this date back", OpenKind: "secondary",
@@ -327,7 +412,26 @@ func (a *App) postAnswer(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/dates/"+f.date.UID+"?done="+c.Status, http.StatusSeeOther)
 		return
 	}
-	again(http.StatusOK, answerStatus(c.Status, c.Dates), nil)
+	again(http.StatusOK, answerStatus(c.Status, c.Dates, c.Waiting), nil)
+}
+
+// willTell says how many people a change will tell (DEC-175). The number is
+// shown, not bound to the press.
+func willTell(n int) string {
+	switch n {
+	case 0:
+		return "No one else will be told."
+	case 1:
+		return "1 other person signed up will be told."
+	}
+	return strconv.Itoa(n) + " other people signed up will be told."
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return strconv.Itoa(n) + " " + many
 }
 
 // runDate runs a date command for someone who may see the date, and comes
@@ -444,5 +548,32 @@ func (a *App) postOpenDate(w http.ResponseWriter, r *http.Request) {
 		a.render(w, r, http.StatusUnprocessableEntity, "date_open", "", f.page)
 		return
 	}
-	a.runDate(w, r, events.OpenDate{UID: f.date.UID, Visibility: vis, Reason: trimLines(raw)}, "opened")
+	c := &events.OpenDate{UID: f.date.UID, Visibility: vis, Reason: trimLines(raw), Private: r.PostFormValue("private") == "yes"}
+	if !a.limits.eventChanges.Allow(f.session.Person.UID) {
+		http.Redirect(w, r, "/dates/"+f.date.UID+"?done=many", http.StatusSeeOther)
+		return
+	}
+	err := a.exec.Run(r.Context(), write.Session(accounts.Hash(a.sessionToken(r))), c)
+	switch {
+	case errors.Is(err, events.ErrMorePrivate):
+		a.showPrivate(w, r, f.pageFacts, privateView{Event: f.event, Date: &f.date, Day: longDay(f.date.StartsAt.In(viewerZone(f.pageFacts))),
+			From: visibilityLabels[policy.Widest(f.event.Visibility, f.date.Visibility)], To: visibilityLabels[policy.Widest(f.event.Visibility, vis)],
+			Action: "/dates/" + f.date.UID + "/open", Back: "/dates/" + f.date.UID + "/open",
+			Hidden: []Hidden{{"visibility", vis}, {"reason", trimLines(raw)}}}, c.Unseen)
+		return
+	case errors.Is(err, events.ErrDateGone):
+		http.Redirect(w, r, "/dates/"+f.date.UID+"?done=gone", http.StatusSeeOther)
+		return
+	case errors.Is(err, write.ErrNotAllowed), errors.Is(err, write.ErrSignedOut):
+		a.notFound(w, r)
+		return
+	case err != nil:
+		a.serverError(w, r, err)
+		return
+	}
+	done := "opened"
+	if vis == "" {
+		done = "closed"
+	}
+	http.Redirect(w, r, "/dates/"+f.date.UID+"?done="+done, http.StatusSeeOther)
 }

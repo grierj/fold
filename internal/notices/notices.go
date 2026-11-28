@@ -8,6 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -28,6 +29,21 @@ const (
 	Invited          = "member.invited"    // to the person invited; actor: who invited; group, if any
 	EventOpened      = "event.opened"      // to a group's other leaders and the admins; actor; event, and date if one date
 	HostNamed        = "event.host"        // to the person made a host; actor; event
+
+	// To the people signed up to a date (Going, Maybe or waiting), about
+	// that date; event and date. Where one change touches many dates, each
+	// person gets one notice naming the first of theirs.
+	Promoted      = "answer.promoted" // moved up off the waitlist (DEC-84)
+	NoRoom        = "answer.no_room"  // turned back on, and a date said Going to is full (DEC-47)
+	DateCancelled = "date.cancelled"  // one date cancelled by hand
+	EventDeleted  = "event.deleted"   // the event deleted (DEC-175)
+	DatesDropped  = "dates.dropped"   // a series edit no longer makes the dates (DEC-91)
+	DatesMoved    = "dates.moved"     // a series edit moved the dates to other days (R40)
+	DatesRestored = "dates.restored"  // dates back on, answers as they were (DEC-91)
+	DatesRetimed  = "dates.retimed"   // a series edit moved the dates to new times the same day; answers stay
+	// To a person those running an event took off it; actor (R44).
+	AnswerRemoved    = "answer.removed"     // off one date
+	AnswerRemovedAll = "answer.removed_all" // off every date still to come; date: the first
 )
 
 // JobMail emails one notice to its person, for the kinds that are required
@@ -37,9 +53,27 @@ const JobMail = "mail.notice"
 // MailsPerDay is how many emails of one kind a person gets in a day.
 const MailsPerDay = 10
 
-// Mails reports whether a kind is also emailed. Until email choices arrive
-// in slice 3 only required account mail goes out.
-func Mails(kind string) bool { return kind == AccountRequested }
+// UrgentPerDay is how many urgent event emails, of every kind together, a
+// person gets in a day, so nobody running an event can fill an inbox by
+// cancelling and restoring. Past it the bell still tells them.
+const UrgentPerDay = 5
+
+// urgent are the event kinds that are emailed (R36).
+var urgent = []string{Promoted, DateCancelled, EventDeleted, DatesDropped, DatesMoved}
+
+// Mails reports whether a notice is also emailed. Until email choices
+// arrive in slice 3 only required mail goes out: account requests, and of
+// event notices only the urgent ones (R36): moving up off a waitlist, and a
+// date the person said Going or Maybe to going away.
+func Mails(kind, answer string) bool {
+	switch kind {
+	case AccountRequested, Promoted:
+		return true
+	case DateCancelled, EventDeleted, DatesDropped, DatesMoved:
+		return policy.Urgent(answer)
+	}
+	return false
+}
 
 // New is one notice to add inside a command.
 type New struct {
@@ -50,6 +84,9 @@ type New struct {
 	GroupID   int64 // 0 if none
 	EventID   int64 // 0 if none
 	DateID    int64 // 0 if none
+	// Answer is the person's answer to the date, for R36's mail rule. It is
+	// not stored.
+	Answer string
 }
 
 func nullID(id int64) any {
@@ -59,28 +96,82 @@ func nullID(id int64) any {
 	return id
 }
 
-// Add writes a notice, and queues its email when the kind is mailed.
-func Add(tx *write.Tx, n New) error {
-	res, err := tx.Exec(`INSERT INTO notices (person_id, kind, actor_id, subject_id, group_id, event_id, date_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		n.PersonID, n.Kind, nullID(n.ActorID), nullID(n.SubjectID), nullID(n.GroupID), nullID(n.EventID), nullID(n.DateID), tx.Now.Unix())
-	if err != nil {
-		return err
+// Add writes a notice, and queues its email when it is mailed.
+func Add(tx *write.Tx, n New) error { return AddMany(tx, []New{n}) }
+
+// batch is how many notices one INSERT writes.
+const batch = 200
+
+// AddMany writes notices in a few statements, however many people a change
+// tells (docs/HAZARDS.md section 7), and queues one email job for each that
+// is mailed. Each job sends one email after the commit.
+func AddMany(tx *write.Tx, ns []New) error {
+	for len(ns) > 0 {
+		chunk := ns[:min(batch, len(ns))]
+		ns = ns[len(chunk):]
+		args := make([]any, 0, len(chunk)*8)
+		mail := map[[2]any]bool{}
+		for _, n := range chunk {
+			args = append(args, n.PersonID, n.Kind, nullID(n.ActorID), nullID(n.SubjectID), nullID(n.GroupID), nullID(n.EventID), nullID(n.DateID), tx.Now.Unix())
+			if Mails(n.Kind, n.Answer) {
+				mail[[2]any{n.PersonID, n.Kind}] = true
+			}
+		}
+		rows, err := tx.Query(`INSERT INTO notices (person_id, kind, actor_id, subject_id, group_id, event_id, date_id, created_at) VALUES `+
+			strings.TrimSuffix(strings.Repeat("(?, ?, ?, ?, ?, ?, ?, ?), ", len(chunk)), ", ")+` RETURNING id, person_id, kind`, args...)
+		if err != nil {
+			return err
+		}
+		type sent struct {
+			id, person int64
+			kind       string
+		}
+		var queue []sent
+		for rows.Next() {
+			var x sent
+			if err := rows.Scan(&x.id, &x.person, &x.kind); err != nil {
+				rows.Close()
+				return err
+			}
+			if mail[[2]any{x.person, x.kind}] {
+				queue = append(queue, x)
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, x := range queue {
+			// Each person gets at most a few emails of one kind a day; past
+			// that the bell still counts them. A flood of requests cannot
+			// flood an inbox.
+			var today int
+			if err := tx.QueryRow(`SELECT count(*) FROM notices WHERE person_id = ? AND kind = ? AND created_at > ? AND id <= ?`,
+				x.person, x.kind, tx.Now.Add(-24*time.Hour).Unix(), x.id).Scan(&today); err != nil {
+				return err
+			}
+			if today > MailsPerDay {
+				continue
+			}
+			if slices.Contains(urgent, x.kind) {
+				// Counted from the jobs already queued, inside the one write,
+				// so the cap is spent as each email is queued.
+				var sent int
+				if err := tx.QueryRow(`SELECT count(*) FROM jobs j JOIN notices n ON n.id = j.ref
+					WHERE j.kind = ? AND j.created_at > ? AND n.person_id = ? AND n.kind IN (`+strings.TrimSuffix(strings.Repeat("?, ", len(urgent)), ", ")+`)`,
+					append([]any{JobMail, tx.Now.Add(-24 * time.Hour).Unix(), x.person}, kinds(urgent)...)...).Scan(&sent); err != nil {
+					return err
+				}
+				if sent >= UrgentPerDay {
+					continue
+				}
+			}
+			if err := tx.Enqueue(write.NewJob{Kind: JobMail, Ref: x.id}); err != nil {
+				return err
+			}
+		}
 	}
-	if !Mails(n.Kind) {
-		return nil
-	}
-	// Each person gets at most a few emails of one kind a day; past that the
-	// bell still counts them. A flood of requests cannot flood an inbox.
-	var today int
-	if err := tx.QueryRow(`SELECT count(*) FROM notices WHERE person_id = ? AND kind = ? AND created_at > ?`,
-		n.PersonID, n.Kind, tx.Now.Add(-24*time.Hour).Unix()).Scan(&today); err != nil {
-		return err
-	}
-	if today > MailsPerDay {
-		return nil
-	}
-	id, _ := res.LastInsertId()
-	return tx.Enqueue(write.NewJob{Kind: JobMail, Ref: id})
+	return nil
 }
 
 // ToAdmins adds a notice for every active admin.
@@ -252,6 +343,8 @@ func word(ctx context.Context, q db.Querier, r Reader, x row) (Notice, bool, err
 		return wordMember(ctx, q, r, x, n)
 	case EventOpened, HostNamed:
 		return wordEvent(ctx, q, r, x, n)
+	case Promoted, NoRoom, DateCancelled, EventDeleted, DatesDropped, DatesMoved, DatesRestored, DatesRetimed, AnswerRemoved, AnswerRemovedAll:
+		return wordSignedUp(ctx, q, r, x, n)
 	}
 	return n, false, nil
 }
@@ -490,4 +583,12 @@ func wordMember(ctx context.Context, q db.Querier, r Reader, x row, n Notice) (N
 		n.Text, n.Subject = who+" made you a leader of "+quoted+".", "You're a group leader"
 	}
 	return n, true, nil
+}
+
+func kinds(list []string) []any {
+	out := make([]any, len(list))
+	for i, k := range list {
+		out[i] = k
+	}
+	return out
 }

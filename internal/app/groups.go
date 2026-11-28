@@ -286,10 +286,17 @@ func (a *App) getGroup(w http.ResponseWriter, r *http.Request) {
 	var leaders []string
 	var leaderCount, members int
 	var coming []events.Listed
-	var standing int
+	var standing, signed int
 	now := a.clock.Now()
 	f, ok := a.loadGroup(w, r, func(q *sql.Tx, f *groupFacts) error {
 		var err error
+		if policy.CanDeleteGroup(f.viewer(), f.group.Policy()) {
+			list, err := answers.GroupAudience(r.Context(), q, f.group.ID, now, f.session.Person.ID)
+			if err != nil {
+				return err
+			}
+			signed = len(list)
+		}
 		if leaders, err = groups.Leaders(r.Context(), q, f.group.ID); err != nil {
 			return err
 		}
@@ -356,7 +363,7 @@ func (a *App) getGroup(w http.ResponseWriter, r *http.Request) {
 			Title: "Leave " + f.group.Name + "?", Text: leaveText, CancelLabel: "Stay", ConfirmLabel: "Leave", ConfirmKind: "primary",
 			Action: "/groups/" + f.group.UID + "/leave", CSRF: a.csrfToken(r)},
 		Delete: Dialog{ID: "delete-group", OpenLabel: "Delete the group", OpenKind: "danger-outline",
-			Title: "Delete " + f.group.Name + "?", Text: "Its members will be told. This cannot be undone.",
+			Title: "Delete " + f.group.Name + "?", Text: "Its members will be told. " + signedTold(signed) + " This cannot be undone.",
 			CancelLabel: "Keep it", ConfirmLabel: "Delete", ConfirmKind: "danger",
 			Action: "/groups/" + f.group.UID + "/delete", CSRF: a.csrfToken(r)},
 	}
@@ -548,4 +555,16 @@ func (a *App) postDecideGroup(approve bool) http.HandlerFunc {
 		}
 		http.Redirect(w, r, "/admin/groups?done="+done, http.StatusSeeOther)
 	}
+}
+
+// signedTold says how many people outside the group signed up to its dates a
+// delete tells (DEC-177). The number is shown, not bound to the press.
+func signedTold(n int) string {
+	switch n {
+	case 0:
+		return "No one else will be told."
+	case 1:
+		return "So will 1 other person signed up to its dates."
+	}
+	return "So will " + strconv.Itoa(n) + " other people signed up to its dates."
 }

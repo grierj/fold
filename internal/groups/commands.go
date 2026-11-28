@@ -253,9 +253,10 @@ func (c Edit) Apply(tx *write.Tx) error {
 	return nil
 }
 
-// Delete is an admin deleting a group. Its members are told (DEC-177); the
-// row stays, marked deleted, so that notice can name it, and nothing shows
-// it again (R29).
+// Delete is an admin deleting a group. Its members are told, and so is
+// everyone else signed up to a date still to come of its events, once each
+// (DEC-177, answers.GroupAudience); the row stays, marked deleted, so those
+// notices can name it, and nothing shows it again (R29).
 type Delete struct{ UID string }
 
 func (Delete) Action() string { return "group.delete" }
@@ -268,8 +269,18 @@ func (c Delete) Apply(tx *write.Tx) error {
 	if !policy.CanDeleteGroup(actor(tx), policy.Group{Status: g.Status}) {
 		return write.ErrNotAllowed
 	}
+	signed, err := answers.GroupAudience(tx.Context(), tx, g.ID, tx.Now, tx.Actor.Person.ID)
+	if err != nil {
+		return err
+	}
 	if err := toMembers(tx, g.ID, notices.New{Kind: notices.GroupDeleted, ActorID: tx.Actor.Person.ID, GroupID: g.ID}, false); err != nil {
 		return err
+	}
+	if len(signed) > 0 {
+		tx.Detail("told", strconv.Itoa(len(signed)))
+		if err := notices.AddMany(tx, signed); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.Exec(`UPDATE groups SET status = 'deleted', updated_at = ?, version = version + 1 WHERE id = ?`, tx.Now.Unix(), g.ID); err != nil {
 		return err

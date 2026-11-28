@@ -148,8 +148,8 @@ func (a *App) showAdminPerson(w http.ResponseWriter, r *http.Request, status int
 		Message    string
 		Status     string
 	}{p, mine, succession, self, msg, map[string]string{
-		"disabled": "Disabled. They've been signed out and can't sign in until you turn their account on again.",
-		"enabled":  "Turned on again. Their groups are back as they were.",
+		"disabled": "Disabled. They've been signed out and can't sign in until you turn their account on again. Any seats they held went to the next people waiting.",
+		"enabled":  "Turned on again. Their groups are back as they were, and their answers too where there's room. If a date they said Going to is full now, they've been told to ask a leader.",
 	}[r.URL.Query().Get("done")]}
 	a.render(w, r, status, "admin_person", "", f.page)
 }
@@ -211,7 +211,7 @@ func (a *App) postEnable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uid := r.PathValue("uid")
-	err := a.exec.Run(r.Context(), write.Session(accounts.Hash(a.sessionToken(r))), accounts.Enable{PersonUID: uid})
+	err := a.exec.Run(r.Context(), write.Session(accounts.Hash(a.sessionToken(r))), &accounts.Enable{PersonUID: uid})
 	done := "?done=enabled"
 	switch {
 	case errors.Is(err, write.ErrNotAllowed):

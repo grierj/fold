@@ -194,11 +194,12 @@ func (s *seeder) build() {
 	}
 	for _, e := range eventList {
 		g := groupNamed(e.group)
-		c := &events.Create{GroupUID: uids[g.name], Input: events.Input{Title: e.title, Place: e.place, Visibility: g.vis, Pattern: pattern(e), VideoURL: e.video}}
+		c := &events.Create{GroupUID: uids[g.name], Input: events.Input{Title: e.title, Place: e.place, Visibility: g.vis, Pattern: pattern(e), VideoURL: e.video, Seats: e.seats}}
 		s.run(email(g.leader), c)
 		made[e.title] = c.UID
 		// Members answer the first date: mostly going, some maybe, some
-		// can't go; one answers every date still to come.
+		// can't go; one answers every date still to come. The event with
+		// seats fills, and two wait.
 		first := s.nthDate(c.UID, 0)
 		for i, m := range s.members(uids[g.name]) {
 			a := &events.Answer{DateUID: first, Status: []string{"cant", "maybe", "going", "going"}[i%4], Scope: "date"}
@@ -212,7 +213,7 @@ func (s *seeder) build() {
 	// event opened to the church (P7, DEC-28).
 	s.run(email(groupList[0].leader), events.CancelDate{UID: s.nthDate(made[eventList[0].title], 2)})
 	grief := groupNamed(openedDate.group)
-	s.run(email(grief.leader), events.OpenDate{UID: s.nthDate(made[openedDate.event], 1), Visibility: policy.Church, Reason: openedDate.reason})
+	s.run(email(grief.leader), &events.OpenDate{UID: s.nthDate(made[openedDate.event], 1), Visibility: policy.Church, Reason: openedDate.reason})
 	// A church-wide event with two hosts (DEC-7).
 	wide := &events.Create{Input: events.Input{Title: churchEvent.title, Place: churchEvent.place, Visibility: policy.Church, Pattern: pattern(churchEvent)}}
 	s.run(adminEmail, wide)

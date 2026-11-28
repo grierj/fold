@@ -439,7 +439,7 @@ func TestCancelAndRestoreOneDate(t *testing.T) {
 	}
 }
 
-func notices(t *testing.T, env *testenv.Env, kind string) map[int64]int {
+func noticesOf(t *testing.T, env *testenv.Env, kind string) map[int64]int {
 	t.Helper()
 	rows, err := env.Writer.Query(`SELECT person_id, count(*) FROM notices WHERE kind = ? GROUP BY person_id`, kind)
 	if err != nil {
@@ -467,7 +467,7 @@ func TestOpeningWiderIsTold(t *testing.T) {
 	in.Visibility = policy.InviteOnly
 	c := &events.Create{GroupUID: "g1", Input: in}
 	run(t, env, 2, c)
-	if len(notices(t, env, "event.opened")) != 0 {
+	if len(noticesOf(t, env, "event.opened")) != 0 {
 		t.Fatal("an event at its group's visibility was told")
 	}
 	open := weekly("2026-12-01T19:00")
@@ -475,7 +475,7 @@ func TestOpeningWiderIsTold(t *testing.T) {
 	if err := run(t, env, 2, &events.Edit{UID: c.UID, Input: open, Version: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if got := notices(t, env, "event.opened"); len(got) != 2 || got[1] != 1 || got[3] != 1 {
+	if got := noticesOf(t, env, "event.opened"); len(got) != 2 || got[1] != 1 || got[3] != 1 {
 		t.Fatalf("told: %v; want the admin and the co-leader once each", got)
 	}
 	var text, subjects string
@@ -486,7 +486,7 @@ func TestOpeningWiderIsTold(t *testing.T) {
 	retitled := open
 	retitled.Title, retitled.Reason = "Study night", ""
 	run(t, env, 2, &events.Edit{UID: c.UID, Input: retitled, Version: 2})
-	if got := notices(t, env, "event.opened"); got[1] != 1 {
+	if got := noticesOf(t, env, "event.opened"); got[1] != 1 {
 		t.Fatalf("a title edit told again: %v", got)
 	}
 	if n := env.Count(t, `SELECT count(*) FROM events WHERE open_reason = ?`, open.Reason); n != 1 {
@@ -494,13 +494,13 @@ func TestOpeningWiderIsTold(t *testing.T) {
 	}
 	// One date opened to the public: told again, with its own reason; never narrower.
 	d := dateUID(t, env, c.UID, "2026-12-08")
-	if err := run(t, env, 2, events.OpenDate{UID: d, Visibility: policy.InviteOnly}); !errors.Is(err, write.ErrNotAllowed) {
+	if err := run(t, env, 2, &events.OpenDate{UID: d, Visibility: policy.InviteOnly}); !errors.Is(err, write.ErrNotAllowed) {
 		t.Fatalf("a date narrower than its event: %v", err)
 	}
-	if err := run(t, env, 2, events.OpenDate{UID: d, Visibility: policy.Public, Reason: "Open house"}); err != nil {
+	if err := run(t, env, 2, &events.OpenDate{UID: d, Visibility: policy.Public, Reason: "Open house"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := notices(t, env, "event.opened"); got[1] != 2 || got[3] != 2 {
+	if got := noticesOf(t, env, "event.opened"); got[1] != 2 || got[3] != 2 {
 		t.Fatalf("opening a date: %v", got)
 	}
 	list, _ := events.Upcoming(context.Background(), env.Writer, events.Viewer{}, events.Filter{}, testenv.Start, 100)
@@ -508,11 +508,11 @@ func TestOpeningWiderIsTold(t *testing.T) {
 		t.Fatalf("a stranger sees %d dates; want only the opened one", len(list))
 	}
 	// Back to the series': nothing is told, and the reason goes.
-	run(t, env, 2, events.OpenDate{UID: d})
+	run(t, env, 2, &events.OpenDate{UID: d, Private: true})
 	if n := env.Count(t, `SELECT count(*) FROM dates WHERE uid = ? AND visibility IS NULL AND open_reason = ''`, d); n != 1 {
 		t.Fatal("not put back to the series'")
 	}
-	if got := notices(t, env, "event.opened"); got[1] != 2 {
+	if got := noticesOf(t, env, "event.opened"); got[1] != 2 {
 		t.Fatalf("narrowing told: %v", got)
 	}
 }
@@ -542,7 +542,7 @@ func TestChurchWideEventsAndHosts(t *testing.T) {
 	if err := run(t, env, 1, events.AddHost{EventUID: c.UID, PersonUID: "p2"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := notices(t, env, "event.host"); got[2] != 1 {
+	if got := noticesOf(t, env, "event.host"); got[2] != 1 {
 		t.Fatalf("the host was not told: %v", got)
 	}
 	if err := run(t, env, 2, &events.Edit{UID: c.UID, Input: retimed, Version: 1}); err != nil {
@@ -644,7 +644,7 @@ func TestAnswers(t *testing.T) {
 	}
 	// An outsider on a date opened to the church answers that date, and
 	// may not answer the series it would reveal.
-	run(t, env, 2, events.OpenDate{UID: dec15, Visibility: policy.Church})
+	run(t, env, 2, &events.OpenDate{UID: dec15, Visibility: policy.Church})
 	if err := run(t, env, 4, &events.Answer{DateUID: dec15, Status: "going", Scope: "all"}); !errors.Is(err, write.ErrNotAllowed) {
 		t.Fatalf("an outsider's series answer: %v", err)
 	}
