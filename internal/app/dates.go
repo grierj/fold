@@ -194,7 +194,7 @@ func (a *App) answerView(f eventFacts, af answerFacts, r *http.Request, status s
 		return out
 	}
 	b.Going, b.Waiting, b.Maybe, b.Cant = rows(af.going), rows(af.waiting), rows(af.maybe), rows(af.cant)
-	full := f.event.Seats > 0 && af.counts.Going >= f.event.Seats
+	full := !policy.HasSeat(f.event.Seats, af.counts.Going)
 	b.SignIn = f.session == nil && !f.date.Cancelled && !ended
 	b.Heading = "Who's coming"
 	if af.mine == policy.AnswerWaiting && !f.date.Cancelled {

@@ -108,6 +108,9 @@ func (a *App) removeAnswer(w http.ResponseWriter, r *http.Request, f eventFacts,
 }
 
 func (a *App) removeDone(w http.ResponseWriter, r *http.Request, f eventFacts, htmx bool, target, back string, code int, text, done string) {
+	if htmx {
+		code = http.StatusOK // htmx swaps nothing on an error, which would leave the dialog open and silent
+	}
 	switch row := "unseen-" + r.PathValue("person"); {
 	case htmx && target == row:
 		f.Data = removed{ID: row, Text: text}

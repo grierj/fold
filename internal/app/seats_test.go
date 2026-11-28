@@ -5,7 +5,14 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
+
+func answerOf(s *site, email string) string {
+	var st string
+	s.Writer.QueryRow(`SELECT a.status FROM answers a JOIN people p ON p.id = a.person_id WHERE p.email = ?`, email).Scan(&st)
+	return st
+}
 
 func (s *site) uidOf(email string) string {
 	s.t.Helper()
@@ -80,6 +87,16 @@ func TestAFullDateAndItsWaitlist(t *testing.T) {
 	}
 	if n := s.Count(t, `SELECT count(*) FROM audit_log WHERE action = 'answer.remove'`); n != 1 {
 		t.Fatalf("%d audit rows for one removal", n)
+	}
+	// htmx swaps nothing on an error status, so a refusal answers 200 and says why.
+	again := htmxPost(admin, "/dates/"+date, remove, "answer", nil)
+	if again.status != http.StatusOK || !strings.Contains(again.body, "They were already off it.") {
+		t.Fatalf("removing twice: %d", again.status)
+	}
+	s.Clock.Set(time.Date(2026, 12, 2, 3, 0, 0, 0, time.UTC))
+	begun := htmxPost(admin, "/dates/"+date, "/dates/"+date+"/people/"+s.uidOf("ned@example.org")+"/remove", "answer", nil)
+	if begun.status != http.StatusOK || !strings.Contains(begun.body, "That date has begun") || answerOf(s, "ned@example.org") != "going" {
+		t.Fatalf("removing from a date that has begun: %d %s", begun.status, begun.body)
 	}
 	// Clearing the limit means no limit (HAZARDS 6).
 	edit := "/events/" + uid + "/edit"
@@ -182,5 +199,39 @@ func TestMorePrivateAsksWithTheList(t *testing.T) {
 	}
 	if r := mia.get("/notices"); !strings.Contains(r.body, "moved to new times") {
 		t.Fatalf("mia isn't told the dates moved: %s", between(r.body, "<main", "</main>"))
+	}
+}
+
+// One edit that drops dates and makes the event more private asks each
+// question in turn, each page carrying the other's answer, and saves every
+// field once both are answered.
+func TestDropAndNarrowAskEachInTurn(t *testing.T) {
+	s := newSite(t)
+	admin := s.finishSetup()
+	group := s.start(admin, "Supper", "invite_only")
+	f := eventForm("Supper", "2026-12-01", "18:00", "weekly")
+	f.Set("seats", "4")
+	uid := s.schedule(admin, group, f)
+	ned := s.member("Ned Outsider", "ned@example.org")
+	answer(ned, firstDate(admin.get("/events/"+uid).body), "going", "all")
+	edit := "/events/" + uid + "/edit"
+	both := editForm(eventForm("Supper", "2026-12-02", "18:00", "weekly"), "1")
+	both.Set("visibility", "invite_only")
+	both.Set("seats", "4")
+	r := admin.post(edit, edit, both)
+	if !strings.Contains(r.body, "Save and cancel") || !strings.Contains(r.body, `name="private" value=""`) {
+		t.Fatalf("the first question isn't the drop: %s", between(r.body, "<main", "</main>"))
+	}
+	both.Set("confirmed", "yes")
+	r = admin.post(edit, edit, both)
+	if !strings.Contains(r.body, "Nobody is removed.") || !strings.Contains(r.body, `name="confirmed" value="yes"`) || !strings.Contains(r.body, "Ned Outsider") {
+		t.Fatalf("the second question doesn't carry the first's answer: %s", between(r.body, "<main", "</main>"))
+	}
+	both.Set("private", "yes")
+	if r := admin.post(edit, edit, both); r.status != http.StatusSeeOther {
+		t.Fatalf("both answered: %d", r.status)
+	}
+	if s.Count(t, `SELECT count(*) FROM events WHERE visibility = 'invite_only' AND seats = 4 AND starts_local = '2026-12-02T18:00'`) != 1 {
+		t.Fatal("the edit didn't save whole")
 	}
 }

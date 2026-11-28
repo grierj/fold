@@ -492,3 +492,47 @@ func TestMorePrivateListsWhoLosesSight(t *testing.T) {
 		t.Fatalf("closing a date: %v %+v", err, closeIt.Unseen)
 	}
 }
+
+// DEC-91: a series edit that brings back dates it dropped tells the people
+// signed up (bell only) and moves the line up where there is room now.
+func TestASeriesEditBringsDatesBack(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		seats int
+		want  map[int]string
+		told  []int64
+	}{
+		{"with room", 2, map[int]string{3: "going", 4: "going"}, []int64{4}},
+		{"without room", 1, map[int]string{3: "going", 4: "waiting"}, nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			env := setup(t)
+			addGroup(t, env, 1, policy.GroupActive, policy.Public)
+			in := weekly("2026-12-01T19:00")
+			in.Seats = 1
+			ev := &events.Create{GroupUID: "g1", Input: in}
+			run(t, env, 2, ev)
+			dec8 := dateUID(t, env, ev.UID, "2026-12-08")
+			run(t, env, 3, &events.Answer{DateUID: dec8, Status: "going", Scope: "date"})
+			run(t, env, 4, &events.Answer{DateUID: dec8, Status: "going", Scope: "date"})
+			short := in
+			short.Pattern.Until = "2026-12-01"
+			if err := run(t, env, 2, &events.Edit{UID: ev.UID, Input: short, Version: 1, Confirmed: true}); err != nil {
+				t.Fatal(err)
+			}
+			exec(t, env, `UPDATE events SET seats = ?`, c.seats) // raised while the date was off
+			back := in
+			back.Seats = c.seats
+			if err := run(t, env, 2, &events.Edit{UID: ev.UID, Input: back, Version: 2}); err != nil {
+				t.Fatal(err)
+			}
+			moved(t, env, dec8, c.want, c.told...)
+			if got := noticesOf(t, env, notices.DatesRestored); len(got) != 2 || got[3] != 1 || got[4] != 1 {
+				t.Fatalf("back on told %v", got)
+			}
+			if len(mailJobs(t, env, notices.DatesRestored)) != 0 {
+				t.Fatal("dates back on were emailed")
+			}
+		})
+	}
+}
