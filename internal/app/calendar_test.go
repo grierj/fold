@@ -237,3 +237,29 @@ func TestHomeComingUp(t *testing.T) {
 		t.Fatal("signed-out Home lacks the church, its public events, or the way in")
 	}
 }
+
+// R15: a guest's calendar is the public one, with their own RSVP marked and
+// in Just mine; no church-wide date is theirs, and a date made private
+// leaves it.
+func TestGuestCalendar(t *testing.T) {
+	s, admin, event, date := publicDate(t, "")
+	g := s.guestGoing(date, "Gina Guest", "gina@example.org")
+	group := between(admin.get("/events/"+event).body, `href="/groups/`, `"`)
+	later := firstDate(admin.get("/events/" + s.schedule(admin, group, eventForm("Picnic", "2026-12-05", "12:00", "once"))).body)
+	r := g.get("/calendar")
+	if !strings.Contains(r.body, `class="cal-row cal-going" href="/dates/`+date+`"`) || !strings.Contains(r.body, "Just mine") || strings.Contains(r.body, "Not answered") {
+		t.Fatal("a guest's calendar does not mark their RSVP, or marks a date they never answered")
+	}
+	if !strings.Contains(r.body, `class="cal-row" href="/dates/`+later+`"`) {
+		t.Fatal("a guest's calendar lacks a public date coming soon")
+	}
+	if r := g.get("/calendar?mine=1"); !strings.Contains(r.body, date) || strings.Contains(r.body, later) {
+		t.Fatal("a guest's Just mine is not their RSVPs")
+	}
+	if _, err := s.Writer.Exec(`UPDATE events SET visibility = 'church'`); err != nil {
+		t.Fatal(err)
+	}
+	if r := g.get("/calendar?mine=1"); strings.Contains(r.body, date) {
+		t.Fatal("a date made private stays in a guest's calendar")
+	}
+}
