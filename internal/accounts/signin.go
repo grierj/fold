@@ -26,7 +26,7 @@ func (c RequestSignIn) Apply(tx *write.Tx) error {
 	if err != nil {
 		return err
 	}
-	if !policy.SendSignInLink(policy.Account{Exists: true, Active: p.Status == people.StatusActive}) {
+	if !policy.SendSignInLink(policy.Account{Exists: true, Active: p.SignsIn()}) {
 		return write.ErrNothing
 	}
 	tx.Subject(p.UID)
@@ -50,14 +50,14 @@ func (c *UseSignInLink) Apply(tx *write.Tx) error {
 	if err != nil {
 		return err
 	}
-	if !l.facts.Found {
+	if !l.facts.Found || l.facts.Purpose != "signin" {
 		return write.ErrNotAllowed
 	}
 	p, err := people.ByID(tx.Context(), tx, l.PersonID)
 	if err != nil {
 		return err
 	}
-	if !policy.SignIn(policy.Account{Exists: true, Active: p.Status == people.StatusActive}, l.facts, tx.Now) {
+	if !policy.SignIn(policy.Account{Exists: true, Active: p.SignsIn()}, l.facts, tx.Now) {
 		return write.ErrNotAllowed
 	}
 	if err := useLink(tx, l.ID); err != nil {

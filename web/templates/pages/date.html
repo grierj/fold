@@ -54,7 +54,21 @@
     </fieldset>{{end}}
     {{template "segment" .Segment}}
   </form>
-  {{else if .SignIn}}<p class="mt-3">{{template "linkbutton" (linkbutton "primary" "Sign in to answer" "/signin")}}</p>{{end}}
+  {{else if .GuestCancel}}
+  {{with .Mine}}<p class="mt-3 font-semibold">{{.}}</p>{{end}}
+  <form class="mt-3" method="post" action="/dates/{{.UID}}/withdraw">
+    {{template "hidden" (hidden "csrf" .CSRF)}}
+    {{template "button" (button "danger-outline" "Cancel my RSVP")}}
+  </form>
+  {{else if .GuestGoing}}
+  <form class="mt-3" method="post" action="/dates/{{.UID}}/answer">
+    {{template "hidden" (hidden "csrf" .CSRF)}}{{template "hidden" (hidden "answer" "going")}}{{template "hidden" (hidden "scope" "date")}}
+    {{template "button" (button "primary" "Going")}}
+  </form>
+  {{else if .SignIn}}<div class="mt-3 flex flex-wrap gap-3">
+    {{if .Guest}}{{template "linkbutton" (linkbutton "primary" "RSVP as a guest" (print "/dates/" .UID "/guest"))}}{{template "linkbutton" (linkbutton "secondary" "Sign in" "/signin")}}
+    {{else}}{{template "linkbutton" (linkbutton "primary" "Sign in to answer" "/signin")}}{{end}}
+  </div>{{end}}
   <div class="mt-2">{{template "status" .Status}}</div>
   {{with .Waitlist}}<p class="mt-2 font-semibold">{{.}}</p>{{end}}
   <p class="mt-2">{{.Counts}}</p>

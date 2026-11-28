@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"fold/internal/answers"
+	"fold/internal/groups"
 	"fold/internal/policy"
 	"fold/internal/write"
 )
@@ -44,6 +45,9 @@ func (c *Answer) Apply(tx *write.Tx) error {
 	g, rel, err := groupOf(tx, e.GroupID)
 	if err != nil {
 		return err
+	}
+	if who := tx.Actor.Person; who != nil && who.Guest() {
+		return c.asGuest(tx, d, e, g)
 	}
 	p := actor(tx)
 	host := false
@@ -104,5 +108,26 @@ func (c *Answer) Apply(tx *write.Tx) error {
 	if n.Waiting > 0 {
 		tx.Detail("waiting", strconv.Itoa(n.Waiting))
 	}
+	return nil
+}
+
+// asGuest is a signed-in guest's answer: Going, for this date alone, on a
+// date a signed-out visitor may answer (DEC-56, R15).
+func (c *Answer) asGuest(tx *write.Tx, d Row, e Event, g groups.Group) error {
+	if !policy.CanSeeDate(nil, e.Policy(false), d.Visibility, g.Policy(), policy.Rel{}) || c.Status != policy.AnswerGoing || c.Scope != policy.ScopeDate {
+		return write.ErrNotAllowed
+	}
+	if !policy.GuestCanAnswer(e.Policy(false), d.Visibility, g.Policy(), d.Cancelled, !d.EndsAt.After(tx.Now)) {
+		return ErrDateGone
+	}
+	tx.Subject(d.UID)
+	tx.Subject(e.UID)
+	n, err := answers.Set(tx, tx.Actor.Person.ID, []int64{d.ID}, policy.AnswerGoing)
+	if err != nil {
+		return err
+	}
+	c.Dates, c.Waiting = 1, n.Waiting
+	tx.Detail("answer", c.Status)
+	tx.Detail("guest", "1")
 	return nil
 }

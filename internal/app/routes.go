@@ -4,7 +4,8 @@ import "net/http"
 
 // routes registers every route, here and nowhere else, so the budget count
 // in AGENTS.md is one grep. A route that writes is a POST, except GET
-// /l/{token} in the browser that asked for the link (R26).
+// /l/{token} in the browser that asked for the link (R26). /l/, /invite/
+// and /g/ carry secrets, which the access log never writes.
 func (a *App) routes(mux *http.ServeMux) {
 	mux.Handle("GET /{$}", http.HandlerFunc(a.home))
 	mux.Handle("GET /static/", a.static())
@@ -48,6 +49,11 @@ func (a *App) routes(mux *http.ServeMux) {
 	mux.Handle("POST /events/{uid}/delete", http.HandlerFunc(a.postDeleteEvent))
 	mux.Handle("GET /dates/{uid}", http.HandlerFunc(a.getDate))
 	mux.Handle("POST /dates/{uid}/answer", http.HandlerFunc(a.postAnswer))
+	mux.Handle("GET /dates/{uid}/guest", http.HandlerFunc(a.getGuest))
+	mux.Handle("POST /dates/{uid}/guest", http.HandlerFunc(a.postGuest))
+	mux.Handle("POST /dates/{uid}/withdraw", http.HandlerFunc(a.postGuestCancel))
+	mux.Handle("GET /g/{token}", http.HandlerFunc(a.getManage))
+	mux.Handle("POST /g/{token}", http.HandlerFunc(a.postManage))
 	mux.Handle("POST /dates/{uid}/cancel", http.HandlerFunc(a.postCancelDate))
 	mux.Handle("POST /dates/{uid}/restore", http.HandlerFunc(a.postRestoreDate))
 	mux.Handle("POST /dates/{uid}/people/{person}/remove", http.HandlerFunc(a.postRemoveFromDate))

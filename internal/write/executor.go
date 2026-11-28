@@ -162,6 +162,9 @@ func (t *Tx) Detail(key, value string) {
 	t.details[key] = value
 }
 
+// MAC is a keyed hash under a purpose key.
+func (t *Tx) MAC(p keys.Purpose, msg []byte) []byte { return t.keys.MAC(p, msg) }
+
 // Seal encrypts a small secret with a purpose key.
 func (t *Tx) Seal(p keys.Purpose, plain []byte) []byte { return t.keys.Seal(p, plain) }
 

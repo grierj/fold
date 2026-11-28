@@ -52,6 +52,9 @@ func seeDate(ctx context.Context, q db.Querier, r Reader, eventID, dateID int64,
 	}
 	d.day, _ = time.Parse("2006-01-02", day)
 	p := &policy.Person{ID: r.ID, Admin: r.Admin}
+	if r.Guest {
+		p = nil
+	}
 	ev := policy.Event{Status: policy.EventActive, Visibility: vis, ChurchWide: !groupID.Valid, Host: host}
 	active := state == "active"
 	g, rel := policy.Group{Status: groupStatus, Visibility: groupVis}, policy.Rel{Member: active, Leader: active && role == "leader", Removed: state == "removed"}

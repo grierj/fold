@@ -68,6 +68,7 @@ type limits struct {
 	profile       *ratelimit.Limiter // changes one person makes to their own profile
 	invites       *ratelimit.Limiter // invitations sent by one person
 	invitesSite   *ratelimit.Limiter // invitations sent from the whole site
+	guests        *ratelimit.Limiter // guest RSVPs asked for from the whole site
 }
 
 type Deps struct {
@@ -105,6 +106,7 @@ func New(cfg Config, d Deps) (*App, error) {
 			profile:       ratelimit.New(c, ratelimit.Rule{N: 30, Per: time.Hour}),
 			invites:       ratelimit.New(c, ratelimit.Rule{N: 20, Per: 24 * time.Hour}),
 			invitesSite:   ratelimit.New(c, ratelimit.Rule{N: 100, Per: 24 * time.Hour}),
+			guests:        ratelimit.New(c, ratelimit.Rule{N: 100, Per: time.Hour}, ratelimit.Rule{N: 500, Per: 24 * time.Hour}),
 		}}
 	return a, nil
 }
@@ -221,10 +223,23 @@ func (a *App) sessionToken(r *http.Request) string {
 }
 
 // pageFacts is what every page's read loads first.
+// pageFacts are what every page reads first. A guest's session is guest,
+// never session, so every page that asks for session treats a guest as
+// signed out by construction (R15); only the pages a guest may use look at
+// guest.
 type pageFacts struct {
 	page
 	session *people.Session
+	guest   *people.Session
 	setup   settings.Settings
+}
+
+// someone is whoever is signed in, a member or a guest.
+func (f pageFacts) someone() *people.Session {
+	if f.session != nil {
+		return f.session
+	}
+	return f.guest
 }
 
 // load reads the church's settings and the viewer inside the page's one
@@ -238,8 +253,13 @@ func (a *App) load(ctx context.Context, r *http.Request, q *sql.Tx) (pageFacts, 
 	if t := a.sessionToken(r); t != "" {
 		sess, err := people.BySession(ctx, q, accounts.Hash(t), a.clock.Now())
 		if err == nil {
-			f.session = &sess
-			f.Viewer = &viewerInfo{Name: sess.Person.Name, IsAdmin: sess.Person.IsAdmin, ZoneUnset: sess.Person.Zone == ""}
+			if sess.Person.Guest() {
+				f.guest = &sess
+				f.Viewer = &viewerInfo{Name: sess.Person.Name, Guest: true}
+			} else {
+				f.session = &sess
+				f.Viewer = &viewerInfo{Name: sess.Person.Name, IsAdmin: sess.Person.IsAdmin, ZoneUnset: sess.Person.Zone == ""}
+			}
 			if f.Unread, err = notices.Unread(ctx, q, a.noticeReader(sess.Person)); err != nil {
 				return pageFacts{}, err
 			}

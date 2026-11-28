@@ -33,6 +33,28 @@ func (a *App) signedIn(w http.ResponseWriter, r *http.Request, extra func(q *sql
 	return f, true
 }
 
+// anyone loads a page for whoever is signed in, a member or a guest (their
+// notices), or sends them to sign in.
+func (a *App) anyone(w http.ResponseWriter, r *http.Request, extra func(q *sql.Tx, f *pageFacts) error) (pageFacts, bool) {
+	var f pageFacts
+	err := a.reader.Read(r.Context(), func(q *sql.Tx) error {
+		var err error
+		if f, err = a.load(r.Context(), r, q); err != nil || f.someone() == nil || extra == nil {
+			return err
+		}
+		return extra(q, &f)
+	})
+	if err != nil {
+		a.serverError(w, r, err)
+		return f, false
+	}
+	if f.someone() == nil {
+		http.Redirect(w, r, "/signin", http.StatusSeeOther)
+		return f, false
+	}
+	return f, true
+}
+
 // adminPage loads a page only an admin may see; anyone else gets the
 // not-found page.
 func (a *App) adminPage(w http.ResponseWriter, r *http.Request, extra func(q *sql.Tx, f *pageFacts) error) (pageFacts, bool) {

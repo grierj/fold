@@ -26,7 +26,17 @@ const (
 	StatusPending  Status = "pending"
 	StatusActive   Status = "active"
 	StatusDisabled Status = "disabled"
+	// StatusGuest answered a public date by emailed link and is not a
+	// member (R15, R35). A guest signs in by link and may only see and
+	// manage their own answers.
+	StatusGuest Status = "guest"
 )
+
+// SignsIn: an active account or a guest may sign in by link (R15).
+func (p Person) SignsIn() bool { return p.Status == StatusActive || p.Status == StatusGuest }
+
+// Guest reports whether the person is a guest.
+func (p Person) Guest() bool { return p.Status == StatusGuest }
 
 type Person struct {
 	ID            int64
@@ -40,8 +50,13 @@ type Person struct {
 	Version       int64
 }
 
-// Policy is the person in policy's terms.
+// Policy is the person in policy's terms. A guest is a signed-out visitor
+// to every rule: what a guest may do besides has its own rules, asked with
+// the guest's id (R15).
 func (p Person) Policy() *policy.Person {
+	if p.Guest() {
+		return nil
+	}
 	return &policy.Person{ID: p.ID, Admin: p.IsAdmin, Inactive: p.Status != StatusActive}
 }
 
@@ -72,11 +87,11 @@ type Session struct {
 }
 
 // BySession loads the person behind a live session. An ended or expired
-// session, or a person who is no longer active, is ErrNotFound.
+// session, or a person who is neither active nor a guest, is ErrNotFound.
 func BySession(ctx context.Context, q db.Querier, tokenHash []byte, now time.Time) (Session, error) {
 	row := q.QueryRowContext(ctx, `SELECT s.id, s.renewed_at, s.expires_at, `+columns+`
 		FROM sessions s JOIN people p ON p.id = s.person_id
-		WHERE s.token_hash = ? AND s.ended_at IS NULL AND s.expires_at > ? AND p.status = 'active'`,
+		WHERE s.token_hash = ? AND s.ended_at IS NULL AND s.expires_at > ? AND p.status IN ('active', 'guest')`,
 		tokenHash, now.Unix())
 	var s Session
 	var renewed, expires int64

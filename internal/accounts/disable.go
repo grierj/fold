@@ -163,6 +163,9 @@ func (EditName) Action() string { return "profile.name" }
 
 func (c EditName) Apply(tx *write.Tx) error {
 	p := tx.Actor.Person
+	if p.Policy() == nil {
+		return write.ErrNotAllowed // a guest has no profile (R15)
+	}
 	if p.Version != c.Version {
 		return write.ErrConflict
 	}
@@ -182,6 +185,9 @@ func (SetContactHidden) Action() string { return "profile.contact" }
 
 func (c SetContactHidden) Apply(tx *write.Tx) error {
 	p := tx.Actor.Person
+	if p.Policy() == nil {
+		return write.ErrNotAllowed // a guest has no profile (R15)
+	}
 	if p.ContactHidden == c.Hidden {
 		return write.ErrNothing
 	}
@@ -206,6 +212,9 @@ func (SetZone) Action() string { return "profile.zone" }
 
 func (c SetZone) Apply(tx *write.Tx) error {
 	p := tx.Actor.Person
+	if p.Policy() == nil {
+		return write.ErrNotAllowed // a guest has no profile (R15)
+	}
 	if _, err := events.LoadZone(c.Zone); err != nil {
 		return write.ErrNotAllowed
 	}

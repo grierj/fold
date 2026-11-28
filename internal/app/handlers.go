@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"fold/internal/accounts"
+	"fold/internal/events"
 	"fold/internal/groups"
 	"fold/internal/mail"
 	"fold/internal/people"
@@ -24,10 +25,18 @@ import (
 func (a *App) home(w http.ResponseWriter, r *http.Request) {
 	var f pageFacts
 	var list []groups.Listed
+	var rsvps []events.Listed
 	err := a.reader.Read(r.Context(), func(q *sql.Tx) error {
 		var err error
 		if f, err = a.load(r.Context(), r, q); err != nil {
 			return err
+		}
+		if f.guest != nil {
+			// Read as a signed-out viewer: a date since made private drops
+			// out of a guest's list (R15).
+			if rsvps, err = events.Upcoming(r.Context(), q, events.Viewer{}, events.Filter{Answerer: f.guest.Person.ID}, a.clock.Now(), 50); err != nil {
+				return err
+			}
 		}
 		if f.session != nil {
 			list, err = groups.Mine(r.Context(), q, f.session.Person.ID)
@@ -54,7 +63,9 @@ func (a *App) home(w http.ResponseWriter, r *http.Request) {
 	f.Data = struct {
 		Status string
 		Groups []groups.Listed
-	}{status, list}
+		Guest  bool
+		RSVPs  []dateItem
+	}{status, list, f.guest != nil, dateItems(rsvps, churchZone(f), a.clock.Now(), true)}
 	a.render(w, r, http.StatusOK, "home", "", f.page)
 }
 
@@ -100,7 +111,9 @@ func (a *App) postSignin(w http.ResponseWriter, r *http.Request) {
 // only its button's POST acts, because mail scanners open links
 // (docs/HAZARDS.md section 9).
 type linkPage struct {
-	Usable                      bool
+	Usable  bool
+	Message bool // a page saying what happened, in place of the link's
+
 	Title, Text, Button, Action string
 	Next                        *LinkButton // what to do when the link no longer works
 }
@@ -117,7 +130,7 @@ func (a *App) showLink(w http.ResponseWriter, r *http.Request, mayAct bool) {
 		if f, err = a.load(r.Context(), r, q); err != nil {
 			return err
 		}
-		info, err = accounts.LookUpLink(r.Context(), q, token, a.clock.Now())
+		info, err = accounts.LookUpLink(r.Context(), q, a.keys, token, a.clock.Now())
 		return err
 	})
 	if err != nil {
@@ -139,6 +152,9 @@ func (a *App) showLink(w http.ResponseWriter, r *http.Request, mayAct bool) {
 		if !f.setup.Done() {
 			lp.Next = &LinkButton{Kind: "primary", Label: "Back to setup", Href: "/setup"}
 		}
+	case "guest":
+		lp.Title, lp.Text, lp.Button = "Confirm your RSVP", "Press the button to say you're going. Until you do, nothing is saved.", "Confirm my RSVP"
+		lp.Next = &LinkButton{Kind: "primary", Label: "See what's coming up", Href: "/groups"}
 	default:
 		church := f.Church
 		lp.Title, lp.Text, lp.Button = "Sign in to "+church, "Press the button to sign in on this device.", "Sign in"
@@ -152,7 +168,7 @@ func (a *App) postLink(w http.ResponseWriter, r *http.Request) {
 	var info accounts.LinkInfo
 	err := a.reader.Read(r.Context(), func(q *sql.Tx) error {
 		var err error
-		info, err = accounts.LookUpLink(r.Context(), q, token, a.clock.Now())
+		info, err = accounts.LookUpLink(r.Context(), q, a.keys, token, a.clock.Now())
 		return err
 	})
 	if err != nil {
@@ -179,6 +195,9 @@ func (a *App) useLink(w http.ResponseWriter, r *http.Request, token, purpose str
 			a.setup.mu.Unlock()
 			a.setCookie(w, "setup", "", -1)
 		}
+	case "guest":
+		a.useGuestLink(w, r, token)
+		return
 	default:
 		c := &accounts.UseSignInLink{Token: token}
 		err = a.exec.Run(r.Context(), write.Anonymous(), c)

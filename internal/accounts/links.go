@@ -4,14 +4,12 @@ package accounts
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/base64"
 	"errors"
 	"time"
 
 	"fold/internal/db"
+	"fold/internal/keys"
 	"fold/internal/policy"
 	"fold/internal/write"
 )
@@ -42,35 +40,21 @@ const (
 // linkJobs are the job kinds that carry a link's token.
 var linkJobs = []string{JobLinkMail, JobApprovedMail}
 
-// NewToken is 32 random bytes, URL-safe.
-func NewToken() string {
-	var b [32]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		panic(err)
-	}
-	return base64.RawURLEncoding.EncodeToString(b[:])
-}
+// NewToken is a new link or session token.
+func NewToken() string { return keys.Token() }
 
 // Hash is what the database stores for a token: links and sessions are
 // stored hashed, so a copy of the database signs nobody in.
-func Hash(token string) []byte {
-	h := sha256.Sum256([]byte(token))
-	return h[:]
-}
+func Hash(token string) []byte { return keys.TokenHash(token) }
 
 // ValidTokenShape refuses anything that cannot be a token before any lookup.
-func ValidTokenShape(s string) bool {
-	if len(s) != 43 {
-		return false
-	}
-	_, err := base64.RawURLEncoding.DecodeString(s)
-	return err == nil
-}
+func ValidTokenShape(s string) bool { return keys.TokenShape(s) }
 
 type linkRow struct {
 	ID       int64
-	PersonID int64
+	PersonID int64  // 0 for a guest's confirm link
 	Email    string // "" if the person row is gone
+	sealed   []byte // a guest's confirm link: their name and email
 	facts    policy.Link
 }
 
@@ -79,9 +63,9 @@ func loadLink(ctx context.Context, q db.Querier, token string) (linkRow, error) 
 	var expires int64
 	var used, cancelled sql.NullInt64
 	var email sql.NullString
-	err := q.QueryRowContext(ctx, `SELECT l.id, l.person_id, l.purpose, l.expires_at, l.used_at, l.cancelled_at, p.email
+	err := q.QueryRowContext(ctx, `SELECT l.id, coalesce(l.person_id, 0), l.purpose, l.expires_at, l.used_at, l.cancelled_at, p.email, l.sealed
 		FROM links l LEFT JOIN people p ON p.id = l.person_id WHERE l.token_hash = ?`,
-		Hash(token)).Scan(&l.ID, &l.PersonID, &l.facts.Purpose, &expires, &used, &cancelled, &email)
+		Hash(token)).Scan(&l.ID, &l.PersonID, &l.facts.Purpose, &expires, &used, &cancelled, &email, &l.sealed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return linkRow{}, nil
 	}
@@ -104,14 +88,23 @@ type LinkInfo struct {
 	Email   string
 }
 
-// LookUpLink reads a link without using it.
-func LookUpLink(ctx context.Context, q db.Querier, token string, now time.Time) (LinkInfo, error) {
+// LookUpLink reads a link without using it. A manage link is not opened
+// here (it has its own page), so it reads as unknown; a guest's confirm
+// link gives the address sealed in it, for the same-device check.
+func LookUpLink(ctx context.Context, q db.Querier, k *keys.Keys, token string, now time.Time) (LinkInfo, error) {
 	if !ValidTokenShape(token) {
 		return LinkInfo{}, nil
 	}
 	l, err := loadLink(ctx, q, token)
-	if err != nil || !l.facts.Found {
+	if err != nil || !l.facts.Found || l.facts.Purpose == "manage" {
 		return LinkInfo{}, err
+	}
+	if l.facts.Purpose == "guest" {
+		g, err := openGuest(k, l.sealed)
+		if err != nil {
+			return LinkInfo{}, nil
+		}
+		l.Email = g.Email
 	}
 	return LinkInfo{Purpose: l.facts.Purpose, Usable: policy.LinkUsable(l.facts, l.facts.Purpose, now), Email: l.Email}, nil
 }

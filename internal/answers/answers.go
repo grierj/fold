@@ -278,6 +278,28 @@ func Remove(tx *write.Tx, personID int64, dateIDs []int64) (int, int64, error) {
 	return int(n), first, Settle(tx, freed)
 }
 
+// GuestCancel takes back a guest's own Going or place in line on one date
+// (MoveGuestCancel, DEC-55); a seat it frees moves the next person up. The
+// caller has asked policy.GuestCanCancel. It reports whether it changed
+// anything.
+func GuestCancel(tx *write.Tx, personID, dateID int64) (bool, error) {
+	var was string
+	if err := tx.QueryRow(`SELECT coalesce((SELECT status FROM answers WHERE person_id = ? AND date_id = ?), '')`, personID, dateID).Scan(&was); err != nil {
+		return false, err
+	}
+	if !policy.MoveGuestCancel.Allows(was, policy.AnswerCancelled) {
+		return false, nil
+	}
+	if _, err := tx.Exec(`UPDATE answers SET status = 'cancelled', waiting_since = NULL, updated_at = ? WHERE person_id = ? AND date_id = ?`,
+		tx.Now.Unix(), personID, dateID); err != nil {
+		return false, err
+	}
+	if was != policy.AnswerGoing {
+		return true, nil
+	}
+	return true, Settle(tx, []int64{dateID})
+}
+
 // Disabled moves the waitlist up on every date still to come that a
 // person, whose account was just turned off, held a seat on: their answers
 // stay, hidden and not counted (DEC-38). Call it after the account's

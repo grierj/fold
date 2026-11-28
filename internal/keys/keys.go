@@ -16,6 +16,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -31,7 +32,38 @@ const (
 	Jobs     Purpose = "jobs/v1"
 	Setup    Purpose = "setup/v1"
 	Device   Purpose = "device/v1"
+	// Guest seals a guest's name and email in their confirm link's row, and
+	// GuestAddress keys the MAC that counts those rows per inbox. A rotation
+	// drops confirm links still waiting, as it does mail still queued; each
+	// lasts a day.
+	Guest        Purpose = "guest/v1"
+	GuestAddress Purpose = "guest-address/v1"
 )
+
+// Token is 32 random bytes, URL-safe: every emailed link and session.
+func Token() string {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b[:])
+}
+
+// TokenHash is what the database stores for a token, so a copy of the
+// database opens nothing.
+func TokenHash(token string) []byte {
+	h := sha256.Sum256([]byte(token))
+	return h[:]
+}
+
+// TokenShape refuses anything that cannot be a token before any lookup.
+func TokenShape(s string) bool {
+	if len(s) != 43 {
+		return false
+	}
+	_, err := base64.RawURLEncoding.DecodeString(s)
+	return err == nil
+}
 
 // MinSecretBytes is the shortest secret accepted: 32 random bytes, written as
 // 64 hex characters (openssl rand -hex 32).

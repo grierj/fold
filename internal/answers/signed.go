@@ -29,6 +29,7 @@ type Signed struct {
 	DateVis  string
 	StartsAt int64
 	person   policy.Person
+	guest    bool // asked about as a signed-out visitor (R15)
 	rel      policy.Rel
 	host     bool
 }
@@ -38,7 +39,11 @@ type Signed struct {
 // delete tells the people who could see it.
 func (s Signed) Sees(e Event, eventVis, dateVis string) bool {
 	ev := policy.Event{Status: policy.EventActive, Visibility: eventVis, ChurchWide: e.ChurchWide, Host: s.host}
-	return policy.CanSeeDate(&s.person, ev, dateVis, e.Group, s.rel)
+	p := &s.person
+	if s.guest {
+		p = nil
+	}
+	return policy.CanSeeDate(p, ev, dateVis, e.Group, s.rel)
 }
 
 // Member: the person is an active member of the event's group.
@@ -51,12 +56,12 @@ func SignedUp(ctx context.Context, q db.Querier, e Event, where string, args ...
 }
 
 func signed(ctx context.Context, q db.Querier, e Event, states []string, where, order string, args ...any) ([]Signed, error) {
-	rows, err := q.QueryContext(ctx, `SELECT a.person_id, p.uid, p.name, p.is_admin, a.status, d.id, coalesce(d.visibility, ''), d.starts_at,
+	rows, err := q.QueryContext(ctx, `SELECT a.person_id, p.uid, p.name, p.is_admin, p.status = 'guest', a.status, d.id, coalesce(d.visibility, ''), d.starts_at,
 		coalesce(m.role, ''), coalesce(m.state, ''),
 		EXISTS (SELECT 1 FROM event_hosts h WHERE h.event_id = d.event_id AND h.person_id = a.person_id)
 		FROM answers a JOIN people p ON p.id = a.person_id JOIN dates d ON d.id = a.date_id
 		LEFT JOIN memberships m ON m.group_id = ? AND m.person_id = a.person_id
-		WHERE d.event_id = ? AND p.status = 'active' AND a.status IN (`+quoted(states)+`) AND `+where+`
+		WHERE d.event_id = ? AND p.status IN ('active', 'guest') AND a.status IN (`+quoted(states)+`) AND `+where+`
 		ORDER BY `+order, append([]any{e.GroupID, e.ID}, args...)...)
 	if err != nil {
 		return nil, err
@@ -66,7 +71,7 @@ func signed(ctx context.Context, q db.Querier, e Event, states []string, where, 
 	for rows.Next() {
 		var s Signed
 		var role, state string
-		if err := rows.Scan(&s.PersonID, &s.UID, &s.Name, &s.person.Admin, &s.Answer, &s.DateID, &s.DateVis, &s.StartsAt, &role, &state, &s.host); err != nil {
+		if err := rows.Scan(&s.PersonID, &s.UID, &s.Name, &s.person.Admin, &s.guest, &s.Answer, &s.DateID, &s.DateVis, &s.StartsAt, &role, &state, &s.host); err != nil {
 			return nil, err
 		}
 		s.person.ID = s.PersonID

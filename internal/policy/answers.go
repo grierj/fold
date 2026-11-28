@@ -56,6 +56,9 @@ const (
 	// An account turned on again finds a date it said Going to full: that
 	// answer is dropped and the person told to ask a leader (DEC-47).
 	MoveNoRoom AnswerMove = "no room on turning back on"
+	// A guest takes back their own Going, or their place on the waitlist,
+	// from the date page or their manage link (DEC-55).
+	MoveGuestCancel AnswerMove = "guest cancels"
 )
 
 // given are a person's answers that stand: what leaving takes back.
@@ -64,10 +67,11 @@ var given = []string{AnswerGoing, AnswerMaybe, AnswerCant, AnswerWaiting}
 var answerMoves = map[AnswerMove]struct{ from, to []string }{
 	MoveAnswer: {from: []string{AnswerNone, AnswerGoing, AnswerMaybe, AnswerCant, AnswerCancelled, AnswerWaiting},
 		to: []string{AnswerGoing, AnswerMaybe, AnswerCant, AnswerWaiting}},
-	MoveLeaveGroup: {from: given, to: []string{AnswerCancelled}},
-	MovePromote:    {from: []string{AnswerWaiting}, to: []string{AnswerGoing}},
-	MoveRemove:     {from: given, to: []string{AnswerCancelled}},
-	MoveNoRoom:     {from: []string{AnswerGoing}, to: []string{AnswerCancelled}},
+	MoveLeaveGroup:  {from: given, to: []string{AnswerCancelled}},
+	MovePromote:     {from: []string{AnswerWaiting}, to: []string{AnswerGoing}},
+	MoveRemove:      {from: given, to: []string{AnswerCancelled}},
+	MoveNoRoom:      {from: []string{AnswerGoing}, to: []string{AnswerCancelled}},
+	MoveGuestCancel: {from: []string{AnswerGoing, AnswerWaiting}, to: []string{AnswerCancelled}},
 }
 
 // SignedUp are the answers whose people are told when a date goes away or

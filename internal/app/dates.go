@@ -64,12 +64,12 @@ func (a *App) loadDate(w http.ResponseWriter, r *http.Request) (eventFacts, answ
 	f, ok := a.loadEvent(w, r, true, func(q *sql.Tx, f *eventFacts) error {
 		ctx, p, ev, g := r.Context(), f.viewer(), f.ev(), f.group.Policy()
 		var err error
-		if f.session != nil {
-			if af.mine, err = answers.Mine(ctx, q, f.date.ID, f.session.Person.ID); err != nil {
+		if who := f.someone(); who != nil {
+			if af.mine, err = answers.Mine(ctx, q, f.date.ID, who.Person.ID); err != nil {
 				return err
 			}
 			if af.mine == policy.AnswerWaiting {
-				if af.place, err = answers.Place(ctx, q, f.date.ID, f.session.Person.ID); err != nil {
+				if af.place, err = answers.Place(ctx, q, f.date.ID, who.Person.ID); err != nil {
 					return err
 				}
 			}
@@ -114,6 +114,9 @@ func (a *App) loadDate(w http.ResponseWriter, r *http.Request) (eventFacts, answ
 type answerBlock struct {
 	UID                         string
 	CanAnswer, SignIn           bool
+	Guest                       bool // a stranger may RSVP as a guest
+	GuestGoing, GuestCancel     bool // a signed-in guest may say Going, or cancel their own
+	Mine                        string
 	Heading                     string
 	Segment                     Segment
 	Series                      bool
@@ -199,7 +202,15 @@ func (a *App) answerView(f eventFacts, af answerFacts, r *http.Request, status s
 	}
 	b.Going, b.Waiting, b.Maybe, b.Cant = rows(af.going), rows(af.waiting), rows(af.maybe), rows(af.cant)
 	full := !policy.HasSeat(f.event.Seats, af.counts.Going)
-	b.SignIn = f.session == nil && !f.date.Cancelled && !ended
+	b.SignIn = f.someone() == nil && !f.date.Cancelled && !ended
+	b.Guest = a.guestOpen(f)
+	if f.guest != nil {
+		b.GuestCancel = policy.GuestCanCancel(af.mine, ended) && !f.date.Cancelled
+		b.GuestGoing = !b.GuestCancel && policy.GuestCanAnswer(ev, f.date.Visibility, g, f.date.Cancelled, ended)
+		if af.mine == policy.AnswerGoing {
+			b.Mine = "You're going."
+		}
+	}
 	b.Heading = "Who's coming"
 	if af.mine == policy.AnswerWaiting && !f.date.Cancelled {
 		b.Waitlist = "You're on the waitlist, number " + strconv.Itoa(af.place) + ". If a seat opens, you'll move up and we'll tell you."
@@ -276,6 +287,14 @@ func (a *App) doneLine(f eventFacts, af answerFacts, done string) string {
 		}
 		return answerStatus(done, 1, 0)
 	case done == "removed" && !f.canManage():
+		return ""
+	case done == "guest" && af.mine == policy.AnswerGoing:
+		return "You're going. We've emailed you a link to see or cancel your RSVP."
+	case done == "guest" && af.mine == policy.AnswerWaiting:
+		return "We've emailed you a link to see or cancel your place on the waitlist."
+	case done == "guest-cancelled" && af.mine == policy.AnswerCancelled:
+		return "Your RSVP is cancelled."
+	case done == "guest", done == "guest-cancelled":
 		return ""
 	case done == "cancelled" && !f.date.Cancelled,
 		done == "restored" && f.date.Cancelled,
@@ -361,7 +380,8 @@ func (a *App) postAnswer(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if f.session == nil {
+	who := f.someone() // a guest answers too, as guests may (R15)
+	if who == nil {
 		http.Redirect(w, r, "/signin", http.StatusSeeOther)
 		return
 	}
@@ -377,7 +397,7 @@ func (a *App) postAnswer(w http.ResponseWriter, r *http.Request) {
 		}
 		a.showDate(w, r, f, af, code, status, block, confirm)
 	}
-	if !a.limits.answers.Allow(f.session.Person.UID) {
+	if !a.limits.answers.Allow(who.Person.UID) {
 		again(http.StatusTooManyRequests, "That's a lot of answers in a short time, so this one could not be saved. Try again in a little while.", nil)
 		return
 	}

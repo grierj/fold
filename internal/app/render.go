@@ -114,6 +114,7 @@ type viewerInfo struct {
 	Name      string
 	IsAdmin   bool
 	ZoneUnset bool // the page asks the browser for its zone (DEC-58)
+	Guest     bool // signed in as a guest: their answers, notices and signing out only
 }
 
 // render writes a whole page, or one named block of it for a fragment
