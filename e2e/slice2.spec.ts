@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { gate, watchCSP } from "./gates";
 import { signIn } from "./session";
+import { milestone1b } from "./slice2b";
 
 // Slice 2, milestone 1a: events and dates through the gates. Runs after
 // slice1.spec.ts on the same site: Pat, an admin, co-leads Sam's
@@ -27,7 +28,8 @@ function springForward(): string {
   return d.toISOString().slice(0, 10);
 }
 
-test("scheduling, the event and date pages, and the series edit, through the gates", async ({ page }) => {
+test("scheduling, the event and date pages, and the series edit, through the gates", async ({ page, browser }) => {
+  test.setTimeout(300_000);
   await watchCSP(page);
   await signIn(page, admin);
 
@@ -111,4 +113,6 @@ test("scheduling, the event and date pages, and the series edit, through the gat
   await gate(page, "event delete dialog");
   await page.getByRole("dialog").getByRole("button", { name: "Delete" }).click();
   await expect(page.getByText("The event is deleted.")).toBeVisible();
+
+  await milestone1b(page, browser);
 });

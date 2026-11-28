@@ -19,6 +19,9 @@ export default defineConfig({
   reporter: [["list"]],
   use: {
     baseURL,
+    // Every browser is in Boise, the pilot church's zone, unless a test says
+    // otherwise; a signed-in browser tells the server its zone (DEC-58).
+    timezoneId: "America/Boise",
     launchOptions: process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {},
   },
   webServer: {
