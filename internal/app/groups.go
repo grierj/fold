@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"time"
@@ -145,7 +146,7 @@ func groupItems(list []groups.Listed, loc *time.Location, now time.Time) []group
 	for _, g := range list {
 		it := groupItem{Listed: g}
 		if !g.NextAt.IsZero() {
-			it.Next = meetingWords(g.NextAt, loc, now)
+			it.Next = meetingWords(g.NextAt, g.NextZone, loc, now)
 		}
 		out = append(out, it)
 	}
@@ -185,6 +186,14 @@ func findTimes(day, part string, today time.Time) string {
 	}
 	b, _ := json.Marshal(spans)
 	return string(b)
+}
+
+// clearFilters is /groups with the search kept and the day and time gone.
+func clearFilters(search string) string {
+	if search == "" {
+		return "/groups"
+	}
+	return "/groups?" + url.Values{"q": {search}}.Encode()
 }
 
 func (a *App) getGroups(w http.ResponseWriter, r *http.Request) {
@@ -234,9 +243,10 @@ func (a *App) getGroups(w http.ResponseWriter, r *http.Request) {
 		Day, Time Select
 		Query     string
 		Filtered  bool
+		Clear     string // the same search without the day and time
 		Labels    map[string]string
 	}{groupItems(list, viewerZone(f), now), Field{ID: "q", Name: "q", Label: "Search groups", Type: "search", Value: search, MaxLength: 100},
-		days, parts, search, day != "" || part != "", visibilityLabels}
+		days, parts, search, day != "" || part != "", clearFilters(search), visibilityLabels}
 	a.render(w, r, http.StatusOK, "groups", "", f.page)
 }
 

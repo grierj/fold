@@ -35,6 +35,10 @@ func TestFinderUsesOnlyVisibleDates(t *testing.T) {
 	if r := admin.get("/groups?day=tue"); !found(r.body, "Supper Club") || !strings.Contains(r.body, "Next: Tue, Dec 1, 7:00 pm") {
 		t.Fatal("the leader does not find their own group by its Tuesday")
 	}
+	if r := mia.get("/groups?q=supper&day=tue"); !strings.Contains(r.body, "No groups match that search on those days and times") ||
+		!strings.Contains(r.body, `href="/groups?q=supper">Clear filters`) {
+		t.Error("a search with filters and no results does not say so, or offer to clear the filters")
+	}
 	if r := mia.get("/groups?day=funday&time=midnight"); !found(r.body, "Supper Club") {
 		t.Fatal("an unknown filter is not ignored")
 	}
@@ -79,6 +83,23 @@ func TestFinderDaysAndTimesAreTheViewers(t *testing.T) {
 				t.Errorf("%s: %s listed", c.query, name)
 			}
 		}
+	}
+	// DEC-57: a time in the viewer's zone names it when the event keeps
+	// another, on the group's card and on Home.
+	if r := mia.get("/groups"); !strings.Contains(r.body, "Next: Wed, Dec 2, 1:30 am New York time") {
+		t.Error("New York's card does not name its zone")
+	}
+	if r := admin.get("/groups"); !strings.Contains(r.body, "Next: Tue, Dec 1, 11:30 pm</p>") {
+		t.Error("Boise's card names a zone it shares with the event")
+	}
+	if r := mia.get("/"); !strings.Contains(r.body, "Meets next Wed, Dec 2, 1:30 am New York time") {
+		t.Error("Home's groups meeting soon do not name the zone")
+	}
+	var night string
+	s.Writer.QueryRow(`SELECT d.uid FROM dates d JOIN events e ON e.id = d.event_id WHERE e.title = 'Night Owls'`).Scan(&night)
+	answer(mia, night, "going", "date")
+	if r := mia.get("/"); !strings.Contains(r.body, "Wed, Dec 2, 1:30 to 3:00 am New York time") {
+		t.Errorf("Home's Coming up does not name the zone: %q %s", night, between(r.body, "Coming up", "</section>"))
 	}
 	// Eight weeks before Monday 15 March 2027, the Sunday before it is 23
 	// hours long.

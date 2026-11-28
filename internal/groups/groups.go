@@ -91,7 +91,8 @@ type Listed struct {
 	Members int
 	Mine    bool      // the viewer is a member
 	Leads   bool      // the viewer leads it
-	NextAt  time.Time // its next date the viewer may see; zero for none
+	NextAt   time.Time // its next date the viewer may see; zero for none
+	NextZone string    // that date's event's zone
 }
 
 // Viewer is who is looking at a list, in the terms the SQL filter needs.
@@ -123,6 +124,11 @@ func escapeLike(s string) string {
 const nextSQL = `(SELECT min(d.starts_at) FROM dates d JOIN events e ON e.id = d.event_id
 	WHERE e.group_id = g.id AND d.status = 'scheduled' AND d.starts_at > ?3 AND ` + DateVisibleSQL + `)`
 
+// nextZoneSQL is the zone of the event nextSQL's date belongs to.
+const nextZoneSQL = `(SELECT e.zone FROM dates d JOIN events e ON e.id = d.event_id
+	WHERE e.group_id = g.id AND d.status = 'scheduled' AND d.starts_at > ?3 AND ` + DateVisibleSQL + `
+	ORDER BY d.starts_at, d.id LIMIT 1)`
+
 // byNext sorts a list by next meeting, groups with none last (DEC-94).
 const byNext = ` ORDER BY next IS NULL, next, g.name COLLATE NOCASE, g.id`
 
@@ -152,7 +158,7 @@ func Directory(ctx context.Context, q db.Querier, v Viewer, f Find, now time.Tim
 		(SELECT count(*) FROM active_memberships am WHERE am.group_id = g.id),
 		EXISTS (SELECT 1 FROM active_memberships am WHERE am.group_id = g.id AND am.person_id = ?1),
 		EXISTS (SELECT 1 FROM active_memberships am WHERE am.group_id = g.id AND am.person_id = ?1 AND am.role = 'leader'),
-		`+nextSQL+` AS next
+		`+nextSQL+` AS next, coalesce(`+nextZoneSQL+`, '')
 		FROM groups g WHERE `+visibleSQL+`
 		AND (?4 = '' OR g.name LIKE ?4 ESCAPE '\' OR g.about LIKE ?4 ESCAPE '\')
 		AND (?5 = '' OR EXISTS (SELECT 1 FROM dates d JOIN events e ON e.id = d.event_id, json_each(?5) w
@@ -172,7 +178,7 @@ func listed(ctx context.Context, q db.Querier, query string, args ...any) ([]Lis
 		var l Listed
 		var next sql.NullInt64
 		if err := rows.Scan(&l.ID, &l.UID, &l.Name, &l.About, &l.Visibility, &l.Status, &l.Version, &l.DecisionReason, &l.DecisionNote,
-			&l.Members, &l.Mine, &l.Leads, &next); err != nil {
+			&l.Members, &l.Mine, &l.Leads, &next, &l.NextZone); err != nil {
 			return nil, err
 		}
 		if next.Valid {
@@ -191,7 +197,7 @@ func Mine(ctx context.Context, q db.Querier, v Viewer, now time.Time) ([]Listed,
 		admin = 1
 	}
 	return listed(ctx, q, `SELECT `+columns+`,
-		(SELECT count(*) FROM active_memberships x WHERE x.group_id = g.id), 1, am.role = 'leader', `+nextSQL+` AS next
+		(SELECT count(*) FROM active_memberships x WHERE x.group_id = g.id), 1, am.role = 'leader', `+nextSQL+` AS next, coalesce(`+nextZoneSQL+`, '')
 		FROM active_memberships am JOIN groups g ON g.id = am.group_id
 		WHERE am.person_id = ?1 AND (g.status = 'active' OR am.role = 'leader')`+byNext, v.ID, admin, now.Unix())
 }
@@ -219,7 +225,7 @@ const seenByVisibility = `e.visibility = 'public' OR d.visibility = 'public'
 // Waiting lists the groups waiting for an admin, oldest first, with who
 // asked.
 func Waiting(ctx context.Context, q db.Querier) ([]Listed, error) {
-	return listed(ctx, q, `SELECT `+columns+`, 0, 0, 0, NULL FROM groups g WHERE g.status = 'pending' ORDER BY g.created_at, g.id`)
+	return listed(ctx, q, `SELECT `+columns+`, 0, 0, 0, NULL, '' FROM groups g WHERE g.status = 'pending' ORDER BY g.created_at, g.id`)
 }
 
 // Leaders are the names of a group's active leaders, by name.

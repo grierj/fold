@@ -12,8 +12,10 @@
   </form>
   {{if .Data.Groups}}
   <ul class="divide-y divide-border border-y border-border">{{range .Data.Groups}}{{template "grouprow" .}}{{end}}</ul>
+  {{else if and .Data.Filtered .Data.Query}}
+  {{template "empty" (empty "not-found.svg" "No groups match that search on those days and times" "Try fewer words, or clear the day and time to search every group." (linkbutton "secondary" "Clear filters" .Data.Clear))}}
   {{else if .Data.Filtered}}
-  {{template "empty" (empty "not-found.svg" "No groups meet then" "Over the next eight weeks, nothing you can see meets at that day or time. Try another." (linkbutton "secondary" "Show every group" "/groups"))}}
+  {{template "empty" (empty "not-found.svg" "No groups meet then" "Over the next eight weeks, nothing you can see meets at that day or time. Try another." (linkbutton "secondary" "Clear filters" .Data.Clear))}}
   {{else if .Data.Query}}
   {{template "empty" (empty "not-found.svg" "No groups match" "Try fewer words, or a different word." (linkbutton "secondary" "Show every group" "/groups"))}}
   {{else if .Viewer}}

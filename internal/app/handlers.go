@@ -87,12 +87,12 @@ func (a *App) home(w http.ResponseWriter, r *http.Request) {
 	for _, c := range coming {
 		_, own := policy.InScope(f.session != nil, c.Facts(kind), now)
 		row := calendarRow(c, own, loc, now)
-		row.When = span(c.StartsAt, c.EndsAt, loc, now)
+		row.When = span(c.StartsAt, c.EndsAt, loc, now) + zoneNote(c.Zone, loc)
 		rows = append(rows, row)
 	}
 	var meeting []soonGroup
 	for _, g := range soon {
-		meeting = append(meeting, soonGroup{UID: g.UID, Name: g.Name, Next: meetingWords(g.Next, loc, now)})
+		meeting = append(meeting, soonGroup{UID: g.UID, Name: g.Name, Next: meetingWords(g.Next, g.Zone, loc, now)})
 	}
 	f.Data = struct {
 		Status   string

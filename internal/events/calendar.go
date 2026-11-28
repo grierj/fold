@@ -158,6 +158,7 @@ func Calendar(ctx context.Context, q db.Querier, s Scope, from, to, since, now t
 type SoonGroup struct {
 	UID, Name string
 	Next      time.Time
+	Zone      string // the next date's event's zone
 }
 
 // JoinableSoon lists up to limit active groups the viewer may see and join
@@ -171,7 +172,9 @@ func JoinableSoon(ctx context.Context, q db.Querier, v Viewer, now time.Time, li
 	if v.Admin {
 		admin = 1
 	}
-	rows, err := q.QueryContext(ctx, `SELECT g.uid, g.name, min(d.starts_at)
+	// SQLite takes a bare column from the row min() picks, so e.zone is the
+	// next date's.
+	rows, err := q.QueryContext(ctx, `SELECT g.uid, g.name, min(d.starts_at), e.zone
 		FROM dates d JOIN events e ON e.id = d.event_id JOIN groups g ON g.id = e.group_id
 		WHERE `+visibleSQL+` AND d.status = 'scheduled' AND d.starts_at > ?3 AND ?1 > 0
 		AND g.status = 'active' AND (g.visibility IN ('public', 'church') OR ?2 = 1)
@@ -185,7 +188,7 @@ func JoinableSoon(ctx context.Context, q db.Querier, v Viewer, now time.Time, li
 	for rows.Next() {
 		var s SoonGroup
 		var next int64
-		if err := rows.Scan(&s.UID, &s.Name, &next); err != nil {
+		if err := rows.Scan(&s.UID, &s.Name, &next, &s.Zone); err != nil {
 			return nil, err
 		}
 		s.Next = time.Unix(next, 0).UTC()
