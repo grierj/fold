@@ -659,8 +659,9 @@ func TestAnswers(t *testing.T) {
 	}
 }
 
-// DEC-74, HAZARDS 7: leaving takes back standing answers on dates to come,
-// never past ones or a Can't go; joining again, the person answers again.
+// DEC-74, HAZARDS 7: leaving takes back every answer on dates to come,
+// Can't go included, never past ones; joining again, the person answers
+// again.
 func TestLeavingTakesBackAnswers(t *testing.T) {
 	env := setup(t)
 	addGroup(t, env, 1, policy.GroupActive, policy.Public)
@@ -673,7 +674,7 @@ func TestLeavingTakesBackAnswers(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := answerRows(t, env, 3)
-	if got["2026-11-17"] != "going" || got["2026-12-01"] != "cancelled" || got["2026-12-08"] != "cant" {
+	if got["2026-11-17"] != "going" || got["2026-12-01"] != "cancelled" || got["2026-12-08"] != "cancelled" {
 		t.Fatalf("after leaving: %v", got)
 	}
 	if err := run(t, env, 3, groups.Join{UID: "g1"}); err != nil {

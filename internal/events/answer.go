@@ -63,6 +63,8 @@ func (c *Answer) Apply(tx *write.Tx) error {
 		if !policy.CanAnswerSeries(p, ev, g.Policy(), rel, e.Repeat != Once) {
 			return write.ErrNotAllowed
 		}
+		// Only dates on now are answered. One cancelled now and brought back
+		// later comes back unanswered, like a date added later (DEC-92).
 		from := d.StartsAt
 		if c.Scope == policy.ScopeAll {
 			from = tx.Now

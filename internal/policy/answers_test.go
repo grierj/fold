@@ -16,8 +16,9 @@ func TestAnswerMoves(t *testing.T) {
 		{MoveAnswer, AnswerGoing, "waiting", false},
 		{MoveLeaveGroup, AnswerGoing, AnswerCancelled, true},
 		{MoveLeaveGroup, AnswerMaybe, AnswerCancelled, true},
-		{MoveLeaveGroup, AnswerCant, AnswerCancelled, false}, // history stays
+		{MoveLeaveGroup, AnswerCant, AnswerCancelled, true},
 		{MoveLeaveGroup, AnswerNone, AnswerCancelled, false},
+		{MoveLeaveGroup, AnswerCancelled, AnswerCancelled, false},
 		{"unknown", AnswerNone, AnswerGoing, false},
 	}
 	for _, c := range cases {

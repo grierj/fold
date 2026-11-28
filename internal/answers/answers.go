@@ -55,19 +55,23 @@ func Set(tx *write.Tx, personID int64, dateIDs []int64, to string) (int, error) 
 	return int(n), nil
 }
 
-// Withdraw takes back a person's standing answers on a group's dates that
-// have not started, when they leave the group or are removed from it
-// (MoveLeaveGroup, DEC-74). Past answers are history and stay.
+// Withdraw takes back a person's answers on a group's dates that have not
+// started, when they leave the group or are removed from it
+// (MoveLeaveGroup, DEC-74). Past answers are history and stay. It also takes
+// back answers on dates cancelled for now, so bringing one back later does
+// not bring back someone who left. It returns how many dates still on it
+// took them off: the same count the leave confirmation states
+// (StandingOnGroup), whatever else it tidied.
 func Withdraw(tx *write.Tx, groupID, personID int64) (int, error) {
-	res, err := tx.Exec(`UPDATE answers SET status = 'cancelled', updated_at = ?
-		WHERE person_id = ? AND status IN (`+quoted(policy.MoveLeaveGroup.From())+`)
-		AND date_id IN (SELECT d.id FROM dates d JOIN events e ON e.id = d.event_id WHERE e.group_id = ? AND d.starts_at > ?)`,
-		tx.Now.Unix(), personID, groupID, tx.Now.Unix())
+	n, err := StandingOnGroup(tx.Context(), tx, groupID, personID, tx.Now)
 	if err != nil {
 		return 0, err
 	}
-	n, _ := res.RowsAffected()
-	return int(n), nil
+	_, err = tx.Exec(`UPDATE answers SET status = 'cancelled', updated_at = ?
+		WHERE person_id = ? AND status IN (`+quoted(policy.MoveLeaveGroup.From())+`)
+		AND date_id IN (SELECT d.id FROM dates d JOIN events e ON e.id = d.event_id WHERE e.group_id = ? AND d.starts_at > ?)`,
+		tx.Now.Unix(), personID, groupID, tx.Now.Unix())
+	return n, err
 }
 
 // Counts are a date's answers that count: active accounts' own answers.
@@ -110,12 +114,11 @@ func Mine(ctx context.Context, q db.Querier, dateID, personID int64) (string, er
 	return s, err
 }
 
-// StandingOnGroup counts a person's standing answers on a group's dates
-// that are on and have not started: the dates leaving takes them off, as
-// the leave confirmation states it (docs/HAZARDS.md section 7). Withdraw
-// also takes back answers on cancelled dates, so a restore later does not
-// bring back someone who left; those are not counted here, since the person
-// is not coming to them anyway.
+// StandingOnGroup counts a person's answers on a group's dates that are on
+// and have not started, in events not deleted: the dates leaving takes them
+// off, as the leave confirmation states it and the audit row records it
+// (docs/HAZARDS.md section 7). A member of an active group sees all of
+// these; nobody else is offered the leave confirmation.
 func StandingOnGroup(ctx context.Context, q db.Querier, groupID, personID int64, now time.Time) (int, error) {
 	var n int
 	err := q.QueryRowContext(ctx, `SELECT count(*) FROM answers a JOIN dates d ON d.id = a.date_id JOIN events e ON e.id = d.event_id

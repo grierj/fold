@@ -3,6 +3,7 @@ package app_test
 import (
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -28,7 +29,7 @@ func TestAnswerADate(t *testing.T) {
 	mia := s.member("Mia Member", "mia@example.org")
 	mia.post("/groups/"+group, "/groups/"+group+"/join", nil)
 	r := answer(mia, date, "going", "date")
-	if r.header.Get("Location") != "/dates/"+date+"?done=going&n=1" {
+	if r.header.Get("Location") != "/dates/"+date+"?done=going" {
 		t.Fatalf("answer: %d %s", r.status, r.header.Get("Location"))
 	}
 	page := mia.get(r.header.Get("Location"))
@@ -52,12 +53,18 @@ func TestAnswerADate(t *testing.T) {
 	}
 	// This date and the ones after it, in one write.
 	r = answer(mia, date, "going", "following")
-	if !strings.Contains(r.header.Get("Location"), "done=going&n=") {
+	if r.header.Get("Location") != "/dates/"+date+"?done=going" {
 		t.Fatalf("series: %s", r.header.Get("Location"))
 	}
 	n := s.Count(t, `SELECT count(*) FROM answers WHERE status = 'going'`)
-	if n < 70 || !strings.Contains(mia.get(r.header.Get("Location")).body, "You&#39;re going to ") {
+	if n < 70 || !strings.Contains(mia.get(r.header.Get("Location")).body, "You&#39;re going. See you there!") {
 		t.Fatalf("%d dates answered", n)
+	}
+	// With htmx the line counts the dates the answer itself wrote.
+	tok = csrfPattern.FindStringSubmatch(page.body)[1]
+	h = mia.postRaw("/dates/"+date+"/answer", url.Values{"answer": {"maybe"}, "scope": {"following"}, "csrf": {tok}}, http.Header{"Hx-Request": {"true"}})
+	if !strings.Contains(h.body, "You said maybe to "+strconv.Itoa(n)+" dates.") {
+		t.Fatalf("the htmx line doesn't count the dates written: %s", between(h.body, "status-line", "</p>"))
 	}
 	// Can't go for every date asks first, with the count.
 	r = answer(mia, date, "cant", "all")
@@ -204,7 +211,7 @@ func TestLeavingAndDisabledAnswers(t *testing.T) {
 	mia := s.member("Mia Member", "mia@example.org")
 	mia.post("/groups/"+group, "/groups/"+group+"/join", nil)
 	answer(mia, date, "going", "date")
-	if r := mia.get("/groups/" + group); !strings.Contains(r.body, "You said you&#39;d come to 1 date of this group") {
+	if r := mia.get("/groups/" + group); !strings.Contains(r.body, "You&#39;ve answered 1 date of this group") {
 		t.Fatal("leaving doesn't say what it takes the person off")
 	}
 	s.Writer.Exec(`UPDATE people SET status = 'disabled' WHERE email = 'mia@example.org'`)
@@ -234,9 +241,28 @@ func TestAnswerStatusComesFromTheAnswer(t *testing.T) {
 	uid := s.schedule(admin, group, eventForm("Study", "2026-12-01", "19:00", "weekly"))
 	date := firstDate(admin.get("/events/" + uid).body)
 	for _, b := range []*browser{s.browser(), admin} {
-		if r := b.get("/dates/" + date + "?done=going&n=50"); strings.Contains(r.body, "You&#39;re going") {
-			t.Fatal("a crafted address put words in the status line")
+		// "restored" on a date that is on matches what is stored, as the
+		// line is defined: only a cancelled date refuses it (below).
+		for _, crafted := range []string{"?done=going", "?done=going&n=50", "?done=cancelled", "?done=opened"} {
+			r := b.get("/dates/" + date + crafted)
+			for _, line := range []string{"You&#39;re going", "This date is cancelled.", "This date is back on.", "Saved.", "50 dates"} {
+				if strings.Contains(r.body, line) {
+					t.Errorf("%s put %q in the status line", crafted, line)
+				}
+			}
 		}
+	}
+	// Each line shows when what is stored bears it out.
+	admin.post("/dates/"+date, "/dates/"+date+"/cancel", nil)
+	if r := admin.get("/dates/" + date + "?done=cancelled"); !strings.Contains(r.body, "This date is cancelled.") {
+		t.Error("the cancelled line is missing")
+	}
+	if r := admin.get("/dates/" + date + "?done=restored"); strings.Contains(r.body, "This date is back on.") {
+		t.Error("a cancelled date says it is back on")
+	}
+	admin.post("/dates/"+date, "/dates/"+date+"/restore", nil)
+	if r := admin.get("/dates/" + date + "?done=restored"); !strings.Contains(r.body, "This date is back on.") {
+		t.Error("the restored line is missing")
 	}
 }
 
@@ -298,7 +324,56 @@ func TestLeaveCountsOnlyDatesStillOn(t *testing.T) {
 	moved := editForm(eventForm("Study", "2026-12-02", "19:00", "weekly"), "1")
 	moved.Set("confirmed", "yes")
 	admin.post(edit, edit, moved)
-	if r := mia.get("/groups/" + group); strings.Contains(r.body, "You said you&#39;d come to") {
+	if r := mia.get("/groups/" + group); strings.Contains(r.body, "You&#39;ve answered") {
 		t.Fatalf("the leave dialog counts dates that are no longer on: %s", between(r.body, "leave-group", "</dialog>"))
+	}
+}
+
+// DEC-74, R40 wording: leaving and removal take every answer on dates to
+// come off, Can't go included; the confirmation's count and the audit row
+// count the same dates; a date restored later comes back without the
+// person who left; joining again, they answer again.
+func TestLeaveAndRemoveTakeEveryAnswer(t *testing.T) {
+	s := newSite(t)
+	admin := s.finishSetup()
+	group := s.start(admin, "Study", "public")
+	uid := s.schedule(admin, group, eventForm("Study", "2026-12-01", "19:00", "weekly"))
+	body := admin.get("/events/" + uid).body
+	first := firstDate(body)
+	second := firstDate(strings.Replace(body, `href="/dates/`+first, "", 1))
+	mia := s.member("Mia Member", "mia@example.org")
+	mia.post("/groups/"+group, "/groups/"+group+"/join", nil)
+	answer(mia, first, "cant", "date")
+	answer(mia, second, "going", "date")
+	admin.post("/dates/"+second, "/dates/"+second+"/cancel", nil)
+	if r := mia.get("/groups/" + group); !strings.Contains(r.body, "You&#39;ve answered 1 date of this group") {
+		t.Fatalf("the leave count: %s", between(r.body, "leave-group", "</dialog>"))
+	}
+	mia.post("/groups/"+group, "/groups/"+group+"/leave", nil)
+	var details string
+	s.Writer.QueryRow(`SELECT details FROM audit_log WHERE action = 'group.leave'`).Scan(&details)
+	if !strings.Contains(details, `"answers":"1"`) {
+		t.Fatalf("the audit row counts other dates than the confirmation: %s", details)
+	}
+	if r := admin.get("/dates/" + first); strings.Contains(r.body, "Mia Member") || strings.Contains(r.body, "can&#39;t go") {
+		t.Fatal("the leaver is still listed under Can't go")
+	}
+	admin.post("/dates/"+second, "/dates/"+second+"/restore", nil)
+	if r := admin.get("/dates/" + second); strings.Contains(r.body, "Mia Member") || strings.Contains(r.body, "1 going") {
+		t.Fatal("the restored date brought the leaver back")
+	}
+	// Joining again, she answers again (DEC-86).
+	mia.post("/groups/"+group, "/groups/"+group+"/join", nil)
+	if r := answer(mia, first, "going", "date"); r.header.Get("Location") != "/dates/"+first+"?done=going" {
+		t.Fatalf("answering after rejoining: %d", r.status)
+	}
+	if r := admin.get("/dates/" + first); !strings.Contains(r.body, "Mia Member") || !strings.Contains(r.body, "1 going") {
+		t.Fatal("the answer after rejoining doesn't count")
+	}
+	// A leader's removal takes Can't go too.
+	answer(mia, second, "cant", "date")
+	admin.post("/groups/"+group+"/members", "/groups/"+group+"/members/"+personUID(s, "mia@example.org")+"/remove", nil)
+	if r := admin.get("/dates/" + second); strings.Contains(r.body, "Mia Member") || strings.Contains(r.body, "can&#39;t go") {
+		t.Fatal("the removed member is still listed under Can't go")
 	}
 }

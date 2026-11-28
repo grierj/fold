@@ -112,7 +112,9 @@ type answerConfirm struct {
 
 var answerLabels = map[string]string{policy.AnswerGoing: "Going", policy.AnswerMaybe: "Maybe", policy.AnswerCant: "Can't go"}
 
-// answerStatus is the line that stays after an answer (DEC-92).
+// answerStatus is the line that stays after an answer (DEC-92). dates is the
+// count the answer itself wrote; a redirect, which can't carry a count it
+// can vouch for, words it for one date.
 func answerStatus(answer string, dates int) string {
 	switch answer {
 	case policy.AnswerGoing:
@@ -179,18 +181,25 @@ func (a *App) getDate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	q := r.URL.Query()
-	status := dateStatuses[q.Get("done")]
-	// The line after an answer says only what the viewer's stored answer
-	// bears out; a crafted address shows nothing.
-	if done := q.Get("done"); policy.IsAnswer(done) {
-		status = ""
-		if af.mine == done {
-			n, _ := strconv.Atoi(q.Get("n"))
-			status = answerStatus(done, min(max(n, 1), events.MaxDates))
+	a.showDate(w, r, f, af, http.StatusOK, a.doneLine(f, af, r.URL.Query().Get("done")), "", nil)
+}
+
+// doneLine is the line a redirect asks for after a change. It shows only
+// when what is stored bears it out, so a crafted address says nothing that
+// isn't so.
+func (a *App) doneLine(f eventFacts, af answerFacts, done string) string {
+	switch {
+	case policy.IsAnswer(done):
+		if af.mine != done {
+			return ""
 		}
+		return answerStatus(done, 1)
+	case done == "cancelled" && !f.date.Cancelled,
+		done == "restored" && f.date.Cancelled,
+		done == "opened" && !policy.MoreOpen(f.date.Visibility, f.event.Visibility):
+		return ""
 	}
-	a.showDate(w, r, f, af, http.StatusOK, status, "", nil)
+	return dateStatuses[done]
 }
 
 // showDate renders the date page, or with block "answer" just the answer
@@ -315,7 +324,7 @@ func (a *App) postAnswer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !htmx {
-		http.Redirect(w, r, "/dates/"+f.date.UID+"?done="+c.Status+"&n="+strconv.Itoa(c.Dates), http.StatusSeeOther)
+		http.Redirect(w, r, "/dates/"+f.date.UID+"?done="+c.Status, http.StatusSeeOther)
 		return
 	}
 	again(http.StatusOK, answerStatus(c.Status, c.Dates), nil)

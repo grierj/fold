@@ -315,9 +315,9 @@ func (a *App) getGroup(w http.ResponseWriter, r *http.Request) {
 	leaveText := "You can join again any time."
 	switch {
 	case standing == 1:
-		leaveText = "You said you'd come to 1 date of this group that's still to come. Leaving takes you off it. You can join again any time."
+		leaveText = "You've answered 1 date of this group that's still to come. Leaving takes you off it. You can join again any time."
 	case standing > 1:
-		leaveText = "You said you'd come to " + strconv.Itoa(standing) + " dates of this group that are still to come. Leaving takes you off them. You can join again any time."
+		leaveText = "You've answered " + strconv.Itoa(standing) + " dates of this group that are still to come. Leaving takes you off them. You can join again any time."
 	}
 	d := struct {
 		Group                        groups.Group

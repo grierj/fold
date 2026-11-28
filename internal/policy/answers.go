@@ -32,16 +32,17 @@ const (
 	// A person's own answer, for one date or across a series.
 	MoveAnswer AnswerMove = "answer"
 	// A person leaves a group, or a leader or admin removes them: their
-	// standing answers on its dates still to come are taken back (DEC-74).
+	// answers on its dates still to come are taken back, Can't go included,
+	// so the people running it no longer see them listed (DEC-74).
 	MoveLeaveGroup AnswerMove = "leave the group"
 )
 
-// standing are the answers that still hold a place: what leaving takes back.
-var standing = []string{AnswerGoing, AnswerMaybe}
+// given are a person's own answers: what leaving takes back.
+var given = []string{AnswerGoing, AnswerMaybe, AnswerCant}
 
 var answerMoves = map[AnswerMove]struct{ from, to []string }{
 	MoveAnswer:     {from: []string{AnswerNone, AnswerGoing, AnswerMaybe, AnswerCant, AnswerCancelled}, to: []string{AnswerGoing, AnswerMaybe, AnswerCant}},
-	MoveLeaveGroup: {from: standing, to: []string{AnswerCancelled}},
+	MoveLeaveGroup: {from: given, to: []string{AnswerCancelled}},
 }
 
 // From is the states a move starts from.
