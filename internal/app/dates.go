@@ -314,10 +314,7 @@ func (a *App) showDate(w http.ResponseWriter, r *http.Request, f eventFacts, af 
 	now := a.clock.Now()
 	loc := viewerZone(f.pageFacts)
 	start, end := f.date.StartsAt.In(loc), f.date.EndsAt.In(loc)
-	when := clockSpan(start, end)
-	if start.YearDay() != end.YearDay() || start.Year() != end.Year() {
-		when = clockWords(start) + " to " + dayWords(end, now) + ", " + clockWords(end)
-	}
+	when := timeSpan(start, end, now)
 	moved := ""
 	if f.date.Moved {
 		if planned, err := time.Parse(events.WallLayout, f.date.Day+f.event.StartsLocal[10:]); err == nil {
@@ -398,7 +395,8 @@ func (a *App) getDateICS(w http.ResponseWriter, r *http.Request) {
 	if f.seesEvent() {
 		e.Description = f.event.About
 	}
-	if f.event.VideoURL != "" && policy.CanSeeVideo(f.canManage(), mine) {
+	// A cancelled date's page shows no answers, so no video link either.
+	if f.event.VideoURL != "" && !f.date.Cancelled && policy.CanSeeVideo(f.canManage(), mine) {
 		e.Video = f.event.VideoURL
 	}
 	switch {

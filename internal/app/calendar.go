@@ -293,7 +293,7 @@ func calendarView(ask calAsk, kind int, list []events.CalDate, options []groups.
 			d.Empty = &Empty{Title: "Nothing this week", Text: "Dates show here as they are scheduled.", Action: &d.Next}
 		}
 	case "month":
-		d.Heading = ask.day.Format("January 2006")
+		d.Heading = monthWords(ask.day)
 		start := time.Date(ask.day.Year(), ask.day.Month(), 1, 0, 0, 0, 0, loc)
 		d.Prev, d.Next = move("Previous", "Previous month", start.AddDate(0, -1, 0)), move("Next", "Next month", start.AddDate(0, 1, 0))
 		for w := range 6 {
@@ -324,11 +324,7 @@ func calendarView(ask calAsk, kind int, list []events.CalDate, options []groups.
 
 func calendarRow(c events.CalDate, own bool, loc *time.Location, now time.Time) calRow {
 	start, end := c.StartsAt.In(loc), c.EndsAt.In(loc)
-	when := clockSpan(start, end)
-	if start.Format(events.DayLayout) != end.Format(events.DayLayout) {
-		when = clockWords(start) + " to " + dayWords(end, now) + ", " + clockWords(end)
-	}
-	row := calRow{UID: c.UID, Title: c.Title, When: when, Starts: clockWords(start), Place: c.Place, Group: c.GroupName, ChurchWide: c.ChurchWide, Dot: "other"}
+	row := calRow{UID: c.UID, Title: c.Title, When: timeSpan(start, end, now), Starts: clockWords(start), Place: c.Place, Group: c.GroupName, ChurchWide: c.ChurchWide, Dot: "other"}
 	if !own {
 		return row
 	}

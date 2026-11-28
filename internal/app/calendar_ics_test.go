@@ -85,13 +85,22 @@ func TestAddToCalendarOpenedDate(t *testing.T) {
 	if r.status != http.StatusOK || strings.Contains(r.body, "Bring a Bible") || strings.Contains(r.body, "Elders") || strings.Contains(r.body, "RRULE") {
 		t.Fatalf("an opened date's file: %d\n%s", r.status, r.body)
 	}
+	if _, err := s.Writer.Exec(`UPDATE events SET video_url = 'https://meet.example.org/prayer'`); err != nil {
+		t.Fatal(err)
+	}
+	if r := admin.get("/dates/" + date + "/calendar.ics"); !strings.Contains(unfold(r.body), "meet.example.org") {
+		t.Fatal("the leader's file lacks the video link")
+	}
 	cancel := "/dates/" + date + "/cancel"
 	admin.post("/dates/"+date, cancel, nil)
 	if r := s.browser().get("/dates/" + date + "/calendar.ics"); !strings.Contains(r.body, "STATUS:CANCELLED") {
 		t.Fatalf("a cancelled date's file:\n%s", r.body)
 	}
-	if r := admin.get("/dates/" + date); strings.Contains(r.body, "/calendar.ics") {
-		t.Fatal("a cancelled date offers Add to calendar")
+	if r := admin.get("/dates/" + date + "/calendar.ics"); strings.Contains(unfold(r.body), "meet.example.org") {
+		t.Fatal("a cancelled date's file gives the video link")
+	}
+	if r := admin.get("/dates/" + date); strings.Contains(r.body, "/calendar.ics") || !strings.Contains(r.body, `id="share-link"`) {
+		t.Fatal("a cancelled date offers Add to calendar, or no longer offers its link")
 	}
 }
 

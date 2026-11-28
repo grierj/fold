@@ -20,11 +20,11 @@
   </section>
   {{template "place" (dict "Place" .Data.Event.Place "Maps" .Data.Maps)}}
   {{if not .Data.Cancelled}}{{template "answer" .}}{{end}}
-  {{if not .Data.Cancelled}}<section class="section mt-6" aria-labelledby="share-h">
-    <h2 id="share-h" class="text-lg font-bold">Save the date</h2>
-    <p class="mt-3">{{template "linkbutton" (linkbutton "secondary" "Add to calendar" (print "/dates/" .Data.UID "/calendar.ics"))}}</p>
+  <section class="section mt-6" aria-labelledby="share-h">
+    <h2 id="share-h" class="text-lg font-bold">{{if .Data.Cancelled}}Share{{else}}Save the date{{end}}</h2>
+    {{if not .Data.Cancelled}}<p class="mt-3">{{template "linkbutton" (linkbutton "secondary" "Add to calendar" (print "/dates/" .Data.UID "/calendar.ics"))}}</p>{{end}}
     <div class="mt-4">{{template "share" .Data.Share}}</div>
-  </section>{{end}}
+  </section>
   {{if .Data.SeesEvent}}<p class="section mt-6">{{template "linkbutton" (linkbutton "secondary" "About this event and its other dates" (print "/events/" .Data.Event.UID))}}</p>{{end}}
   {{if or .Data.CanCancel .Data.CanRestore .Data.CanOpen}}
   <details class="section mt-10">
