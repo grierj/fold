@@ -22,6 +22,7 @@ type Button struct {
 
 type LinkButton struct {
 	Kind, Label, Href string
+	Name              string // the accessible name, when the label alone is not enough; it starts with the label
 	Wide              bool
 }
 
@@ -75,6 +76,18 @@ type Segment struct {
 type SegmentOption struct {
 	Label, Value      string
 	Pressed, Disabled bool
+}
+
+// Pick is a joined set of links, one of them current: a choice that is a
+// page of its own, such as the calendar's view, so it works as a plain GET.
+type Pick struct {
+	Label   string
+	Options []PickOption
+}
+
+type PickOption struct {
+	Label, Href string
+	Current     bool
 }
 
 type Menu struct {

@@ -26,6 +26,8 @@ func (a *App) routes(mux *http.ServeMux) {
 	mux.Handle("GET /request", http.HandlerFunc(a.getRequest))
 	mux.Handle("POST /request", http.HandlerFunc(a.postRequest))
 
+	mux.Handle("GET /calendar", http.HandlerFunc(a.getCalendar))
+
 	mux.Handle("GET /notices", http.HandlerFunc(a.getNotices))
 	mux.Handle("POST /notices/{id}/open", http.HandlerFunc(a.postNoticeOpen))
 	mux.Handle("POST /notices/read", http.HandlerFunc(a.postNoticesRead))

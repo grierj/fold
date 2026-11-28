@@ -184,3 +184,63 @@ func TestCalendarLimitsAfterScope(t *testing.T) {
 		t.Fatalf("a guest's first date: %v %+v", err, list)
 	}
 }
+
+// Home's groups meeting soon are the groups policy.CanJoinGroup lets the
+// viewer join and they are not in, each by its next date they may see: a
+// hidden earlier date neither lists a group nor gives its time.
+func TestJoinableSoonMatchesPolicy(t *testing.T) {
+	env := setup(t)
+	ctx := context.Background()
+	type made struct {
+		uid string
+		gid int64
+		g   policy.Group
+	}
+	var all []made
+	n := 0
+	for _, status := range []string{policy.GroupPending, policy.GroupActive, policy.GroupArchived} {
+		for _, vis := range []string{policy.Public, policy.Church, policy.InviteOnly} {
+			n++
+			uid := addGroup(t, env, n, status, vis)
+			all = append(all, made{uid, int64(n), policy.Group{Status: status, Visibility: vis}})
+			// A hidden date first, then one its group's visibility shows.
+			for i, ev := range []string{policy.InviteOnly, vis} {
+				res, err := env.Writer.Exec(`INSERT INTO events (uid, group_id, title, visibility, zone, starts_local, minutes, repeat, created_at, updated_at)
+					VALUES (?, ?, 'x', ?, 'America/Boise', '2026-12-01T19:00', 60, 'once', 0, 0)`, fmt.Sprintf("e%d-%d", n, i), n, ev)
+				if err != nil {
+					t.Fatal(err)
+				}
+				eid, _ := res.LastInsertId()
+				start := testenv.Start.Add(time.Duration(n*10+i) * time.Hour)
+				exec(t, env, `INSERT INTO dates (uid, event_id, day, starts_at, ends_at, starts_local) VALUES (?, ?, '2026-12-01', ?, ?, '2026-12-01T19:00')`,
+					fmt.Sprintf("d%d-%d", n, i), eid, start.Unix(), start.Add(time.Hour).Unix())
+			}
+		}
+	}
+	for viewer := 1; viewer <= 6; viewer++ {
+		p := &policy.Person{ID: int64(viewer), Admin: viewer == 1}
+		list, err := events.JoinableSoon(ctx, env.Writer, events.Viewer{ID: int64(viewer), Admin: viewer == 1}, testenv.Start, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]time.Time{}
+		for _, s := range list {
+			got[s.UID] = s.Next
+		}
+		for i, m := range all {
+			r, _ := groups.RelOf(ctx, env.Writer, m.gid, int64(viewer))
+			want := policy.CanJoinGroup(p, m.g, r) && !r.Member
+			next, listed := got[m.uid]
+			if listed != want {
+				t.Errorf("viewer %d, group %+v %+v: listed %v, policy %v", viewer, m.g, r, listed, want)
+			}
+			seesHidden := viewer == 1
+			if first := testenv.Start.Add(time.Duration((i+1)*10) * time.Hour); listed && !seesHidden && !next.Equal(first.Add(time.Hour)) {
+				t.Errorf("viewer %d, group %+v: next %v, the hidden date's time", viewer, m.g, next)
+			}
+		}
+	}
+	if list, _ := events.JoinableSoon(ctx, env.Writer, events.Viewer{}, testenv.Start, 100); len(list) != 0 {
+		t.Fatalf("signed out: %+v", list)
+	}
+}

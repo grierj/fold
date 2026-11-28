@@ -171,3 +171,9 @@ func (s *site) finishSetup() *browser {
 	}
 	return b
 }
+
+// greeted reports whether a home page greets someone by name (DEC-94),
+// whatever the time of day.
+func greeted(body, name string) bool {
+	return regexp.MustCompile(`Good (morning|afternoon|evening), ` + regexp.QuoteMeta(name)).MatchString(body)
+}

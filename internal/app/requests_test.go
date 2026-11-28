@@ -57,7 +57,7 @@ func TestAccountRequestApproved(t *testing.T) {
 	if r := visitor.get("/l/" + tok); r.status != http.StatusSeeOther {
 		t.Fatalf("approval link: %d", r.status)
 	}
-	if r := visitor.get("/"); !strings.Contains(r.body, "Welcome, Sam Member") {
+	if r := visitor.get("/"); !greeted(r.body, "Sam Member") {
 		t.Fatal("not signed in after approval")
 	}
 	// The admin's notice now reads as approved, worded when read.

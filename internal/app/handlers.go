@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"net/http"
 	"strings"
+	"time"
 
 	"fold/internal/accounts"
 	"fold/internal/events"
@@ -17,15 +18,18 @@ import (
 	"fold/web"
 )
 
-// home is the signed-in home page, or the church's front page. Before setup
-// it sends the visitor to setup.
-// home greets a signed-in person with their groups (DEC-94 begins here;
-// what is coming up arrives with events), and shows a visitor the church's
-// public groups.
+// home greets a signed-in person and leads with what is coming up for them
+// (DEC-94): their next dates from the calendar's Just mine, and their
+// groups, or a few groups meeting soon when they are in none. A visitor
+// sees the church's public events and groups; a guest, their RSVPs. Before
+// setup it sends the visitor to setup.
 func (a *App) home(w http.ResponseWriter, r *http.Request) {
+	now := a.clock.Now()
 	var f pageFacts
 	var list []groups.Listed
 	var rsvps []events.Listed
+	var coming []events.CalDate
+	var soon []events.SoonGroup
 	err := a.reader.Read(r.Context(), func(q *sql.Tx) error {
 		var err error
 		if f, err = a.load(r.Context(), r, q); err != nil {
@@ -34,15 +38,29 @@ func (a *App) home(w http.ResponseWriter, r *http.Request) {
 		if f.guest != nil {
 			// Read as a signed-out viewer: a date since made private drops
 			// out of a guest's list (R15).
-			if rsvps, err = events.Upcoming(r.Context(), q, events.Viewer{}, events.Filter{Answerer: f.guest.Person.ID}, a.clock.Now(), 50); err != nil {
+			if rsvps, err = events.Upcoming(r.Context(), q, events.Viewer{}, events.Filter{Answerer: f.guest.Person.ID}, now, 50); err != nil {
 				return err
 			}
 		}
-		if f.session != nil {
-			list, err = groups.Mine(r.Context(), q, f.session.Person.ID)
-		} else {
-			list, err = groups.Directory(r.Context(), q, groups.Viewer{}, "", 12)
+		if f.guest == nil {
+			s := events.Scope{Viewer: listViewer(f), JustMine: f.session != nil}
+			if f.session != nil {
+				s.Answerer = f.session.Person.ID
+			}
+			// A date lasts at most a week, so one that began a week ago may
+			// still be on.
+			if coming, err = events.Calendar(r.Context(), q, s, now.Add(-events.MaxMinutes*time.Minute), now.AddDate(1, 0, 0), now, now, 4); err != nil {
+				return err
+			}
 		}
+		if f.session == nil {
+			list, err = groups.Directory(r.Context(), q, groups.Viewer{}, "", 12)
+			return err
+		}
+		if list, err = groups.Mine(r.Context(), q, f.session.Person.ID); err != nil || len(list) > 0 {
+			return err
+		}
+		soon, err = events.JoinableSoon(r.Context(), q, listViewer(f), now, 3)
 		return err
 	})
 	if err != nil {
@@ -60,13 +78,47 @@ func (a *App) home(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("done") == "event-deleted" && f.Viewer != nil {
 		status = "The event is deleted."
 	}
+	loc := viewerZone(f)
+	kind := policy.ViewerSignedOut
+	if f.session != nil {
+		kind = policy.ViewerMember
+	}
+	rows := make([]calRow, 0, len(coming))
+	for _, c := range coming {
+		_, own := policy.InScope(f.session != nil, c.Facts(kind), now)
+		row := calendarRow(c, own, loc, now)
+		row.When = span(c.StartsAt, c.EndsAt, loc, now)
+		rows = append(rows, row)
+	}
+	var meeting []soonGroup
+	for _, g := range soon {
+		meeting = append(meeting, soonGroup{UID: g.UID, Name: g.Name, Next: dayWords(g.Next.In(loc), now) + ", " + clockWords(g.Next.In(loc))})
+	}
 	f.Data = struct {
-		Status string
-		Groups []groups.Listed
-		Guest  bool
-		RSVPs  []dateItem
-	}{status, list, f.guest != nil, dateItems(rsvps, churchZone(f), a.clock.Now(), true)}
+		Status   string
+		Greeting string
+		Groups   []groups.Listed
+		Guest    bool
+		RSVPs    []dateItem
+		Coming   []calRow
+		Soon     []soonGroup
+	}{status, greeting(now.In(loc)), list, f.guest != nil, dateItems(rsvps, churchZone(f), now, true), rows, meeting}
 	a.render(w, r, http.StatusOK, "home", "", f.page)
+}
+
+// soonGroup is a group meeting soon that a person in no group may join.
+type soonGroup struct{ UID, Name, Next string }
+
+// greeting is "Good morning" before noon, "Good afternoon" before 5 pm,
+// and "Good evening" after, on the viewer's clock.
+func greeting(t time.Time) string {
+	switch {
+	case t.Hour() < 12:
+		return "Good morning"
+	case t.Hour() < 17:
+		return "Good afternoon"
+	}
+	return "Good evening"
 }
 
 func (a *App) signinForm(email, problem, status string) any {

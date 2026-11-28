@@ -12,3 +12,13 @@
   <p class="mt-1 wrap-anywhere">{{.Place}}</p>
   <a class="text-link" href="{{.Maps}}" rel="noopener noreferrer">Open in maps</a>
 </section>{{end}}{{end}}
+
+{{/* calrow: one date on the calendar, the whole row a link to its page. It
+     carries the viewer's own answer and nothing about anyone else's
+     (DEC-64, DEC-71); the answer sits below the time. */}}
+{{define "calrow"}}<a class="cal-row{{with .Mark}} cal-{{.}}{{end}}" href="/dates/{{.UID}}">
+  <span class="cal-row-title">{{.Title}}</span>
+  <span class="block text-sm text-text-muted">{{.When}}</span>
+  {{with .Label}}<span class="cal-label">{{if eq $.Mark "going"}}<span aria-hidden="true">✓ </span>{{end}}{{.}}</span>{{end}}
+  {{if or .Place .Group .ChurchWide}}<span class="block text-sm text-text-muted wrap-anywhere">{{.Place}}{{if and .Place (or .Group .ChurchWide)}} · {{end}}{{if .Group}}{{.Group}}{{else if .ChurchWide}}Church-wide{{end}}</span>{{end}}
+</a>{{end}}

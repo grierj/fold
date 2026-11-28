@@ -126,3 +126,43 @@ func Calendar(ctx context.Context, q db.Querier, s Scope, from, to, since, now t
 	}
 	return out, rows.Err()
 }
+
+// SoonGroup is a group someone might join, with its next date they may see.
+type SoonGroup struct {
+	UID, Name string
+	Next      time.Time
+}
+
+// JoinableSoon lists up to limit active groups the viewer may see and join
+// and is not in, soonest next date first, for Home when they are in no group
+// (DEC-94). The next date is the soonest the viewer may see, so it reveals
+// no hidden date's time (docs/HAZARDS.md section 2, #359). Joining follows
+// policy.CanJoinGroup: not invite-only unless an admin, and not someone a
+// leader removed; the test holds them together.
+func JoinableSoon(ctx context.Context, q db.Querier, v Viewer, now time.Time, limit int) ([]SoonGroup, error) {
+	admin := 0
+	if v.Admin {
+		admin = 1
+	}
+	rows, err := q.QueryContext(ctx, `SELECT g.uid, g.name, min(d.starts_at)
+		FROM dates d JOIN events e ON e.id = d.event_id JOIN groups g ON g.id = e.group_id
+		WHERE `+visibleSQL+` AND d.status = 'scheduled' AND d.starts_at > ?3 AND ?1 > 0
+		AND g.status = 'active' AND (g.visibility IN ('public', 'church') OR ?2 = 1)
+		AND NOT EXISTS (SELECT 1 FROM memberships m WHERE m.group_id = g.id AND m.person_id = ?1 AND m.state IN ('active', 'removed'))
+		GROUP BY g.id ORDER BY min(d.starts_at), g.id LIMIT `+strconv.Itoa(limit), v.ID, admin, now.Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SoonGroup
+	for rows.Next() {
+		var s SoonGroup
+		var next int64
+		if err := rows.Scan(&s.UID, &s.Name, &next); err != nil {
+			return nil, err
+		}
+		s.Next = time.Unix(next, 0).UTC()
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}

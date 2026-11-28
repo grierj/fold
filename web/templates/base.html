@@ -27,6 +27,7 @@
     </a>
     {{if and .Viewer .Viewer.Guest}}
     <nav aria-label="Main" class="site-nav">
+      <a class="text-link px-2" href="/calendar">Calendar</a>
       <a class="text-link px-2" href="/groups">Groups</a>
       <a class="text-link px-2" href="/notices">Notices{{if .Unread}} <span class="badge">{{.Unread}}<span class="sr-only"> unread</span></span>{{end}}</a>
       <span class="px-2 text-sm text-text-muted">{{.Viewer.Name}}, guest</span>
@@ -34,6 +35,7 @@
     </nav>
     {{else if .Viewer}}
     <nav aria-label="Main" class="site-nav">
+      <a class="text-link px-2" href="/calendar">Calendar</a>
       <a class="text-link px-2" href="/groups">Groups</a>
       <a class="text-link px-2" href="/notices">Notices{{if .Unread}} <span class="badge">{{.Unread}}<span class="sr-only"> unread</span></span>{{end}}</a>
       {{if .Viewer.IsAdmin}}<a class="text-link px-2" href="/admin/requests">Admin</a>{{end}}
@@ -42,6 +44,7 @@
     </nav>
     {{else}}
     <nav aria-label="Main" class="flex flex-wrap items-center gap-2">
+      <a class="text-link px-2" href="/calendar">Calendar</a>
       <a class="text-link px-2" href="/groups">Groups</a>
       <a class="text-link px-2" href="/signin">Sign in</a>
     </nav>
@@ -55,6 +58,7 @@
 {{if .Viewer}}
 <nav aria-label="Tabs" class="tabbar">
   <a class="tab" href="/"{{if eq .Path "/"}} aria-current="page"{{end}}>Home</a>
+  <a class="tab" href="/calendar"{{if eq .Path "/calendar"}} aria-current="page"{{end}}>Calendar</a>
   <a class="tab" href="/groups"{{if or (eq .Path "/groups") (hasPrefix .Path "/groups/")}} aria-current="page"{{end}}>Groups</a>
   <a class="tab" href="/notices"{{if eq .Path "/notices"}} aria-current="page"{{end}}>Notices{{if .Unread}} <span class="badge">{{.Unread}}<span class="sr-only"> unread</span></span>{{end}}</a>
   {{if not .Viewer.Guest}}<a class="tab" href="/profile"{{if eq .Path "/profile"}} aria-current="page"{{end}}>You</a>{{end}}

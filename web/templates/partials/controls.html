@@ -20,7 +20,7 @@
 {{- with .Pressed}} aria-pressed="{{.}}"{{end}}>{{.Label}}</button>{{end}}
 
 {{/* linkbutton: a link drawn as a button, for navigation. */}}
-{{define "linkbutton"}}<a class="btn-{{.Kind}}{{if .Wide}} w-full{{end}} no-underline" href="{{.Href}}">{{.Label}}</a>{{end}}
+{{define "linkbutton"}}<a class="btn-{{.Kind}}{{if .Wide}} w-full{{end}} no-underline" href="{{.Href}}"{{with .Name}} aria-label="{{.}}"{{end}}>{{.Label}}</a>{{end}}
 
 {{/* field: label, then hint, then the control, then the error (DEC-65). */}}
 {{define "field"}}<div>
@@ -87,6 +87,11 @@
 {{define "segment"}}<div class="segment-bar" role="group" aria-label="{{.Label}}">
 {{- range .Options}}<button class="segment" type="submit" name="{{$.Name}}" value="{{.Value}}" aria-pressed="{{if .Pressed}}true{{else}}false{{end}}"{{if .Disabled}} disabled{{end}}>{{.Label}}</button>{{end -}}
 </div>{{end}}
+
+{{/* pick: a joined set of links, the current one marked; each is a page. */}}
+{{define "pick"}}<nav class="pick-bar" aria-label="{{.Label}}">
+{{- range .Options}}<a class="pick" href="{{.Href}}"{{if .Current}} aria-current="true"{{end}}>{{.Label}}</a>{{end -}}
+</nav>{{end}}
 
 {{/* menu: a "More" button opening a popover list of links or form buttons. */}}
 {{define "menu"}}<div class="relative inline-block">
