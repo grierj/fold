@@ -61,6 +61,7 @@
   <li class="inline-flex items-center gap-1.5"><span class="dot dot-cant" aria-hidden="true"></span>Can't go</li>
   <li class="inline-flex items-center gap-1.5"><span class="dot dot-other" aria-hidden="true"></span>Other dates</li>
 </ul>
+{{with .Empty}}{{template "empty" .}}{{end}}
 {{with .Picked}}<section id="picked" class="section mt-6" aria-labelledby="picked-h">
   <h3 id="picked-h" class="font-bold">{{.Label}}{{if .Today}} <span class="tag">Today</span>{{end}}</h3>
   {{if .Rows}}<ul class="mt-2 space-y-2">{{range .Rows}}<li>{{template "calrow" .}}</li>{{end}}</ul>{{else}}<p class="mt-1 text-text-muted">Nothing on this day.</p>{{end}}

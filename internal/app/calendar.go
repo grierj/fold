@@ -259,6 +259,9 @@ func calendarView(ask calAsk, kind int, list []events.CalDate, options []groups.
 	if ask.mine {
 		d.Filter.Hidden = append(d.Filter.Hidden, Hidden{"mine", "1"})
 	}
+	if ask.view == "agenda" && ask.days != agendaStep {
+		d.Filter.Hidden = append(d.Filter.Hidden, Hidden{"days", strconv.Itoa(ask.days)})
+	}
 	for _, g := range options {
 		d.Filter.Group.Options = append(d.Filter.Group.Options, Option{Value: g.UID, Label: g.Name, Selected: g.UID == ask.group})
 	}
@@ -296,6 +299,7 @@ func calendarView(ask calAsk, kind int, list []events.CalDate, options []groups.
 		d.Heading = monthWords(ask.day)
 		start := time.Date(ask.day.Year(), ask.day.Month(), 1, 0, 0, 0, 0, loc)
 		d.Prev, d.Next = move("Previous", "Previous month", start.AddDate(0, -1, 0)), move("Next", "Next month", start.AddDate(0, 1, 0))
+		empty := true
 		for w := range 6 {
 			var week []calCell
 			for i := range 7 {
@@ -310,6 +314,7 @@ func calendarView(ask calAsk, kind int, list []events.CalDate, options []groups.
 				if c.Today {
 					c.Summary += ", today"
 				}
+				empty = empty && len(c.Rows) == 0
 				week = append(week, c)
 				if c.Picked {
 					picked := c.calDay
@@ -317,6 +322,9 @@ func calendarView(ask calAsk, kind int, list []events.CalDate, options []groups.
 				}
 			}
 			d.Weeks = append(d.Weeks, week)
+		}
+		if empty {
+			d.Empty = &Empty{Title: "Nothing this month", Text: "Dates show here as they are scheduled.", Action: &d.Next}
 		}
 	}
 	return d

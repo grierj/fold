@@ -200,6 +200,12 @@ func TestCalendarURL(t *testing.T) {
 	if r := s.browser().get("/calendar?mine=1"); strings.Contains(r.body, "Just mine") || r.status != http.StatusOK {
 		t.Fatal("signed out is offered Just mine")
 	}
+	if r := admin.get("/calendar?days=90"); !strings.Contains(r.body, `name="days" value="90"`) {
+		t.Fatal("the group filter drops the agenda's length")
+	}
+	if r := admin.get("/calendar?view=month&date=2027-03-01"); !strings.Contains(r.body, "Nothing this month") {
+		t.Fatal("an empty month says nothing")
+	}
 }
 
 // DEC-94: Home greets a member by the time of day and lists their next four
