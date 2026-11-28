@@ -1,6 +1,9 @@
 package policy
 
-import "slices"
+import (
+	"slices"
+	"time"
+)
 
 // Answers to dates. Carried from Fold (internal/policy/registration_lifecycle.go,
 // CanRegisterEvent and CanSeeAttendeeNames at the pinned commit in
@@ -9,8 +12,15 @@ import "slices"
 //   - Being removed from a group takes answers back as cancelled, like
 //     leaving; there is no separate removed state, so a removed person who
 //     may still see a date may answer it again.
-//   - Guests, household people, managers adding or removing an answer, and
-//     the waitlist arrive in later milestones; their moves are not here yet.
+//   - A leader removing someone's answer takes it back as cancelled, like
+//     leaving; there is no removed state, so they may answer again while
+//     they may see the date.
+//   - Parties are one person (R37), so a waiting party always fits a free
+//     seat and nobody is skipped.
+//   - Inside the two-hour cutoff nobody moves up; Fold's notice to the
+//     leaders and their one-click promote are not built.
+//   - Guests, household people and a manager adding someone arrive in later
+//     milestones; their moves are not here yet.
 
 // Answer states.
 const (
@@ -19,6 +29,9 @@ const (
 	AnswerMaybe     = "maybe"
 	AnswerCant      = "cant"
 	AnswerCancelled = "cancelled" // taken back by the system, never chosen (DEC-54)
+	// AnswerWaiting is Going on a full date: never chosen, only given by
+	// the write that finds no seat.
+	AnswerWaiting = "waiting"
 )
 
 // IsAnswer reports whether a person may choose this answer for themselves.
@@ -35,15 +48,70 @@ const (
 	// answers on its dates still to come are taken back, Can't go included,
 	// so the people running it no longer see them listed (DEC-74).
 	MoveLeaveGroup AnswerMove = "leave the group"
+	// A seat frees and the earliest waiting person takes it (DEC-84).
+	MovePromote AnswerMove = "move up from the waitlist"
+	// Those running the event take someone off a date, or off all of its
+	// dates still to come (DEC-84, R3).
+	MoveRemove AnswerMove = "remove from a date"
+	// An account turned on again finds a date it said Going to full: that
+	// answer is dropped and the person told to ask a leader (DEC-47).
+	MoveNoRoom AnswerMove = "no room on turning back on"
 )
 
-// given are a person's own answers: what leaving takes back.
-var given = []string{AnswerGoing, AnswerMaybe, AnswerCant}
+// given are a person's answers that stand: what leaving takes back.
+var given = []string{AnswerGoing, AnswerMaybe, AnswerCant, AnswerWaiting}
 
 var answerMoves = map[AnswerMove]struct{ from, to []string }{
-	MoveAnswer:     {from: []string{AnswerNone, AnswerGoing, AnswerMaybe, AnswerCant, AnswerCancelled}, to: []string{AnswerGoing, AnswerMaybe, AnswerCant}},
+	MoveAnswer: {from: []string{AnswerNone, AnswerGoing, AnswerMaybe, AnswerCant, AnswerCancelled, AnswerWaiting},
+		to: []string{AnswerGoing, AnswerMaybe, AnswerCant, AnswerWaiting}},
 	MoveLeaveGroup: {from: given, to: []string{AnswerCancelled}},
+	MovePromote:    {from: []string{AnswerWaiting}, to: []string{AnswerGoing}},
+	MoveRemove:     {from: given, to: []string{AnswerCancelled}},
+	MoveNoRoom:     {from: []string{AnswerGoing}, to: []string{AnswerCancelled}},
 }
+
+// SignedUp are the answers whose people are told when a date goes away or
+// comes back: Going, Maybe and waiting. Can't go has nothing to lose.
+var SignedUp = []string{AnswerGoing, AnswerMaybe, AnswerWaiting}
+
+// Urgent: until email choices exist, a date going away is emailed only to
+// people who said Going or Maybe to it (R36). The bell tells everyone.
+func Urgent(answer string) bool { return answer == AnswerGoing || answer == AnswerMaybe }
+
+// Cutoff is how close to its start a date stops moving people up (Fold's
+// 5.4): a seat freed later goes to whoever says Going next.
+const Cutoff = 2 * time.Hour
+
+// CanPromote: a freed seat moves the waitlist up only on a date that is on,
+// in an event not deleted, more than Cutoff before it starts.
+func CanPromote(eventActive, cancelled bool, startsAt, now time.Time) bool {
+	return eventActive && !cancelled && now.Before(startsAt.Add(-Cutoff))
+}
+
+// HasSeat: a Going fits when the date has no limit (seats 0) or fewer than
+// seats others are going. Someone already going keeps their seat whatever
+// the limit became; the caller does not ask for them.
+func HasSeat(seats, others int) bool { return seats == 0 || others < seats }
+
+// Promote is who moves up: the earliest of queue, one per free seat. A
+// limit lowered below how many are going frees nothing; no limit takes
+// everyone waiting.
+func Promote(seats, going int, queue []int64) []int64 {
+	if seats == 0 {
+		return slices.Clone(queue)
+	}
+	free := max(seats-going, 0)
+	return slices.Clone(queue[:min(free, len(queue))])
+}
+
+// ValidSeats: a seat limit is a whole number of people, or 0 for none.
+const MaxSeats = 10000
+
+func ValidSeats(n int) bool { return n >= 0 && n <= MaxSeats }
+
+// CanRemoveAnswer: those running the event take someone off a date that
+// has not begun. A date that has begun is history.
+func CanRemoveAnswer(manages, started bool) bool { return manages && !started }
 
 // From is the states a move starts from.
 func (m AnswerMove) From() []string { return slices.Clone(answerMoves[m].from) }
