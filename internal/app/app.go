@@ -69,6 +69,7 @@ type limits struct {
 	invites       *ratelimit.Limiter // invitations sent by one person
 	invitesSite   *ratelimit.Limiter // invitations sent from the whole site
 	guests        *ratelimit.Limiter // guest RSVPs asked for from the whole site
+	manage        *ratelimit.Limiter // manage-link cancels from one client
 }
 
 type Deps struct {
@@ -107,6 +108,7 @@ func New(cfg Config, d Deps) (*App, error) {
 			invites:       ratelimit.New(c, ratelimit.Rule{N: 20, Per: 24 * time.Hour}),
 			invitesSite:   ratelimit.New(c, ratelimit.Rule{N: 100, Per: 24 * time.Hour}),
 			guests:        ratelimit.New(c, ratelimit.Rule{N: 100, Per: time.Hour}, ratelimit.Rule{N: 500, Per: 24 * time.Hour}),
+			manage:        ratelimit.New(c, ratelimit.Rule{N: 20, Per: time.Hour}),
 		}}
 	return a, nil
 }

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"fold/internal/accounts"
+	"fold/internal/events"
+	"fold/internal/groups"
 	"fold/internal/notices"
 	"fold/internal/write"
 )
@@ -177,6 +179,13 @@ func TestConfirmLink(t *testing.T) {
 	}
 	if r := other.post("/signin", "/l/"+tok, nil); !strings.Contains(r.body, "This link no longer works") {
 		t.Fatal("the link worked twice")
+	}
+	// R30: the audit rows name the date and the person by id, never what was typed.
+	if n := s.Count(t, `SELECT count(*) FROM audit_log WHERE action IN ('guest.request', 'guest.confirm')`); n != 2 {
+		t.Fatalf("%d audit rows for a request and a confirm", n)
+	}
+	if n := s.Count(t, `SELECT count(*) FROM audit_log WHERE action LIKE 'guest.%' AND (subjects || details) LIKE '%gina%'`); n != 0 {
+		t.Fatal("an audit row carries the guest's name or address")
 	}
 	s.work()
 	m, _ := s.outbox.LatestTo("gina@example.org")
@@ -364,6 +373,19 @@ func TestManageLink(t *testing.T) {
 			t.Errorf("%s answers differently from an unknown link", name)
 		}
 	}
+	// HAZARDS 2: once the event is church only, the link shows nothing of it.
+	s.Writer.Exec(`UPDATE events SET visibility = 'church'`)
+	if got := dead("/g/" + tok); got.status != unknown.status || stripTokens(got.body) != stripTokens(unknown.body) {
+		t.Error("a manage link shows a church-only date")
+	}
+	s.Writer.Exec(`UPDATE events SET visibility = 'public'`)
+	// A manage token never signs anyone in: at /l/ it is an unknown link.
+	unknownL := s.browser().get("/l/" + strings.Repeat("A", 43))
+	for _, got := range []resp{s.browser().get("/l/" + tok), s.browser().post("/signin", "/l/"+tok, nil)} {
+		if got.status != unknownL.status || stripTokens(got.body) != stripTokens(unknownL.body) || strings.Contains(got.header.Get("Set-Cookie"), "session=") {
+			t.Error("a manage token at /l/ answers differently from an unknown link, or signs in")
+		}
+	}
 	if r := stranger.post("/g/"+tok, "/g/"+tok, nil); !strings.Contains(r.body, "Your RSVP is cancelled") {
 		t.Fatalf("cancel: %s", between(r.body, "<main", "</main>"))
 	}
@@ -476,5 +498,112 @@ func TestAGuestAsksForAnAccount(t *testing.T) {
 	admin.post("/admin/requests", "/admin/requests/"+s.uidOf("hal@example.org")+"/decline", nil)
 	if s.Count(t, `SELECT count(*) FROM people p JOIN answers a ON a.person_id = p.id WHERE p.email = 'hal@example.org' AND p.status = 'guest' AND p.requested_at IS NULL`) != 1 {
 		t.Fatal("declining a guest's ask didn't leave them a guest with their answer")
+	}
+}
+
+// R15: a guest signs in by link like anyone, and lands on their RSVPs.
+func TestAGuestSignsInByLink(t *testing.T) {
+	s, _, _, date := publicDate(t, "")
+	g := s.browser()
+	g.rsvp(date, "Gina Guest", "gina@example.org")
+	s.work()
+	g.get("/l/" + s.confirmLink("gina@example.org"))
+	b := s.browser()
+	b.post("/signin", "/signin", url.Values{"email": {"gina@example.org"}})
+	s.work()
+	if r := b.get("/l/" + s.linkIn("gina@example.org")); r.header.Get("Location") != "/?welcome=1" {
+		t.Fatalf("a guest's sign-in link: %d %s", r.status, r.header.Get("Location"))
+	}
+	if r := b.get("/"); !strings.Contains(r.body, "Your RSVPs") || !strings.Contains(r.body, "Supper") {
+		t.Fatal("a signed-in guest doesn't see their RSVPs")
+	}
+}
+
+// A restore cancels links rather than deleting them: a cancelled confirm
+// link is refused and makes no person.
+func TestACancelledConfirmLinkIsRefused(t *testing.T) {
+	s, _, _, date := publicDate(t, "")
+	b := s.browser()
+	b.rsvp(date, "Gina Guest", "gina@example.org")
+	s.work()
+	tok := s.confirmLink("gina@example.org")
+	s.Writer.Exec(`UPDATE links SET cancelled_at = 1 WHERE purpose = 'guest'`)
+	if r := b.get("/l/" + tok); !strings.Contains(r.body, "This link no longer works") {
+		t.Fatal("a cancelled confirm link worked")
+	}
+	if s.Count(t, `SELECT count(*) FROM people WHERE email = 'gina@example.org'`) != 0 {
+		t.Fatal("a cancelled link made a person")
+	}
+}
+
+func sessionOf(b *browser) write.ActorRef {
+	for _, c := range b.c.Jar.Cookies(mustURL(b.s.srv.URL)) {
+		if strings.HasSuffix(c.Name, "session") {
+			return write.Session(accounts.Hash(c.Value))
+		}
+	}
+	b.s.t.Fatal("no session")
+	return write.ActorRef{}
+}
+
+// Through the executor a guest is refused what members do, and as the
+// person acted on, nothing makes a guest a member, a leader or a successor.
+func TestAGuestThroughTheExecutor(t *testing.T) {
+	s, admin, event, date := publicDate(t, "")
+	group := between(admin.get("/dates/"+date).body, `href="/groups/`, `"`)
+	g := s.browser()
+	g.rsvp(date, "Gina Guest", "gina@example.org")
+	s.work()
+	g.get("/l/" + s.confirmLink("gina@example.org"))
+	gina := s.uidOf("gina@example.org")
+	mia := s.member("Mia Member", "mia@example.org")
+	mia.post("/groups/"+group, "/groups/"+group+"/join", nil)
+	ctx, guest, boss := context.Background(), sessionOf(g), sessionOf(admin)
+	once := events.Input{Title: "x", Visibility: "public", Pattern: events.Pattern{Start: "2026-12-10T10:00", Minutes: 60, Repeat: "once"}}
+	for name, c := range map[string]write.Command{
+		"join":               groups.Join{UID: group},
+		"start a group":      &groups.Create{Name: "Mine", Visibility: "public"},
+		"church-wide event":  &events.Create{Input: once},
+		"group event":        &events.Create{GroupUID: group, Input: once},
+		"remove an answer":   &events.RemoveAnswer{DateUID: date, PersonUID: s.uidOf("mia@example.org")},
+		"delete the event":   events.Delete{UID: event},
+		"decide an account":  accounts.DecideAccount{PersonUID: gina, Approve: true},
+		"disable someone":    accounts.Disable{PersonUID: s.uidOf("mia@example.org")},
+		"invite by name":     accounts.InviteByName{GroupUID: group, PersonUID: s.uidOf("mia@example.org")},
+		"invite by email":    accounts.InviteByEmail{GroupUID: group, Name: "X", Email: "x@example.org"},
+		"add to a group":     groups.Add{GroupUID: group, PersonUID: gina},
+		"make a leader":      groups.SetRole{GroupUID: group, PersonUID: s.uidOf("mia@example.org"), Leader: true},
+		"remove from group":  groups.Remove{GroupUID: group, PersonUID: s.uidOf("mia@example.org")},
+		"answer maybe":       &events.Answer{DateUID: date, Status: "maybe", Scope: "date"},
+		"set a zone":         accounts.SetZone{Zone: "America/Boise"},
+		"hide their contact": accounts.SetContactHidden{Hidden: true},
+	} {
+		if err := s.Exec.Run(ctx, guest, c); !errors.Is(err, write.ErrNotAllowed) {
+			t.Errorf("a guest's %s: %v", name, err)
+		}
+	}
+	for name, c := range map[string]write.Command{
+		"disable a guest":       accounts.Disable{PersonUID: gina},
+		"add a guest":           groups.Add{GroupUID: group, PersonUID: gina},
+		"make a guest a leader": groups.SetRole{GroupUID: group, PersonUID: gina, Leader: true},
+		"remove a guest":        groups.Remove{GroupUID: group, PersonUID: gina},
+		"invite a guest":        accounts.InviteByName{GroupUID: group, PersonUID: gina},
+	} {
+		if err := s.Exec.Run(ctx, boss, c); !errors.Is(err, write.ErrNotAllowed) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	// A guest can't take over a group from someone turned off; an admin can.
+	mine := s.start(mia, "Mia's circle", "public")
+	admin.post("/admin/groups", "/admin/groups/"+mine+"/approve", nil)
+	miaUID := s.uidOf("mia@example.org")
+	if err := s.Exec.Run(ctx, boss, accounts.Disable{PersonUID: miaUID, Successors: map[string]string{mine: gina}}); !errors.Is(err, write.ErrNotAllowed) {
+		t.Fatalf("a guest as successor: %v", err)
+	}
+	if err := s.Exec.Run(ctx, boss, accounts.Disable{PersonUID: miaUID, Successors: map[string]string{mine: s.uidOf("pat@cloverdale.example")}}); err != nil {
+		t.Fatalf("an admin as successor: %v", err)
+	}
+	if s.Count(t, `SELECT count(*) FROM memberships m JOIN people p ON p.id = m.person_id WHERE p.uid = ?`, gina) != 0 {
+		t.Fatal("a guest got a membership")
 	}
 }

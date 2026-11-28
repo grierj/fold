@@ -7,6 +7,7 @@ import (
 
 	"fold/internal/accounts"
 	"fold/internal/events"
+	"fold/internal/httpx"
 	"fold/internal/mail"
 	"fold/internal/people"
 	"fold/internal/policy"
@@ -185,8 +186,7 @@ func (a *App) showManage(w http.ResponseWriter, r *http.Request, status string) 
 		return
 	}
 	if !m.Works {
-		f.Data = struct{ Works bool }{false}
-		a.render(w, r, http.StatusNotFound, "manage", "", f.page)
+		a.deadManage(w, r, f)
 		return
 	}
 	loc := churchZone(f)
@@ -206,9 +206,28 @@ func (a *App) showManage(w http.ResponseWriter, r *http.Request, status string) 
 	a.render(w, r, http.StatusOK, "manage", "", f.page)
 }
 
+// deadManage is the one answer for every manage link that does not work.
+func (a *App) deadManage(w http.ResponseWriter, r *http.Request, f pageFacts) {
+	f.Data = struct{ Works bool }{false}
+	a.render(w, r, http.StatusNotFound, "manage", "", f.page)
+}
+
 func (a *App) getManage(w http.ResponseWriter, r *http.Request) { a.showManage(w, r, "") }
 
 func (a *App) postManage(w http.ResponseWriter, r *http.Request) {
+	if !a.limits.manage.Allow(httpx.ClientKey(a.cfg.Proxies.ClientIP(r))) {
+		var f pageFacts
+		if err := a.reader.Read(r.Context(), func(q *sql.Tx) error {
+			var err error
+			f, err = a.load(r.Context(), r, q)
+			return err
+		}); err != nil {
+			a.serverError(w, r, err)
+			return
+		}
+		a.deadManage(w, r, f)
+		return
+	}
 	c := &accounts.CancelByManageLink{Token: r.PathValue("token")}
 	err := a.exec.Run(r.Context(), write.Anonymous(), c)
 	switch {

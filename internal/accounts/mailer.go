@@ -101,7 +101,7 @@ func (m *Mailer) SendGuestConfirm(ctx context.Context, j write.Job) error {
 			"Press the button to say you're going. Until you do, nothing is saved."},
 		Button: &mail.Button{Label: "Confirm my RSVP", URL: m.SiteURL + "/l/" + string(j.Secret)},
 		After: []string{"The link works once, within 24 hours.",
-			"If you didn't ask, you can ignore this message. Nothing about you is kept."}})
+			"If you didn't ask, you can ignore this message. What was typed is erased within a day."}})
 }
 
 // SendGuestGoing emails the manage link after a confirm (JobGuestGoing),
