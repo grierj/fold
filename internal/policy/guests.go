@@ -18,9 +18,9 @@ func GuestCanCancel(answer string, ended bool) bool {
 
 // Confirm outcomes: what opening a guest's confirm link does.
 const (
-	ConfirmDateGone = "date gone" // the date is no longer open to guests: nothing is answered
+	ConfirmDateGone = "date-gone" // the date is no longer open to guests: nothing is answered
 	ConfirmNew      = "new"       // no account: a guest is made, and answers
-	ConfirmAsThem   = "as them"   // an account that may answer: it answers
+	ConfirmAsThem   = "as-them"   // an account that may answer: it answers
 	ConfirmRefused  = "refused"   // an account that may not: nothing is answered (R42)
 )
 

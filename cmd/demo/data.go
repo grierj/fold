@@ -21,6 +21,7 @@ const (
 	demoInvitee    = "Priya Shah"
 	disabledPerson = "Gary Lund"
 	emailInvitee   = "Jordan Reyes"
+	guestName      = "Elena Visitor" // a guest, not a member
 )
 
 // invitedPeople were invited by the admin and accepted.

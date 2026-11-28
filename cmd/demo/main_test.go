@@ -95,6 +95,9 @@ func TestSeed(t *testing.T) {
 			WHERE e.seats = 3 AND a.status = 'going'`); n != 3 {
 			t.Errorf("%d going on the full event, want 3", n)
 		}
+		if n := count(q, `SELECT count(*) FROM people p JOIN answers a ON a.person_id = p.id WHERE p.status = 'guest' AND a.status = 'going'`); n != 1 {
+			t.Errorf("%d guest answers, want 1", n)
+		}
 		if n := count(q, `SELECT count(*) FROM events WHERE video_url <> ''`); n != 1 {
 			t.Errorf("%d events with a video link", n)
 		}
