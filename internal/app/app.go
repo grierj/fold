@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"fold/internal/accounts"
@@ -70,6 +71,8 @@ type limits struct {
 	invitesSite   *ratelimit.Limiter // invitations sent from the whole site
 	guests        *ratelimit.Limiter // guest RSVPs asked for from the whole site
 	manage        *ratelimit.Limiter // manage-link cancels from one client
+	feedToken     *ratelimit.Limiter // reads of one calendar feed link
+	feedClient    *ratelimit.Limiter // calendar feed reads from one client, a church's wifi included
 }
 
 type Deps struct {
@@ -109,6 +112,8 @@ func New(cfg Config, d Deps) (*App, error) {
 			invitesSite:   ratelimit.New(c, ratelimit.Rule{N: 100, Per: 24 * time.Hour}),
 			guests:        ratelimit.New(c, ratelimit.Rule{N: 100, Per: time.Hour}, ratelimit.Rule{N: 500, Per: 24 * time.Hour}),
 			manage:        ratelimit.New(c, ratelimit.Rule{N: 20, Per: time.Hour}),
+			feedToken:     ratelimit.New(c, ratelimit.Rule{N: 60, Per: time.Hour}),
+			feedClient:    ratelimit.New(c, ratelimit.Rule{N: 1200, Per: time.Hour}),
 		}}
 	return a, nil
 }
@@ -138,6 +143,11 @@ func (a *App) guard(next http.Handler) http.Handler {
 		}
 		switch r.Method {
 		case http.MethodGet, http.MethodHead:
+			// A calendar feed is read by an app with its link alone: it
+			// sets no cookie and renews no session.
+			if isFeed(r) {
+				break
+			}
 			a.ensureCSRFCookie(w, r)
 			if !isStatic(r) {
 				a.renew(w, r)
@@ -154,6 +164,8 @@ func (a *App) guard(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+func isFeed(r *http.Request) bool { return strings.HasPrefix(r.URL.Path, "/feed/") }
 
 func isStatic(r *http.Request) bool {
 	return len(r.URL.Path) > 8 && r.URL.Path[:8] == "/static/"

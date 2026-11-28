@@ -14,12 +14,14 @@ import (
 // their email (P5).
 
 func (a *App) profileData(r *http.Request, f pageFacts, name string, version int64, nameErr string, conflict bool) any {
-	return a.profileDataWith(f, name, version, nameErr, conflict, map[string]string{"saved": "Saved."}[r.URL.Query().Get("done")])
+	return a.profileDataWith(r, f, name, version, nameErr, conflict, map[string]string{"saved": "Saved."}[r.URL.Query().Get("done")])
 }
 
-func (a *App) profileDataWith(f pageFacts, name string, version int64, nameErr string, conflict bool, status string) any {
-	return a.profileView(f, name, version, nameErr, conflict, status, "", "")
+func (a *App) profileDataWith(r *http.Request, f pageFacts, name string, version int64, nameErr string, conflict bool, status string) any {
+	return a.profileView(r, f, name, version, nameErr, conflict, status, "", "")
 }
+
+var feedStatuses = map[string]string{"feed-off": "Your calendar feed is off. Its link no longer works."}
 
 // zoneSelect is the profile's time zone: the person's, else the church's,
 // from the same full list setup offers, plus the person's own if a browser
@@ -46,16 +48,17 @@ type profilePage struct {
 	Conflict   bool
 	Zone       Select
 	ZoneStatus string
+	Feed       feedView
 }
 
-func (a *App) profileView(f pageFacts, name string, version int64, nameErr string, conflict bool, status, zoneStatus, zoneErr string) profilePage {
+func (a *App) profileView(r *http.Request, f pageFacts, name string, version int64, nameErr string, conflict bool, status, zoneStatus, zoneErr string) profilePage {
 	p := f.session.Person
 	nameF := Field{ID: "name", Name: "name", Label: "Your name", Hint: "As people at church know you. It's shown on rosters and notices.",
 		Value: name, MaxLength: maxName, Required: true, Error: nameErr, Autocomplete: "name"}
 	return profilePage{Name: nameF, Version: version, Email: p.Email,
 		// Pressing the switch posts the state it changes to.
 		Contact: Chip{Label: "Show my email to leaders of my groups", Name: "hide", Value: map[bool]string{true: "0", false: "1"}[p.ContactHidden], Type: "submit", Pressed: !p.ContactHidden},
-		Status:  status, Conflict: conflict, Zone: zoneSelect(f, zoneErr), ZoneStatus: zoneStatus}
+		Status:  status, Conflict: conflict, Zone: zoneSelect(f, zoneErr), ZoneStatus: zoneStatus, Feed: a.feedSection(r, p.Feed, "", "")}
 }
 
 // tooMany is what a person sees when their own changes outpace the limit.
@@ -66,7 +69,9 @@ func (a *App) getProfile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	f.Data = a.profileData(r, f, f.session.Person.Name, f.session.Person.Version, "", false)
+	d := a.profileView(r, f, f.session.Person.Name, f.session.Person.Version, "", false, map[string]string{"saved": "Saved."}[r.URL.Query().Get("done")], "", "")
+	d.Feed.Status = feedStatuses[r.URL.Query().Get("done")]
+	f.Data = d
 	a.render(w, r, http.StatusOK, "profile", "", f.page)
 }
 
@@ -112,7 +117,7 @@ func (a *App) postProfileContact(w http.ResponseWriter, r *http.Request) {
 	}
 	hidden := r.PostFormValue("hide") == "1"
 	if !a.limits.profile.Allow(f.session.Person.UID) {
-		d := a.profileView(f, f.session.Person.Name, f.session.Person.Version, "", false, "", "", "")
+		d := a.profileView(r, f, f.session.Person.Name, f.session.Person.Version, "", false, "", "", "")
 		d.ContactErr = tooMany
 		f.Data = d
 		if r.Header.Get("HX-Request") == "true" {
@@ -136,7 +141,7 @@ func (a *App) postProfileContact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.session.Person.ContactHidden = hidden
-	f.Data = a.profileDataWith(f, f.session.Person.Name, f.session.Person.Version, "", false, "Saved.")
+	f.Data = a.profileDataWith(r, f, f.session.Person.Name, f.session.Person.Version, "", false, "Saved.")
 	a.render(w, r, http.StatusOK, "profile", "contact", f.page)
 }
 
@@ -160,7 +165,7 @@ func (a *App) postProfileZone(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		f.Data = a.profileView(f, f.session.Person.Name, f.session.Person.Version, "", false, "", "", tooMany)
+		f.Data = a.profileView(r, f, f.session.Person.Name, f.session.Person.Version, "", false, "", "", tooMany)
 		if r.Header.Get("HX-Request") == "true" {
 			a.render(w, r, http.StatusOK, "profile", "zone", f.page) // htmx swaps only a 200
 			return
@@ -182,7 +187,7 @@ func (a *App) postProfileZone(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/signin", http.StatusSeeOther)
 		return
 	case errors.Is(err, write.ErrNotAllowed):
-		f.Data = a.profileView(f, f.session.Person.Name, f.session.Person.Version, "", false, "", "", "Choose a time zone from the list.")
+		f.Data = a.profileView(r, f, f.session.Person.Name, f.session.Person.Version, "", false, "", "", "Choose a time zone from the list.")
 		block := ""
 		if htmx {
 			block = "zone"
@@ -198,6 +203,6 @@ func (a *App) postProfileZone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.session.Person.Zone = zone
-	f.Data = a.profileView(f, f.session.Person.Name, f.session.Person.Version, "", false, "", "Saved.", "")
+	f.Data = a.profileView(r, f, f.session.Person.Name, f.session.Person.Version, "", false, "", "Saved.", "")
 	a.render(w, r, http.StatusOK, "profile", "zone", f.page)
 }

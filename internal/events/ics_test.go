@@ -34,8 +34,13 @@ func TestICS(t *testing.T) {
 		"utc": {{UID: "d4@church.example.org", Stamp: stamp, Title: "Picnic", Link: "https://church.example.org/dates/d4",
 			Zone: "Nowhere/Atlantis", Start: time.Date(2026, 12, 5, 19, 0, 0, 0, time.UTC), End: time.Date(2026, 12, 5, 21, 0, 0, 0, time.UTC)}},
 	}
+	cases["feed"] = append(append([]events.ICSEvent{}, cases["one-date"]...), cases["utc"]...)
+	cases["feed"][1].Status = "CANCELLED"
 	for name, list := range cases {
-		got := events.ICS("", list)
+		got := events.ICS("", 0, list)
+		if name == "feed" {
+			got = events.ICS("Cloverdale, a church", time.Hour, list)
+		}
 		path := filepath.Join("testdata", name+".ics")
 		if *update {
 			if err := os.WriteFile(path, got, 0o644); err != nil {

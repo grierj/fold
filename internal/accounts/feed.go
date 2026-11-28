@@ -62,13 +62,6 @@ func (EndFeed) Apply(tx *write.Tx) error {
 	return nil
 }
 
-// FeedOn reports whether a person has a feed.
-func FeedOn(ctx context.Context, q db.Querier, personID int64) (bool, error) {
-	var on bool
-	err := q.QueryRowContext(ctx, `SELECT feed_hash IS NOT NULL FROM people WHERE id = ?`, personID).Scan(&on)
-	return on, err
-}
-
 // FeedOwner is the person a feed token belongs to, if the token has the
 // shape of one, matches, and its person may have a feed now. Every other
 // case is people.ErrNotFound, alike.

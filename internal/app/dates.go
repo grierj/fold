@@ -390,26 +390,36 @@ func (a *App) getDateICS(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	e := events.ICSEvent{UID: f.date.UID + "@" + a.cfg.SiteURL.Hostname(), Stamp: a.clock.Now(), Title: f.event.Title,
-		Link: a.origin + "/dates/" + f.date.UID, Location: f.event.Place, Zone: f.event.Zone, Start: f.date.StartsAt, End: f.date.EndsAt}
+	var about, video string
 	if f.seesEvent() {
-		e.Description = f.event.About
+		about = f.event.About
 	}
 	// A cancelled date's page shows no answers, so no video link either.
-	if f.event.VideoURL != "" && !f.date.Cancelled && policy.CanSeeVideo(f.canManage(), mine) {
-		e.Video = f.event.VideoURL
+	if !f.date.Cancelled && policy.CanSeeVideo(f.canManage(), mine) {
+		video = f.event.VideoURL
 	}
-	switch {
-	case f.date.Cancelled:
-		e.Status = "CANCELLED"
-	case mine == policy.AnswerGoing:
-		e.Status = "CONFIRMED"
-	case mine == policy.AnswerMaybe, mine == policy.AnswerWaiting:
-		e.Status = "TENTATIVE"
-	}
+	e := a.dateEvent(f.date.UID, f.event.Title, f.event.Place, f.event.Zone, f.date.StartsAt, f.date.EndsAt, about, video, mine, f.date.Cancelled)
 	w.Header().Set("Content-Type", "text/calendar; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="event.ics"`)
-	w.Write(events.ICS("", []events.ICSEvent{e}))
+	w.Write(events.ICS("", 0, []events.ICSEvent{e}))
+}
+
+// dateEvent is one date as a calendar file gives it, the same in the
+// one-date download and the feed: about and video are already cleared for
+// the viewer. Going is confirmed, Maybe and waiting tentative (DEC-71), and
+// a cancelled date says so, so a calendar app takes it off.
+func (a *App) dateEvent(uid, title, place, zone string, start, end time.Time, about, video, answer string, cancelled bool) events.ICSEvent {
+	e := events.ICSEvent{UID: uid + "@" + a.cfg.SiteURL.Hostname(), Stamp: a.clock.Now(), Title: title, Description: about,
+		Link: a.origin + "/dates/" + uid, Video: video, Location: place, Zone: zone, Start: start, End: end}
+	switch {
+	case cancelled:
+		e.Status = "CANCELLED"
+	case answer == policy.AnswerGoing:
+		e.Status = "CONFIRMED"
+	case answer == policy.AnswerMaybe, answer == policy.AnswerWaiting:
+		e.Status = "TENTATIVE"
+	}
+	return e
 }
 
 // postAnswer saves a person's answer. A signed-out visitor who may see the

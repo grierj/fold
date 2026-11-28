@@ -28,10 +28,15 @@ type ICSEvent struct {
 }
 
 // ICS writes a calendar of dates, with a VTIMEZONE for every zone they use.
-func ICS(name string, list []ICSEvent) []byte {
+// A subscribed calendar names itself and says how often to check again.
+func ICS(name string, refresh time.Duration, list []ICSEvent) []byte {
 	lines := []string{"BEGIN:VCALENDAR", "PRODID:-//Fold//Events//EN", "VERSION:2.0", "CALSCALE:GREGORIAN", "METHOD:PUBLISH"}
 	if name != "" {
 		lines = append(lines, "X-WR-CALNAME:"+escapeText(name))
+	}
+	if refresh > 0 {
+		d := fmt.Sprintf("PT%dM", int(refresh.Minutes()))
+		lines = append(lines, "REFRESH-INTERVAL;VALUE=DURATION:"+d, "X-PUBLISHED-TTL:"+d)
 	}
 	zones := map[string]*time.Location{}
 	spans := map[string][2]time.Time{}

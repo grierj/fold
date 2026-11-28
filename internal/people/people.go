@@ -48,6 +48,7 @@ type Person struct {
 	Zone          string
 	ContactHidden bool // P5: leaders of their groups do not see the address
 	Version       int64
+	Feed          bool // has a calendar feed; its link is never loaded
 }
 
 // Policy is the person in policy's terms. A guest is a signed-out visitor
@@ -60,11 +61,11 @@ func (p Person) Policy() *policy.Person {
 	return &policy.Person{ID: p.ID, Admin: p.IsAdmin, Inactive: p.Status != StatusActive}
 }
 
-const columns = `p.id, p.uid, p.name, p.email, p.status, p.is_admin, p.zone, p.contact_hidden, p.version`
+const columns = `p.id, p.uid, p.name, p.email, p.status, p.is_admin, p.zone, p.contact_hidden, p.version, p.feed_hash IS NOT NULL`
 
 func scan(row interface{ Scan(...any) error }) (Person, error) {
 	var p Person
-	err := row.Scan(&p.ID, &p.UID, &p.Name, &p.Email, &p.Status, &p.IsAdmin, &p.Zone, &p.ContactHidden, &p.Version)
+	err := row.Scan(&p.ID, &p.UID, &p.Name, &p.Email, &p.Status, &p.IsAdmin, &p.Zone, &p.ContactHidden, &p.Version, &p.Feed)
 	return p, err
 }
 
@@ -96,7 +97,7 @@ func BySession(ctx context.Context, q db.Querier, tokenHash []byte, now time.Tim
 	var s Session
 	var renewed, expires int64
 	err := row.Scan(&s.ID, &renewed, &expires, &s.Person.ID, &s.Person.UID, &s.Person.Name, &s.Person.Email,
-		&s.Person.Status, &s.Person.IsAdmin, &s.Person.Zone, &s.Person.ContactHidden, &s.Person.Version)
+		&s.Person.Status, &s.Person.IsAdmin, &s.Person.Zone, &s.Person.ContactHidden, &s.Person.Version, &s.Person.Feed)
 	if err != nil {
 		return Session{}, notFound(err)
 	}

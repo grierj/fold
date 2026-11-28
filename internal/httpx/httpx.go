@@ -56,7 +56,7 @@ func LimitBody(n int64, next http.Handler) http.Handler {
 // secretPrefixes are paths whose next segment is a secret. The access log
 // keeps the route and drops the secret, and never logs a query string, so a
 // log file cannot replay a link (docs/HAZARDS.md section 5).
-var secretPrefixes = []string{"/l/", "/invite/", "/g/"}
+var secretPrefixes = []string{"/l/", "/invite/", "/g/", "/feed/"}
 
 // RedactPath is the path as the log shows it.
 func RedactPath(p string) string {

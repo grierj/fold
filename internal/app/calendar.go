@@ -124,6 +124,7 @@ type calCell struct {
 
 type calendarData struct {
 	View, Heading, ZoneLine string
+	FeedLink                bool // a member may subscribe from their profile
 	Views                   Pick
 	Scopes                  *Pick
 	Filter                  calFilter
@@ -240,7 +241,7 @@ func calendarView(ask calAsk, kind int, list []events.CalDate, options []groups.
 		return calDay{Key: key, Label: dayWords(t, now), Today: key == today.Format(events.DayLayout), Rows: byDay[key],
 			Href: ask.href(func(c *calAsk) { c.view, c.day = "month", t })}
 	}
-	d := calendarData{View: ask.view}
+	d := calendarData{View: ask.view, FeedLink: kind == policy.ViewerMember}
 	d.Views = Pick{Label: "Calendar view"}
 	for _, v := range []struct{ view, label string }{{"agenda", "Agenda"}, {"week", "Week"}, {"month", "Month"}} {
 		d.Views.Options = append(d.Views.Options, PickOption{Label: v.label, Current: ask.view == v.view,
