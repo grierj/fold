@@ -235,7 +235,7 @@ func (a *App) load(ctx context.Context, r *http.Request, q *sql.Tx) (pageFacts, 
 		sess, err := people.BySession(ctx, q, accounts.Hash(t), a.clock.Now())
 		if err == nil {
 			f.session = &sess
-			f.Viewer = &viewerInfo{Name: sess.Person.Name, IsAdmin: sess.Person.IsAdmin}
+			f.Viewer = &viewerInfo{Name: sess.Person.Name, IsAdmin: sess.Person.IsAdmin, ZoneUnset: sess.Person.Zone == ""}
 			if f.Unread, err = notices.Unread(ctx, q, a.noticeReader(sess.Person)); err != nil {
 				return pageFacts{}, err
 			}

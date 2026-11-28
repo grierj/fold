@@ -56,6 +56,20 @@
   {{with .Error}}<p class="field-error" id="{{$.ID}}-error"><span aria-hidden="true">⚠</span><span>{{.}}</span></p>{{end}}
 </div>{{end}}
 
+{{/* select: a drop-down, label above, hint before, error beneath. With a
+     Trigger it posts its form when changed (DEC-98). */}}
+{{define "select"}}<div>
+  <label class="label" for="{{.ID}}">{{.Label}}</label>
+  {{with .Hint}}<p class="field-hint" id="{{$.ID}}-hint">{{.}}</p>{{end}}
+  <select class="input" id="{{.ID}}" name="{{.Name}}"
+    {{- with .Trigger}} hx-post="{{.}}" hx-trigger="change" hx-include="closest form" hx-target="closest form" hx-swap="outerHTML"{{end}}
+    {{- if .Error}} aria-invalid="true"{{end}}
+    {{- if or .Hint .Error}} aria-describedby="{{if .Hint}}{{.ID}}-hint{{end}}{{if and .Hint .Error}} {{end}}{{if .Error}}{{.ID}}-error{{end}}"{{end}}>
+    {{- range .Options}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end -}}
+  </select>
+  {{with .Error}}<p class="field-error" id="{{$.ID}}-error"><span aria-hidden="true">⚠</span><span>{{.}}</span></p>{{end}}
+</div>{{end}}
+
 {{/* choice: one checkbox or radio row; the whole row is the label. */}}
 {{define "choice"}}<div>
   <label class="choice-row" for="{{.ID}}">

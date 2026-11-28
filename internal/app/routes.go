@@ -78,6 +78,7 @@ func (a *App) routes(mux *http.ServeMux) {
 	mux.Handle("GET /profile", http.HandlerFunc(a.getProfile))
 	mux.Handle("POST /profile/name", http.HandlerFunc(a.postProfileName))
 	mux.Handle("POST /profile/contact", http.HandlerFunc(a.postProfileContact))
+	mux.Handle("POST /profile/zone", http.HandlerFunc(a.postProfileZone))
 
 	mux.Handle("GET /admin/groups", http.HandlerFunc(a.getAdminGroups))
 	mux.Handle("POST /admin/groups/{uid}/approve", a.postDecideGroup(true))

@@ -53,7 +53,7 @@ func TestGalleryShowsEveryPartial(t *testing.T) {
 	admin := s.finishSetup()
 	r := admin.get("/admin/gallery")
 	for _, want := range []string{"btn-primary", "btn-danger-outline", "btn-busy", "aria-invalid", "choice-row", `class="chip"`,
-		"segment-bar", "popover", "<dialog", `class="empty"`, "notice-danger", "status-line", "error-summary", "hx-post"} {
+		"segment-bar", "popover", "<dialog", "<select", `class="empty"`, "notice-danger", "status-line", "error-summary", "hx-post"} {
 		if !strings.Contains(r.body, want) {
 			t.Errorf("gallery lacks %s", want)
 		}

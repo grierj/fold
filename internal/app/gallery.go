@@ -16,6 +16,7 @@ type galleryData struct {
 	Fields       []Field
 	Areas        []Field
 	Choices      []Choice
+	Selects      []Select
 	Chips        []Chip
 	Segment      Segment
 	Menu         Menu
@@ -84,6 +85,10 @@ func (a *App) gallery(w http.ResponseWriter, r *http.Request) {
 			{ID: "g-c4", Name: "g-c4", Type: "checkbox", Value: "1", Label: "With an error", Error: "Confirm this to go on."},
 			{ID: "g-r1", Name: "g-r", Type: "radio", Value: "a", Label: "Weekly", Hint: "Every week on the same day.", Checked: true},
 			{ID: "g-r2", Name: "g-r", Type: "radio", Value: "b", Label: "Once"},
+		},
+		Selects: []Select{
+			{ID: "g-s1", Name: "g-s1", Label: "Your time zone", Hint: "Times are shown in it.", Options: []Option{{Value: "America/Boise", Label: "America/Boise", Selected: true}, {Value: "America/Chicago", Label: "America/Chicago"}}},
+			{ID: "g-s2", Name: "g-s2", Label: "With an error", Options: []Option{{Value: "", Label: "Choose one"}}, Error: "Choose a time zone from the list."},
 		},
 		Chips:   []Chip{{Label: "Women"}, {Label: "Men", Pressed: true}, {Label: "Youth", Disabled: true}},
 		Segment: Segment{Label: "Your answer", Name: "g-seg", Options: []SegmentOption{{Label: "Going", Value: "going", Pressed: true}, {Label: "Maybe", Value: "maybe"}, {Label: "Can't go", Value: "no"}}},
