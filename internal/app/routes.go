@@ -48,6 +48,7 @@ func (a *App) routes(mux *http.ServeMux) {
 	mux.Handle("POST /events/{uid}/edit", http.HandlerFunc(a.postEditEvent))
 	mux.Handle("POST /events/{uid}/delete", http.HandlerFunc(a.postDeleteEvent))
 	mux.Handle("GET /dates/{uid}", http.HandlerFunc(a.getDate))
+	mux.Handle("GET /dates/{uid}/calendar.ics", http.HandlerFunc(a.getDateICS))
 	mux.Handle("POST /dates/{uid}/answer", http.HandlerFunc(a.postAnswer))
 	mux.Handle("GET /dates/{uid}/guest", http.HandlerFunc(a.getGuest))
 	mux.Handle("POST /dates/{uid}/guest", http.HandlerFunc(a.postGuest))

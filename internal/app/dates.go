@@ -351,6 +351,7 @@ func (a *App) showDate(w http.ResponseWriter, r *http.Request, f eventFacts, af 
 		UID                  string
 		Cancel, Restore      Dialog
 		Answer               answerBlock
+		Share                Field
 	}{
 		Event: f.event, Day: longDay(start), When: when, ZoneLine: zoneLine(f.event.Zone, loc), Moved: moved, Opened: opened,
 		Visibility: visibilityLabels[policy.Widest(f.event.Visibility, f.date.Visibility)],
@@ -371,8 +372,46 @@ func (a *App) showDate(w http.ResponseWriter, r *http.Request, f eventFacts, af 
 			CancelLabel: "Not now", ConfirmLabel: "Bring it back", ConfirmKind: "primary",
 			Action: "/dates/" + f.date.UID + "/restore", CSRF: a.csrfToken(r)},
 		Answer: a.answerView(f, af, r, answerStatus, confirm),
+		Share:  Field{ID: "share-link", Name: "link", Label: "Link to this date", Value: a.origin + "/dates/" + f.date.UID, ReadOnly: true},
 	}
 	a.render(w, r, code, "date", block, f.page)
+}
+
+// getDateICS downloads one date for a calendar app (DEC-93), to anyone who
+// may see the date, with what its page shows: the event's description only
+// to someone who may see the event (docs/HAZARDS.md section 2, #167), no
+// group, and the video link as the page gives it (R41, R49).
+func (a *App) getDateICS(w http.ResponseWriter, r *http.Request) {
+	var mine string
+	f, ok := a.loadEvent(w, r, true, func(q *sql.Tx, f *eventFacts) error {
+		var err error
+		if who := f.someone(); who != nil {
+			mine, err = answers.Mine(r.Context(), q, f.date.ID, who.Person.ID)
+		}
+		return err
+	})
+	if !ok {
+		return
+	}
+	e := events.ICSEvent{UID: f.date.UID + "@" + a.cfg.SiteURL.Hostname(), Stamp: a.clock.Now(), Title: f.event.Title,
+		Link: a.origin + "/dates/" + f.date.UID, Location: f.event.Place, Zone: f.event.Zone, Start: f.date.StartsAt, End: f.date.EndsAt}
+	if f.seesEvent() {
+		e.Description = f.event.About
+	}
+	if f.event.VideoURL != "" && policy.CanSeeVideo(f.canManage(), mine) {
+		e.Video = f.event.VideoURL
+	}
+	switch {
+	case f.date.Cancelled:
+		e.Status = "CANCELLED"
+	case mine == policy.AnswerGoing:
+		e.Status = "CONFIRMED"
+	case mine == policy.AnswerMaybe, mine == policy.AnswerWaiting:
+		e.Status = "TENTATIVE"
+	}
+	w.Header().Set("Content-Type", "text/calendar; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="event.ics"`)
+	w.Write(events.ICS("", []events.ICSEvent{e}))
 }
 
 // postAnswer saves a person's answer. A signed-out visitor who may see the
