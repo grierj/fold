@@ -16,7 +16,7 @@ The only place status is kept. Update the row in the pull request that changes i
 |---|---|---|
 | 0 | Foundation and install | Done (v0.2.0). The timed install by a person waits for an installer who is not Grier |
 | 1 | People, groups, approvals, notices | Done (v0.3.0). A real volunteer admin approving from their phone is in `docs/FIRST-CHURCH-CHECKS.md` |
-| 2 | Events, dates, RSVP, calendar | Planned below (R33 to R37). Milestone 1a in review |
+| 2 | Events, dates, RSVP, calendar | Planned below (R33 to R41). Milestone 1a done; 1b in progress |
 | 3 | Announcements, reminders, email choices | Not started |
 | 4 | First-church readiness. **Pilot goes live.** | Not started |
 | 5 | Households, children, teens | Waits for the pilot |
@@ -203,13 +203,14 @@ people signed up. Then the measuring gate.
    event wider than its group is audited, tells the other leaders and admins, and never shows an
    invite-only group's name, place or members (DEC-6, DEC-17, DEC-28). Each person gets a time
    zone (DEC-58, R29): the church's by default, set from the browser the first time, changed on
-   the profile. Video is a link out (DEC-16).
+   the profile.
 2. **Answers, seats and the waitlist.** Going, Maybe, Can't go, and Cancelled as its own state
    (DEC-54). Membership is a standing invitation, a church-wide event invites every member, and a
    public event is not an invitation until the person answers (DEC-72, DEC-73). The series dialog
    says that dates added later are not answered for them, and a status line stays after each
    answer (DEC-71, DEC-92). Counts first, names to those allowed, and Can't go only to the people
-   running the event (DEC-63, DEC-64). Optional seats, and one function every seat change passes
+   running the event (DEC-63, DEC-64). A video link, a link out (DEC-16), shown only to those who
+   answered Going or Maybe and those running the event (R41). Optional seats, and one function every seat change passes
    through, which moves the next waiting person up and tells them (DEC-84, `docs/HAZARDS.md`
    section 7). Leaving a group or being removed takes the person off upcoming dates without
    rewriting past ones; a disabled account's answers are hidden and not counted, and come back
@@ -285,7 +286,7 @@ people signed up. Then the measuring gate.
 - No pictures on events in this slice. Uploads (DEC-49) arrive when a church asks or with a later
   slice.
 
-**Rests on.** R3, R15, R29, R33 to R40, P7, P8, and "Events and dates" and "RSVP" in the decisions.
+**Rests on.** R3, R15, R29, R33 to R41, P7, P8, and "Events and dates" and "RSVP" in the decisions.
 
 **Not in this slice.** Reminders and announcements (slice 3). Children, childcare and teens
 (slice 5). Rooms (slice 6). Attendance (slice 4).

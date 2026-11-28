@@ -61,6 +61,7 @@ the code or the pull request.
 | R38 | **Dates are written the American way**: "Tue, Dec 8", "Tuesday, December 8, 2026". | 2026-11-27. "'Tue, Dec 8' is good." |
 | R39 | **"Open in maps" is a Google Maps search** of the place's text, built as a plain link; the server fetches nothing. | 2026-11-27. "Google Maps is good." |
 | R40 | **Answers do not follow a date that moves to another day.** When an edit moves a one-off event or a series' weekday, the old dates are cancelled and new ones made, and people signed up must answer the new date themselves. | 2026-11-27. "RSVPs should not follow, they'll need to confirm the new date." |
+| R41 | **An event's video link is shown only to people who answered Going or Maybe, and to the people running the event.** Strangers who can read a public event's page do not get the link. It arrives with answers, in slice 2's milestone 2. | 2026-11-27. Chose "Those who said Going/Maybe" over anyone who can see the event and over a per-event choice. |
 
 Standing yardsticks, in Grier's words from the Fold work. They apply to every design choice.
 
