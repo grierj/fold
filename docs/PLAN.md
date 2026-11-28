@@ -16,7 +16,7 @@ The only place status is kept. Update the row in the pull request that changes i
 |---|---|---|
 | 0 | Foundation and install | Done (v0.2.0). The timed install by a person waits for an installer who is not Grier |
 | 1 | People, groups, approvals, notices | Done (v0.3.0). A real volunteer admin approving from their phone is in `docs/FIRST-CHURCH-CHECKS.md` |
-| 2 | Events, dates, RSVP, calendar | Planned below (R33 to R51). Milestones 1 to 3 done; milestone 4a in review |
+| 2 | Events, dates, RSVP, calendar | Planned below (R33 to R51). Milestones 1 to 3 and 4a done; milestone 4b in review |
 | 3 | Announcements, reminders, email choices | Not started |
 | 4 | First-church readiness. **Pilot goes live.** | Not started |
 | 5 | Households, children, teens | Waits for the pilot |
