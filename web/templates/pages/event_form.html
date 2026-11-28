@@ -34,13 +34,14 @@
     </fieldset>
     {{template "field" .Data.Place}}
     {{template "field" .Data.Video}}
-    <details class="section vis-settings" data-group="{{.Data.GroupVisibility}}"{{range .Data.Visibility}}{{if .Error}} open{{end}}{{end}}{{if .Data.Reason.Error}} open{{end}}>
+    <details class="section vis-settings" data-group="{{.Data.GroupVisibility}}"{{range .Data.Visibility}}{{if .Error}} open{{end}}{{end}}{{if .Data.Reason.Error}} open{{end}}{{if or .Data.Seats.Error .Data.Seats.Value}} open{{end}}>
       <summary class="text-link">More options</summary>
       <fieldset class="mt-3">
         <legend class="label">Who can see it</legend>
         {{range .Data.Visibility}}{{template "choice" .}}{{end}}
       </fieldset>
       {{if .Data.ShowReason}}<div class="reason-field mt-3">{{template "textarea" .Data.Reason}}</div>{{end}}
+      <div class="mt-3">{{template "field" .Data.Seats}}</div>
     </details>
     <div class="flex flex-wrap gap-3">
       {{template "button" (button "primary" .Data.Submit)}}

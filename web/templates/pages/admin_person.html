@@ -18,10 +18,10 @@
   <section class="section mt-10" aria-labelledby="account-h">
     <h2 id="account-h" class="mb-2 text-xl font-bold">Account</h2>
     {{if eq .Data.Person.Status "disabled"}}
-      <p class="mb-4 text-text-muted">Their account is turned off. Turning it on brings back their groups.</p>
+      <p class="mb-4 text-text-muted">Their account is turned off. Turning it on brings back their groups, and their answers where there's room.</p>
       <form method="post" action="/admin/people/{{.Data.Person.UID}}/enable">{{template "csrf" .}}{{template "button" (button "primary" "Turn their account on")}}</form>
     {{else}}
-      <p class="mb-4 text-text-muted">Turning their account off signs them out everywhere. Their groups are kept, hidden, until it's turned on again.</p>
+      <p class="mb-4 text-text-muted">Turning their account off signs them out everywhere. Their groups and answers are kept, hidden, until it's turned on again. Seats they hold go to the next people waiting.</p>
       <form class="form-stack" method="post" action="/admin/people/{{.Data.Person.UID}}/disable">
         {{template "csrf" .}}
         {{range .Data.Succession}}<fieldset>

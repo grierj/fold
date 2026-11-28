@@ -2,7 +2,8 @@
 {{define "content"}}<div class="page-form">
   <h1 class="text-2xl font-bold sm:text-3xl">Cancel {{.Data.Count}}?</h1>
   <p class="mt-3">The new times leave out {{.Data.Count}} of {{.Data.Event.Title}} that {{if eq .Data.Drops 1}}is{{else}}are{{end}} coming up. Saving cancels {{if eq .Data.Drops 1}}it{{else}}them{{end}}. Dates that have already happened stay as they were.</p>
-  <p class="mt-3">Dates this change cancels come back if a later change brings their day back.</p>
+  <p class="mt-3">{{.Data.Told}} Answers don't move to new dates: anyone who wants to come answers those themselves.</p>
+  <p class="mt-3">Dates this change cancels come back, with their answers, if a later change brings their day back.</p>
   <form class="mt-6 flex flex-wrap gap-3" method="post" action="/events/{{.Data.Event.UID}}/edit">
     {{template "csrf" .}}
     {{template "hidden" (hidden "version" .Data.Version)}}
@@ -20,6 +21,8 @@
     {{template "hidden" (hidden "visibility" .Data.Form.Visibility)}}
     {{template "hidden" (hidden "reason" .Data.Form.Reason)}}
     {{template "hidden" (hidden "video" .Data.Form.Video)}}
+    {{template "hidden" (hidden "seats" .Data.Form.Seats)}}
+    {{template "hidden" (hidden "private" .Data.Private)}}
     {{template "hidden" (hidden "confirmed" "yes")}}
     {{template "button" (button "primary" (print "Save and cancel " .Data.Count))}}
     {{template "linkbutton" (linkbutton "secondary" "Go back" (print "/events/" .Data.Event.UID "/edit"))}}

@@ -97,12 +97,13 @@
 </div>{{end}}
 
 {{/* dialog: a native modal dialog with its own opener. The body is HTML the
-     page built from its own template, never user text marked safe. */}}
-{{define "dialog"}}<button class="btn-{{.OpenKind}}" type="button" commandfor="{{.ID}}" command="show-modal">{{.OpenLabel}}</button>
+     page built from its own template, never user text marked safe. With a
+     Target, confirming swaps that part of the page in place (htmx). */}}
+{{define "dialog"}}<button class="btn-{{.OpenKind}}" type="button" commandfor="{{.ID}}" command="show-modal"{{with .OpenName}} aria-label="{{.}}"{{end}}>{{.OpenLabel}}</button>
 <dialog class="dialog" id="{{.ID}}" aria-labelledby="{{.ID}}-title">
   <h2 class="text-xl font-bold" id="{{.ID}}-title">{{.Title}}</h2>
   <p class="mt-2 text-text-muted">{{.Text}}</p>
-  <form class="mt-6 flex flex-wrap justify-end gap-3" method="post" action="{{.Action}}">
+  <form class="mt-6 flex flex-wrap justify-end gap-3" method="post" action="{{.Action}}"{{with .Target}} hx-post="{{$.Action}}" hx-target="{{.}}" hx-swap="outerHTML"{{end}}>
     <input type="hidden" name="csrf" value="{{.CSRF}}">
     <button class="btn-secondary" type="button" commandfor="{{.ID}}" command="close">{{.CancelLabel}}</button>
     <button class="btn-{{.ConfirmKind}}" type="submit">{{.ConfirmLabel}}</button>
