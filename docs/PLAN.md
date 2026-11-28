@@ -16,7 +16,7 @@ The only place status is kept. Update the row in the pull request that changes i
 |---|---|---|
 | 0 | Foundation and install | Done (v0.2.0). The timed install by a person waits for an installer who is not Grier |
 | 1 | People, groups, approvals, notices | Done (v0.3.0). A real volunteer admin approving from their phone is in `docs/FIRST-CHURCH-CHECKS.md` |
-| 2 | Events, dates, RSVP, calendar | Planned below (R33 to R41). Milestones 1 and 2 done; Milestone 3a in review |
+| 2 | Events, dates, RSVP, calendar | Planned below (R33 to R51). Milestones 1 to 3 done; milestone 4a in progress |
 | 3 | Announcements, reminders, email choices | Not started |
 | 4 | First-church readiness. **Pilot goes live.** | Not started |
 | 5 | Households, children, teens | Waits for the pilot |
@@ -233,7 +233,7 @@ people signed up. Then the measuring gate.
    same page and the same email shape, and the answer joins that account (R15). Guests get only the
    mail R36 allows, by their manage link; no optional mail. Limits per address and per client,
    in memory, answer with the usual message (`docs/HAZARDS.md` sections 3 and 9). Inviting one
-   person to one date by link (P8).
+   person to one private date by link (P8) waits for a church to ask (R51).
 4. **Calendar, Home and feeds.** `/calendar` with Agenda (the default), Week and Month (DEC-67),
    Going tinted and Maybe and unanswered outlined, unanswered church-wide and public dates within
    30 days (DEC-77). Home's "Coming up for you" (DEC-94). A personal ICS feed on a standing link:
@@ -254,7 +254,7 @@ people signed up. Then the measuring gate.
   night a 1:30 am date uses the first 1:30; the form warns when the chosen time can do either
   (R34).
 - A: the policy tables for seeing an event, answering, running it and seeing who is coming pass,
-  carried from Fold and changed where R3, P7 and P8 say. An invite-only group's event answers like
+  carried from Fold and changed where R3 and P7 say. An invite-only group's event answers like
   a missing page to someone outside it, on the date page, the calendar and the feed. Only the
   people running an event see who can't go.
 - A: every change that frees a seat (Can't go, Cancelled, a removal, leaving a group, a disabled
@@ -289,7 +289,7 @@ people signed up. Then the measuring gate.
 - No pictures on events in this slice. Uploads (DEC-49) arrive when a church asks or with a later
   slice.
 
-**Rests on.** R3, R15, R29, R33 to R50, P7, P8, and "Events and dates" and "RSVP" in the decisions.
+**Rests on.** R3, R15, R29, R33 to R51, P7, and "Events and dates" and "RSVP" in the decisions.
 
 **Not in this slice.** Reminders and announcements (slice 3). Children, childcare and teens
 (slice 5). Rooms (slice 6). Attendance (slice 4).
