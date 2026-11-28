@@ -228,7 +228,7 @@ func TestDroppedDatesAskFirst(t *testing.T) {
 		t.Fatal("asking saved something")
 	}
 	confirm := url.Values{}
-	for _, name := range []string{"version", "timing", "title", "about", "place", "date", "time", "hours", "minutes", "repeat", "month_week", "until", "visibility", "confirmed"} {
+	for _, name := range []string{"version", "timing", "title", "about", "place", "date", "time", "hours", "minutes", "repeat", "month_week", "until", "visibility", "reason", "video", "confirmed"} {
 		confirm.Set(name, html.UnescapeString(between(r.body, `name="`+name+`" value="`, `"`)))
 	}
 	if r := admin.post(edit, edit, confirm); r.status != http.StatusSeeOther {

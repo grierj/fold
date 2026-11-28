@@ -91,9 +91,14 @@ func TestCantGoOnlyForThoseRunningIt(t *testing.T) {
 	answer(mia, date, "going", "date")
 	for _, b := range []*browser{mia, s.browser()} {
 		r := b.get("/dates/" + date)
-		if strings.Contains(r.body, "Cara") || strings.Contains(r.body, "1 can&#39;t go") || strings.Contains(r.body, "<h3 class=\"mt-2 font-semibold\">Can&#39;t go") {
+		if strings.Contains(r.body, "Cara") || strings.Contains(r.body, "can&#39;t go") || strings.Contains(r.body, `font-semibold">Can't go`) {
 			t.Error("can't go reached someone not running the event")
 		}
+	}
+	tok := csrfPattern.FindStringSubmatch(mia.get("/dates/" + date).body)[1]
+	h := mia.postRaw("/dates/"+date+"/answer", url.Values{"answer": {"going"}, "scope": {"date"}, "csrf": {tok}}, http.Header{"Hx-Request": {"true"}})
+	if h.status != http.StatusOK || strings.Contains(h.body, "Cara") || strings.Contains(h.body, "can&#39;t go") || strings.Contains(h.body, `font-semibold">Can't go`) {
+		t.Fatal("the htmx fragment carries can't go to a member")
 	}
 	if r := s.browser().get("/dates/" + date); strings.Contains(r.body, "Mia Member") || !strings.Contains(r.body, "1 going") || !strings.Contains(r.body, "Sign in to answer") {
 		t.Error("a visitor sees names, or no count, or no way to answer")
@@ -218,5 +223,82 @@ func TestLeavingAndDisabledAnswers(t *testing.T) {
 	s.Writer.QueryRow(`SELECT details FROM audit_log WHERE action = 'group.leave'`).Scan(&details)
 	if !strings.Contains(details, `"answers":"1"`) {
 		t.Fatalf("the leave's audit row: %s", details)
+	}
+}
+
+// The line after an answer says only what the viewer's own answer bears out.
+func TestAnswerStatusComesFromTheAnswer(t *testing.T) {
+	s := newSite(t)
+	admin := s.finishSetup()
+	group := s.start(admin, "Study", "public")
+	uid := s.schedule(admin, group, eventForm("Study", "2026-12-01", "19:00", "weekly"))
+	date := firstDate(admin.get("/events/" + uid).body)
+	for _, b := range []*browser{s.browser(), admin} {
+		if r := b.get("/dates/" + date + "?done=going&n=50"); strings.Contains(r.body, "You&#39;re going") {
+			t.Fatal("a crafted address put words in the status line")
+		}
+	}
+}
+
+// DEC-91: a cancelled date hides its answers, and bringing it back brings
+// them back.
+func TestCancelAndRestoreKeepAnswers(t *testing.T) {
+	s := newSite(t)
+	admin := s.finishSetup()
+	group := s.start(admin, "Study", "public")
+	uid := s.schedule(admin, group, eventForm("Study", "2026-12-01", "19:00", "weekly"))
+	date := firstDate(admin.get("/events/" + uid).body)
+	mia := s.member("Mia Member", "mia@example.org")
+	answer(mia, date, "going", "date")
+	admin.post("/dates/"+date, "/dates/"+date+"/cancel", nil)
+	if r := mia.get("/dates/" + date); strings.Contains(r.body, `id="answer"`) || strings.Contains(r.body, "1 going") {
+		t.Fatal("a cancelled date still offers answers or counts")
+	}
+	admin.post("/dates/"+date, "/dates/"+date+"/restore", nil)
+	if r := mia.get("/dates/" + date); !strings.Contains(r.body, "1 going") || !strings.Contains(r.body, `aria-pressed="true">Going`) {
+		t.Fatal("bringing the date back did not bring back the answer")
+	}
+}
+
+// R41 on an opened date: an outsider sees the link only once they answer.
+func TestVideoOnAnOpenedDate(t *testing.T) {
+	s := newSite(t)
+	admin := s.finishSetup()
+	group := s.start(admin, "Elders Prayer", "invite_only")
+	f := eventForm("Prayer night", "2026-12-02", "19:00", "weekly")
+	f.Set("visibility", "invite_only")
+	f.Set("video", "https://meet.example.org/prayer")
+	uid := s.schedule(admin, group, f)
+	date := firstDate(admin.get("/events/" + uid).body)
+	admin.post("/dates/"+date+"/open", "/dates/"+date+"/open", url.Values{"visibility": {"church"}})
+	oscar := s.member("Oscar Other", "oscar@example.org")
+	if r := oscar.get("/dates/" + date); strings.Contains(r.body, "meet.example.org") {
+		t.Fatal("the outsider sees the link before answering")
+	}
+	answer(oscar, date, "going", "date")
+	if r := oscar.get("/dates/" + date); !strings.Contains(r.body, "https://meet.example.org/prayer") {
+		t.Fatal("the outsider doesn't see the link after answering Going")
+	}
+	if r := oscar.get("/events/" + uid); r.status != http.StatusNotFound {
+		t.Fatal("the event page shows to the outsider")
+	}
+}
+
+// DEC-74, HAZARDS 7: the leave confirmation counts only dates still on.
+func TestLeaveCountsOnlyDatesStillOn(t *testing.T) {
+	s := newSite(t)
+	admin := s.finishSetup()
+	group := s.start(admin, "Study", "public")
+	uid := s.schedule(admin, group, eventForm("Study", "2026-12-01", "19:00", "weekly"))
+	date := firstDate(admin.get("/events/" + uid).body)
+	mia := s.member("Mia Member", "mia@example.org")
+	mia.post("/groups/"+group, "/groups/"+group+"/join", nil)
+	answer(mia, date, "going", "all")
+	edit := "/events/" + uid + "/edit"
+	moved := editForm(eventForm("Study", "2026-12-02", "19:00", "weekly"), "1")
+	moved.Set("confirmed", "yes")
+	admin.post(edit, edit, moved)
+	if r := mia.get("/groups/" + group); strings.Contains(r.body, "You said you&#39;d come to") {
+		t.Fatalf("the leave dialog counts dates that are no longer on: %s", between(r.body, "leave-group", "</dialog>"))
 	}
 }

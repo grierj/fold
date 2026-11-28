@@ -328,7 +328,7 @@ An estimate to test the ceilings, not a schema.
 |---|---|---|
 | 0 | people, sessions, links, settings, audit log, jobs | 6 |
 | 1 | groups, memberships, approvals, notices | 10 |
-| 2 | events, hosts, dates, registrations | 14 |
+| 2 | events, event hosts, dates, answers | 14 |
 | 3 | messages, recipients, email choices, stopped addresses | 18 |
 | 4 | attendance, audit requests | 20 |
 | 5 | households, guardians | 22 |

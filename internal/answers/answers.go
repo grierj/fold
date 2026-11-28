@@ -110,12 +110,17 @@ func Mine(ctx context.Context, q db.Querier, dateID, personID int64) (string, er
 	return s, err
 }
 
-// StandingOnGroup counts a person's standing answers on a group's dates that
-// have not started: what leaving it would take back.
+// StandingOnGroup counts a person's standing answers on a group's dates
+// that are on and have not started: the dates leaving takes them off, as
+// the leave confirmation states it (docs/HAZARDS.md section 7). Withdraw
+// also takes back answers on cancelled dates, so a restore later does not
+// bring back someone who left; those are not counted here, since the person
+// is not coming to them anyway.
 func StandingOnGroup(ctx context.Context, q db.Querier, groupID, personID int64, now time.Time) (int, error) {
 	var n int
 	err := q.QueryRowContext(ctx, `SELECT count(*) FROM answers a JOIN dates d ON d.id = a.date_id JOIN events e ON e.id = d.event_id
-		WHERE a.person_id = ? AND a.status IN (`+quoted(policy.MoveLeaveGroup.From())+`) AND e.group_id = ? AND d.starts_at > ?`,
+		WHERE a.person_id = ? AND a.status IN (`+quoted(policy.MoveLeaveGroup.From())+`) AND e.group_id = ? AND d.starts_at > ?
+		AND d.status = 'scheduled' AND e.status = 'active'`,
 		personID, groupID, now.Unix()).Scan(&n)
 	return n, err
 }

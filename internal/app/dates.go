@@ -181,9 +181,14 @@ func (a *App) getDate(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	status := dateStatuses[q.Get("done")]
-	if policy.IsAnswer(q.Get("done")) {
-		n, _ := strconv.Atoi(q.Get("n"))
-		status = answerStatus(q.Get("done"), min(max(n, 1), events.MaxDates))
+	// The line after an answer says only what the viewer's stored answer
+	// bears out; a crafted address shows nothing.
+	if done := q.Get("done"); policy.IsAnswer(done) {
+		status = ""
+		if af.mine == done {
+			n, _ := strconv.Atoi(q.Get("n"))
+			status = answerStatus(done, min(max(n, 1), events.MaxDates))
+		}
 	}
 	a.showDate(w, r, f, af, http.StatusOK, status, "", nil)
 }
