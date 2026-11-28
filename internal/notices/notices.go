@@ -348,10 +348,10 @@ func wordEvent(ctx context.Context, q db.Querier, r Reader, x row, n Notice) (No
 		return n, true, nil
 	}
 	var leads bool
-	var groupStatus string
+	var groupStatus, groupVis string
 	if groupID.Valid {
-		q.QueryRowContext(ctx, `SELECT status, EXISTS (SELECT 1 FROM active_memberships WHERE group_id = g.id AND person_id = ? AND role = 'leader')
-			FROM groups g WHERE g.id = ?`, r.ID, groupID.Int64).Scan(&groupStatus, &leads)
+		q.QueryRowContext(ctx, `SELECT status, visibility, EXISTS (SELECT 1 FROM active_memberships WHERE group_id = g.id AND person_id = ? AND role = 'leader')
+			FROM groups g WHERE g.id = ?`, r.ID, groupID.Int64).Scan(&groupStatus, &groupVis, &leads)
 	}
 	if !groupID.Valid || groupStatus == policy.GroupDeleted || (!leads && !r.Admin) {
 		return n, false, nil
@@ -366,10 +366,10 @@ func wordEvent(ctx context.Context, q db.Querier, r Reader, x row, n Notice) (No
 		visibility = policy.Widest(visibility, dvis)
 		what, n.Href = "a date of "+quoted, "/dates/"+duid
 	}
-	to, ok := audiences[visibility]
-	if !ok {
-		to = "more people than its group"
+	if !policy.MoreOpen(visibility, groupVis) {
+		return n, false, nil // the opening was undone; the audit row keeps it
 	}
+	to := audiences[visibility]
 	n.Text, n.Subject, n.Note = who+" opened "+what+" to "+to+".", "An event was opened wider", reason
 	return n, true, nil
 }

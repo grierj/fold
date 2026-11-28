@@ -120,6 +120,8 @@ func (a *App) runHosts(w http.ResponseWriter, r *http.Request, c func(eventUID s
 	switch {
 	case errors.Is(err, write.ErrNotAllowed):
 		done = "refused"
+	case errors.Is(err, events.ErrUnchanged):
+		done = "same"
 	case errors.Is(err, write.ErrSignedOut):
 		a.notFound(w, r)
 		return

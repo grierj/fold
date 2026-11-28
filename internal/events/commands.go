@@ -376,6 +376,10 @@ func dateTarget(tx *write.Tx, uid string) (Row, Event, groups.Group, error) {
 // begun, or was cancelled or restored since the page was drawn.
 var ErrDateGone = errors.New("events: that date can't be changed now")
 
+// ErrUnchanged: the host was already named, or already gone. Nothing is
+// written, and the page says so.
+var ErrUnchanged = errors.New("events: already so")
+
 // CancelDate cancels one date by hand (P7). A series edit never moves it or
 // brings it back; only RestoreDate does (DEC-91).
 type CancelDate struct{ UID string }
@@ -498,7 +502,7 @@ func (c AddHost) Apply(tx *write.Tx) error {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return write.ErrNothing
+		return ErrUnchanged
 	}
 	tx.Subject(e.UID)
 	tx.Subject(c.PersonUID)
@@ -531,7 +535,7 @@ func (c RemoveHost) Apply(tx *write.Tx) error {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return write.ErrNothing
+		return ErrUnchanged
 	}
 	tx.Subject(e.UID)
 	tx.Subject(c.PersonUID)

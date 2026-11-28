@@ -137,6 +137,9 @@ func TestChurchWideEventAndHosts(t *testing.T) {
 		t.Fatal("the search doesn't find a name, or shows an address")
 	}
 	admin.post(hosts, hosts+"/add", url.Values{"person": {personUID(s, "mia@example.org")}})
+	if r := admin.post(hosts, hosts+"/add", url.Values{"person": {personUID(s, "mia@example.org")}}); !strings.Contains(r.header.Get("Location"), "done=same") {
+		t.Fatalf("adding a host twice says it happened: %s", r.header.Get("Location"))
+	}
 	if r := mia.get("/notices"); !strings.Contains(r.body, "Pat Admin made you a host of “Christmas Eve service”.") {
 		t.Fatal("the host was not told")
 	}
@@ -209,5 +212,28 @@ func TestOpeningNoticeGoesWithItsGroup(t *testing.T) {
 	admin.post("/groups/"+group, "/groups/"+group+"/delete", nil)
 	if r := admin.get("/notices"); r.status != http.StatusOK || strings.Contains(r.body, "Open house") {
 		t.Fatalf("after the group was deleted: %d", r.status)
+	}
+}
+
+// An opening that is undone takes its notice with it; the audit row keeps
+// the history.
+func TestUndoneOpeningLeavesTheBell(t *testing.T) {
+	s := newSite(t)
+	admin := s.finishSetup()
+	mel := s.member("Mel Leader", "mel@example.org")
+	group := s.start(mel, "Elders Prayer", "invite_only")
+	admin.post("/admin/groups", "/admin/groups/"+group+"/approve", nil)
+	uid := s.schedule(mel, group, eventForm("Open house", "2026-12-02", "19:00", "once"))
+	if r := admin.get("/notices"); !strings.Contains(r.body, "opened “Open house”") {
+		t.Fatal("no opening notice")
+	}
+	edit := "/events/" + uid + "/edit"
+	narrowed := editForm(eventForm("Open house", "2026-12-02", "19:00", "once"), "1")
+	narrowed.Set("visibility", "invite_only")
+	if r := mel.post(edit, edit, narrowed); r.status != http.StatusSeeOther {
+		t.Fatalf("narrowing: %d", r.status)
+	}
+	if r := admin.get("/notices"); strings.Contains(r.body, "Open house") {
+		t.Fatal("the bell still says the event was opened")
 	}
 }

@@ -311,7 +311,7 @@ it. *Rests on:* R6, R7, P10, P11, P17.
 
 **Slice 5: households, children, teens.** A parent adds their children and signs them up; events
 count childcare; a teen has an account with a guardian's and an admin's consent. The finder gains
-a childcare filter.
+a childcare filter. Naming a host (`events.AddHost`) must then refuse a teen (DEC-18).
 
 **Slice 6: rooms.** Bookings, conflicts, optional approval, the by-room calendar, suggestions.
 
