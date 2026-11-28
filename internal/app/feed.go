@@ -35,7 +35,7 @@ func feedPath(token string) string { return "/feed/" + token + "/calendar.ics" }
 
 func (a *App) getFeed(w http.ResponseWriter, r *http.Request) {
 	token := r.PathValue("token")
-	w.Header().Set("Cache-Control", "private, max-age=900")
+	w.Header().Set("Cache-Control", "private, no-store") // a replaced link stops at once, even in a cache
 	// Limits are spent before the lookup, so a guess costs the same as a
 	// match; the token is counted by its hash.
 	client := httpx.ClientKey(a.cfg.Proxies.ClientIP(r))

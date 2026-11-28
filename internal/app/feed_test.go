@@ -52,7 +52,7 @@ func TestFeedLifecycle(t *testing.T) {
 	}
 	first := turnOnFeed(t, mia)
 	r := s.browser().get(first)
-	if r.status != http.StatusOK || r.header.Get("Content-Type") != "text/calendar; charset=utf-8" || !strings.HasPrefix(r.header.Get("Cache-Control"), "private") ||
+	if r.status != http.StatusOK || r.header.Get("Content-Type") != "text/calendar; charset=utf-8" || r.header.Get("Cache-Control") != "private, no-store" ||
 		r.header.Get("Set-Cookie") != "" || !strings.Contains(r.body, "X-WR-CALNAME:Cloverdale Church of God") {
 		t.Fatalf("the feed: %d %v", r.status, r.header)
 	}
