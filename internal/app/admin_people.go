@@ -19,11 +19,11 @@ import (
 
 type personRow struct {
 	UID, Name, Email, Status string
-	Admin                    bool
+	Admin, Guest             bool
 }
 
 func findPeople(ctx context.Context, q db.Querier, search string, limit int) ([]personRow, error) {
-	query := `SELECT uid, name, email, status, is_admin FROM people WHERE status IN ('active', 'disabled')`
+	query := `SELECT uid, name, email, status, is_admin, 'guest' IN (status, coalesce(disabled_from, '')) FROM people WHERE status IN ('active', 'disabled', 'guest')`
 	var args []any
 	if search != "" {
 		query += ` AND (name LIKE ? ESCAPE '\' OR email LIKE ? ESCAPE '\')`
@@ -40,7 +40,7 @@ func findPeople(ctx context.Context, q db.Querier, search string, limit int) ([]
 	var out []personRow
 	for rows.Next() {
 		var p personRow
-		if err := rows.Scan(&p.UID, &p.Name, &p.Email, &p.Status, &p.Admin); err != nil {
+		if err := rows.Scan(&p.UID, &p.Name, &p.Email, &p.Status, &p.Admin, &p.Guest); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -84,10 +84,11 @@ func (a *App) showAdminPerson(w http.ResponseWriter, r *http.Request, status int
 	var p people.Person
 	var mine []groups.Listed
 	var succession []successorChoice
-	found := false
+	found, guest := false, false
 	f, ok := a.adminPage(w, r, func(q *sql.Tx, f *pageFacts) error {
 		var id int64
-		err := q.QueryRowContext(r.Context(), `SELECT id FROM people WHERE uid = ? AND status IN ('active', 'disabled')`, r.PathValue("uid")).Scan(&id)
+		err := q.QueryRowContext(r.Context(), `SELECT id, 'guest' IN (status, coalesce(disabled_from, '')) FROM people WHERE uid = ? AND status IN ('active', 'disabled', 'guest')`,
+			r.PathValue("uid")).Scan(&id, &guest)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
 		}
@@ -145,9 +146,10 @@ func (a *App) showAdminPerson(w http.ResponseWriter, r *http.Request, status int
 		Groups     []groups.Listed
 		Succession []successorChoice
 		Self       bool
+		Guest      bool // a guest, or one turned off (R48)
 		Message    string
 		Status     string
-	}{p, mine, succession, self, msg, map[string]string{
+	}{p, mine, succession, self, guest, msg, map[string]string{
 		"disabled": "Disabled. They've been signed out and can't sign in until you turn their account on again. Any seats they held went to the next people waiting.",
 		"enabled":  "Turned on again. Their groups are back as they were, and their answers too where there's room. If a date they said Going to is full now, they've been told to ask a leader.",
 	}[r.URL.Query().Get("done")]}

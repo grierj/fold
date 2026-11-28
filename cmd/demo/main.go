@@ -232,7 +232,7 @@ func (s *seeder) build() {
 	s.drain()
 	var unfinished int
 	s.read(func(q *sql.Tx) error {
-		return q.QueryRowContext(s.ctx, `SELECT count(*) FROM jobs WHERE state IN ('pending', 'failed')`).Scan(&unfinished)
+		return q.QueryRowContext(s.ctx, `SELECT count(*) FROM jobs WHERE state IN ('pending', 'failed') AND kind LIKE 'mail.%'`).Scan(&unfinished)
 	})
 	if s.err == nil && unfinished > 0 {
 		s.err = fmt.Errorf("%d emails could not be sent while seeding", unfinished)

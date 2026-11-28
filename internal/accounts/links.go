@@ -100,11 +100,11 @@ func LookUpLink(ctx context.Context, q db.Querier, k *keys.Keys, token string, n
 		return LinkInfo{}, err
 	}
 	if l.facts.Purpose == "guest" {
-		g, err := openGuest(k, l.sealed)
-		if err != nil {
-			return LinkInfo{}, nil
+		// One that no longer opens has no address to match a browser to; its
+		// button deletes it (UseGuestLink).
+		if g, err := openGuest(k, l.sealed); err == nil {
+			l.Email = g.Email
 		}
-		l.Email = g.Email
 	}
 	return LinkInfo{Purpose: l.facts.Purpose, Usable: policy.LinkUsable(l.facts, l.facts.Purpose, now), Email: l.Email}, nil
 }

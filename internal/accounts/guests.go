@@ -27,9 +27,9 @@ const (
 	// JobGuestConfirm emails a confirm link. Its ref is the link and its
 	// secret the token.
 	JobGuestConfirm = "mail.guest_confirm"
-	// JobGuestGoing emails the manage link after a confirm. Its ref is the
-	// manage link and its secret the token.
-	JobGuestGoing = "mail.guest_going"
+	// JobGuestGoing emails the manage link after a guest's own answer
+	// (notices.SendManage).
+	JobGuestGoing = notices.JobManageMail
 	// JobGuestCleanup deletes confirm links that expired or were cancelled.
 	JobGuestCleanup = "guests.cleanup"
 
@@ -136,6 +136,10 @@ func (c RequestGuest) Apply(tx *write.Tx) error {
 	if len(old) > 0 {
 		tx.Detail("replaced", "1")
 	}
+	// The sealed name and email go the moment the link expires (R35).
+	if err := tx.Enqueue(write.NewJob{Kind: JobGuestCleanup, RunAt: tx.Now.Add(LinkLife)}); err != nil {
+		return err
+	}
 	return tx.Enqueue(write.NewJob{Kind: JobGuestConfirm, Ref: id, Secret: []byte(token)})
 }
 
@@ -157,7 +161,7 @@ func openGuest(k interface {
 // that browser, and a manage link for the date is emailed (DEC-55).
 type UseGuestLink struct {
 	Token        string
-	Outcome      string // set on success
+	Outcome      string // set on success; "" is a link that could not be read
 	DateUID      string // set on success
 	SessionToken string // set when it answered
 }
@@ -183,12 +187,14 @@ func (c *UseGuestLink) Apply(tx *write.Tx) error {
 	if !policy.LinkUsable(policy.Link{Found: true, Purpose: "guest", Cancelled: cancelled.Valid, ExpiresAt: time.Unix(expires, 0)}, "guest", tx.Now) {
 		return write.ErrNotAllowed
 	}
-	who, err := openGuest(tx, sealed)
-	if err != nil {
-		return write.ErrNotAllowed // sealed before a key change: the cleanup deletes it
-	}
 	if _, err := tx.Exec(`DELETE FROM links WHERE id = ?`, id); err != nil {
 		return err
+	}
+	who, err := openGuest(tx, sealed)
+	if err != nil {
+		// Sealed before a key change: it is gone, and reads as a used link.
+		tx.Detail("outcome", "unreadable")
+		return nil
 	}
 	var duid string
 	if err := tx.QueryRow(`SELECT uid FROM dates WHERE id = ?`, dateID).Scan(&duid); err != nil {
@@ -240,11 +246,7 @@ func (c *UseGuestLink) Apply(tx *write.Tx) error {
 	if _, err := answers.Set(tx, p.ID, []int64{d.ID}, policy.AnswerGoing); err != nil {
 		return err
 	}
-	linkID, token, err := notices.ManageLink(tx, p.ID, d.ID)
-	if err != nil {
-		return err
-	}
-	if err := tx.Enqueue(write.NewJob{Kind: JobGuestGoing, Ref: linkID, Secret: []byte(token)}); err != nil {
+	if err := notices.SendManage(tx, p.ID, d.ID); err != nil {
 		return err
 	}
 	c.SessionToken, err = startSession(tx, p.ID)

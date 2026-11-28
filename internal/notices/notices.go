@@ -60,18 +60,21 @@ const MailsPerDay = 10
 const UrgentPerDay = 5
 
 // urgent are the event kinds that are emailed (R36).
-var urgent = []string{Promoted, DateCancelled, EventDeleted, DatesDropped, DatesMoved}
+var urgent = []string{Promoted, DateCancelled, EventDeleted, DatesDropped, DatesMoved, AnswerRemoved, AnswerRemovedAll}
 
 // Mails reports whether a notice is also emailed. Until email choices
 // arrive in slice 3 only required mail goes out: account requests, and of
-// event notices only the urgent ones (R36): moving up off a waitlist, and a
-// date the person said Going or Maybe to going away.
-func Mails(kind, answer string) bool {
-	switch kind {
+// event notices only the urgent ones (R36): moving up off a waitlist, a
+// date the person said Going or Maybe to going away, and a guest taken off
+// a date, who rarely sees the bell (R47).
+func Mails(n New) bool {
+	switch n.Kind {
 	case AccountRequested, Promoted:
 		return true
 	case DateCancelled, EventDeleted, DatesDropped, DatesMoved:
-		return policy.Urgent(answer)
+		return policy.Urgent(n.Answer)
+	case AnswerRemoved, AnswerRemovedAll:
+		return n.Guest
 	}
 	return false
 }
@@ -85,9 +88,10 @@ type New struct {
 	GroupID   int64 // 0 if none
 	EventID   int64 // 0 if none
 	DateID    int64 // 0 if none
-	// Answer is the person's answer to the date, for R36's mail rule. It is
-	// not stored.
+	// Answer is the person's answer to the date, for R36's mail rule, and
+	// Guest whether they are a guest, for R47's. Neither is stored.
 	Answer string
+	Guest  bool
 }
 
 func nullID(id int64) any {
@@ -114,7 +118,7 @@ func AddMany(tx *write.Tx, ns []New) error {
 		mail := map[[2]any]bool{}
 		for _, n := range chunk {
 			args = append(args, n.PersonID, n.Kind, nullID(n.ActorID), nullID(n.SubjectID), nullID(n.GroupID), nullID(n.EventID), nullID(n.DateID), tx.Now.Unix())
-			if Mails(n.Kind, n.Answer) {
+			if Mails(n) {
 				mail[[2]any{n.PersonID, n.Kind}] = true
 			}
 		}
@@ -621,6 +625,32 @@ func guestManageLink(tx *write.Tx, noticeID int64) ([]byte, error) {
 	}
 	_, token, err := ManageLink(tx, personID, dateID)
 	return []byte(token), err
+}
+
+// JobManageMail emails a manage link after a person's own answer: the
+// "You're going" email. Its ref is the manage link and its secret the token.
+const JobManageMail = "mail.guest_going"
+
+// ManageMailsPerDay is how many "You're going" emails a person gets in a
+// day; past it their answer still stands, and their latest link works.
+const ManageMailsPerDay = 5
+
+// SendManage makes a manage link to a date and queues the "You're going"
+// email that carries it (DEC-55), within ManageMailsPerDay.
+func SendManage(tx *write.Tx, personID, dateID int64) error {
+	var today int
+	if err := tx.QueryRow(`SELECT count(*) FROM jobs j JOIN links l ON l.id = j.ref WHERE j.kind = ? AND l.person_id = ? AND j.created_at > ?`,
+		JobManageMail, personID, tx.Now.Add(-24*time.Hour).Unix()).Scan(&today); err != nil {
+		return err
+	}
+	if today >= ManageMailsPerDay {
+		return nil
+	}
+	id, token, err := ManageLink(tx, personID, dateID)
+	if err != nil {
+		return err
+	}
+	return tx.Enqueue(write.NewJob{Kind: JobManageMail, Ref: id, Secret: []byte(token)})
 }
 
 // ManageLink makes a standing link to one date for the person who answered

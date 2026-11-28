@@ -319,8 +319,10 @@ func (c *RedeemInvitation) Apply(tx *write.Tx) error {
 		p = people.Person{ID: id, UID: uid, Status: people.StatusActive}
 	case err != nil:
 		return err
-	case p.Status == people.StatusPending:
-		if _, err := tx.Exec(`UPDATE people SET status = 'active', updated_at = ?, version = version + 1 WHERE id = ?`, tx.Now.Unix(), p.ID); err != nil {
+	case p.Status == people.StatusPending, p.Guest():
+		// A leader's invitation needs no approval (DEC-4): a waiting request
+		// or a guest becomes a member, a guest keeping their answers.
+		if _, err := tx.Exec(`UPDATE people SET status = 'active', requested_at = NULL, updated_at = ?, version = version + 1 WHERE id = ?`, tx.Now.Unix(), p.ID); err != nil {
 			return err
 		}
 	case p.Status != people.StatusActive:

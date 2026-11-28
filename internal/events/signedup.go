@@ -76,7 +76,8 @@ func Telling(ctx context.Context, q db.Querier, e Event, g groups.Group, dateID 
 // the event may remove them.
 type Unseen struct {
 	UID, Name string
-	Dates     int // how many answers Remove would take: Answers on its dates still to come
+	Guest     bool // marked beside their name (R46)
+	Dates     int  // how many answers Remove would take: Answers on its dates still to come
 }
 
 // unseen lists who among list may see their date now and would not with
@@ -90,7 +91,7 @@ func unseen(ctx context.Context, q db.Querier, list []answers.Signed, e Event, g
 			continue
 		}
 		seen[s.PersonID] = true
-		u := Unseen{UID: s.UID, Name: s.Name, Dates: 1}
+		u := Unseen{UID: s.UID, Name: s.Name, Guest: s.Guest(), Dates: 1}
 		if !oneDate {
 			n, err := Answers(ctx, q, e.ID, s.PersonID, now)
 			if err != nil {
@@ -160,7 +161,8 @@ func (c *RemoveAnswer) Apply(tx *write.Tx) error {
 		tx.Subject(e.UID)
 	}
 	var personID int64
-	if err := tx.QueryRow(`SELECT id, name FROM people WHERE uid = ?`, c.PersonUID).Scan(&personID, &c.Name); err != nil {
+	var guest bool
+	if err := tx.QueryRow(`SELECT id, name, status = 'guest' FROM people WHERE uid = ?`, c.PersonUID).Scan(&personID, &c.Name, &guest); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrUnchanged
 		}
@@ -183,6 +185,6 @@ func (c *RemoveAnswer) Apply(tx *write.Tx) error {
 	if c.DateUID == "" {
 		kind = notices.AnswerRemovedAll
 	}
-	// R44: told plainly, at the bell, with no reason.
-	return notices.Add(tx, notices.New{PersonID: personID, Kind: kind, ActorID: tx.Actor.Person.ID, EventID: e.ID, DateID: first})
+	// R44: told plainly, at the bell, with no reason; a guest by email too (R47).
+	return notices.Add(tx, notices.New{PersonID: personID, Kind: kind, ActorID: tx.Actor.Person.ID, EventID: e.ID, DateID: first, Guest: guest})
 }

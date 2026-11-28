@@ -135,6 +135,7 @@ type answerBlock struct {
 // event (DEC-84).
 type nameRow struct {
 	Name   string
+	Guest  bool // marked "Guest" (R46)
 	Remove *Dialog
 }
 
@@ -189,7 +190,7 @@ func (a *App) answerView(f eventFacts, af answerFacts, r *http.Request, status s
 	rows := func(list []answers.Named) []nameRow {
 		out := make([]nameRow, 0, len(list))
 		for _, n := range list {
-			row := nameRow{Name: n.Name}
+			row := nameRow{Name: n.Name, Guest: n.Guest}
 			if remove {
 				row.Remove = &Dialog{ID: "remove-" + n.UID, OpenLabel: "Remove", OpenKind: "ghost", OpenName: "Remove " + n.Name,
 					Title: "Take " + n.Name + " off " + day + "?", Text: "Their answer to this date is taken off. If that frees a seat, the next person waiting moves up and is told. They can answer again while they can see it.",
@@ -288,11 +289,13 @@ func (a *App) doneLine(f eventFacts, af answerFacts, done string) string {
 		return answerStatus(done, 1, 0)
 	case done == "removed" && !f.canManage():
 		return ""
-	case done == "guest" && af.mine == policy.AnswerGoing:
+	case done == "guest" && f.guest != nil && af.mine == policy.AnswerGoing:
 		return "You're going. We've emailed you a link to see or cancel your RSVP."
-	case done == "guest" && af.mine == policy.AnswerWaiting:
+	case done == "guest" && f.guest != nil && af.mine == policy.AnswerWaiting:
 		return "We've emailed you a link to see or cancel your place on the waitlist."
-	case done == "guest-cancelled" && af.mine == policy.AnswerCancelled:
+	case done == "guest" && f.session != nil && af.mine == policy.AnswerGoing:
+		return answerStatus(policy.AnswerGoing, 1, 0)
+	case done == "guest-cancelled" && f.guest != nil && af.mine == policy.AnswerCancelled:
 		return "Your RSVP is cancelled."
 	case done == "guest", done == "guest-cancelled":
 		return ""

@@ -381,8 +381,12 @@ func CountsFor(ctx context.Context, q db.Querier, dateID int64, withCant bool) (
 }
 
 // Named is one person with an answer: their public name, never their
-// address, and their id for the people running the event.
-type Named struct{ UID, Name string }
+// address, their id for the people running the event, and whether they are
+// a guest, whose name is their own say-so (R46).
+type Named struct {
+	UID, Name string
+	Guest     bool
+}
 
 // Names are the people with one answer on a date, by name; the waitlist is
 // in its order.
@@ -391,7 +395,7 @@ func Names(ctx context.Context, q db.Querier, dateID int64, status string) ([]Na
 	if status == policy.AnswerWaiting {
 		order = "a.waiting_since, a.id"
 	}
-	rows, err := q.QueryContext(ctx, `SELECT p.uid, p.name FROM counted_answers a JOIN people p ON p.id = a.person_id
+	rows, err := q.QueryContext(ctx, `SELECT p.uid, p.name, p.status = 'guest' FROM counted_answers a JOIN people p ON p.id = a.person_id
 		WHERE a.date_id = ? AND a.status = ? ORDER BY `+order, dateID, status)
 	if err != nil {
 		return nil, err
@@ -400,7 +404,7 @@ func Names(ctx context.Context, q db.Querier, dateID int64, status string) ([]Na
 	var out []Named
 	for rows.Next() {
 		var n Named
-		if err := rows.Scan(&n.UID, &n.Name); err != nil {
+		if err := rows.Scan(&n.UID, &n.Name, &n.Guest); err != nil {
 			return nil, err
 		}
 		out = append(out, n)

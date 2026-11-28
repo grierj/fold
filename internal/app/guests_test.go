@@ -583,7 +583,6 @@ func TestAGuestThroughTheExecutor(t *testing.T) {
 		}
 	}
 	for name, c := range map[string]write.Command{
-		"disable a guest":       accounts.Disable{PersonUID: gina},
 		"add a guest":           groups.Add{GroupUID: group, PersonUID: gina},
 		"make a guest a leader": groups.SetRole{GroupUID: group, PersonUID: gina, Leader: true},
 		"remove a guest":        groups.Remove{GroupUID: group, PersonUID: gina},
@@ -605,5 +604,202 @@ func TestAGuestThroughTheExecutor(t *testing.T) {
 	}
 	if s.Count(t, `SELECT count(*) FROM memberships m JOIN people p ON p.id = m.person_id WHERE p.uid = ?`, gina) != 0 {
 		t.Fatal("a guest got a membership")
+	}
+}
+
+// guestGoing makes a guest going to date in their own browser.
+func (s *site) guestGoing(date, name, email string) *browser {
+	s.t.Helper()
+	g := s.browser()
+	g.rsvp(date, name, email)
+	s.work()
+	g.get("/l/" + s.confirmLink(email))
+	s.work()
+	return g
+}
+
+// R46: a guest is marked "Guest" beside their name wherever names of the
+// people coming show: who's coming, and R3's list.
+func TestGuestsAreMarked(t *testing.T) {
+	s, admin, event, date := publicDate(t, "")
+	s.guestGoing(date, "Gina Guest", "gina@example.org")
+	mia := s.member("Mia Member", "mia@example.org")
+	tag := `Gina Guest <span class="tag">Guest</span>`
+	if r := mia.get("/dates/" + date); !strings.Contains(r.body, tag) {
+		t.Fatalf("a member doesn't see the guest marked: %s", between(r.body, `id="answer"`, "</section>"))
+	}
+	if r := admin.get("/dates/" + date); !strings.Contains(r.body, tag) {
+		t.Fatal("those running it don't see the guest marked")
+	}
+	edit := "/events/" + event + "/edit"
+	narrowed := editForm(eventForm("Supper", "2026-12-01", "18:00", "once"), "1")
+	narrowed.Set("visibility", "church")
+	if r := admin.post(edit, edit, narrowed); !strings.Contains(r.body, tag) {
+		t.Fatalf("R3's list doesn't mark the guest: %s", between(r.body, "<main", "</main>"))
+	}
+}
+
+// R47: a guest taken off a date is told by email too, pointing at the
+// date; a member is told at the bell only (R44).
+func TestAGuestTakenOffIsEmailed(t *testing.T) {
+	s, admin, _, date := publicDate(t, "")
+	s.guestGoing(date, "Gina Guest", "gina@example.org")
+	mia := s.member("Mia Member", "mia@example.org")
+	answer(mia, date, "going", "date")
+	sent := len(s.outbox.All())
+	for _, who := range []string{"gina@example.org", "mia@example.org"} {
+		admin.post("/dates/"+date, "/dates/"+date+"/people/"+s.uidOf(who)+"/remove", nil)
+	}
+	s.work()
+	if len(s.outbox.All()) != sent+1 {
+		t.Fatalf("%d emails for two removals, want one, the guest's", len(s.outbox.All())-sent)
+	}
+	m, _ := s.outbox.LatestTo("gina@example.org")
+	if !strings.Contains(m.Text, "took you off the list") || !strings.Contains(m.Text, "/dates/"+date) {
+		t.Fatalf("the guest's email: %q", m.Text)
+	}
+}
+
+// R48: admins find guests on the people page, tagged, and turn one off;
+// their answers stop counting and the line moves up; turned on again they
+// are a guest, not a member.
+func TestAdminsTurnAGuestOff(t *testing.T) {
+	s, admin, _, date := publicDate(t, "1")
+	s.guestGoing(date, "Gina Guest", "gina@example.org")
+	mia := s.member("Mia Member", "mia@example.org")
+	answer(mia, date, "going", "date")
+	if r := admin.get("/admin/people?q=gina"); !strings.Contains(r.body, `Gina Guest</a> <span class="tag">Guest</span>`) {
+		t.Fatalf("the people page: %s", between(r.body, "<ul", "</ul>"))
+	}
+	uid := s.uidOf("gina@example.org")
+	if r := admin.get("/admin/people/" + uid); !strings.Contains(r.body, "Turn their account off") {
+		t.Fatal("no way to turn a guest off")
+	}
+	if r := admin.post("/admin/people/"+uid, "/admin/people/"+uid+"/disable", nil); r.header.Get("Location") != "/admin/people/"+uid+"?done=disabled" {
+		t.Fatalf("disable a guest: %d %s", r.status, r.header.Get("Location"))
+	}
+	if s.Count(t, `SELECT count(*) FROM answers a JOIN people p ON p.id = a.person_id WHERE p.email = 'mia@example.org' AND a.status = 'going'`) != 1 {
+		t.Fatal("the next person didn't move up when the guest was turned off")
+	}
+	if r := admin.get("/dates/" + date); strings.Contains(r.body, "Gina Guest") {
+		t.Fatal("a turned-off guest still shows as coming")
+	}
+	admin.post("/admin/people/"+uid, "/admin/people/"+uid+"/enable", nil)
+	if s.Count(t, `SELECT count(*) FROM people WHERE uid = ? AND status = 'guest' AND disabled_from IS NULL`, uid) != 1 {
+		t.Fatal("turned on again, a guest became something else")
+	}
+}
+
+// The sealed name and email are gone the moment a confirm link expires.
+func TestAConfirmLinkIsDeletedAtExpiry(t *testing.T) {
+	s, _, _, date := publicDate(t, "")
+	s.browser().rsvp(date, "Gina Guest", "gina@example.org")
+	s.work()
+	s.Clock.Advance(accounts.LinkLife - time.Second)
+	s.work()
+	if s.Count(t, `SELECT count(*) FROM links WHERE purpose = 'guest'`) != 1 {
+		t.Fatal("deleted early")
+	}
+	s.Clock.Advance(time.Second)
+	s.work()
+	if s.Count(t, `SELECT count(*) FROM links WHERE purpose = 'guest'`) != 0 {
+		t.Fatal("the sealed row outlived its 24 hours")
+	}
+}
+
+// A confirm row whose seal no longer opens is deleted when used, and reads
+// as a used link.
+func TestAnUnreadableConfirmLinkIsDeleted(t *testing.T) {
+	s, _, _, date := publicDate(t, "")
+	b := s.browser()
+	b.rsvp(date, "Gina Guest", "gina@example.org")
+	s.work()
+	tok := s.confirmLink("gina@example.org")
+	s.Writer.Exec(`UPDATE links SET sealed = x'00' WHERE purpose = 'guest'`)
+	if r := s.browser().post("/signin", "/l/"+tok, nil); !strings.Contains(r.body, "This link no longer works") {
+		t.Fatalf("%d %s", r.status, between(r.body, "<main", "</main>"))
+	}
+	if s.Count(t, `SELECT count(*) FROM links WHERE purpose = 'guest'`)+s.Count(t, `SELECT count(*) FROM people WHERE email = 'gina@example.org'`) != 0 {
+		t.Fatal("an unreadable confirm link was kept, or made a person")
+	}
+}
+
+// The guest lines after a confirm are for guests: a member's crafted
+// address says nothing about an email they weren't sent.
+func TestGuestLinesAreForGuests(t *testing.T) {
+	_, admin, _, date := publicDate(t, "")
+	answer(admin, date, "going", "date")
+	if r := admin.get("/dates/" + date + "?done=guest"); strings.Contains(r.body, "We&#39;ve emailed you") {
+		t.Fatal("a member is told of an email they weren't sent")
+	}
+}
+
+// A leader's emailed invitation makes a guest a member, keeping their
+// answers, with the invitation's own checks.
+func TestAGuestAcceptsAnInvitation(t *testing.T) {
+	s, admin, _, date := publicDate(t, "")
+	g := s.guestGoing(date, "Gina Guest", "gina@example.org")
+	group := between(admin.get("/dates/"+date).body, `href="/groups/`, `"`)
+	admin.post("/groups/"+group+"/members", "/groups/"+group+"/invite", url.Values{"name": {"Gina"}, "email": {"gina@example.org"}, "adult": {"yes"}})
+	s.work()
+	tok := s.inviteLink("gina@example.org")
+	r := g.post("/invite/"+tok, "/invite/"+tok, url.Values{"name": {"Gina Guest"}, "age": {"adult"}})
+	if !strings.HasSuffix(r.header.Get("Location"), "done=joined") {
+		t.Fatalf("accepting: %d %s %s", r.status, r.header.Get("Location"), between(r.body, "<main", "</main>"))
+	}
+	if s.Count(t, `SELECT count(*) FROM people p JOIN answers a ON a.person_id = p.id JOIN active_memberships m ON m.person_id = p.id
+		WHERE p.email = 'gina@example.org' AND p.status = 'active' AND a.status = 'going'`) != 1 {
+		t.Fatal("the guest isn't a member with their answer")
+	}
+}
+
+// A guest's own Going from the date page comes with a fresh manage link.
+func TestAGuestAnsweringAgainGetsALink(t *testing.T) {
+	s, _, _, date := publicDate(t, "")
+	g := s.guestGoing(date, "Gina Guest", "gina@example.org")
+	g.post("/dates/"+date, "/dates/"+date+"/withdraw", nil)
+	before := len(s.outbox.All())
+	g.post("/dates/"+date, "/dates/"+date+"/answer", url.Values{"answer": {"going"}, "scope": {"date"}})
+	s.work()
+	m, _ := s.outbox.LatestTo("gina@example.org")
+	if len(s.outbox.All()) != before+1 || !strings.Contains(m.Text, "You're going to") || managePattern.FindString(m.Text) == "" {
+		t.Fatalf("answering again: %q", m.Text)
+	}
+	tok := managePattern.FindStringSubmatch(m.Text)[1]
+	if r := s.browser().get("/g/" + tok); r.status != http.StatusOK {
+		t.Fatalf("the new manage link: %d", r.status)
+	}
+	g.post("/dates/"+date, "/dates/"+date+"/answer", url.Values{"answer": {"going"}, "scope": {"date"}})
+	s.work()
+	if len(s.outbox.All()) != before+1 {
+		t.Fatal("pressing Going again sent another email")
+	}
+}
+
+// One address may have three confirm links waiting; a fourth answers with
+// the same page and makes nothing.
+func TestAFourthWaitingLinkIsRefused(t *testing.T) {
+	s := newSite(t)
+	admin := s.finishSetup()
+	group := s.start(admin, "Supper Club", "public")
+	uid := s.schedule(admin, group, eventForm("Supper", "2026-12-01", "18:00", "weekly"))
+	body := admin.get("/events/" + uid + "?all=1").body
+	var dates []string
+	for _, m := range regexp.MustCompile(`href="/dates/([a-z0-9]+)"`).FindAllStringSubmatch(body, 4) {
+		dates = append(dates, m[1])
+	}
+	var first string
+	for i, d := range dates {
+		r := s.browser().rsvp(d, "Gina Guest", "gina@example.org")
+		page := stripTokens(between(r.body, "<main", "</main>"))
+		page = strings.ReplaceAll(page, d, "DATE")
+		if r.status != http.StatusOK || (i > 0 && page != first) {
+			t.Fatalf("date %d answered differently: %d", i, r.status)
+		}
+		first = page
+	}
+	s.work()
+	if n := s.Count(t, `SELECT count(*) FROM links WHERE purpose = 'guest'`); n != accounts.MaxGuestPending {
+		t.Fatalf("%d links waiting for one address, want %d", n, accounts.MaxGuestPending)
 	}
 }

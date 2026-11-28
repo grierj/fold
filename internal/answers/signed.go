@@ -46,6 +46,9 @@ func (s Signed) Sees(e Event, eventVis, dateVis string) bool {
 	return policy.CanSeeDate(p, ev, dateVis, e.Group, s.rel)
 }
 
+// Guest: the person is a guest (R46).
+func (s Signed) Guest() bool { return s.guest }
+
 // Member: the person is an active member of the event's group.
 func (s Signed) Member() bool { return s.rel.Member }
 

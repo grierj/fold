@@ -137,6 +137,9 @@ func (a *App) useGuestLink(w http.ResponseWriter, r *http.Request, token string)
 	}
 	a.setCookie(w, "device", "", -1)
 	switch c.Outcome {
+	case "":
+		a.showLink(w, r, false)
+		return
 	case policy.ConfirmNew, policy.ConfirmAsThem:
 		a.setCookie(w, "session", c.SessionToken, accounts.SessionLife)
 		http.Redirect(w, r, "/dates/"+c.DateUID+"?done=guest", http.StatusSeeOther)

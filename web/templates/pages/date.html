@@ -87,5 +87,5 @@
 {{/* names: who gave one answer. Those running the event get Remove beside
      each (DEC-84); everyone else, names alone. */}}
 {{define "names"}}{{if (index . 0).Remove}}<ul class="mt-1 divide-y divide-border">{{range .}}<li class="flex flex-wrap items-center justify-between gap-2 py-1">
-  <span class="wrap-anywhere">{{.Name}}</span>{{template "dialog" .Remove}}
-</li>{{end}}</ul>{{else}}<p class="wrap-anywhere">{{range $i, $n := .}}{{if $i}}, {{end}}{{$n.Name}}{{end}}</p>{{end}}{{end}}
+  <span class="wrap-anywhere">{{.Name}}{{if .Guest}} <span class="tag">Guest</span>{{end}}</span>{{template "dialog" .Remove}}
+</li>{{end}}</ul>{{else}}<p class="wrap-anywhere">{{range $i, $n := .}}{{if $i}}, {{end}}{{$n.Name}}{{if $n.Guest}} <span class="tag">Guest</span>{{end}}{{end}}</p>{{end}}{{end}}

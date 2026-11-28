@@ -6,6 +6,7 @@ import (
 
 	"fold/internal/answers"
 	"fold/internal/groups"
+	"fold/internal/notices"
 	"fold/internal/policy"
 	"fold/internal/write"
 )
@@ -122,6 +123,10 @@ func (c *Answer) asGuest(tx *write.Tx, d Row, e Event, g groups.Group) error {
 	}
 	tx.Subject(d.UID)
 	tx.Subject(e.UID)
+	was, err := answers.Mine(tx.Context(), tx, d.ID, tx.Actor.Person.ID)
+	if err != nil {
+		return err
+	}
 	n, err := answers.Set(tx, tx.Actor.Person.ID, []int64{d.ID}, policy.AnswerGoing)
 	if err != nil {
 		return err
@@ -129,5 +134,9 @@ func (c *Answer) asGuest(tx *write.Tx, d Row, e Event, g groups.Group) error {
 	c.Dates, c.Waiting = 1, n.Waiting
 	tx.Detail("answer", c.Status)
 	tx.Detail("guest", "1")
-	return nil
+	if was == policy.AnswerGoing || was == policy.AnswerWaiting {
+		return nil
+	}
+	// A guest has no pages of their own: a new answer comes with its manage link.
+	return notices.SendManage(tx, tx.Actor.Person.ID, d.ID)
 }

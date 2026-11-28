@@ -26,6 +26,7 @@ type privateView struct {
 
 type unseenRow struct {
 	ID, Name, Dates string
+	Guest           bool
 	Remove          Dialog
 }
 
@@ -36,7 +37,7 @@ func (a *App) showPrivate(w http.ResponseWriter, r *http.Request, f pageFacts, v
 		if v.Date != nil {
 			action, what = "/dates/"+v.Date.UID+"/people/"+u.UID+"/remove", "their answer to this date"
 		}
-		row := unseenRow{ID: id, Name: u.Name, Dates: plural(u.Dates, "date", "dates"),
+		row := unseenRow{ID: id, Name: u.Name, Guest: u.Guest, Dates: plural(u.Dates, "date", "dates"),
 			Remove: Dialog{ID: "remove-" + u.UID, OpenLabel: "Remove", OpenKind: "secondary", OpenName: "Remove " + u.Name,
 				Title: "Take " + u.Name + " off " + v.Event.Title + "?", Text: "This takes off " + what + ". If that frees a seat, the next person waiting moves up and is told.",
 				CancelLabel: "Keep them", ConfirmLabel: "Remove", ConfirmKind: "danger", Action: action, CSRF: a.csrfToken(r), Target: "#" + id}}
