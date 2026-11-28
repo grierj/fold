@@ -22,6 +22,12 @@ type Scope struct {
 	Answerer int64
 	JustMine bool
 	GroupID  int64 // 0 for every group
+	// Cancelled lists dates cancelled by hand or by a series edit too, so a
+	// calendar app removes them (the feed).
+	Cancelled bool
+	// Details reads each row's description and video link, kept only where
+	// the viewer may have them (the feed).
+	Details bool
 }
 
 // Kind is the viewer in policy.InScope's terms.
@@ -50,6 +56,14 @@ type CalDate struct {
 	Host             bool
 	GroupUID         string // "" for a church-wide event or a group the viewer may not see
 	GroupName        string
+	Cancelled        bool
+	Zone             string
+	Sequence         int
+	UpdatedAt        time.Time
+	// With Scope.Details: the event's description only to someone who may
+	// see the event, not just an opened date (#167), and its video link as
+	// the date page gives it (R41, R49).
+	About, Video string
 }
 
 // Facts are the row in policy.InScope's terms.
@@ -82,23 +96,27 @@ const scopeSQL = `CASE
 // that start in [from, to) and end after since, soonest first, at most
 // limit. Visibility and scope are filtered in the query, before the limit.
 func Calendar(ctx context.Context, q db.Querier, s Scope, from, to, since, now time.Time, limit int) ([]CalDate, error) {
-	admin, mine := 0, 0
+	admin, mine, cancelled := 0, 0, 0
 	if s.Viewer.Admin {
 		admin = 1
 	}
 	if s.JustMine {
 		mine = 1
 	}
-	rows, err := q.QueryContext(ctx, `SELECT d.uid, d.starts_at, d.ends_at, d.moved, e.title, e.place, e.group_id IS NULL, `+publicSQL+`,
+	if s.Cancelled {
+		cancelled = 1
+	}
+	rows, err := q.QueryContext(ctx, `SELECT d.uid, d.starts_at, d.ends_at, d.moved, d.status = 'cancelled', d.sequence, d.updated_at, e.title, e.place, e.zone, e.visibility,
+		CASE WHEN ?12 = 1 THEN e.about ELSE '' END, CASE WHEN ?12 = 1 THEN e.video_url ELSE '' END, e.group_id IS NULL, `+publicSQL+`,
 		coalesce(o.status, ''), e.group_id IS NOT NULL AND `+inGroupSQL+`,
 		EXISTS (SELECT 1 FROM active_memberships am WHERE am.group_id = e.group_id AND am.person_id = ?1 AND am.role = 'leader'),
 		`+hostSQL+`, coalesce(g.status, ''), coalesce(g.visibility, ''), coalesce(g.uid, ''), coalesce(g.name, '')
 		FROM dates d JOIN events e ON e.id = d.event_id LEFT JOIN groups g ON g.id = e.group_id
 		LEFT JOIN answers o ON o.date_id = d.id AND o.person_id = ?3
-		WHERE `+visibleSQL+` AND d.status = 'scheduled' AND d.starts_at >= ?7 AND d.starts_at < ?8 AND d.ends_at > ?9
+		WHERE `+visibleSQL+` AND (d.status = 'scheduled' OR ?11 = 1) AND d.starts_at >= ?7 AND d.starts_at < ?8 AND d.ends_at > ?9
 		AND (?10 = 0 OR e.group_id = ?10) AND `+scopeSQL+`
 		ORDER BY d.starts_at, d.id LIMIT `+strconv.Itoa(limit),
-		s.Viewer.ID, admin, s.Answerer, mine, now.Unix(), now.Add(policy.Window).Unix(), from.Unix(), to.Unix(), since.Unix(), s.GroupID)
+		s.Viewer.ID, admin, s.Answerer, mine, now.Unix(), now.Add(policy.Window).Unix(), from.Unix(), to.Unix(), since.Unix(), s.GroupID, cancelled, s.Details)
 	if err != nil {
 		return nil, err
 	}
@@ -111,17 +129,26 @@ func Calendar(ctx context.Context, q db.Querier, s Scope, from, to, since, now t
 	for rows.Next() {
 		var c CalDate
 		var g policy.Group
-		var starts, ends int64
-		if err := rows.Scan(&c.UID, &starts, &ends, &c.Moved, &c.Title, &c.Place, &c.ChurchWide, &c.Public, &c.Answer, &c.InGroup, &c.Leads,
-			&c.Host, &g.Status, &g.Visibility, &c.GroupUID, &c.GroupName); err != nil {
+		var starts, ends, updated int64
+		var visibility, about, video string
+		if err := rows.Scan(&c.UID, &starts, &ends, &c.Moved, &c.Cancelled, &c.Sequence, &updated, &c.Title, &c.Place, &c.Zone, &visibility, &about, &video,
+			&c.ChurchWide, &c.Public, &c.Answer, &c.InGroup, &c.Leads, &c.Host, &g.Status, &g.Visibility, &c.GroupUID, &c.GroupName); err != nil {
 			return nil, err
+		}
+		ev := policy.Event{Status: policy.EventActive, Visibility: visibility, ChurchWide: c.ChurchWide, Host: c.Host}
+		rel := policy.Rel{Member: c.InGroup, Leader: c.Leads}
+		if policy.CanSeeEvent(p, ev, g, rel) {
+			c.About = about
+		}
+		if !c.Cancelled && policy.CanSeeVideo(policy.CanManageEvent(p, ev, g, rel), c.Answer) {
+			c.Video = video
 		}
 		// An event can be more open than its group (DEC-48, P7): the row
 		// names the group only to someone who may see it.
-		if c.ChurchWide || !policy.CanSeeGroup(p, g, policy.Rel{Member: c.InGroup, Leader: c.Leads}) {
+		if c.ChurchWide || !policy.CanSeeGroup(p, g, rel) {
 			c.GroupUID, c.GroupName = "", ""
 		}
-		c.StartsAt, c.EndsAt = time.Unix(starts, 0).UTC(), time.Unix(ends, 0).UTC()
+		c.StartsAt, c.EndsAt, c.UpdatedAt = time.Unix(starts, 0).UTC(), time.Unix(ends, 0).UTC(), time.Unix(updated, 0).UTC()
 		out = append(out, c)
 	}
 	return out, rows.Err()
@@ -131,6 +158,7 @@ func Calendar(ctx context.Context, q db.Querier, s Scope, from, to, since, now t
 type SoonGroup struct {
 	UID, Name string
 	Next      time.Time
+	Zone      string // the next date's event's zone
 }
 
 // JoinableSoon lists up to limit active groups the viewer may see and join
@@ -144,7 +172,9 @@ func JoinableSoon(ctx context.Context, q db.Querier, v Viewer, now time.Time, li
 	if v.Admin {
 		admin = 1
 	}
-	rows, err := q.QueryContext(ctx, `SELECT g.uid, g.name, min(d.starts_at)
+	// SQLite takes a bare column from the row min() picks, so e.zone is the
+	// next date's.
+	rows, err := q.QueryContext(ctx, `SELECT g.uid, g.name, min(d.starts_at), e.zone
 		FROM dates d JOIN events e ON e.id = d.event_id JOIN groups g ON g.id = e.group_id
 		WHERE `+visibleSQL+` AND d.status = 'scheduled' AND d.starts_at > ?3 AND ?1 > 0
 		AND g.status = 'active' AND (g.visibility IN ('public', 'church') OR ?2 = 1)
@@ -158,7 +188,7 @@ func JoinableSoon(ctx context.Context, q db.Querier, v Viewer, now time.Time, li
 	for rows.Next() {
 		var s SoonGroup
 		var next int64
-		if err := rows.Scan(&s.UID, &s.Name, &next); err != nil {
+		if err := rows.Scan(&s.UID, &s.Name, &next, &s.Zone); err != nil {
 			return nil, err
 		}
 		s.Next = time.Unix(next, 0).UTC()

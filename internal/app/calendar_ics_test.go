@@ -3,8 +3,11 @@ package app_test
 import (
 	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // DEC-93: a date downloads for a calendar app to anyone who may see it, as
@@ -106,3 +109,60 @@ func TestAddToCalendarOpenedDate(t *testing.T) {
 
 // unfold joins a calendar file's folded lines (RFC 5545 section 3.1).
 func unfold(s string) string { return strings.ReplaceAll(s, "\r\n ", "") }
+
+// RFC 5545: every change a calendar app shows about a date raises its
+// SEQUENCE and LAST-MODIFIED, in the download and the feed alike, so apps
+// replace their copy; a change it does not show raises nothing.
+func TestCalendarFileSequence(t *testing.T) {
+	s := newSite(t)
+	admin := s.finishSetup()
+	group := s.start(admin, "Study", "public")
+	uid := s.schedule(admin, group, eventForm("Study", "2026-12-01", "19:00", "weekly"))
+	date := firstDate(admin.get("/events/" + uid).body)
+	feed := turnOnFeed(t, admin)
+	edit := "/events/" + uid + "/edit"
+	version := 1
+	steps := []struct {
+		name string
+		do   func()
+		seq  string
+	}{
+		{"scheduled", func() {}, "SEQUENCE:0"},
+		{"a new title", func() {
+			admin.post(edit, edit, editForm(eventForm("Bible study", "2026-12-01", "19:00", "weekly"), strconv.Itoa(version)))
+		}, "SEQUENCE:1"},
+		{"a seat limit, which no calendar shows", func() {
+			f := eventForm("Bible study", "2026-12-01", "19:00", "weekly")
+			f.Set("seats", "12")
+			admin.post(edit, edit, editForm(f, strconv.Itoa(version)))
+		}, "SEQUENCE:1"},
+		{"a later start", func() {
+			f := eventForm("Bible study", "2026-12-01", "19:30", "weekly")
+			f.Set("seats", "12")
+			admin.post(edit, edit, editForm(f, strconv.Itoa(version)))
+		}, "SEQUENCE:2"},
+		{"cancelled", func() { admin.post("/dates/"+date, "/dates/"+date+"/cancel", nil) }, "SEQUENCE:3"},
+		{"brought back", func() { admin.post("/dates/"+date, "/dates/"+date+"/restore", nil) }, "SEQUENCE:4"},
+		{"who can see it, saved", func() {
+			admin.post("/dates/"+date+"/open", "/dates/"+date+"/open", url.Values{"visibility": {""}})
+		}, "SEQUENCE:5"},
+	}
+	for _, st := range steps {
+		s.Clock.Advance(time.Hour)
+		st.do()
+		version = s.Count(t, `SELECT version FROM events`)
+		one := unfold(admin.get("/dates/" + date + "/calendar.ics").body)
+		if !strings.Contains(one, st.seq+"\r\n") || !strings.Contains(one, "LAST-MODIFIED:") {
+			t.Fatalf("%s: the download has %q", st.name, regexp.MustCompile(`SEQUENCE:\d+`).FindString(one))
+		}
+		all := unfold(s.browser().get(feed).body)
+		i := strings.Index(all, "UID:"+date+"@")
+		if i < 0 || !strings.HasPrefix(all[i:][strings.Index(all[i:], "SEQUENCE:"):], st.seq+"\r\n") {
+			t.Fatalf("%s: the feed's sequence differs from %s", st.name, st.seq)
+		}
+	}
+	// Seven steps an hour apart from 5 pm UTC on 25 November.
+	if one := admin.get("/dates/" + date + "/calendar.ics").body; !strings.Contains(one, "LAST-MODIFIED:20261126T000000Z") {
+		t.Fatalf("LAST-MODIFIED is not the last change's time:\n%s", one)
+	}
+}

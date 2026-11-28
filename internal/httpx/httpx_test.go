@@ -1,8 +1,12 @@
 package httpx
 
 import (
+	"bytes"
+	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"testing"
 )
 
@@ -47,7 +51,24 @@ func TestRedactPath(t *testing.T) {
 	if got := RedactPath("/g/abcdefsecret"); got != "/g/REDACTED" {
 		t.Fatal(got)
 	}
+	if got := RedactPath("/feed/abcdefsecret/calendar.ics"); got != "/feed/REDACTED" {
+		t.Errorf("a feed path: %q", got)
+	}
 	if got := RedactPath("/signin"); got != "/signin" {
 		t.Fatal(got)
+	}
+}
+
+// A secret in a path never reaches the access log, nor does a query string.
+func TestAccessLogKeepsSecretsOut(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	h := AccessLog(log, func(*http.Request) netip.Addr { return netip.MustParseAddr("203.0.113.9") },
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNotFound) }))
+	for _, p := range []string{"/feed/feedsecret123/calendar.ics", "/l/linksecret123", "/g/managesecret123", "/calendar?q=querysecret123"} {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", p, nil))
+	}
+	if strings.Contains(buf.String(), "secret123") || !strings.Contains(buf.String(), "/feed/REDACTED") {
+		t.Fatalf("the access log:\n%s", buf.String())
 	}
 }

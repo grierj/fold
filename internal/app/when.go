@@ -68,6 +68,23 @@ func timeSpan(start, end, now time.Time) string {
 	return clockWords(start) + " to " + dayWords(end, now) + ", " + clockWords(end)
 }
 
+// meetingWords is when a group next meets: "Tue, Dec 8, 7:00 pm", naming
+// the viewer's zone when the event keeps another (DEC-57).
+func meetingWords(t time.Time, eventZone string, loc *time.Location, now time.Time) string {
+	t = t.In(loc)
+	return dayWords(t, now) + ", " + clockWords(t) + zoneNote(eventZone, loc)
+}
+
+// zoneNote is " New York time" when an event keeps a clock other than the
+// viewer's, for a list that has no room for zoneLine's sentence; "" when
+// they agree.
+func zoneNote(eventZone string, viewer *time.Location) string {
+	if eventZone == "" || eventZone == viewer.String() {
+		return ""
+	}
+	return " " + events.ZoneCity(viewer.String()) + " time"
+}
+
 // monthWords is "December 2026", for the calendar's month.
 func monthWords(t time.Time) string { return t.Format("January 2006") }
 

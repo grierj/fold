@@ -19,6 +19,34 @@
     <h2 id="zone-h" class="text-xl font-bold">Time zone</h2>
     <div class="mt-4">{{template "zone" .}}</div>
   </section>
+  {{with .Data.Feed}}<section id="feed" class="section mt-10" aria-labelledby="feed-h">
+    <h2 id="feed-h" class="text-xl font-bold">Calendar feed</h2>
+    <p class="mt-2 text-text-muted">Your groups' dates, church-wide dates and the dates you answer, in the calendar app on your phone or computer. It keeps itself up to date.</p>
+    {{with .Status}}<div class="mt-3">{{template "status" .}}</div>{{end}}
+    {{with .Error}}<p class="field-error mt-3" role="alert"><span aria-hidden="true">⚠</span><span>{{.}}</span></p>{{end}}
+    {{if .URL.Value}}
+    <div class="mt-4">{{template "notice" (notice "info" "This link is shown only now" "Add it to your calendar now. Keep it to yourself: anyone with it can see your calendar.")}}</div>
+    <div class="mt-4 flex flex-wrap gap-3">
+      <a class="btn-primary no-underline" href="{{.Subscribe}}">Subscribe on iPhone or Mac</a>
+      {{template "linkbutton" (linkbutton "secondary" "Add to Google Calendar" .Google)}}
+    </div>
+    <p class="mt-2 text-sm text-text-muted">Google Calendar's page adds it to your Google account, and it shows on your Android phone.</p>
+    {{with .QR}}{{if .Size}}<figure class="mt-4">
+      <svg class="h-48 w-48 bg-white" role="img" aria-label="QR code for your calendar feed" viewBox="0 0 {{.Size}} {{.Size}}" shape-rendering="crispEdges">{{range .Runs}}<rect x="{{.X}}" y="{{.Y}}" width="{{.W}}" height="1"/>{{end}}</svg>
+      <figcaption class="mt-2 text-sm text-text-muted">On a computer? Point your phone's camera at this to subscribe on the phone.</figcaption>
+    </figure>{{end}}{{end}}
+    <h3 class="mt-6 font-bold">Other calendar apps</h3>
+    <div class="mt-2">{{template "field" .URL}}</div>
+    <p class="mt-2 text-sm text-text-muted">In Outlook, choose Add calendar, then Subscribe from web, and paste this address. If Subscribe does nothing on an iPhone, paste it in Settings, Calendar, Calendar Accounts, Add Account, Other, Add Subscribed Calendar.</p>
+    <p class="mt-2 text-sm text-text-muted">Calendar apps check for changes every few hours, so a change can take a while to show.</p>
+    {{else if .On}}
+    <p class="mt-3">Your calendar feed is on. Its link was shown once, when it was made. If you need it again, make a new link; the old one stops working.</p>
+    {{end}}
+    <div class="mt-4 flex flex-wrap items-center gap-3">
+    {{if .On}}{{template "dialog" .Replace}}{{template "dialog" .Off}}
+    {{else}}<form method="post" action="/profile/feed/new">{{template "hidden" (hidden "csrf" .Replace.CSRF)}}{{template "button" (button "primary" "Turn on the calendar feed")}}</form>{{end}}
+    </div>
+  </section>{{end}}
   <section class="section mt-10 flex flex-wrap items-center gap-3" aria-label="More">
     {{if .Viewer.IsAdmin}}{{template "linkbutton" (linkbutton "secondary" "Admin" "/admin/requests")}}{{template "linkbutton" (linkbutton "ghost" "Components" "/admin/gallery")}}{{end}}
     <form method="post" action="/signout">{{template "csrf" .}}{{template "button" (button "secondary" "Sign out")}}</form>

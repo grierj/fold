@@ -4,6 +4,7 @@
     <div class="min-w-0">
       <h1 class="text-2xl font-bold sm:text-3xl">Calendar</h1>
       <p class="mt-1 text-sm text-text-muted">{{.Data.ZoneLine}}</p>
+      {{if .Data.FeedLink}}<p class="text-sm"><a class="text-link" href="/profile#feed">Put your calendar on your phone</a></p>{{end}}
     </div>
   </div>
   <div class="flex flex-wrap items-end gap-x-6 gap-y-4">

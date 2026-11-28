@@ -5,7 +5,7 @@ import "net/http"
 // routes registers every route, here and nowhere else, so the budget count
 // in AGENTS.md is one grep. A route that writes is a POST, except GET
 // /l/{token} in the browser that asked for the link (R26). /l/, /invite/
-// and /g/ carry secrets, which the access log never writes.
+// /g/ and /feed/ carry secrets, which the access log never writes.
 func (a *App) routes(mux *http.ServeMux) {
 	mux.Handle("GET /{$}", http.HandlerFunc(a.home))
 	mux.Handle("GET /static/", a.static())
@@ -91,6 +91,9 @@ func (a *App) routes(mux *http.ServeMux) {
 	mux.Handle("POST /profile/name", http.HandlerFunc(a.postProfileName))
 	mux.Handle("POST /profile/contact", http.HandlerFunc(a.postProfileContact))
 	mux.Handle("POST /profile/zone", http.HandlerFunc(a.postProfileZone))
+	mux.Handle("POST /profile/feed/new", http.HandlerFunc(a.postNewFeed))
+	mux.Handle("POST /profile/feed/off", http.HandlerFunc(a.postEndFeed))
+	mux.Handle("GET /feed/{token}/calendar.ics", http.HandlerFunc(a.getFeed))
 
 	mux.Handle("GET /admin/groups", http.HandlerFunc(a.getAdminGroups))
 	mux.Handle("POST /admin/groups/{uid}/approve", a.postDecideGroup(true))

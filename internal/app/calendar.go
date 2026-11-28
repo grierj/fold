@@ -5,7 +5,9 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"fold/internal/events"
@@ -124,6 +126,7 @@ type calCell struct {
 
 type calendarData struct {
 	View, Heading, ZoneLine string
+	FeedLink                bool // a member may subscribe from their profile
 	Views                   Pick
 	Scopes                  *Pick
 	Filter                  calFilter
@@ -184,7 +187,7 @@ func (a *App) getCalendar(w http.ResponseWriter, r *http.Request) {
 			}
 			s.GroupID, ask.group = g.ID, g.UID
 		}
-		options, err := calendarGroups(r, q, f)
+		options, err := calendarGroups(r, q, f, now)
 		if err != nil {
 			return err
 		}
@@ -210,20 +213,26 @@ func (a *App) getCalendar(w http.ResponseWriter, r *http.Request) {
 	a.render(w, r, http.StatusOK, "calendar", "", f.page)
 }
 
-// calendarGroups are the groups the filter offers: those the viewer may
-// see, and the waiting or archived groups they lead.
-func calendarGroups(r *http.Request, q *sql.Tx, f pageFacts) ([]groups.Listed, error) {
-	list, err := groups.Directory(r.Context(), q, groups.Viewer(listViewer(f)), "", 500)
-	if err != nil || f.session == nil {
-		return list, err
+// calendarGroups are the groups the filter offers, by name: those the
+// viewer may see, and the waiting or archived groups they lead.
+func calendarGroups(r *http.Request, q *sql.Tx, f pageFacts, now time.Time) ([]groups.Listed, error) {
+	list, err := groups.Directory(r.Context(), q, groups.Viewer(listViewer(f)), groups.Find{}, now, 500)
+	if err != nil {
+		return nil, err
 	}
-	mine, err := groups.Mine(r.Context(), q, f.session.Person.ID)
-	for _, g := range mine {
-		if g.Status != policy.GroupActive {
-			list = append(list, g)
+	if f.session != nil {
+		mine, err := groups.Mine(r.Context(), q, groups.Viewer(listViewer(f)), now)
+		if err != nil {
+			return nil, err
+		}
+		for _, g := range mine {
+			if g.Status != policy.GroupActive {
+				list = append(list, g)
+			}
 		}
 	}
-	return list, err
+	slices.SortFunc(list, func(x, y groups.Listed) int { return strings.Compare(strings.ToLower(x.Name), strings.ToLower(y.Name)) })
+	return list, nil
 }
 
 func calendarView(ask calAsk, kind int, list []events.CalDate, options []groups.Listed, today, now time.Time) calendarData {
@@ -240,7 +249,7 @@ func calendarView(ask calAsk, kind int, list []events.CalDate, options []groups.
 		return calDay{Key: key, Label: dayWords(t, now), Today: key == today.Format(events.DayLayout), Rows: byDay[key],
 			Href: ask.href(func(c *calAsk) { c.view, c.day = "month", t })}
 	}
-	d := calendarData{View: ask.view}
+	d := calendarData{View: ask.view, FeedLink: kind == policy.ViewerMember}
 	d.Views = Pick{Label: "Calendar view"}
 	for _, v := range []struct{ view, label string }{{"agenda", "Agenda"}, {"week", "Week"}, {"month", "Month"}} {
 		d.Views.Options = append(d.Views.Options, PickOption{Label: v.label, Current: ask.view == v.view,

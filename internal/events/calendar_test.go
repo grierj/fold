@@ -15,8 +15,9 @@ import (
 
 // The calendar's SQL is policy.CanSeeDate and policy.InScope together, for
 // every kind of viewer, Just mine or not, every answer, church-wide or a
-// group's, public or opened, and each edge of the window; and a row names
-// its group only to someone who may see the group.
+// group's, public or opened, each edge of the window, and with cancelled
+// dates or without; a row names its group only to someone who may see the
+// group, and carries the description and video link only as policy allows.
 func TestCalendarSQLMatchesPolicy(t *testing.T) {
 	env := setup(t)
 	ctx := context.Background()
@@ -41,8 +42,8 @@ func TestCalendarSQLMatchesPolicy(t *testing.T) {
 	}
 	var all []made
 	add := func(gid int64, g policy.Group, ev string) {
-		res, err := env.Writer.Exec(`INSERT INTO events (uid, group_id, title, visibility, zone, starts_local, minutes, repeat, created_at, updated_at)
-			VALUES (?, ?, 'x', ?, 'America/Boise', '2026-12-01T19:00', 60, 'once', 0, 0)`,
+		res, err := env.Writer.Exec(`INSERT INTO events (uid, group_id, title, about, video_url, visibility, zone, starts_local, minutes, repeat, created_at, updated_at)
+			VALUES (?, ?, 'x', 'about', 'https://v.example.org', ?, 'America/Boise', '2026-12-01T19:00', 60, 'once', 0, 0)`,
 			fmt.Sprintf("e%d", len(all)), sql.NullInt64{Int64: gid, Valid: gid != 0}, ev)
 		if err != nil {
 			t.Fatal(err)
@@ -112,8 +113,9 @@ func TestCalendarSQLMatchesPolicy(t *testing.T) {
 		if s.Kind() != kind {
 			t.Fatalf("viewer %d is kind %d", viewer, s.Kind())
 		}
-		for _, mine := range []bool{false, true} {
-			s.JustMine = mine
+		for _, mode := range []struct{ mine, cancelled bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
+			mine := mode.mine
+			s.JustMine, s.Cancelled, s.Details = mine, mode.cancelled, mode.cancelled
 			list, err := events.Calendar(ctx, env.Writer, s, now.Add(-30*24*time.Hour), now.Add(100*24*time.Hour), time.Unix(0, 0), now, 100000)
 			if err != nil {
 				t.Fatal(err)
@@ -133,7 +135,7 @@ func TestCalendarSQLMatchesPolicy(t *testing.T) {
 				}
 				var answer string
 				env.Writer.QueryRow(`SELECT coalesce((SELECT status FROM answers WHERE date_id = ? AND person_id = ?), '')`, m.id, viewer).Scan(&answer)
-				f := policy.CalendarFacts{Seen: !m.cancelled && policy.CanSeeDate(p, m.e.Policy(host), m.dvis, m.g, r), Viewer: kind,
+				f := policy.CalendarFacts{Seen: (mode.cancelled || !m.cancelled) && policy.CanSeeDate(p, m.e.Policy(host), m.dvis, m.g, r), Viewer: kind,
 					InGroup: r.Member, ChurchWide: m.gid == 0, Host: host && m.gid == 0, Answer: answer,
 					Public: policy.Widest(m.e.Visibility, m.dvis) == policy.Public, StartsAt: m.start, EndsAt: m.end}
 				want, _ := policy.InScope(mine, f, now)
@@ -150,6 +152,19 @@ func TestCalendarSQLMatchesPolicy(t *testing.T) {
 				}
 				if named := c.GroupName != ""; named != (m.gid != 0 && policy.CanSeeGroup(p, m.g, r)) {
 					t.Errorf("viewer %d, date %s of group %+v: named %v", viewer, m.uid, m.g, named)
+				}
+				if c.Cancelled != m.cancelled {
+					t.Errorf("viewer %d, date %s: cancelled %v", viewer, m.uid, c.Cancelled)
+				}
+				if !mode.cancelled {
+					continue
+				}
+				ev := m.e.Policy(host)
+				if about := c.About != ""; about != policy.CanSeeEvent(p, ev, m.g, r) {
+					t.Errorf("viewer %d, date %s, event %+v: description %v", viewer, m.uid, ev, about)
+				}
+				if video := c.Video != ""; video != (!m.cancelled && policy.CanSeeVideo(policy.CanManageEvent(p, ev, m.g, r), answer)) {
+					t.Errorf("viewer %d, date %s, answer %q: video %v", viewer, m.uid, answer, video)
 				}
 			}
 		}
@@ -242,5 +257,117 @@ func TestJoinableSoonMatchesPolicy(t *testing.T) {
 	}
 	if list, _ := events.JoinableSoon(ctx, env.Writer, events.Viewer{}, testenv.Start, 100); len(list) != 0 {
 		t.Fatalf("signed out: %+v", list)
+	}
+}
+
+// The directory's next meeting, its order and its day-and-time filter come
+// only from dates policy.CanSeeDate lets the viewer see: a group whose
+// soonest date is hidden shows its next visible one, and is not found at
+// the hidden one's time (docs/HAZARDS.md section 2, #359).
+func TestDirectoryNextMatchesPolicy(t *testing.T) {
+	env := setup(t)
+	ctx := context.Background()
+	now := testenv.Start
+	type made struct {
+		gid       int64
+		g         policy.Group
+		e         events.Event
+		dvis      string
+		start     time.Time
+		cancelled bool
+	}
+	var all []made
+	n := 0
+	for _, g := range []policy.Group{{Status: policy.GroupActive, Visibility: policy.Public}, {Status: policy.GroupActive, Visibility: policy.Church},
+		{Status: policy.GroupActive, Visibility: policy.InviteOnly}, {Status: policy.GroupArchived, Visibility: policy.Public},
+		{Status: policy.GroupPending, Visibility: policy.Church}} {
+		n++
+		addGroup(t, env, n, g.Status, g.Visibility)
+		dates := []struct {
+			ev, dvis  string
+			hours     int
+			cancelled bool
+		}{
+			{g.Visibility, "", 6, true},                       // the soonest, but cancelled
+			{policy.InviteOnly, "", 24 + n, false},            // hidden from outsiders
+			{policy.InviteOnly, policy.Public, 72 + n, false}, // one date opened to all
+			{g.Visibility, "", 120 + n, false},
+			{g.Visibility, "", -24, false}, // past
+		}
+		for i, d := range dates {
+			res, err := env.Writer.Exec(`INSERT INTO events (uid, group_id, title, visibility, zone, starts_local, minutes, repeat, created_at, updated_at)
+				VALUES (?, ?, 'x', ?, 'America/Boise', '2026-12-01T19:00', 60, 'once', 0, 0)`, fmt.Sprintf("e%d-%d", n, i), n, d.ev)
+			if err != nil {
+				t.Fatal(err)
+			}
+			eid, _ := res.LastInsertId()
+			start := now.Add(time.Duration(d.hours) * time.Hour)
+			status, by := "scheduled", sql.NullString{}
+			if d.cancelled {
+				status, by = "cancelled", sql.NullString{String: "person", Valid: true}
+			}
+			exec(t, env, `INSERT INTO dates (uid, event_id, day, starts_at, ends_at, starts_local, visibility, status, cancelled_by)
+				VALUES (?, ?, '2026-12-01', ?, ?, '2026-12-01T19:00', ?, ?, ?)`, fmt.Sprintf("d%d-%d", n, i), eid, start.Unix(), start.Add(time.Hour).Unix(),
+				sql.NullString{String: d.dvis, Valid: d.dvis != ""}, status, by)
+			all = append(all, made{int64(n), g, events.Event{ID: eid, GroupID: int64(n), Status: policy.EventActive, Visibility: d.ev}, d.dvis, start, d.cancelled})
+		}
+	}
+	// A window around the hidden dates alone.
+	hidden := fmt.Sprintf("[[%d,%d]]", now.Add(24*time.Hour).Unix(), now.Add(30*time.Hour).Unix())
+	for viewer := 0; viewer <= 6; viewer++ {
+		v := groups.Viewer{ID: int64(viewer), Admin: viewer == 1}
+		var p *policy.Person
+		if viewer > 0 {
+			p = &policy.Person{ID: int64(viewer), Admin: viewer == 1}
+		}
+		next := func(gid int64, from, to time.Time) time.Time {
+			var best time.Time
+			for _, m := range all {
+				if m.gid != gid || m.cancelled || !m.start.After(now) || m.start.Before(from) || !m.start.Before(to) {
+					continue
+				}
+				r, _ := groups.RelOf(ctx, env.Writer, gid, int64(viewer))
+				if policy.CanSeeDate(p, m.e.Policy(false), m.dvis, m.g, r) && (best.IsZero() || m.start.Before(best)) {
+					best = m.start
+				}
+			}
+			return best
+		}
+		forever := now.AddDate(10, 0, 0)
+		list, err := groups.Directory(ctx, env.Writer, v, groups.Find{}, now, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lists := map[string][]groups.Listed{"directory": list}
+		if viewer > 0 {
+			mine, err := groups.Mine(ctx, env.Writer, v, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lists["mine"] = mine
+		}
+		for name, l := range lists {
+			for i, g := range l {
+				if want := next(g.ID, now, forever); !g.NextAt.Equal(want) {
+					t.Errorf("viewer %d, %s, group %d: next %v, want %v", viewer, name, g.ID, g.NextAt, want)
+				}
+				if i > 0 && (l[i-1].NextAt.IsZero() && !g.NextAt.IsZero() || !g.NextAt.IsZero() && g.NextAt.Before(l[i-1].NextAt)) {
+					t.Errorf("viewer %d, %s: not by next meeting at %d", viewer, name, i)
+				}
+			}
+		}
+		found, err := groups.Directory(ctx, env.Writer, v, groups.Find{Times: hidden}, now, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		in := map[int64]bool{}
+		for _, g := range found {
+			in[g.ID] = true
+		}
+		for _, g := range list {
+			if want := !next(g.ID, now.Add(24*time.Hour), now.Add(30*time.Hour)).IsZero(); in[g.ID] != want {
+				t.Errorf("viewer %d, group %d: found by the hidden time %v, want %v", viewer, g.ID, in[g.ID], want)
+			}
+		}
 	}
 }

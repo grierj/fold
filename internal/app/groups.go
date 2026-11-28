@@ -2,9 +2,13 @@ package app
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
+	"slices"
 	"strconv"
+	"time"
 
 	"fold/internal/accounts"
 	"fold/internal/answers"
@@ -130,11 +134,82 @@ var groupStatuses = map[string]string{
 	"waiting":       "Your group is waiting for an administrator to approve it. You'll get a notice when they do.",
 }
 
+// groupItem is a group in a list, with when it next meets in the viewer's
+// zone.
+type groupItem struct {
+	groups.Listed
+	Next string
+}
+
+func groupItems(list []groups.Listed, loc *time.Location, now time.Time) []groupItem {
+	out := make([]groupItem, 0, len(list))
+	for _, g := range list {
+		it := groupItem{Listed: g}
+		if !g.NextAt.IsZero() {
+			it.Next = meetingWords(g.NextAt, g.NextZone, loc, now)
+		}
+		out = append(out, it)
+	}
+	return out
+}
+
+// The finder's filters: a day of the week and a time of day, over the next
+// eight weeks, in the viewer's zone. The times of day are the greeting's.
+const findWeeks = 8
+
+var (
+	findDays  = []string{"sun", "mon", "tue", "wed", "thu", "fri", "sat"}
+	findParts = map[string][2]int{"morning": {0, 12}, "afternoon": {12, 17}, "evening": {17, 24}}
+)
+
+// findTimes is the spans a group must meet in for the day and time asked
+// for, as groups.Find.Times wants them; "" when neither is asked. Each day
+// is counted on the calendar, so a daylight-saving change moves nothing.
+func findTimes(day, part string, today time.Time) string {
+	wd := slices.Index(findDays, day)
+	hours, timed := findParts[part]
+	if wd < 0 && !timed {
+		return ""
+	}
+	if !timed {
+		hours = [2]int{0, 24}
+	}
+	var spans [][2]int64
+	for i := range findWeeks * 7 {
+		d := dayOf(today, i)
+		if wd >= 0 && int(d.Weekday()) != wd {
+			continue
+		}
+		from := time.Date(d.Year(), d.Month(), d.Day(), hours[0], 0, 0, 0, d.Location())
+		to := time.Date(d.Year(), d.Month(), d.Day(), hours[1], 0, 0, 0, d.Location())
+		spans = append(spans, [2]int64{from.Unix(), to.Unix()})
+	}
+	b, _ := json.Marshal(spans)
+	return string(b)
+}
+
+// clearFilters is /groups with the search kept and the day and time gone.
+func clearFilters(search string) string {
+	if search == "" {
+		return "/groups"
+	}
+	return "/groups?" + url.Values{"q": {search}}.Encode()
+}
+
 func (a *App) getGroups(w http.ResponseWriter, r *http.Request) {
-	search := r.URL.Query().Get("q")
+	query := r.URL.Query()
+	search := query.Get("q")
 	if len(search) > 100 {
 		search = search[:100]
 	}
+	day, part := query.Get("day"), query.Get("time")
+	if !slices.Contains(findDays, day) {
+		day = ""
+	}
+	if _, ok := findParts[part]; !ok {
+		part = ""
+	}
+	now := a.clock.Now()
 	var list []groups.Listed
 	var f pageFacts
 	err := a.reader.Read(r.Context(), func(q *sql.Tx) error {
@@ -142,11 +217,8 @@ func (a *App) getGroups(w http.ResponseWriter, r *http.Request) {
 		if f, err = a.load(r.Context(), r, q); err != nil {
 			return err
 		}
-		v := groups.Viewer{}
-		if f.session != nil {
-			v = groups.Viewer{ID: f.session.Person.ID, Admin: policy.IsAdmin(f.session.Person.Policy())}
-		}
-		list, err = groups.Directory(r.Context(), q, v, search, 200)
+		find := groups.Find{Search: search, Times: findTimes(day, part, dayOf(now.In(viewerZone(f)), 0))}
+		list, err = groups.Directory(r.Context(), q, groups.Viewer(listViewer(f)), find, now, 200)
 		return err
 	})
 	if err != nil {
@@ -157,12 +229,24 @@ func (a *App) getGroups(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 		return
 	}
+	days := Select{ID: "day", Name: "day", Label: "Meets on", Options: []Option{{Value: "", Label: "Any day", Selected: day == ""}}}
+	for i, d := range findDays {
+		days.Options = append(days.Options, Option{Value: d, Label: time.Weekday(i).String() + "s", Selected: d == day})
+	}
+	parts := Select{ID: "time", Name: "time", Label: "Time of day", Options: []Option{{Value: "", Label: "Any time", Selected: part == ""},
+		{Value: "morning", Label: "Morning, before noon", Selected: part == "morning"},
+		{Value: "afternoon", Label: "Afternoon, noon to 5 pm", Selected: part == "afternoon"},
+		{Value: "evening", Label: "Evening, after 5 pm", Selected: part == "evening"}}}
 	f.Data = struct {
-		Groups []groups.Listed
-		Search Field
-		Query  string
-		Labels map[string]string
-	}{list, Field{ID: "q", Name: "q", Label: "Search groups", Type: "search", Value: search, MaxLength: 100}, search, visibilityLabels}
+		Groups    []groupItem
+		Search    Field
+		Day, Time Select
+		Query     string
+		Filtered  bool
+		Clear     string // the same search without the day and time
+		Labels    map[string]string
+	}{groupItems(list, viewerZone(f), now), Field{ID: "q", Name: "q", Label: "Search groups", Type: "search", Value: search, MaxLength: 100},
+		days, parts, search, day != "" || part != "", clearFilters(search), visibilityLabels}
 	a.render(w, r, http.StatusOK, "groups", "", f.page)
 }
 

@@ -54,10 +54,10 @@ func (a *App) home(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if f.session == nil {
-			list, err = groups.Directory(r.Context(), q, groups.Viewer{}, "", 12)
+			list, err = groups.Directory(r.Context(), q, groups.Viewer{}, groups.Find{}, now, 12)
 			return err
 		}
-		if list, err = groups.Mine(r.Context(), q, f.session.Person.ID); err != nil || len(list) > 0 {
+		if list, err = groups.Mine(r.Context(), q, groups.Viewer(listViewer(f)), now); err != nil || len(list) > 0 {
 			return err
 		}
 		soon, err = events.JoinableSoon(r.Context(), q, listViewer(f), now, 3)
@@ -87,22 +87,22 @@ func (a *App) home(w http.ResponseWriter, r *http.Request) {
 	for _, c := range coming {
 		_, own := policy.InScope(f.session != nil, c.Facts(kind), now)
 		row := calendarRow(c, own, loc, now)
-		row.When = span(c.StartsAt, c.EndsAt, loc, now)
+		row.When = span(c.StartsAt, c.EndsAt, loc, now) + zoneNote(c.Zone, loc)
 		rows = append(rows, row)
 	}
 	var meeting []soonGroup
 	for _, g := range soon {
-		meeting = append(meeting, soonGroup{UID: g.UID, Name: g.Name, Next: dayWords(g.Next.In(loc), now) + ", " + clockWords(g.Next.In(loc))})
+		meeting = append(meeting, soonGroup{UID: g.UID, Name: g.Name, Next: meetingWords(g.Next, g.Zone, loc, now)})
 	}
 	f.Data = struct {
 		Status   string
 		Greeting string
-		Groups   []groups.Listed
+		Groups   []groupItem
 		Guest    bool
 		RSVPs    []dateItem
 		Coming   []calRow
 		Soon     []soonGroup
-	}{status, greeting(now.In(loc)), list, f.guest != nil, dateItems(rsvps, churchZone(f), now, true), rows, meeting}
+	}{status, greeting(now.In(loc)), groupItems(list, loc, now), f.guest != nil, dateItems(rsvps, churchZone(f), now, true), rows, meeting}
 	a.render(w, r, http.StatusOK, "home", "", f.page)
 }
 

@@ -6,6 +6,7 @@ import { milestone2a } from "./slice2c";
 import { milestone2b } from "./slice2d";
 import { milestone3a } from "./slice2e";
 import { milestone4a } from "./slice2f";
+import { milestone4b } from "./slice2g";
 
 // Slice 2, milestone 1a: events and dates through the gates. Runs after
 // slice1.spec.ts on the same site: Pat, an admin, co-leads Sam's
@@ -33,7 +34,7 @@ function springForward(): string {
 }
 
 test("scheduling, the event and date pages, and the series edit, through the gates", async ({ page, browser }) => {
-  test.setTimeout(480_000);
+  test.setTimeout(600_000);
   await watchCSP(page);
   await signIn(page, admin);
 
@@ -123,4 +124,5 @@ test("scheduling, the event and date pages, and the series edit, through the gat
   await milestone2b(page, zed, opened);
   await milestone3a(page, browser);
   await milestone4a(page, browser);
+  await milestone4b(page);
 });

@@ -6,8 +6,8 @@
 // elsewhere is the church's choice (docs/OPERATIONS.md).
 //
 // A restore is staged: the backup is copied to a staging file, checked,
-// migrated, and finished there (sessions ended, links expired, pending mail
-// dropped, the "restored" audit row written). Only then is it copied over
+// migrated, and finished there (sessions ended, links expired, calendar feeds
+// turned off, pending mail dropped, the "restored" audit row written). Only then is it copied over
 // the live database in one step, so a crash leaves either the old database or
 // the finished one (docs/HAZARDS.md section 5).
 package backup
@@ -255,6 +255,9 @@ func (c restored) Apply(tx *write.Tx) error {
 		return err
 	}
 	if _, err := tx.Exec(`UPDATE links SET cancelled_at = ? WHERE used_at IS NULL AND cancelled_at IS NULL`, now); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE people SET feed_hash = NULL WHERE feed_hash IS NOT NULL`); err != nil {
 		return err
 	}
 	// Mail waiting in the backup would carry expired links. Recurring work
