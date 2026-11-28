@@ -58,6 +58,8 @@ type CalDate struct {
 	GroupName        string
 	Cancelled        bool
 	Zone             string
+	Sequence         int
+	UpdatedAt        time.Time
 	// With Scope.Details: the event's description only to someone who may
 	// see the event, not just an opened date (#167), and its video link as
 	// the date page gives it (R41, R49).
@@ -104,7 +106,7 @@ func Calendar(ctx context.Context, q db.Querier, s Scope, from, to, since, now t
 	if s.Cancelled {
 		cancelled = 1
 	}
-	rows, err := q.QueryContext(ctx, `SELECT d.uid, d.starts_at, d.ends_at, d.moved, d.status = 'cancelled', e.title, e.place, e.zone, e.visibility,
+	rows, err := q.QueryContext(ctx, `SELECT d.uid, d.starts_at, d.ends_at, d.moved, d.status = 'cancelled', d.sequence, d.updated_at, e.title, e.place, e.zone, e.visibility,
 		CASE WHEN ?12 = 1 THEN e.about ELSE '' END, CASE WHEN ?12 = 1 THEN e.video_url ELSE '' END, e.group_id IS NULL, `+publicSQL+`,
 		coalesce(o.status, ''), e.group_id IS NOT NULL AND `+inGroupSQL+`,
 		EXISTS (SELECT 1 FROM active_memberships am WHERE am.group_id = e.group_id AND am.person_id = ?1 AND am.role = 'leader'),
@@ -127,9 +129,9 @@ func Calendar(ctx context.Context, q db.Querier, s Scope, from, to, since, now t
 	for rows.Next() {
 		var c CalDate
 		var g policy.Group
-		var starts, ends int64
+		var starts, ends, updated int64
 		var visibility, about, video string
-		if err := rows.Scan(&c.UID, &starts, &ends, &c.Moved, &c.Cancelled, &c.Title, &c.Place, &c.Zone, &visibility, &about, &video,
+		if err := rows.Scan(&c.UID, &starts, &ends, &c.Moved, &c.Cancelled, &c.Sequence, &updated, &c.Title, &c.Place, &c.Zone, &visibility, &about, &video,
 			&c.ChurchWide, &c.Public, &c.Answer, &c.InGroup, &c.Leads, &c.Host, &g.Status, &g.Visibility, &c.GroupUID, &c.GroupName); err != nil {
 			return nil, err
 		}
@@ -146,7 +148,7 @@ func Calendar(ctx context.Context, q db.Querier, s Scope, from, to, since, now t
 		if c.ChurchWide || !policy.CanSeeGroup(p, g, rel) {
 			c.GroupUID, c.GroupName = "", ""
 		}
-		c.StartsAt, c.EndsAt = time.Unix(starts, 0).UTC(), time.Unix(ends, 0).UTC()
+		c.StartsAt, c.EndsAt, c.UpdatedAt = time.Unix(starts, 0).UTC(), time.Unix(ends, 0).UTC(), time.Unix(updated, 0).UTC()
 		out = append(out, c)
 	}
 	return out, rows.Err()

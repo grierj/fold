@@ -67,7 +67,7 @@ func (a *App) getFeed(w http.ResponseWriter, r *http.Request) {
 		}
 		out := make([]events.ICSEvent, 0, len(list))
 		for _, c := range list {
-			out = append(out, a.dateEvent(c.UID, c.Title, c.Place, c.Zone, c.StartsAt, c.EndsAt, c.About, c.Video, c.Answer, c.Cancelled))
+			out = append(out, a.dateEvent(c))
 		}
 		body = events.ICS(church[settings.ChurchName], feedRefresh, out)
 		return nil

@@ -398,25 +398,27 @@ func (a *App) getDateICS(w http.ResponseWriter, r *http.Request) {
 	if !f.date.Cancelled && policy.CanSeeVideo(f.canManage(), mine) {
 		video = f.event.VideoURL
 	}
-	e := a.dateEvent(f.date.UID, f.event.Title, f.event.Place, f.event.Zone, f.date.StartsAt, f.date.EndsAt, about, video, mine, f.date.Cancelled)
+	e := a.dateEvent(events.CalDate{UID: f.date.UID, Title: f.event.Title, Place: f.event.Place, Zone: f.event.Zone, StartsAt: f.date.StartsAt,
+		EndsAt: f.date.EndsAt, About: about, Video: video, Answer: mine, Cancelled: f.date.Cancelled, Sequence: f.date.Sequence, UpdatedAt: f.date.UpdatedAt})
 	w.Header().Set("Content-Type", "text/calendar; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="event.ics"`)
 	w.Write(events.ICS("", 0, []events.ICSEvent{e}))
 }
 
 // dateEvent is one date as a calendar file gives it, the same in the
-// one-date download and the feed: about and video are already cleared for
+// one-date download and the feed: About and Video are already cleared for
 // the viewer. Going is confirmed, Maybe and waiting tentative (DEC-71), and
 // a cancelled date says so, so a calendar app takes it off.
-func (a *App) dateEvent(uid, title, place, zone string, start, end time.Time, about, video, answer string, cancelled bool) events.ICSEvent {
-	e := events.ICSEvent{UID: uid + "@" + a.cfg.SiteURL.Hostname(), Stamp: a.clock.Now(), Title: title, Description: about,
-		Link: a.origin + "/dates/" + uid, Video: video, Location: place, Zone: zone, Start: start, End: end}
+func (a *App) dateEvent(c events.CalDate) events.ICSEvent {
+	e := events.ICSEvent{UID: c.UID + "@" + a.cfg.SiteURL.Hostname(), Stamp: a.clock.Now(), Title: c.Title, Description: c.About,
+		Link: a.origin + "/dates/" + c.UID, Video: c.Video, Location: c.Place, Zone: c.Zone, Start: c.StartsAt, End: c.EndsAt,
+		Sequence: c.Sequence, Modified: c.UpdatedAt}
 	switch {
-	case cancelled:
+	case c.Cancelled:
 		e.Status = "CANCELLED"
-	case answer == policy.AnswerGoing:
+	case c.Answer == policy.AnswerGoing:
 		e.Status = "CONFIRMED"
-	case answer == policy.AnswerMaybe, answer == policy.AnswerWaiting:
+	case c.Answer == policy.AnswerMaybe, c.Answer == policy.AnswerWaiting:
 		e.Status = "TENTATIVE"
 	}
 	return e

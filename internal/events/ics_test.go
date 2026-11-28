@@ -24,7 +24,7 @@ func TestICS(t *testing.T) {
 	cases := map[string][]events.ICSEvent{
 		"one-date": {{UID: "d1@church.example.org", Stamp: stamp, Title: "Tuesday study", Description: "We read a chapter a week.\nCoffee at 6:45.",
 			Link: "https://church.example.org/dates/d1", Video: "https://video.example.org/room", Location: "Room 4",
-			Zone: "America/Boise", Start: time.Date(2026, 12, 1, 19, 0, 0, 0, boise), End: time.Date(2026, 12, 1, 20, 30, 0, 0, boise), Status: "CONFIRMED"}},
+			Zone: "America/Boise", Start: time.Date(2026, 12, 1, 19, 0, 0, 0, boise), End: time.Date(2026, 12, 1, 20, 30, 0, 0, boise), Status: "CONFIRMED", Sequence: 3, Modified: time.Date(2026, 11, 20, 9, 30, 0, 0, time.UTC)}},
 		"escaping": {{UID: "d2@church.example.org", Stamp: stamp, Title: "Dinner, study; prayer\\worship\x00\x1b",
 			Description: "First line\r\nSecond, line; with \\ backslash\n\nÜber café — naïve résumé, a long line that must fold at seventy-five octets without splitting a character",
 			Link:        "https://church.example.org/dates/d2", Location: "Smith home, 12 Oak St; ring twice",

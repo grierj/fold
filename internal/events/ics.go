@@ -24,7 +24,9 @@ type ICSEvent struct {
 	Location    string
 	Zone        string // the event's IANA zone; one that cannot be loaded writes UTC
 	Start, End  time.Time
-	Status      string // CONFIRMED, TENTATIVE or ""
+	Status      string    // CONFIRMED, TENTATIVE, CANCELLED or ""
+	Sequence    int       // goes up with every change, so apps replace their copy
+	Modified    time.Time // LAST-MODIFIED; zero writes none
 }
 
 // ICS writes a calendar of dates, with a VTIMEZONE for every zone they use.
@@ -64,7 +66,10 @@ func ICS(name string, refresh time.Duration, list []ICSEvent) []byte {
 		lines = append(lines, timezone(n, zones[n], spans[n][0].AddDate(0, 0, -2), spans[n][1].AddDate(0, 0, 2))...)
 	}
 	for _, e := range list {
-		lines = append(lines, "BEGIN:VEVENT", "UID:"+escapeText(e.UID), "DTSTAMP:"+e.Stamp.UTC().Format(icsUTC))
+		lines = append(lines, "BEGIN:VEVENT", "UID:"+escapeText(e.UID), "DTSTAMP:"+e.Stamp.UTC().Format(icsUTC), fmt.Sprintf("SEQUENCE:%d", e.Sequence))
+		if !e.Modified.IsZero() {
+			lines = append(lines, "LAST-MODIFIED:"+e.Modified.UTC().Format(icsUTC))
+		}
 		if loc, ok := zones[e.Zone]; ok {
 			lines = append(lines, "DTSTART;TZID="+e.Zone+":"+e.Start.In(loc).Format(icsWall), "DTEND;TZID="+e.Zone+":"+e.End.In(loc).Format(icsWall))
 		} else {

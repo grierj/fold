@@ -91,6 +91,8 @@ type Row struct {
 	BySeries    bool
 	Visibility  string // its own when opened wider than its series (P7), else ""
 	OpenReason  string
+	Sequence    int       // goes up with each change a calendar app shows
+	UpdatedAt   time.Time // when that last happened
 }
 
 // State is the date in policy's terms.
@@ -99,13 +101,14 @@ func (d Row) State(now time.Time) policy.DateState {
 }
 
 const dateColumns = `d.id, d.uid, d.event_id, d.day, d.starts_at, d.ends_at, d.starts_local, d.moved, d.status = 'cancelled',
-	coalesce(d.cancelled_by, '') = 'series', coalesce(d.visibility, ''), d.open_reason`
+	coalesce(d.cancelled_by, '') = 'series', coalesce(d.visibility, ''), d.open_reason, d.sequence, d.updated_at`
 
 func scanDate(row interface{ Scan(...any) error }) (Row, error) {
 	var d Row
-	var starts, ends int64
-	err := row.Scan(&d.ID, &d.UID, &d.EventID, &d.Day, &starts, &ends, &d.StartsLocal, &d.Moved, &d.Cancelled, &d.BySeries, &d.Visibility, &d.OpenReason)
-	d.StartsAt, d.EndsAt = time.Unix(starts, 0).UTC(), time.Unix(ends, 0).UTC()
+	var starts, ends, updated int64
+	err := row.Scan(&d.ID, &d.UID, &d.EventID, &d.Day, &starts, &ends, &d.StartsLocal, &d.Moved, &d.Cancelled, &d.BySeries, &d.Visibility, &d.OpenReason,
+		&d.Sequence, &updated)
+	d.StartsAt, d.EndsAt, d.UpdatedAt = time.Unix(starts, 0).UTC(), time.Unix(ends, 0).UTC(), time.Unix(updated, 0).UTC()
 	return d, err
 }
 

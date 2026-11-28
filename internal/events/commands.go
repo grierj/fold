@@ -64,8 +64,8 @@ func groupOf(tx *write.Tx, groupID int64) (groups.Group, policy.Rel, error) {
 
 func insertDates(tx *write.Tx, eventID int64, ds []Date) error {
 	for _, d := range ds {
-		if _, err := tx.Exec(`INSERT INTO dates (uid, event_id, day, starts_at, ends_at, starts_local, moved) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			people.NewUID(), eventID, d.Day, d.StartsAt.Unix(), d.EndsAt.Unix(), d.StartsLocal, d.Moved); err != nil {
+		if _, err := tx.Exec(`INSERT INTO dates (uid, event_id, day, starts_at, ends_at, starts_local, moved, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			people.NewUID(), eventID, d.Day, d.StartsAt.Unix(), d.EndsAt.Unix(), d.StartsLocal, d.Moved, tx.Now.Unix()); err != nil {
 			return err
 		}
 	}
@@ -346,13 +346,18 @@ func (c *Edit) Apply(tx *write.Tx) error {
 		nullable(c.Seats), tx.Now.Unix(), e.ID); err != nil {
 		return err
 	}
+	if c.Title != e.Title || c.About != e.About || c.Place != e.Place || c.VideoURL != e.VideoURL || c.Visibility != e.Visibility {
+		if _, err := tx.Exec(`UPDATE dates SET `+touched+` WHERE event_id = ?`, tx.Now.Unix(), e.ID); err != nil {
+			return err
+		}
+	}
 	for _, ch := range append(plan.Move, plan.Restore...) {
 		if err := retime(tx, ch.ID, ch.Date); err != nil {
 			return err
 		}
 	}
 	for _, id := range plan.Cancel {
-		if _, err := tx.Exec(`UPDATE dates SET status = 'cancelled', cancelled_by = 'series' WHERE id = ?`, id); err != nil {
+		if _, err := tx.Exec(`UPDATE dates SET status = 'cancelled', cancelled_by = 'series', `+touched+` WHERE id = ?`, tx.Now.Unix(), id); err != nil {
 			return err
 		}
 	}
@@ -435,10 +440,15 @@ func scanDates(tx *write.Tx, query string, args ...any) ([]int64, error) {
 
 // retime puts a date on new times and schedules it.
 func retime(tx *write.Tx, id int64, d Date) error {
-	_, err := tx.Exec(`UPDATE dates SET starts_at = ?, ends_at = ?, starts_local = ?, moved = ?, status = 'scheduled', cancelled_by = NULL WHERE id = ?`,
-		d.StartsAt.Unix(), d.EndsAt.Unix(), d.StartsLocal, d.Moved, id)
+	_, err := tx.Exec(`UPDATE dates SET starts_at = ?, ends_at = ?, starts_local = ?, moved = ?, status = 'scheduled', cancelled_by = NULL, `+touched+` WHERE id = ?`,
+		d.StartsAt.Unix(), d.EndsAt.Unix(), d.StartsLocal, d.Moved, tx.Now.Unix(), id)
 	return err
 }
+
+// touched is the SET clause every change to what a calendar shows about a
+// date carries, with tx.Now as its one argument: calendar apps take the
+// copy with the higher SEQUENCE.
+const touched = `sequence = sequence + 1, updated_at = ?`
 
 // Delete deletes an event. Its row and dates stay, marked by the event, and
 // nothing shows them again. Everyone signed up to a date still to come who
@@ -505,7 +515,7 @@ func (c CancelDate) Apply(tx *write.Tx) error {
 	if !policy.CanCancelDate(true, d.State(tx.Now)) {
 		return ErrDateGone
 	}
-	if _, err = tx.Exec(`UPDATE dates SET status = 'cancelled', cancelled_by = 'person' WHERE id = ?`, d.ID); err != nil {
+	if _, err = tx.Exec(`UPDATE dates SET status = 'cancelled', cancelled_by = 'person', `+touched+` WHERE id = ?`, tx.Now.Unix(), d.ID); err != nil {
 		return err
 	}
 	list, err := signedUp(tx.Context(), tx, e, g, `d.id = ?`, d.ID)
@@ -601,7 +611,7 @@ func (c *OpenDate) Apply(tx *write.Tx) error {
 	case c.Visibility == "" || !policy.MoreOpen(now, g.Visibility) || e.ChurchWide():
 		reason = ""
 	}
-	if _, err := tx.Exec(`UPDATE dates SET visibility = ?, open_reason = ? WHERE id = ?`, nullable(c.Visibility), reason, d.ID); err != nil {
+	if _, err := tx.Exec(`UPDATE dates SET visibility = ?, open_reason = ?, `+touched+` WHERE id = ?`, nullable(c.Visibility), reason, tx.Now.Unix(), d.ID); err != nil {
 		return err
 	}
 	tx.Detail("visibility", now)
@@ -724,8 +734,8 @@ func (extend) Apply(tx *write.Tx) error {
 			if !d.StartsAt.After(tx.Now) {
 				continue
 			}
-			res, err := tx.Exec(`INSERT INTO dates (uid, event_id, day, starts_at, ends_at, starts_local, moved) VALUES (?, ?, ?, ?, ?, ?, ?)
-				ON CONFLICT (event_id, day) DO NOTHING`, people.NewUID(), e.ID, d.Day, d.StartsAt.Unix(), d.EndsAt.Unix(), d.StartsLocal, d.Moved)
+			res, err := tx.Exec(`INSERT INTO dates (uid, event_id, day, starts_at, ends_at, starts_local, moved, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+				ON CONFLICT (event_id, day) DO NOTHING`, people.NewUID(), e.ID, d.Day, d.StartsAt.Unix(), d.EndsAt.Unix(), d.StartsLocal, d.Moved, tx.Now.Unix())
 			if err != nil {
 				return err
 			}
