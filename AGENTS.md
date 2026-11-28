@@ -122,7 +122,7 @@ that would cross a ceiling says what it removes, or asks Grier to raise it.
 
 | Budget | Ceiling | How to measure |
 |---|---|---|
-| Go and templates, not tests | 25,000 lines | `find . \( -name '*.go' -o -name '*.html' \) ! -name '*_test.go' \| xargs cat \| wc -l` |
+| Go and templates, not tests | 35,000 lines (R53) | `find . \( -name '*.go' -o -name '*.html' \) ! -name '*_test.go' \| xargs cat \| wc -l` |
 | Tables | 35 | `grep -ci 'create table' migrations/*.sql` |
 | Routes | 200 | `grep -c 'mux.Handle' internal/app/routes.go` (every route is registered in that one file) |
 | Whole test suite | 3 minutes, no containers | `time go test ./...` |

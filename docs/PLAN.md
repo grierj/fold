@@ -367,9 +367,8 @@ also carry parts of the features it leaves out. This project does the same work 
 about a quarter, with 10,038 lines of tests against Fold's 186,499.
 
 **Verdict: clearly smaller.** The gate passes. The one budget to watch is lines: slice 2 used
-about 9,000 of the remaining 15,000, with slices 3 and 4 still to come. Slice 3 should stay under
-about 2,500 lines so slice 4 has room; if it cannot, it asks Grier to raise the ceiling (R13's
-spirit) rather than squeezing. The timed install by someone who is not Grier still waits, as in
+about 9,000 of the remaining 15,000, with slices 3 and 4 still to come, so Grier raised the
+ceiling to 35,000 (R53). The timed install by someone who is not Grier still waits, as in
 slice 0.
 
 ## Where each carried rule lands
