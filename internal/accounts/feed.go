@@ -19,7 +19,8 @@ import (
 // at once. Token is set on success, for the page that shows it; it is never
 // written anywhere else.
 type NewFeed struct {
-	Token string
+	Token    string
+	Replaced bool // an earlier link stopped working
 }
 
 func (*NewFeed) Action() string { return "feed.new" }
@@ -41,7 +42,7 @@ func (c *NewFeed) Apply(tx *write.Tx) error {
 	if had {
 		tx.Detail("replaced", "yes")
 	}
-	c.Token = token
+	c.Token, c.Replaced = token, had
 	return nil
 }
 

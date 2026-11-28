@@ -32,7 +32,7 @@ func gone(t *testing.T, s *site, path, why string) {
 	t.Helper()
 	never := s.browser().get("/feed/" + strings.Repeat("A", 43) + "/calendar.ics")
 	r := s.browser().get(path)
-	if r.status != http.StatusNotFound || r.body != never.body || r.status != never.status ||
+	if r.status != http.StatusNotFound || r.body != never.body || r.status != never.status || r.header.Get("Set-Cookie") != "" ||
 		r.header.Get("Content-Type") != never.header.Get("Content-Type") || r.header.Get("Cache-Control") != never.header.Get("Cache-Control") {
 		t.Fatalf("%s: %d %q %v, where never made is %d %q %v", why, r.status, r.body, r.header, never.status, never.body, never.header)
 	}
@@ -60,6 +60,13 @@ func TestFeedLifecycle(t *testing.T) {
 		t.Fatal("the profile shows the link again, or not that the feed is on")
 	}
 	second := turnOnFeed(t, mia)
+	if r := mia.get("/profile"); !strings.Contains(r.body, "Your calendar feed is on") {
+		t.Fatal("the feed is not on after a new link")
+	}
+	if r := mia.post("/profile", "/profile/feed/new", nil); !strings.Contains(r.body, "The one before it no longer works") {
+		t.Fatal("making a new link does not say the old one stopped")
+	}
+	second = turnOnFeed(t, mia)
 	gone(t, s, first, "a replaced link")
 	if r := s.browser().get(second); r.status != http.StatusOK {
 		t.Fatalf("the new link: %d", r.status)
@@ -68,10 +75,10 @@ func TestFeedLifecycle(t *testing.T) {
 		t.Fatalf("turning off: %d %s", r.status, r.header.Get("Location"))
 	}
 	gone(t, s, second, "a turned-off link")
-	if n := s.Count(t, `SELECT count(*) FROM audit_log WHERE action = 'feed.new'`); n != 2 {
+	if n := s.Count(t, `SELECT count(*) FROM audit_log WHERE action = 'feed.new'`); n != 4 {
 		t.Fatalf("%d feed.new rows", n)
 	}
-	if n := s.Count(t, `SELECT count(*) FROM audit_log WHERE action = 'feed.new' AND details LIKE '%replaced%'`); n != 1 {
+	if n := s.Count(t, `SELECT count(*) FROM audit_log WHERE action = 'feed.new' AND details LIKE '%replaced%'`); n != 3 {
 		t.Fatal("replacing is not told apart in the audit log")
 	}
 	if n := s.Count(t, `SELECT count(*) FROM audit_log WHERE action = 'feed.off'`); n != 1 {

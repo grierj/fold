@@ -23,6 +23,7 @@
     <h2 id="feed-h" class="text-xl font-bold">Calendar feed</h2>
     <p class="mt-2 text-text-muted">Your groups' dates, church-wide dates and the dates you answer, in the calendar app on your phone or computer. It keeps itself up to date.</p>
     {{with .Status}}<div class="mt-3">{{template "status" .}}</div>{{end}}
+    {{with .Error}}<p class="field-error mt-3" role="alert"><span aria-hidden="true">⚠</span><span>{{.}}</span></p>{{end}}
     {{if .URL.Value}}
     <div class="mt-4">{{template "notice" (notice "info" "This link is shown only now" "Copy it into your calendar app now. Keep it to yourself: anyone with it can see your calendar.")}}</div>
     <div class="mt-4">{{template "field" .URL}}</div>

@@ -12,6 +12,7 @@ import (
 	"fold/internal/httpx"
 	"fold/internal/people"
 	"fold/internal/policy"
+	"fold/internal/settings"
 	"fold/internal/write"
 )
 
@@ -55,7 +56,7 @@ func (a *App) getFeed(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		f, err := a.load(r.Context(), r, q)
+		church, err := settings.Load(r.Context(), q)
 		if err != nil {
 			return err
 		}
@@ -68,7 +69,7 @@ func (a *App) getFeed(w http.ResponseWriter, r *http.Request) {
 		for _, c := range list {
 			out = append(out, a.dateEvent(c.UID, c.Title, c.Place, c.Zone, c.StartsAt, c.EndsAt, c.About, c.Video, c.Answer, c.Cancelled))
 		}
-		body = events.ICS(f.Church, feedRefresh, out)
+		body = events.ICS(church[settings.ChurchName], feedRefresh, out)
 		return nil
 	})
 	if err != nil {
@@ -92,6 +93,7 @@ type feedView struct {
 	On           bool
 	URL          Field
 	Status       string
+	Error        string
 	Replace, Off Dialog
 }
 
@@ -117,14 +119,18 @@ func (a *App) postNewFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !a.limits.profile.Allow(f.session.Person.UID) {
-		a.showProfileFeed(w, r, f, a.feedSection(r, true, "", tooMany))
+		a.feedTooMany(w, r, f)
 		return
 	}
 	c := &accounts.NewFeed{}
 	if !a.runFeed(w, r, c) {
 		return
 	}
-	a.showProfileFeed(w, r, f, a.feedSection(r, true, c.Token, "Your calendar feed is on."))
+	status := "Your calendar feed is on."
+	if c.Replaced {
+		status = "This is a new link. The one before it no longer works."
+	}
+	a.showProfileFeed(w, r, f, a.feedSection(r, true, c.Token, status))
 }
 
 func (a *App) postEndFeed(w http.ResponseWriter, r *http.Request) {
@@ -133,12 +139,19 @@ func (a *App) postEndFeed(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !a.limits.profile.Allow(f.session.Person.UID) {
-		a.showProfileFeed(w, r, f, a.feedSection(r, true, "", tooMany))
+		a.feedTooMany(w, r, f)
 		return
 	}
 	if a.runFeed(w, r, accounts.EndFeed{}) {
 		http.Redirect(w, r, "/profile?done=feed-off#feed", http.StatusSeeOther)
 	}
+}
+
+// feedTooMany says the change could not be saved, with the feed as it is.
+func (a *App) feedTooMany(w http.ResponseWriter, r *http.Request, f pageFacts) {
+	v := a.feedSection(r, f.session.Person.Feed, "", "")
+	v.Error = tooMany
+	a.showProfileFeed(w, r, f, v)
 }
 
 func (a *App) runFeed(w http.ResponseWriter, r *http.Request, c write.Command) bool {

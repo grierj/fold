@@ -43,8 +43,9 @@ The restore:
 1. checks the backup, and its audit log against its checkpoint, and refuses a damaged one;
 2. keeps a copy of the current database as a new backup first;
 3. replaces the database in one step;
-4. signs everyone out and stops every emailed link, so nothing from the backup's day comes
-   back to life;
+4. signs everyone out and stops every emailed link and every calendar feed, so nothing from
+   the backup's day comes back to life. Members who subscribed to their calendar on a phone
+   turn the feed on again from their profile and add the new link;
 5. writes "restored from the backup of *date*" in the audit log.
 
 Anything changed since the backup was taken is gone.
