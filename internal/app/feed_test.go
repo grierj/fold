@@ -27,6 +27,24 @@ func turnOnFeed(t *testing.T, b *browser) string {
 	return m
 }
 
+var replacePattern = regexp.MustCompile(`action="(/profile/feed/new\?replaces=[0-9a-f]{8})"`)
+
+// newFeedLink makes a new link for b's feed from its profile, as the
+// Make a new link dialog does, and returns the dialog's action and the path.
+func newFeedLink(t *testing.T, b *browser) (action, path string) {
+	t.Helper()
+	m := replacePattern.FindStringSubmatch(b.get("/profile").body)
+	if m == nil {
+		t.Fatal("no Make a new link on the profile")
+	}
+	r := b.post("/profile", m[1], nil)
+	path = feedPattern.FindString(r.body)
+	if r.status != http.StatusOK || path == "" || !strings.Contains(r.body, "The one before it no longer works") {
+		t.Fatalf("making a new link: %d", r.status)
+	}
+	return m[1], path
+}
+
 // gone checks that a feed answers exactly as one never made.
 func gone(t *testing.T, s *site, path, why string) {
 	t.Helper()
@@ -59,14 +77,18 @@ func TestFeedLifecycle(t *testing.T) {
 	if r := mia.get("/profile"); feedPattern.MatchString(r.body) || !strings.Contains(r.body, "Your calendar feed is on") || !strings.Contains(r.body, "Make a new link") {
 		t.Fatal("the profile shows the link again, or not that the feed is on")
 	}
-	turnOnFeed(t, mia)
-	if r := mia.get("/profile"); !strings.Contains(r.body, "Your calendar feed is on") {
-		t.Fatal("the feed is not on after a new link")
+	// Sent again, Turn on changes nothing and the link just shown works.
+	if r := mia.post("/profile", "/profile/feed/new", nil); feedPattern.MatchString(r.body) || !strings.Contains(r.body, "its newest link still works") {
+		t.Fatal("turning on a feed that is on did something")
 	}
-	if r := mia.post("/profile", "/profile/feed/new", nil); !strings.Contains(r.body, "The one before it no longer works") {
-		t.Fatal("making a new link does not say the old one stopped")
+	if r := s.browser().get(first); r.status != http.StatusOK {
+		t.Fatalf("turning on again killed the link: %d", r.status)
 	}
-	second := turnOnFeed(t, mia)
+	action, second := newFeedLink(t, mia)
+	// Sent again, Make a new link changes nothing: its link was replaced.
+	if r := mia.post("/profile", action, nil); feedPattern.MatchString(r.body) || !strings.Contains(r.body, "its newest link still works") {
+		t.Fatal("making a new link twice made two")
+	}
 	gone(t, s, first, "a replaced link")
 	if r := s.browser().get(second); r.status != http.StatusOK {
 		t.Fatalf("the new link: %d", r.status)
@@ -75,10 +97,13 @@ func TestFeedLifecycle(t *testing.T) {
 		t.Fatalf("turning off: %d %s", r.status, r.header.Get("Location"))
 	}
 	gone(t, s, second, "a turned-off link")
-	if n := s.Count(t, `SELECT count(*) FROM audit_log WHERE action = 'feed.new'`); n != 4 {
+	if r := mia.post("/profile", "/profile/feed/off", nil); r.header.Get("Location") != "/profile?done=feed-off#feed" {
+		t.Fatalf("turning off again: %d", r.status)
+	}
+	if n := s.Count(t, `SELECT count(*) FROM audit_log WHERE action = 'feed.new'`); n != 2 {
 		t.Fatalf("%d feed.new rows", n)
 	}
-	if n := s.Count(t, `SELECT count(*) FROM audit_log WHERE action = 'feed.new' AND details LIKE '%replaced%'`); n != 3 {
+	if n := s.Count(t, `SELECT count(*) FROM audit_log WHERE action = 'feed.new' AND details LIKE '%replaced%'`); n != 1 {
 		t.Fatal("replacing is not told apart in the audit log")
 	}
 	if n := s.Count(t, `SELECT count(*) FROM audit_log WHERE action = 'feed.off'`); n != 1 {

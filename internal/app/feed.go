@@ -97,11 +97,14 @@ type feedView struct {
 	Replace, Off Dialog
 }
 
-func (a *App) feedSection(r *http.Request, on bool, token, status string) feedView {
-	v := feedView{On: on || token != "", Status: status,
+// feedSection is the feed as it stands: print is the current link's
+// fingerprint, which Make a new link carries so that it replaces that link
+// and no other.
+func (a *App) feedSection(r *http.Request, print, token, status string) feedView {
+	v := feedView{On: print != "", Status: status,
 		Replace: Dialog{ID: "feed-new", OpenLabel: "Make a new link", OpenKind: "secondary", Title: "Make a new link?",
 			Text:        "The link you have now stops working at once. A calendar using it stops updating until you add the new one.",
-			CancelLabel: "Keep this link", ConfirmLabel: "Make a new link", ConfirmKind: "primary", Action: "/profile/feed/new", CSRF: a.csrfToken(r)},
+			CancelLabel: "Keep this link", ConfirmLabel: "Make a new link", ConfirmKind: "primary", Action: "/profile/feed/new?replaces=" + print, CSRF: a.csrfToken(r)},
 		Off: Dialog{ID: "feed-off", OpenLabel: "Turn off", OpenKind: "danger-outline", Title: "Turn off your calendar feed?",
 			Text:        "Its link stops working at once, and calendars using it stop updating. You can turn it on again with a new link.",
 			CancelLabel: "Keep it on", ConfirmLabel: "Turn off", ConfirmKind: "danger", Action: "/profile/feed/off", CSRF: a.csrfToken(r)}}
@@ -122,15 +125,21 @@ func (a *App) postNewFeed(w http.ResponseWriter, r *http.Request) {
 		a.feedTooMany(w, r, f)
 		return
 	}
-	c := &accounts.NewFeed{}
-	if !a.runFeed(w, r, c) {
+	c := &accounts.NewFeed{Replaces: r.URL.Query().Get("replaces")}
+	err := a.exec.Run(r.Context(), write.Session(accounts.Hash(a.sessionToken(r))), c)
+	if errors.Is(err, accounts.ErrFeedUnchanged) {
+		// Sent again, or from an older page: the newest link stands.
+		a.showProfileFeed(w, r, f, a.feedSection(r, f.session.Person.FeedPrint, "", "Your calendar feed is on, and its newest link still works."))
+		return
+	}
+	if !a.feedDone(w, r, err) {
 		return
 	}
 	status := "Your calendar feed is on."
 	if c.Replaced {
 		status = "This is a new link. The one before it no longer works."
 	}
-	a.showProfileFeed(w, r, f, a.feedSection(r, true, c.Token, status))
+	a.showProfileFeed(w, r, f, a.feedSection(r, accounts.FeedPrint(accounts.Hash(c.Token)), c.Token, status))
 }
 
 func (a *App) postEndFeed(w http.ResponseWriter, r *http.Request) {
@@ -142,20 +151,21 @@ func (a *App) postEndFeed(w http.ResponseWriter, r *http.Request) {
 		a.feedTooMany(w, r, f)
 		return
 	}
-	if a.runFeed(w, r, accounts.EndFeed{}) {
+	err := a.exec.Run(r.Context(), write.Session(accounts.Hash(a.sessionToken(r))), accounts.EndFeed{})
+	if errors.Is(err, accounts.ErrFeedUnchanged) || a.feedDone(w, r, err) {
 		http.Redirect(w, r, "/profile?done=feed-off#feed", http.StatusSeeOther)
 	}
 }
 
 // feedTooMany says the change could not be saved, with the feed as it is.
 func (a *App) feedTooMany(w http.ResponseWriter, r *http.Request, f pageFacts) {
-	v := a.feedSection(r, f.session.Person.Feed, "", "")
+	v := a.feedSection(r, f.session.Person.FeedPrint, "", "")
 	v.Error = tooMany
 	a.showProfileFeed(w, r, f, v)
 }
 
-func (a *App) runFeed(w http.ResponseWriter, r *http.Request, c write.Command) bool {
-	err := a.exec.Run(r.Context(), write.Session(accounts.Hash(a.sessionToken(r))), c)
+// feedDone answers a feed command that failed, or reports it succeeded.
+func (a *App) feedDone(w http.ResponseWriter, r *http.Request, err error) bool {
 	switch {
 	case errors.Is(err, write.ErrSignedOut):
 		http.Redirect(w, r, "/signin", http.StatusSeeOther)

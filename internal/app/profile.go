@@ -58,7 +58,7 @@ func (a *App) profileView(r *http.Request, f pageFacts, name string, version int
 	return profilePage{Name: nameF, Version: version, Email: p.Email,
 		// Pressing the switch posts the state it changes to.
 		Contact: Chip{Label: "Show my email to leaders of my groups", Name: "hide", Value: map[bool]string{true: "0", false: "1"}[p.ContactHidden], Type: "submit", Pressed: !p.ContactHidden},
-		Status:  status, Conflict: conflict, Zone: zoneSelect(f, zoneErr), ZoneStatus: zoneStatus, Feed: a.feedSection(r, p.Feed, "", "")}
+		Status:  status, Conflict: conflict, Zone: zoneSelect(f, zoneErr), ZoneStatus: zoneStatus, Feed: a.feedSection(r, p.FeedPrint, "", "")}
 }
 
 // tooMany is what a person sees when their own changes outpace the limit.
