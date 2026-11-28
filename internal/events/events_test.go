@@ -494,10 +494,10 @@ func TestOpeningWiderIsTold(t *testing.T) {
 	}
 	// One date opened to the public: told again, with its own reason; never narrower.
 	d := dateUID(t, env, c.UID, "2026-12-08")
-	if err := run(t, env, 2, events.OpenDate{UID: d, Visibility: policy.InviteOnly}); !errors.Is(err, write.ErrNotAllowed) {
+	if err := run(t, env, 2, &events.OpenDate{UID: d, Visibility: policy.InviteOnly}); !errors.Is(err, write.ErrNotAllowed) {
 		t.Fatalf("a date narrower than its event: %v", err)
 	}
-	if err := run(t, env, 2, events.OpenDate{UID: d, Visibility: policy.Public, Reason: "Open house"}); err != nil {
+	if err := run(t, env, 2, &events.OpenDate{UID: d, Visibility: policy.Public, Reason: "Open house"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := notices(t, env, "event.opened"); got[1] != 2 || got[3] != 2 {
@@ -508,7 +508,7 @@ func TestOpeningWiderIsTold(t *testing.T) {
 		t.Fatalf("a stranger sees %d dates; want only the opened one", len(list))
 	}
 	// Back to the series': nothing is told, and the reason goes.
-	run(t, env, 2, events.OpenDate{UID: d})
+	run(t, env, 2, &events.OpenDate{UID: d, Private: true})
 	if n := env.Count(t, `SELECT count(*) FROM dates WHERE uid = ? AND visibility IS NULL AND open_reason = ''`, d); n != 1 {
 		t.Fatal("not put back to the series'")
 	}
@@ -644,7 +644,7 @@ func TestAnswers(t *testing.T) {
 	}
 	// An outsider on a date opened to the church answers that date, and
 	// may not answer the series it would reveal.
-	run(t, env, 2, events.OpenDate{UID: dec15, Visibility: policy.Church})
+	run(t, env, 2, &events.OpenDate{UID: dec15, Visibility: policy.Church})
 	if err := run(t, env, 4, &events.Answer{DateUID: dec15, Status: "going", Scope: "all"}); !errors.Is(err, write.ErrNotAllowed) {
 		t.Fatalf("an outsider's series answer: %v", err)
 	}

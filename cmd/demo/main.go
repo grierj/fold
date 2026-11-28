@@ -212,7 +212,7 @@ func (s *seeder) build() {
 	// event opened to the church (P7, DEC-28).
 	s.run(email(groupList[0].leader), events.CancelDate{UID: s.nthDate(made[eventList[0].title], 2)})
 	grief := groupNamed(openedDate.group)
-	s.run(email(grief.leader), events.OpenDate{UID: s.nthDate(made[openedDate.event], 1), Visibility: policy.Church, Reason: openedDate.reason})
+	s.run(email(grief.leader), &events.OpenDate{UID: s.nthDate(made[openedDate.event], 1), Visibility: policy.Church, Reason: openedDate.reason})
 	// A church-wide event with two hosts (DEC-7).
 	wide := &events.Create{Input: events.Input{Title: churchEvent.title, Place: churchEvent.place, Visibility: policy.Church, Pattern: pattern(churchEvent)}}
 	s.run(adminEmail, wide)

@@ -38,6 +38,7 @@ type Event struct {
 	Version     int64
 	OpenReason  string // why it was opened wider than its group
 	VideoURL    string // shown only as policy.CanSeeVideo allows (R41)
+	Seats       int    // the most who may say Going to each date; 0 is no limit
 }
 
 // ChurchWide is an event with no group (DEC-7).
@@ -58,12 +59,12 @@ func (e Event) Pattern() Pattern {
 var ErrNotFound = errors.New("events: not found")
 
 const eventColumns = `e.id, e.uid, coalesce(e.group_id, 0), e.title, e.about, e.place, e.visibility, e.zone, e.starts_local,
-	e.minutes, e.repeat, coalesce(e.month_week, 0), coalesce(e.until, ''), e.status, e.version, e.open_reason, e.video_url`
+	e.minutes, e.repeat, coalesce(e.month_week, 0), coalesce(e.until, ''), e.status, e.version, e.open_reason, e.video_url, coalesce(e.seats, 0)`
 
 func scanEvent(row interface{ Scan(...any) error }) (Event, error) {
 	var e Event
 	err := row.Scan(&e.ID, &e.UID, &e.GroupID, &e.Title, &e.About, &e.Place, &e.Visibility, &e.Zone, &e.StartsLocal,
-		&e.Minutes, &e.Repeat, &e.MonthWeek, &e.Until, &e.Status, &e.Version, &e.OpenReason, &e.VideoURL)
+		&e.Minutes, &e.Repeat, &e.MonthWeek, &e.Until, &e.Status, &e.Version, &e.OpenReason, &e.VideoURL, &e.Seats)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Event{}, ErrNotFound
 	}
