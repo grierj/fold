@@ -207,7 +207,7 @@ func (a *App) answerView(f eventFacts, af answerFacts, r *http.Request, status s
 	if f.guest != nil {
 		b.GuestCancel = policy.GuestCanCancel(af.mine, ended) && !f.date.Cancelled
 		b.GuestGoing = !b.GuestCancel && policy.GuestCanAnswer(ev, f.date.Visibility, g, f.date.Cancelled, ended)
-		if af.mine == policy.AnswerGoing {
+		if af.mine == policy.AnswerGoing && status == "" {
 			b.Mine = "You're going."
 		}
 	}
