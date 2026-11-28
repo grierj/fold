@@ -76,8 +76,17 @@ func TestSeed(t *testing.T) {
 				t.Errorf("%s has %d unread notices (%v), want some", name, n, err)
 			}
 		}
-		if n := count(q, `SELECT count(*) FROM events`); n != len(eventList) {
-			t.Errorf("%d events, want %d", n, len(eventList))
+		if n := count(q, `SELECT count(*) FROM events`); n != len(eventList)+1 {
+			t.Errorf("%d events, want %d", n, len(eventList)+1)
+		}
+		if n := count(q, `SELECT count(*) FROM event_hosts h JOIN events e ON e.id = h.event_id WHERE e.group_id IS NULL`); n != len(churchHosts) {
+			t.Errorf("%d church-wide hosts", n)
+		}
+		if n := count(q, `SELECT count(*) FROM dates WHERE cancelled_by = 'person'`); n != 1 {
+			t.Errorf("%d dates cancelled by hand", n)
+		}
+		if n := count(q, `SELECT count(*) FROM dates WHERE visibility = 'church' AND open_reason <> ''`); n != 1 {
+			t.Errorf("%d dates opened wider", n)
 		}
 		if n := count(q, `SELECT count(*) FROM dates d JOIN events e ON e.id = d.event_id WHERE e.repeat = 'monthly' AND d.status = 'scheduled'`); n < 30 {
 			t.Errorf("%d monthly dates, want 18 months of two monthly events", n)

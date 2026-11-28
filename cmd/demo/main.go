@@ -183,14 +183,31 @@ func (s *seeder) build() {
 
 	zone, _ := events.LoadZone(churchZone)
 	today := time.Now().In(zone)
-	for _, e := range eventList {
-		g := groupNamed(e.group)
+	made := map[string]string{} // event uids by title
+	pattern := func(e demoEvent) events.Pattern {
 		day := firstDay(today, e)
 		p := events.Pattern{Start: day.Format(events.DayLayout) + "T" + e.at, Minutes: e.minutes, Repeat: e.repeat, MonthWeek: e.monthWeek}
 		if e.untilWeeks > 0 {
 			p.Until = day.AddDate(0, 0, 7*e.untilWeeks).Format(events.DayLayout)
 		}
-		s.run(email(g.leader), &events.Create{GroupUID: uids[g.name], Input: events.Input{Title: e.title, Place: e.place, Visibility: g.vis, Pattern: p}})
+		return p
+	}
+	for _, e := range eventList {
+		g := groupNamed(e.group)
+		c := &events.Create{GroupUID: uids[g.name], Input: events.Input{Title: e.title, Place: e.place, Visibility: g.vis, Pattern: pattern(e)}}
+		s.run(email(g.leader), c)
+		made[e.title] = c.UID
+	}
+	// One date cancelled by hand, and one date of an invite-only group's
+	// event opened to the church (P7, DEC-28).
+	s.run(email(groupList[0].leader), events.CancelDate{UID: s.nthDate(made[eventList[0].title], 2)})
+	grief := groupNamed(openedDate.group)
+	s.run(email(grief.leader), events.OpenDate{UID: s.nthDate(made[openedDate.event], 1), Visibility: policy.Church, Reason: openedDate.reason})
+	// A church-wide event with two hosts (DEC-7).
+	wide := &events.Create{Input: events.Input{Title: churchEvent.title, Place: churchEvent.place, Visibility: policy.Church, Pattern: pattern(churchEvent)}}
+	s.run(adminEmail, wide)
+	for _, h := range churchHosts {
+		s.run(adminEmail, events.AddHost{EventUID: wide.UID, PersonUID: s.person(email(h)).UID})
 	}
 
 	s.run(adminEmail, accounts.Disable{PersonUID: s.person(email(disabledPerson)).UID})
@@ -340,4 +357,13 @@ func firstDay(today time.Time, e demoEvent) time.Time {
 		d = d.AddDate(0, 0, 1)
 	}
 	return d
+}
+
+// nthDate is the uid of an event's nth date from the soonest, counting from 0.
+func (s *seeder) nthDate(eventUID string, n int) (uid string) {
+	s.read(func(q *sql.Tx) error {
+		return q.QueryRowContext(s.ctx, `SELECT d.uid FROM dates d JOIN events e ON e.id = d.event_id
+			WHERE e.uid = ? ORDER BY d.starts_at LIMIT 1 OFFSET ?`, eventUID, n).Scan(&uid)
+	})
+	return uid
 }

@@ -106,4 +106,15 @@ var eventList = []demoEvent{
 	{group: "Young Adults", title: "Game night and chili supper", place: "Youth room", at: "18:30", weekday: time.Friday, repeat: events.Once, minutes: 150},
 	{group: "Choir", title: "Christmas cantata rehearsal", place: "Choir room", at: "19:00", weekday: time.Wednesday, repeat: events.Weekly, minutes: 90, untilWeeks: 6},
 	{group: "Senior Saints Lunch", title: "Senior Saints lunch", place: "Fellowship hall", at: "12:00", weekday: time.Wednesday, repeat: events.Monthly, monthWeek: 1, minutes: 90},
+	{group: "Grief Share", title: "Grief Share evening", place: "Church library", at: "19:00", weekday: time.Monday, repeat: events.Weekly, minutes: 90},
 }
+
+// openedDate is one date of an invite-only group's event opened to the
+// whole church.
+var openedDate = struct{ group, event, reason string }{"Grief Share", "Grief Share evening", "An open evening for anyone carrying a loss this season."}
+
+// churchEvent is a church-wide event, and its hosts.
+var (
+	churchEvent = demoEvent{title: "Wednesday family supper", place: "Fellowship hall", at: "17:30", weekday: time.Wednesday, repeat: events.Weekly, minutes: 90}
+	churchHosts = []string{"Walter Brooks", "Joyce Palmer"}
+)
