@@ -67,7 +67,7 @@ test("setup, sign in and out, with every page through the gates", async ({ page,
   await expect(elsewhere.getByRole("heading", { name: "Finish setting up" })).toBeVisible();
   await gate(elsewhere, "setup link");
   await page.goto(setupLink);
-  await expect(page.getByRole("heading", { name: "Welcome, Pat Admin" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^Good (morning|afternoon|evening), Pat Admin$/ })).toBeVisible();
   await expect(page.getByText("You're not in any groups yet")).toBeVisible();
   await gate(page, "home signed in");
 
@@ -112,7 +112,7 @@ test("setup, sign in and out, with every page through the gates", async ({ page,
   await elsewhere.goto(signin);
   await gate(elsewhere, "sign in link");
   await page.goto(signin);
-  await expect(page.getByRole("heading", { name: "Welcome, Pat Admin" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /^Good (morning|afternoon|evening), Pat Admin$/ })).toBeVisible();
 
   await page.goto(signin);
   await expect(page.getByText("This link no longer works")).toBeVisible();

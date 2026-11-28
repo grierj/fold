@@ -117,7 +117,7 @@ export async function milestone1b(page: Page, browser: Browser): Promise<{ zed: 
   await zed.goto(zedLink);
   await zed.getByLabel("I am 18 or older").check();
   await zed.getByRole("button", { name: "Accept the invitation" }).click();
-  await expect(zed.getByRole("heading", { name: /Welcome/ })).toBeVisible();
+  await expect(zed.getByRole("heading", { name: /^Good (morning|afternoon|evening), / })).toBeVisible();
   await expect.poll(async () => {
     await zed.goto("/profile");
     return zed.getByLabel("Your time zone").inputValue();
